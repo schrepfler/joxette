@@ -40,8 +40,6 @@ public class KafkaConfig {
         // successful DuckLake write to guarantee at-least-once semantics.
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest");
-        // Use the Kafka producer timestamp as the canonical message timestamp.
-        props.put(ConsumerConfig.LOG_TIMESTAMP_TYPE_CONFIG, "CreateTime");
         return props;
     }
 }
