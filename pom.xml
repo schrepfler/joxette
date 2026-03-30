@@ -103,6 +103,12 @@
             <artifactId>jackson-databind</artifactId>
         </dependency>
 
+        <!-- JSONPath for entity ID extraction from message values -->
+        <dependency>
+            <groupId>com.jayway.jsonpath</groupId>
+            <artifactId>json-path</artifactId>
+        </dependency>
+
         <!-- Spring Boot Test -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
