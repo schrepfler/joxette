@@ -1,0 +1,88 @@
+spring:
+  application:
+    name: joxette
+  # Disable Spring auto-config for Kafka (we use Jox Kafka directly)
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration
+
+server:
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    export:
+      prometheus:
+        enabled: true
+
+# ---------------------------------------------------------------------------
+# Joxette configuration
+# All values below are defaults; override via environment variables or
+# a profile-specific application-{profile}.yml file.
+# ---------------------------------------------------------------------------
+joxette:
+
+  # DuckLake catalog: the DuckDB file acts as the lakehouse catalog.
+  # object-storage-path is where DuckLake flushes inlined data to Parquet.
+  catalog:
+    path: "./data/joxette.ducklake"
+    object-storage-path: "s3://my-bucket/joxette/data"
+
+  # DuckLake inline-buffering thresholds.
+  # Data is buffered inside the catalog DB until one of these limits is hit,
+  # then flushed to Parquet on object storage automatically by DuckLake.
+  inline:
+    threshold-mb: 4
+    threshold-records: 50000
+
+  # Compaction: merges small Parquet files to reduce read amplification.
+  compaction:
+    schedule: "0 3 * * *"   # cron: daily at 03:00
+    entity:
+      min-files-per-bucket: 10
+      target-file-size-mb: 256
+      lookback-days: 30      # only compact data older than N days
+    general:
+      enabled: false         # general cassette compaction disabled by default
+      min-files-per-partition: 20
+      target-file-size-mb: 256
+
+  # Kafka bootstrap config (used to build per-topic KafkaConsumer instances).
+  kafka:
+    bootstrap-servers: "localhost:9092"
+
+  # Recording pipeline batching.
+  recording:
+    batch-size: 10000        # flush after N messages
+    batch-timeout-ms: 1000  # flush after N ms even if batch not full
+
+  # Bootstrap seed: loaded only on first start when config tables are empty.
+  # After first start, use the REST API to manage topics and entities.
+  bootstrap:
+    topics:
+      - topic: "orders.events"
+        mode: "both"          # record general stream AND route to entity cassettes
+      - topic: "audit.log"
+        mode: "general"       # raw stream only, no entity extraction
+      - topic: "payments.events"
+        mode: "entity_only"   # extract entities only, discard unmatched messages
+
+    entities:
+      - type: "order"
+        buckets: 256
+        sources:
+          - topic: "orders.events"
+            entity-id:
+              source: value
+              expression: "$.order_id"
+          - topic: "payments.events"
+            entity-id:
+              source: value
+              expression: "$.payment.order_id"
