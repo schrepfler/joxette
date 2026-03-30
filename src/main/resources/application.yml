@@ -5,6 +5,9 @@ spring:
   autoconfigure:
     exclude:
       - org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
 
 server:
   port: 8080
