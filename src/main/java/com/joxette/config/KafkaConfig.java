@@ -1,5 +1,7 @@
 package com.joxette.config;
 
+import org.apache.kafka.clients.admin.AdminClient;
+import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
@@ -41,5 +43,19 @@ public class KafkaConfig {
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest");
         return props;
+    }
+
+    /**
+     * Shared {@link AdminClient} used by the health endpoint to compute
+     * consumer lag.  The bean is destroyed automatically by Spring (via the
+     * {@code destroyMethod}) when the application context is closed.
+     */
+    @Bean(destroyMethod = "close")
+    public AdminClient kafkaAdminClient(JoxetteProperties properties) {
+        Map<String, Object> cfg = new HashMap<>();
+        cfg.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, properties.getKafka().getBootstrapServers());
+        cfg.put(AdminClientConfig.REQUEST_TIMEOUT_MS_CONFIG, 3_000);
+        cfg.put(AdminClientConfig.DEFAULT_API_TIMEOUT_MS_CONFIG, 5_000);
+        return AdminClient.create(cfg);
     }
 }

@@ -54,8 +54,12 @@ public class JoxetteProperties {
     // -----------------------------------------------------------------------
 
     public static class Compaction {
-        /** Cron expression for the scheduled compaction run. */
-        private String schedule = "0 3 * * *";
+        /**
+         * Cron expression for the scheduled compaction run.
+         * Uses Spring 6-field format: {@code <sec> <min> <hour> <dom> <month> <dow>}.
+         * Default: daily at 03:00:00.
+         */
+        private String schedule = "0 0 3 * * *";
         private Entity entity = new Entity();
         private General general = new General();
 
@@ -78,6 +82,7 @@ public class JoxetteProperties {
             private boolean enabled = false;
             private int minFilesPerPartition = 20;
             private int targetFileSizeMb = 256;
+            private int lookbackDays = 30;
 
             public boolean isEnabled() { return enabled; }
             public void setEnabled(boolean enabled) { this.enabled = enabled; }
@@ -87,6 +92,9 @@ public class JoxetteProperties {
 
             public int getTargetFileSizeMb() { return targetFileSizeMb; }
             public void setTargetFileSizeMb(int targetFileSizeMb) { this.targetFileSizeMb = targetFileSizeMb; }
+
+            public int getLookbackDays() { return lookbackDays; }
+            public void setLookbackDays(int lookbackDays) { this.lookbackDays = lookbackDays; }
         }
 
         public String getSchedule() { return schedule; }
