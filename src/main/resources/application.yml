@@ -47,7 +47,8 @@ joxette:
 
   # Compaction: merges small Parquet files to reduce read amplification.
   compaction:
-    schedule: "0 3 * * *"   # cron: daily at 03:00
+    # Spring 6-field cron: <sec> <min> <hour> <dom> <month> <dow>
+    schedule: "0 0 3 * * *"  # daily at 03:00:00
     entity:
       min-files-per-bucket: 10
       target-file-size-mb: 256
@@ -56,6 +57,7 @@ joxette:
       enabled: false         # general cassette compaction disabled by default
       min-files-per-partition: 20
       target-file-size-mb: 256
+      lookback-days: 30      # only compact data older than N days
 
   # Kafka bootstrap config (used to build per-topic KafkaConsumer instances).
   kafka:

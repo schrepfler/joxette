@@ -60,6 +60,7 @@ public class SchemaManager {
                 createEntityCassettes(st);
                 createConfigTables(st);
                 createSnapshotsTable(st);
+                createCompactionHistoryTable(st);
             }
         }
     }
@@ -159,6 +160,22 @@ public class SchemaManager {
                     name        VARCHAR     NOT NULL PRIMARY KEY,
                     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
                     size_bytes  BIGINT
+                )
+                """);
+    }
+
+    private static void createCompactionHistoryTable(Statement st) throws SQLException {
+        st.execute("""
+                CREATE TABLE IF NOT EXISTS lake.compaction_history (
+                    id              BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                    started_at      TIMESTAMPTZ NOT NULL,
+                    completed_at    TIMESTAMPTZ,
+                    status          VARCHAR     NOT NULL,
+                    triggered_by    VARCHAR     NOT NULL,
+                    targets         VARCHAR[],
+                    entity_buckets_compacted     INTEGER NOT NULL DEFAULT 0,
+                    general_partitions_compacted INTEGER NOT NULL DEFAULT 0,
+                    error_message   VARCHAR
                 )
                 """);
     }
