@@ -8,6 +8,9 @@ import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBo
 
 import java.sql.SQLException;
 import java.time.Instant;
+import java.util.List;
+import java.util.Map;
+import java.util.NoSuchElementException;
 
 /**
  * REST endpoints for cassette replay.
@@ -38,14 +41,17 @@ public class CassetteController {
     private final TopicReplayService topicService;
     private final EntityReplayService entityService;
     private final SseReplayHandler sseHandler;
+    private final CassetteLifecycleService lifecycle;
 
     public CassetteController(
             TopicReplayService topicService,
             EntityReplayService entityService,
-            SseReplayHandler sseHandler) {
+            SseReplayHandler sseHandler,
+            CassetteLifecycleService lifecycle) {
         this.topicService  = topicService;
         this.entityService = entityService;
         this.sseHandler    = sseHandler;
+        this.lifecycle     = lifecycle;
     }
 
     // =========================================================================
@@ -173,12 +179,85 @@ public class CassetteController {
     }
 
     // =========================================================================
+    // Cassette lifecycle – stats, compaction, truncation
+    // =========================================================================
+
+    @GetMapping(value = "/topics/{topic}/stats", produces = MediaType.APPLICATION_JSON_VALUE)
+    public CassetteStats getTopicStats(@PathVariable String topic) throws SQLException {
+        return lifecycle.getTopicCassetteStats(topic);
+    }
+
+    /** Triggers a DuckDB CHECKPOINT to flush the WAL for the given topic's cassette. */
+    @PostMapping("/topics/{topic}/compact")
+    public ResponseEntity<Void> compactTopic(@PathVariable String topic) throws SQLException {
+        lifecycle.compactTopicCassette(topic);
+        return ResponseEntity.accepted().build();
+    }
+
+    /** Deletes all rows for {@code topic} from {@code lake.cassette}. */
+    @PostMapping(value = "/topics/{topic}/truncate", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<Map<String, Long>> truncateTopic(@PathVariable String topic)
+            throws SQLException {
+        long deleted = lifecycle.truncateTopicCassette(topic);
+        return ResponseEntity.ok(Map.of("deleted", deleted));
+    }
+
+    // =========================================================================
+    // GDPR entity deletion
+    // =========================================================================
+
+    /**
+     * Permanently deletes all data for the given entity (right to erasure).
+     * Removes rows from {@code lake.entity_{entityType}} and
+     * {@code lake.known_entities}.
+     */
+    @DeleteMapping(value = "/entities/{entityType}/{entityId}",
+                   produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<Map<String, Long>> deleteEntity(
+            @PathVariable String entityType,
+            @PathVariable String entityId) throws SQLException {
+        long deleted = lifecycle.deleteEntityFromCassette(entityType, entityId);
+        return ResponseEntity.ok(Map.of("deleted", deleted));
+    }
+
+    // =========================================================================
+    // Snapshot management
+    // =========================================================================
+
+    @GetMapping(value = "/snapshots", produces = MediaType.APPLICATION_JSON_VALUE)
+    public List<SnapshotInfo> listSnapshots() throws SQLException {
+        return lifecycle.listSnapshots();
+    }
+
+    @PostMapping(value = "/snapshots",
+                 consumes = MediaType.APPLICATION_JSON_VALUE,
+                 produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<SnapshotInfo> createSnapshot(@RequestBody Map<String, String> body)
+            throws SQLException {
+        String name = body.getOrDefault("name",
+                "snapshot-" + Instant.now().toEpochMilli());
+        SnapshotInfo info = lifecycle.createSnapshot(name);
+        return ResponseEntity.status(201).body(info);
+    }
+
+    @PostMapping(value = "/snapshots/{name}/restore")
+    public ResponseEntity<Void> restoreSnapshot(@PathVariable String name) throws SQLException {
+        lifecycle.restoreSnapshot(name);
+        return ResponseEntity.ok().build();
+    }
+
+    // =========================================================================
     // Error handling
     // =========================================================================
 
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<String> handleBadRequest(IllegalArgumentException ex) {
         return ResponseEntity.badRequest().body(ex.getMessage());
+    }
+
+    @ExceptionHandler(NoSuchElementException.class)
+    public ResponseEntity<String> handleNotFound(NoSuchElementException ex) {
+        return ResponseEntity.notFound().build();
     }
 
     @ExceptionHandler(SQLException.class)

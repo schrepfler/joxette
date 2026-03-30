@@ -20,22 +20,20 @@ import java.util.regex.Pattern;
  *
  * <h2>Schema layout</h2>
  * <pre>
- * lake.cassette          – general-mode messages (all topics that include general routing)
- * lake.entity_{type}     – per-entity-type cassette (one table per configured entity)
- * lake.known_entities    – registry of observed (entity_type, entity_id) pairs
+ * lake.cassette               – general-mode messages (all topics that include general routing)
+ * lake.entity_{type}          – per-entity-type cassette (one table per configured entity)
+ * lake.known_entities         – registry of observed (entity_type, entity_id) pairs
+ * lake.config_topics          – runtime topic configuration (mode, paused flag)
+ * lake.config_entities        – runtime entity-type configuration (buckets)
+ * lake.config_entity_sources  – entity-type ↔ source-topic mappings
+ * lake.snapshots              – metadata for EXPORT DATABASE snapshots
  * </pre>
- *
- * <h2>Entity cassette ordering</h2>
- * <p>Entity cassette tables use {@code (entity_id, timestamp, recorded_at)} as
- * their primary key. {@code timestamp} is the primary sort dimension; {@code
- * recorded_at} acts as a tiebreaker for messages that share the same logical
- * timestamp (e.g. events replayed with the original timestamp).
  */
 @Component
 public class SchemaManager {
 
     /** Only lower-case letters, digits, and underscores are valid in entity type names. */
-    private static final Pattern SAFE_IDENTIFIER = Pattern.compile("[a-z][a-z0-9_]*");
+    public static final Pattern SAFE_IDENTIFIER = Pattern.compile("[a-z][a-z0-9_]*");
 
     private static final String HEADERS_TYPE = "LIST(STRUCT(key VARCHAR, value BLOB))";
 
@@ -54,13 +52,21 @@ public class SchemaManager {
     }
 
     private void createSchema() throws SQLException {
-        try (Statement st = duckDB.createStatement()) {
-            st.execute("CREATE SCHEMA IF NOT EXISTS lake");
-            createGeneralCassette(st);
-            createKnownEntitiesRegistry(st);
-            createEntityCassettes(st);
+        synchronized (duckDB) {
+            try (Statement st = duckDB.createStatement()) {
+                st.execute("CREATE SCHEMA IF NOT EXISTS lake");
+                createGeneralCassette(st);
+                createKnownEntitiesRegistry(st);
+                createEntityCassettes(st);
+                createConfigTables(st);
+                createSnapshotsTable(st);
+            }
         }
     }
+
+    // -------------------------------------------------------------------------
+    // Cassette tables
+    // -------------------------------------------------------------------------
 
     private void createGeneralCassette(Statement st) throws SQLException {
         st.execute("""
@@ -95,31 +101,108 @@ public class SchemaManager {
         List<JoxetteProperties.Bootstrap.EntityEntry> entities =
                 properties.getBootstrap().getEntities();
         for (JoxetteProperties.Bootstrap.EntityEntry entity : entities) {
-            String type = entity.getType();
-            validateEntityType(type);
-            st.execute("""
-                    CREATE TABLE IF NOT EXISTS lake.entity_%s (
-                        entity_id     VARCHAR      NOT NULL,
-                        entity_bucket INTEGER      NOT NULL,
-                        topic         VARCHAR      NOT NULL,
-                        partition     INTEGER      NOT NULL,
-                        "offset"      BIGINT       NOT NULL,
-                        timestamp     TIMESTAMPTZ  NOT NULL,
-                        recorded_at   TIMESTAMPTZ  NOT NULL DEFAULT now(),
-                        key           VARCHAR,
-                        value         BLOB,
-                        headers       %s,
-                        PRIMARY KEY (entity_id, timestamp, recorded_at)
-                    )
-                    """.formatted(type, HEADERS_TYPE));
+            createSingleEntityTable(st, entity.getType());
         }
     }
+
+    private void createSingleEntityTable(Statement st, String type) throws SQLException {
+        validateEntityType(type);
+        st.execute("""
+                CREATE TABLE IF NOT EXISTS lake.entity_%s (
+                    entity_id     VARCHAR      NOT NULL,
+                    entity_bucket INTEGER      NOT NULL,
+                    topic         VARCHAR      NOT NULL,
+                    partition     INTEGER      NOT NULL,
+                    "offset"      BIGINT       NOT NULL,
+                    timestamp     TIMESTAMPTZ  NOT NULL,
+                    recorded_at   TIMESTAMPTZ  NOT NULL DEFAULT now(),
+                    key           VARCHAR,
+                    value         BLOB,
+                    headers       %s,
+                    PRIMARY KEY (entity_id, timestamp, recorded_at)
+                )
+                """.formatted(type, HEADERS_TYPE));
+    }
+
+    // -------------------------------------------------------------------------
+    // Config & snapshot tables
+    // -------------------------------------------------------------------------
+
+    private static void createConfigTables(Statement st) throws SQLException {
+        st.execute("""
+                CREATE TABLE IF NOT EXISTS lake.config_topics (
+                    topic  VARCHAR NOT NULL PRIMARY KEY,
+                    mode   VARCHAR NOT NULL DEFAULT 'general',
+                    paused BOOLEAN NOT NULL DEFAULT FALSE
+                )
+                """);
+        st.execute("""
+                CREATE TABLE IF NOT EXISTS lake.config_entities (
+                    entity_type VARCHAR  NOT NULL PRIMARY KEY,
+                    buckets     INTEGER  NOT NULL DEFAULT 256
+                )
+                """);
+        st.execute("""
+                CREATE TABLE IF NOT EXISTS lake.config_entity_sources (
+                    entity_type   VARCHAR NOT NULL,
+                    topic         VARCHAR NOT NULL,
+                    id_source     VARCHAR NOT NULL DEFAULT 'value',
+                    id_expression VARCHAR,
+                    PRIMARY KEY (entity_type, topic)
+                )
+                """);
+    }
+
+    private static void createSnapshotsTable(Statement st) throws SQLException {
+        st.execute("""
+                CREATE TABLE IF NOT EXISTS lake.snapshots (
+                    name        VARCHAR     NOT NULL PRIMARY KEY,
+                    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    size_bytes  BIGINT
+                )
+                """);
+    }
+
+    // -------------------------------------------------------------------------
+    // Public DDL helpers for dynamic entity management
+    // -------------------------------------------------------------------------
+
+    /**
+     * Creates the {@code lake.entity_{type}} cassette table if it does not yet
+     * exist. Safe to call when the table already exists (idempotent).
+     */
+    public synchronized void createEntityTable(String type) throws SQLException {
+        validateEntityType(type);
+        synchronized (duckDB) {
+            try (Statement st = duckDB.createStatement()) {
+                createSingleEntityTable(st, type);
+            }
+        }
+    }
+
+    /**
+     * Drops the {@code lake.entity_{type}} cassette table. This is a
+     * destructive, irreversible operation — callers must confirm intent before
+     * invoking it.
+     */
+    public synchronized void dropEntityTable(String type) throws SQLException {
+        validateEntityType(type);
+        synchronized (duckDB) {
+            try (Statement st = duckDB.createStatement()) {
+                st.execute("DROP TABLE IF EXISTS lake.entity_" + type);
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Validation
+    // -------------------------------------------------------------------------
 
     /**
      * Guards against SQL injection in dynamically constructed table names.
      * Entity type names must match {@code [a-z][a-z0-9_]*}.
      */
-    private static void validateEntityType(String type) {
+    public static void validateEntityType(String type) {
         if (type == null || !SAFE_IDENTIFIER.matcher(type).matches()) {
             throw new IllegalArgumentException(
                     "Invalid entity type name '%s': must match [a-z][a-z0-9_]*".formatted(type));
