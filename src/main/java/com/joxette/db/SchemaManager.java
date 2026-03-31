@@ -36,7 +36,7 @@ import java.util.List;
  * </ul>
  * Topic and entity-type names are normalised to {@code [a-z0-9_]} before use.
  */
-@Component
+@Component("dbSchemaManager")
 public class SchemaManager {
 
     private static final Logger log = LoggerFactory.getLogger(SchemaManager.class);
@@ -129,7 +129,8 @@ public class SchemaManager {
                     entity_id_source     VARCHAR NOT NULL
                                            CHECK (entity_id_source IN ('key', 'value', 'headers')),
                     entity_id_expression VARCHAR NOT NULL,
-                    created_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+                    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    UNIQUE (entity_type, topic)
                 )
                 """);
 

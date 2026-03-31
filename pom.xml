@@ -193,34 +193,34 @@
                     </execution>
                 </executions>
                 <dependencies>
-                    <!-- DuckDB JDBC driver must be on the plugin classpath for codegen -->
+                    <!-- DDLDatabase interprets DDL via jOOQ's parser; no JDBC driver needed -->
                     <dependency>
-                        <groupId>org.duckdb</groupId>
-                        <artifactId>duckdb_jdbc</artifactId>
-                        <version>${duckdb.version}</version>
+                        <groupId>org.jooq</groupId>
+                        <artifactId>jooq-meta-extensions</artifactId>
+                        <version>${jooq.version}</version>
                     </dependency>
                 </dependencies>
                 <configuration>
-                    <jdbc>
-                        <driver>org.duckdb.DuckDBDriver</driver>
-                        <!-- In-memory DuckDB instance: ephemeral, no file I/O during build -->
-                        <url>jdbc:duckdb:</url>
-                    </jdbc>
                     <generator>
                         <database>
-                            <name>org.jooq.meta.duckdb.DuckDBDatabase</name>
-                            <!-- Default schema for plain DuckDB (not DuckLake) -->
-                            <inputSchema>main</inputSchema>
-                            <!-- Config tables + known_entities (placed in main for codegen) -->
-                            <includes>
-                                topic_configs
-                                | entity_type_configs
-                                | entity_source_mappings
-                                | compaction_history
-                                | known_entities
-                            </includes>
-                            <!-- Bootstrap the in-memory DB with the codegen schema -->
-                            <initScript>src/main/resources/db/jooq-codegen-schema.sql</initScript>
+                            <name>org.jooq.meta.extensions.ddl.DDLDatabase</name>
+                            <!-- DDLDatabase places unqualified tables in PUBLIC -->
+                            <inputSchema>PUBLIC</inputSchema>
+                            <properties>
+                                <property>
+                                    <key>scripts</key>
+                                    <value>src/main/resources/db/jooq-codegen-schema.sql</value>
+                                </property>
+                                <!-- Preserve lower-case table/column names from the DDL -->
+                                <property>
+                                    <key>defaultNameCase</key>
+                                    <value>as_is</value>
+                                </property>
+                                <property>
+                                    <key>sort</key>
+                                    <value>semantic</value>
+                                </property>
+                            </properties>
                         </database>
                         <target>
                             <packageName>com.joxette.db.jooq</packageName>

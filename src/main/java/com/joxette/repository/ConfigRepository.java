@@ -1,263 +1,178 @@
 package com.joxette.repository;
 
+import com.joxette.db.jooq.tables.records.EntitySourceMappingsRecord;
+import com.joxette.db.jooq.tables.records.EntityTypeConfigsRecord;
+import com.joxette.db.jooq.tables.records.TopicConfigsRecord;
 import com.joxette.model.EntitySourceMapping;
 import com.joxette.model.EntityTypeConfig;
 import com.joxette.model.TopicConfig;
-import jakarta.annotation.PostConstruct;
+import org.jooq.DSLContext;
+import org.springframework.context.annotation.DependsOn;
 import org.springframework.stereotype.Repository;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
-import java.sql.Statement;
-import java.util.ArrayList;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
 
+import static com.joxette.db.jooq.Tables.ENTITY_SOURCE_MAPPINGS;
+import static com.joxette.db.jooq.Tables.ENTITY_TYPE_CONFIGS;
+import static com.joxette.db.jooq.Tables.TOPIC_CONFIGS;
+
 /**
- * Plain-JDBC repository backed by the shared DuckDB {@link Connection}.
- *
- * <p>All three config tables ({@code topic_configs}, {@code entity_type_configs},
- * {@code entity_source_mappings}) are created on first use via {@link #initSchema()}.
+ * jOOQ-backed repository for the three config tables managed in the
+ * {@code main} schema by {@link com.joxette.db.SchemaManager}.
  *
  * <p>DuckDB serialises writes internally, so no external locking is needed.
+ * All exceptions from the DSL layer are unchecked {@link org.jooq.exception.DataAccessException}.
  */
 @Repository
+@DependsOn("dbSchemaManager")
 public class ConfigRepository {
 
-    private final Connection conn;
+    private final DSLContext dsl;
 
-    public ConfigRepository(Connection duckDbConnection) {
-        this.conn = duckDbConnection;
-    }
-
-    @PostConstruct
-    public void initSchema() throws SQLException {
-        try (Statement st = conn.createStatement()) {
-            st.execute("""
-                    CREATE TABLE IF NOT EXISTS topic_configs (
-                        topic VARCHAR PRIMARY KEY,
-                        mode  VARCHAR NOT NULL
-                    )
-                    """);
-            st.execute("""
-                    CREATE TABLE IF NOT EXISTS entity_type_configs (
-                        entity_type VARCHAR PRIMARY KEY,
-                        buckets     INTEGER NOT NULL
-                    )
-                    """);
-            st.execute("""
-                    CREATE TABLE IF NOT EXISTS entity_source_mappings (
-                        entity_type          VARCHAR NOT NULL,
-                        topic                VARCHAR NOT NULL,
-                        entity_id_source     VARCHAR NOT NULL,
-                        entity_id_expression VARCHAR NOT NULL,
-                        PRIMARY KEY (entity_type, topic)
-                    )
-                    """);
-        }
+    public ConfigRepository(DSLContext dsl) {
+        this.dsl = dsl;
     }
 
     // -----------------------------------------------------------------------
     // TopicConfig
     // -----------------------------------------------------------------------
 
-    public List<TopicConfig> findAllTopics() throws SQLException {
-        List<TopicConfig> result = new ArrayList<>();
-        try (Statement st = conn.createStatement();
-             ResultSet rs = st.executeQuery("SELECT topic, mode FROM topic_configs ORDER BY topic")) {
-            while (rs.next()) {
-                result.add(new TopicConfig(rs.getString("topic"), rs.getString("mode")));
-            }
-        }
-        return result;
+    public List<TopicConfig> findAllTopics() {
+        return dsl.selectFrom(TOPIC_CONFIGS)
+                .orderBy(TOPIC_CONFIGS.TOPIC)
+                .fetch(this::toTopicConfig);
     }
 
-    public Optional<TopicConfig> findTopic(String topic) throws SQLException {
-        try (PreparedStatement ps = conn.prepareStatement(
-                "SELECT topic, mode FROM topic_configs WHERE topic = ?")) {
-            ps.setString(1, topic);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    return Optional.of(new TopicConfig(rs.getString("topic"), rs.getString("mode")));
-                }
-            }
-        }
-        return Optional.empty();
+    public Optional<TopicConfig> findTopic(String topic) {
+        return dsl.selectFrom(TOPIC_CONFIGS)
+                .where(TOPIC_CONFIGS.TOPIC.eq(topic))
+                .fetchOptional(this::toTopicConfig);
     }
 
-    public void upsertTopic(TopicConfig config) throws SQLException {
-        try (PreparedStatement ps = conn.prepareStatement("""
-                INSERT INTO topic_configs (topic, mode) VALUES (?, ?)
-                ON CONFLICT (topic) DO UPDATE SET mode = excluded.mode
-                """)) {
-            ps.setString(1, config.topic());
-            ps.setString(2, config.mode());
-            ps.executeUpdate();
-        }
+    public void upsertTopic(TopicConfig config) {
+        dsl.insertInto(TOPIC_CONFIGS)
+                .set(TOPIC_CONFIGS.TOPIC, config.topic())
+                .set(TOPIC_CONFIGS.MODE, config.mode())
+                .onConflict(TOPIC_CONFIGS.TOPIC)
+                .doUpdate()
+                .set(TOPIC_CONFIGS.MODE, config.mode())
+                .set(TOPIC_CONFIGS.UPDATED_AT, OffsetDateTime.now())
+                .execute();
     }
 
-    public void deleteTopic(String topic) throws SQLException {
-        try (PreparedStatement ps = conn.prepareStatement(
-                "DELETE FROM topic_configs WHERE topic = ?")) {
-            ps.setString(1, topic);
-            ps.executeUpdate();
-        }
+    public void deleteTopic(String topic) {
+        dsl.deleteFrom(TOPIC_CONFIGS)
+                .where(TOPIC_CONFIGS.TOPIC.eq(topic))
+                .execute();
     }
 
     /** Returns {@code true} when the {@code topic_configs} table has no rows. */
-    public boolean isTopicConfigEmpty() throws SQLException {
-        try (Statement st = conn.createStatement();
-             ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM topic_configs")) {
-            return rs.next() && rs.getLong(1) == 0;
-        }
+    public boolean isTopicConfigEmpty() {
+        return dsl.fetchCount(TOPIC_CONFIGS) == 0;
     }
 
     // -----------------------------------------------------------------------
     // EntityTypeConfig
     // -----------------------------------------------------------------------
 
-    public List<EntityTypeConfig> findAllEntityTypes() throws SQLException {
-        List<EntityTypeConfig> result = new ArrayList<>();
-        try (Statement st = conn.createStatement();
-             ResultSet rs = st.executeQuery(
-                     "SELECT entity_type, buckets FROM entity_type_configs ORDER BY entity_type")) {
-            while (rs.next()) {
-                result.add(new EntityTypeConfig(rs.getString("entity_type"), rs.getInt("buckets")));
-            }
-        }
-        return result;
+    public List<EntityTypeConfig> findAllEntityTypes() {
+        return dsl.selectFrom(ENTITY_TYPE_CONFIGS)
+                .orderBy(ENTITY_TYPE_CONFIGS.ENTITY_TYPE)
+                .fetch(this::toEntityTypeConfig);
     }
 
-    public Optional<EntityTypeConfig> findEntityType(String entityType) throws SQLException {
-        try (PreparedStatement ps = conn.prepareStatement(
-                "SELECT entity_type, buckets FROM entity_type_configs WHERE entity_type = ?")) {
-            ps.setString(1, entityType);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    return Optional.of(
-                            new EntityTypeConfig(rs.getString("entity_type"), rs.getInt("buckets")));
-                }
-            }
-        }
-        return Optional.empty();
+    public Optional<EntityTypeConfig> findEntityType(String entityType) {
+        return dsl.selectFrom(ENTITY_TYPE_CONFIGS)
+                .where(ENTITY_TYPE_CONFIGS.ENTITY_TYPE.eq(entityType))
+                .fetchOptional(this::toEntityTypeConfig);
     }
 
-    public void upsertEntityType(EntityTypeConfig config) throws SQLException {
-        try (PreparedStatement ps = conn.prepareStatement("""
-                INSERT INTO entity_type_configs (entity_type, buckets) VALUES (?, ?)
-                ON CONFLICT (entity_type) DO UPDATE SET buckets = excluded.buckets
-                """)) {
-            ps.setString(1, config.entityType());
-            ps.setInt(2, config.buckets());
-            ps.executeUpdate();
-        }
+    public void upsertEntityType(EntityTypeConfig config) {
+        dsl.insertInto(ENTITY_TYPE_CONFIGS)
+                .set(ENTITY_TYPE_CONFIGS.ENTITY_TYPE, config.entityType())
+                .set(ENTITY_TYPE_CONFIGS.BUCKET_COUNT, config.buckets())
+                .onConflict(ENTITY_TYPE_CONFIGS.ENTITY_TYPE)
+                .doUpdate()
+                .set(ENTITY_TYPE_CONFIGS.BUCKET_COUNT, config.buckets())
+                .execute();
     }
 
-    public void deleteEntityType(String entityType) throws SQLException {
-        try (PreparedStatement ps = conn.prepareStatement(
-                "DELETE FROM entity_type_configs WHERE entity_type = ?")) {
-            ps.setString(1, entityType);
-            ps.executeUpdate();
-        }
+    public void deleteEntityType(String entityType) {
+        dsl.deleteFrom(ENTITY_TYPE_CONFIGS)
+                .where(ENTITY_TYPE_CONFIGS.ENTITY_TYPE.eq(entityType))
+                .execute();
     }
 
     // -----------------------------------------------------------------------
     // EntitySourceMapping
     // -----------------------------------------------------------------------
 
-    public List<EntitySourceMapping> findAllMappings() throws SQLException {
-        List<EntitySourceMapping> result = new ArrayList<>();
-        try (Statement st = conn.createStatement();
-             ResultSet rs = st.executeQuery("""
-                     SELECT entity_type, topic, entity_id_source, entity_id_expression
-                     FROM entity_source_mappings
-                     ORDER BY entity_type, topic
-                     """)) {
-            while (rs.next()) {
-                result.add(toMapping(rs));
-            }
-        }
-        return result;
+    public List<EntitySourceMapping> findAllMappings() {
+        return dsl.selectFrom(ENTITY_SOURCE_MAPPINGS)
+                .orderBy(ENTITY_SOURCE_MAPPINGS.ENTITY_TYPE, ENTITY_SOURCE_MAPPINGS.TOPIC)
+                .fetch(this::toMapping);
     }
 
-    public List<EntitySourceMapping> findMappingsByEntityType(String entityType) throws SQLException {
-        List<EntitySourceMapping> result = new ArrayList<>();
-        try (PreparedStatement ps = conn.prepareStatement("""
-                SELECT entity_type, topic, entity_id_source, entity_id_expression
-                FROM entity_source_mappings
-                WHERE entity_type = ?
-                ORDER BY topic
-                """)) {
-            ps.setString(1, entityType);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    result.add(toMapping(rs));
-                }
-            }
-        }
-        return result;
+    public List<EntitySourceMapping> findMappingsByEntityType(String entityType) {
+        return dsl.selectFrom(ENTITY_SOURCE_MAPPINGS)
+                .where(ENTITY_SOURCE_MAPPINGS.ENTITY_TYPE.eq(entityType))
+                .orderBy(ENTITY_SOURCE_MAPPINGS.TOPIC)
+                .fetch(this::toMapping);
     }
 
-    public List<EntitySourceMapping> findMappingsByTopic(String topic) throws SQLException {
-        List<EntitySourceMapping> result = new ArrayList<>();
-        try (PreparedStatement ps = conn.prepareStatement("""
-                SELECT entity_type, topic, entity_id_source, entity_id_expression
-                FROM entity_source_mappings
-                WHERE topic = ?
-                ORDER BY entity_type
-                """)) {
-            ps.setString(1, topic);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    result.add(toMapping(rs));
-                }
-            }
-        }
-        return result;
+    public List<EntitySourceMapping> findMappingsByTopic(String topic) {
+        return dsl.selectFrom(ENTITY_SOURCE_MAPPINGS)
+                .where(ENTITY_SOURCE_MAPPINGS.TOPIC.eq(topic))
+                .orderBy(ENTITY_SOURCE_MAPPINGS.ENTITY_TYPE)
+                .fetch(this::toMapping);
     }
 
-    public void upsertMapping(EntitySourceMapping mapping) throws SQLException {
-        try (PreparedStatement ps = conn.prepareStatement("""
-                INSERT INTO entity_source_mappings
-                    (entity_type, topic, entity_id_source, entity_id_expression)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT (entity_type, topic) DO UPDATE SET
-                    entity_id_source     = excluded.entity_id_source,
-                    entity_id_expression = excluded.entity_id_expression
-                """)) {
-            ps.setString(1, mapping.entityType());
-            ps.setString(2, mapping.topic());
-            ps.setString(3, mapping.entityIdSource());
-            ps.setString(4, mapping.entityIdExpression());
-            ps.executeUpdate();
-        }
+    public void upsertMapping(EntitySourceMapping mapping) {
+        dsl.insertInto(ENTITY_SOURCE_MAPPINGS)
+                .set(ENTITY_SOURCE_MAPPINGS.ENTITY_TYPE, mapping.entityType())
+                .set(ENTITY_SOURCE_MAPPINGS.TOPIC, mapping.topic())
+                .set(ENTITY_SOURCE_MAPPINGS.ENTITY_ID_SOURCE, mapping.entityIdSource())
+                .set(ENTITY_SOURCE_MAPPINGS.ENTITY_ID_EXPRESSION, mapping.entityIdExpression())
+                .onConflict(ENTITY_SOURCE_MAPPINGS.ENTITY_TYPE, ENTITY_SOURCE_MAPPINGS.TOPIC)
+                .doUpdate()
+                .set(ENTITY_SOURCE_MAPPINGS.ENTITY_ID_SOURCE, mapping.entityIdSource())
+                .set(ENTITY_SOURCE_MAPPINGS.ENTITY_ID_EXPRESSION, mapping.entityIdExpression())
+                .execute();
     }
 
-    public void deleteMapping(String entityType, String topic) throws SQLException {
-        try (PreparedStatement ps = conn.prepareStatement(
-                "DELETE FROM entity_source_mappings WHERE entity_type = ? AND topic = ?")) {
-            ps.setString(1, entityType);
-            ps.setString(2, topic);
-            ps.executeUpdate();
-        }
+    public void deleteMapping(String entityType, String topic) {
+        dsl.deleteFrom(ENTITY_SOURCE_MAPPINGS)
+                .where(ENTITY_SOURCE_MAPPINGS.ENTITY_TYPE.eq(entityType)
+                        .and(ENTITY_SOURCE_MAPPINGS.TOPIC.eq(topic)))
+                .execute();
     }
 
-    public void deleteMappingsByEntityType(String entityType) throws SQLException {
-        try (PreparedStatement ps = conn.prepareStatement(
-                "DELETE FROM entity_source_mappings WHERE entity_type = ?")) {
-            ps.setString(1, entityType);
-            ps.executeUpdate();
-        }
+    public void deleteMappingsByEntityType(String entityType) {
+        dsl.deleteFrom(ENTITY_SOURCE_MAPPINGS)
+                .where(ENTITY_SOURCE_MAPPINGS.ENTITY_TYPE.eq(entityType))
+                .execute();
     }
 
-    private EntitySourceMapping toMapping(ResultSet rs) throws SQLException {
+    // -----------------------------------------------------------------------
+    // Mappers
+    // -----------------------------------------------------------------------
+
+    private TopicConfig toTopicConfig(TopicConfigsRecord r) {
+        return new TopicConfig(r.getTopic(), r.getMode());
+    }
+
+    private EntityTypeConfig toEntityTypeConfig(EntityTypeConfigsRecord r) {
+        return new EntityTypeConfig(r.getEntityType(), r.getBucketCount());
+    }
+
+    private EntitySourceMapping toMapping(EntitySourceMappingsRecord r) {
         return new EntitySourceMapping(
-                rs.getString("entity_type"),
-                rs.getString("topic"),
-                rs.getString("entity_id_source"),
-                rs.getString("entity_id_expression")
+                r.getEntityType(),
+                r.getTopic(),
+                r.getEntityIdSource(),
+                r.getEntityIdExpression()
         );
     }
 }
