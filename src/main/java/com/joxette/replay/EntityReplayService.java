@@ -1,11 +1,24 @@
 package com.joxette.replay;
 
+import org.jooq.Condition;
+import org.jooq.DSLContext;
+import org.jooq.Field;
+import org.jooq.Record;
+import org.jooq.Table;
+import org.jooq.exception.DataAccessException;
+import org.jooq.impl.DSL;
+import org.jooq.impl.SQLDataType;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
-import java.sql.*;
+import java.sql.SQLException;
 import java.time.Instant;
-import java.util.*;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.util.Base64;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.function.Consumer;
 import java.util.regex.Pattern;
 
@@ -24,7 +37,8 @@ import java.util.regex.Pattern;
  * <p>The entity replay cursor encodes
  * {@code (timestamp, recorded_at, source_topic, source_partition,
  * source_offset)}, matching the five-column {@code ORDER BY} used after
- * deduplication.
+ * deduplication. jOOQ's {@code seekAfter} generates the correct tuple
+ * comparison for these five columns.
  *
  * <h2>Known-entity pagination</h2>
  * <p>List and search cursors encode only {@code entity_id} (ordering column)
@@ -36,10 +50,37 @@ public class EntityReplayService {
     private static final Pattern SAFE_IDENTIFIER = Pattern.compile("[a-z][a-z0-9_]*");
     private static final int STREAM_PAGE_SIZE = 500;
 
-    private final Connection duckDB;
+    // -------------------------------------------------------------------------
+    // Field references (shared across entity cassette and known_entities)
+    // -------------------------------------------------------------------------
 
-    public EntityReplayService(Connection duckDB) {
-        this.duckDB = duckDB;
+    private static final Field<String>         F_ENTITY_ID     = DSL.field(DSL.name("entity_id"),     String.class);
+    private static final Field<Integer>        F_ENTITY_BUCKET = DSL.field(DSL.name("entity_bucket"), Integer.class);
+    private static final Field<String>         F_TOPIC         = DSL.field(DSL.name("topic"),         String.class);
+    private static final Field<Integer>        F_PARTITION     = DSL.field(DSL.name("partition"),     Integer.class);
+    private static final Field<Long>           F_OFFSET        = DSL.field(DSL.name("offset"),        Long.class);
+    private static final Field<OffsetDateTime> F_TIMESTAMP     = DSL.field(DSL.name("timestamp"),     OffsetDateTime.class);
+    private static final Field<OffsetDateTime> F_RECORDED_AT   = DSL.field(DSL.name("recorded_at"),   OffsetDateTime.class);
+    private static final Field<String>         F_KEY           = DSL.field(DSL.name("key"),           String.class);
+    private static final Field<byte[]>         F_VALUE         = DSL.field(DSL.name("value"),         byte[].class);
+    private static final Field<Object>         F_HEADERS       = DSL.field(DSL.name("headers"),       Object.class);
+
+    // known_entities-specific fields
+    private static final Table<?>              KNOWN_ENTITIES  = DSL.table(DSL.name("lake", "known_entities"));
+    private static final Field<String>         F_ENTITY_TYPE   = DSL.field(DSL.name("entity_type"),   String.class);
+    private static final Field<OffsetDateTime> F_FIRST_SEEN    = DSL.field(DSL.name("first_seen"),    OffsetDateTime.class);
+    private static final Field<OffsetDateTime> F_LAST_SEEN     = DSL.field(DSL.name("last_seen"),     OffsetDateTime.class);
+
+    // QUALIFY deduplication for entity cassette rows
+    private static final Condition QUALIFY_DEDUP = DSL.rowNumber().over(
+            DSL.partitionBy(F_TOPIC, F_PARTITION.cast(SQLDataType.BIGINT), F_OFFSET)
+               .orderBy(F_RECORDED_AT.desc())
+    ).eq(1);
+
+    private final DSLContext dsl;
+
+    public EntityReplayService(DSLContext dsl) {
+        this.dsl = dsl;
     }
 
     // -------------------------------------------------------------------------
@@ -60,57 +101,37 @@ public class EntityReplayService {
         validateEntityType(entityType);
         EntityCursor decoded = cursor != null ? EntityCursor.decode(cursor) : null;
 
-        String table = "lake.entity_" + entityType;
-        var sql = new StringBuilder("SELECT entity_id, entity_bucket, topic, partition, \"offset\","
-                + " timestamp, recorded_at, key, value, headers\nFROM (\n"
-                + "    SELECT entity_id, entity_bucket, topic, partition, \"offset\","
-                + " timestamp, recorded_at, key, value, headers\n"
-                + "    FROM " + table + "\n"
-                + "    WHERE entity_id = ?\n");
-        List<Object> params = new ArrayList<>();
-        params.add(entityId);
+        Table<?> entityTable = entityTable(entityType);
 
-        if (from != null) {
-            sql.append("      AND timestamp >= ?\n");
-            params.add(Timestamp.from(from));
-        }
-        if (to != null) {
-            sql.append("      AND timestamp <= ?\n");
-            params.add(Timestamp.from(to));
-        }
+        Condition cond = F_ENTITY_ID.eq(entityId);
+        if (from != null) cond = cond.and(F_TIMESTAMP.ge(from.atOffset(ZoneOffset.UTC)));
+        if (to != null)   cond = cond.and(F_TIMESTAMP.le(to.atOffset(ZoneOffset.UTC)));
 
-        // Cast partition to BIGINT in the PARTITION BY to avoid a DuckDB 1.5 type-binding
-        // bug that surfaces when BIGINT parameters are combined with INTEGER columns in
-        // QUALIFY window functions.
-        sql.append("""
-                    QUALIFY ROW_NUMBER() OVER (PARTITION BY topic, CAST(partition AS BIGINT), "offset" ORDER BY recorded_at DESC) = 1
-                ) deduped
-                """);
+        var selectBase = dsl
+                .select(F_ENTITY_ID, F_ENTITY_BUCKET, F_TOPIC, F_PARTITION, F_OFFSET,
+                        F_TIMESTAMP, F_RECORDED_AT, F_KEY, F_VALUE, F_HEADERS)
+                .from(entityTable)
+                .where(cond)
+                .qualify(QUALIFY_DEDUP)
+                .orderBy(F_TIMESTAMP.asc(), F_RECORDED_AT.asc(), F_TOPIC.asc(),
+                         F_PARTITION.asc(), F_OFFSET.asc());
 
+        List<EntityRecord> records;
         if (decoded != null) {
-            sql.append("""
-                    WHERE (timestamp > ?)
-                       OR (timestamp = ? AND recorded_at > ?)
-                       OR (timestamp = ? AND recorded_at = ? AND topic > ?)
-                       OR (timestamp = ? AND recorded_at = ? AND topic = ? AND partition > ?)
-                       OR (timestamp = ? AND recorded_at = ? AND topic = ? AND partition = ? AND "offset" > ?)
-                    """);
-            Timestamp ts  = Timestamp.from(decoded.timestamp());
-            Timestamp ra  = Timestamp.from(decoded.recordedAt());
-            String    tp  = decoded.sourceTopic();
-            int       p   = decoded.sourcePartition();
-            long      o   = decoded.sourceOffset();
-            params.add(ts);
-            params.add(ts); params.add(ra);
-            params.add(ts); params.add(ra); params.add(tp);
-            params.add(ts); params.add(ra); params.add(tp); params.add(p);
-            params.add(ts); params.add(ra); params.add(tp); params.add(p); params.add(o);
+            records = selectBase
+                    .seekAfter(decoded.timestamp().atOffset(ZoneOffset.UTC),
+                               decoded.recordedAt().atOffset(ZoneOffset.UTC),
+                               decoded.sourceTopic(),
+                               decoded.sourcePartition(),
+                               decoded.sourceOffset())
+                    .limit(limit + 1)
+                    .fetch(EntityReplayService::mapEntityRecord);
+        } else {
+            records = selectBase
+                    .limit(limit + 1)
+                    .fetch(EntityReplayService::mapEntityRecord);
         }
 
-        sql.append("ORDER BY timestamp ASC, recorded_at ASC, topic ASC, partition ASC, \"offset\" ASC\nLIMIT ?\n");
-        params.add(limit + 1);
-
-        List<EntityRecord> records = executeEntityQuery(sql.toString(), params);
         return TopicReplayService.buildPage(records, limit,
                 r -> new EntityCursor(r.timestamp(), r.recordedAt(), r.topic(), r.partition(), r.offset()).encode());
     }
@@ -146,22 +167,19 @@ public class EntityReplayService {
     ) throws SQLException {
         String afterId = cursor != null ? decodePlainCursor(cursor) : null;
 
-        var sql = new StringBuilder("""
-                SELECT entity_type, entity_id, entity_bucket, first_seen, last_seen
-                FROM lake.known_entities
-                WHERE entity_type = ?
-                """);
-        List<Object> params = new ArrayList<>();
-        params.add(entityType);
+        var selectBase = dsl
+                .select(F_ENTITY_TYPE, F_ENTITY_ID, F_ENTITY_BUCKET, F_FIRST_SEEN, F_LAST_SEEN)
+                .from(KNOWN_ENTITIES)
+                .where(F_ENTITY_TYPE.eq(entityType))
+                .orderBy(F_ENTITY_ID.asc());
 
+        List<EntityInfo> entities;
         if (afterId != null) {
-            sql.append("  AND entity_id > ?\n");
-            params.add(afterId);
+            entities = selectBase.seekAfter(afterId).limit(limit + 1).fetch(EntityReplayService::mapEntityInfo);
+        } else {
+            entities = selectBase.limit(limit + 1).fetch(EntityReplayService::mapEntityInfo);
         }
-        sql.append("ORDER BY entity_id ASC\nLIMIT ?\n");
-        params.add(limit + 1);
 
-        List<EntityInfo> entities = executeInfoQuery(sql.toString(), params);
         return TopicReplayService.buildPage(entities, limit,
                 e -> encodePlainCursor(e.entityId()));
     }
@@ -174,24 +192,20 @@ public class EntityReplayService {
     ) throws SQLException {
         String afterId = cursor != null ? decodePlainCursor(cursor) : null;
 
-        var sql = new StringBuilder("""
-                SELECT entity_type, entity_id, entity_bucket, first_seen, last_seen
-                FROM lake.known_entities
-                WHERE entity_type = ?
-                  AND entity_id ILIKE ?
-                """);
-        List<Object> params = new ArrayList<>();
-        params.add(entityType);
-        params.add("%" + escapeLike(q) + "%");
+        var selectBase = dsl
+                .select(F_ENTITY_TYPE, F_ENTITY_ID, F_ENTITY_BUCKET, F_FIRST_SEEN, F_LAST_SEEN)
+                .from(KNOWN_ENTITIES)
+                .where(F_ENTITY_TYPE.eq(entityType)
+                        .and(F_ENTITY_ID.likeIgnoreCase("%" + escapeLike(q) + "%")))
+                .orderBy(F_ENTITY_ID.asc());
 
+        List<EntityInfo> entities;
         if (afterId != null) {
-            sql.append("  AND entity_id > ?\n");
-            params.add(afterId);
+            entities = selectBase.seekAfter(afterId).limit(limit + 1).fetch(EntityReplayService::mapEntityInfo);
+        } else {
+            entities = selectBase.limit(limit + 1).fetch(EntityReplayService::mapEntityInfo);
         }
-        sql.append("ORDER BY entity_id ASC\nLIMIT ?\n");
-        params.add(limit + 1);
 
-        List<EntityInfo> entities = executeInfoQuery(sql.toString(), params);
         return TopicReplayService.buildPage(entities, limit,
                 e -> encodePlainCursor(e.entityId()));
     }
@@ -202,77 +216,56 @@ public class EntityReplayService {
 
     public EntityStats getEntityStats(String entityType, String entityId) throws SQLException {
         validateEntityType(entityType);
-        String table = "lake.entity_" + entityType;
+        Table<?> entityTable = entityTable(entityType);
 
-        // Aggregate stats from the entity cassette
-        String aggSql = """
-                SELECT COUNT(*) AS cnt,
-                       MIN(timestamp) AS first_msg,
-                       MAX(timestamp) AS last_msg
-                FROM (
-                    SELECT timestamp
-                    FROM %s
-                    WHERE entity_id = ?
-                    QUALIFY ROW_NUMBER() OVER (PARTITION BY topic, partition, "offset" ORDER BY recorded_at DESC) = 1
-                ) deduped
-                """.formatted(table);
+        // Deduplicated inner table used by both aggregation sub-queries
+        Table<?> deduped = dsl
+                .select(F_TIMESTAMP, F_TOPIC)
+                .from(entityTable)
+                .where(F_ENTITY_ID.eq(entityId))
+                .qualify(QUALIFY_DEDUP)
+                .asTable("deduped");
 
-        String topicSql = """
-                SELECT topic, COUNT(*) AS cnt
-                FROM (
-                    SELECT topic
-                    FROM %s
-                    WHERE entity_id = ?
-                    QUALIFY ROW_NUMBER() OVER (PARTITION BY topic, partition, "offset" ORDER BY recorded_at DESC) = 1
-                ) deduped
-                GROUP BY topic
-                ORDER BY topic
-                """.formatted(table);
+        Field<OffsetDateTime> dedupedTs    = DSL.field(DSL.name("timestamp"),   OffsetDateTime.class);
+        Field<String>         dedupedTopic = DSL.field(DSL.name("topic"),        String.class);
+        Field<Integer>        fCnt         = DSL.count().as("cnt");
+        Field<OffsetDateTime> fFirstMsg    = DSL.min(dedupedTs).as("first_msg");
+        Field<OffsetDateTime> fLastMsg     = DSL.max(dedupedTs).as("last_msg");
 
-        String registrySql = """
-                SELECT first_seen, last_seen
-                FROM lake.known_entities
-                WHERE entity_type = ? AND entity_id = ?
-                """;
-
+        // Aggregate count and timestamp range
         long count = 0;
         Instant firstMsg = null;
         Instant lastMsg  = null;
+
+        var aggRecord = dsl.select(fCnt, fFirstMsg, fLastMsg).from(deduped).fetchOne();
+        if (aggRecord != null) {
+            count = aggRecord.get(fCnt).longValue();
+            OffsetDateTime f = aggRecord.get(fFirstMsg);
+            OffsetDateTime l = aggRecord.get(fLastMsg);
+            if (f != null) firstMsg = f.toInstant();
+            if (l != null) lastMsg  = l.toInstant();
+        }
+
+        // Count per source topic
         Map<String, Long> countByTopic = new LinkedHashMap<>();
+        dsl.select(dedupedTopic, fCnt)
+                .from(deduped)
+                .groupBy(dedupedTopic)
+                .orderBy(dedupedTopic.asc())
+                .forEach(r -> countByTopic.put(r.get(dedupedTopic), r.get(fCnt).longValue()));
+
+        // First / last seen from the entity registry
         Instant firstSeen = null;
         Instant lastSeen  = null;
 
-        synchronized (duckDB) {
-            try (PreparedStatement ps = duckDB.prepareStatement(aggSql)) {
-                ps.setString(1, entityId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    if (rs.next()) {
-                        count = rs.getLong("cnt");
-                        Timestamp f = rs.getTimestamp("first_msg");
-                        Timestamp l = rs.getTimestamp("last_msg");
-                        if (f != null) firstMsg = f.toInstant();
-                        if (l != null) lastMsg  = l.toInstant();
-                    }
-                }
-            }
-            try (PreparedStatement ps = duckDB.prepareStatement(topicSql)) {
-                ps.setString(1, entityId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    while (rs.next()) {
-                        countByTopic.put(rs.getString("topic"), rs.getLong("cnt"));
-                    }
-                }
-            }
-            try (PreparedStatement ps = duckDB.prepareStatement(registrySql)) {
-                ps.setString(1, entityType);
-                ps.setString(2, entityId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    if (rs.next()) {
-                        firstSeen = rs.getTimestamp("first_seen").toInstant();
-                        lastSeen  = rs.getTimestamp("last_seen").toInstant();
-                    }
-                }
-            }
+        var regRecord = dsl
+                .select(F_FIRST_SEEN, F_LAST_SEEN)
+                .from(KNOWN_ENTITIES)
+                .where(F_ENTITY_TYPE.eq(entityType).and(F_ENTITY_ID.eq(entityId)))
+                .fetchOne();
+        if (regRecord != null) {
+            firstSeen = regRecord.get(F_FIRST_SEEN).toInstant();
+            lastSeen  = regRecord.get(F_LAST_SEEN).toInstant();
         }
 
         return new EntityStats(entityType, entityId, count, firstMsg, lastMsg,
@@ -280,64 +273,44 @@ public class EntityReplayService {
     }
 
     // -------------------------------------------------------------------------
-    // JDBC helpers
+    // Record mappers
     // -------------------------------------------------------------------------
 
-    private List<EntityRecord> executeEntityQuery(String sql, List<Object> params) throws SQLException {
-        List<EntityRecord> records = new ArrayList<>();
-        synchronized (duckDB) {
-            try (PreparedStatement ps = duckDB.prepareStatement(sql)) {
-                TopicReplayService.bindParams(ps, params);
-                try (ResultSet rs = ps.executeQuery()) {
-                    while (rs.next()) {
-                        records.add(mapEntityRecord(rs));
-                    }
-                }
-            }
+    private static EntityRecord mapEntityRecord(Record r) {
+        try {
+            return new EntityRecord(
+                    r.get(F_ENTITY_ID),
+                    r.get(F_ENTITY_BUCKET),
+                    r.get(F_TOPIC),
+                    r.get(F_PARTITION),
+                    r.get(F_OFFSET),
+                    r.get(F_TIMESTAMP).toInstant(),
+                    r.get(F_RECORDED_AT).toInstant(),
+                    r.get(F_KEY),
+                    TopicReplayService.encodeBlob(r.get(F_VALUE)),
+                    TopicReplayService.mapHeaders(r.get(F_HEADERS))
+            );
+        } catch (SQLException e) {
+            throw new DataAccessException("Failed to map entity record headers", e);
         }
-        return records;
     }
 
-    private List<EntityInfo> executeInfoQuery(String sql, List<Object> params) throws SQLException {
-        List<EntityInfo> entities = new ArrayList<>();
-        synchronized (duckDB) {
-            try (PreparedStatement ps = duckDB.prepareStatement(sql)) {
-                TopicReplayService.bindParams(ps, params);
-                try (ResultSet rs = ps.executeQuery()) {
-                    while (rs.next()) {
-                        entities.add(new EntityInfo(
-                                rs.getString("entity_type"),
-                                rs.getString("entity_id"),
-                                rs.getInt("entity_bucket"),
-                                rs.getTimestamp("first_seen").toInstant(),
-                                rs.getTimestamp("last_seen").toInstant()
-                        ));
-                    }
-                }
-            }
-        }
-        return entities;
-    }
-
-    private static EntityRecord mapEntityRecord(ResultSet rs) throws SQLException {
-        // Use positional index for "value" (column 9) to avoid a DuckDB JDBC bug
-        // where rs.getBytes("value") incorrectly matches the struct sub-field named
-        // "value" inside headers STRUCT(key VARCHAR, value BLOB)[] instead of the
-        // top-level BLOB column. SELECT order:
-        // entity_id(1), entity_bucket(2), topic(3), partition(4), "offset"(5),
-        // timestamp(6), recorded_at(7), key(8), value(9), headers(10)
-        return new EntityRecord(
-                rs.getString("entity_id"),
-                rs.getInt("entity_bucket"),
-                rs.getString("topic"),
-                rs.getInt("partition"),
-                rs.getLong("offset"),
-                rs.getTimestamp("timestamp").toInstant(),
-                rs.getTimestamp("recorded_at").toInstant(),
-                rs.getString("key"),
-                TopicReplayService.encodeBlob(rs.getBytes(9)),
-                TopicReplayService.mapHeaders(rs.getObject("headers"))
+    private static EntityInfo mapEntityInfo(Record r) {
+        return new EntityInfo(
+                r.get(F_ENTITY_TYPE),
+                r.get(F_ENTITY_ID),
+                r.get(F_ENTITY_BUCKET),
+                r.get(F_FIRST_SEEN).toInstant(),
+                r.get(F_LAST_SEEN).toInstant()
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // Helpers
+    // -------------------------------------------------------------------------
+
+    private static Table<?> entityTable(String entityType) {
+        return DSL.table(DSL.name("lake", "entity_" + entityType));
     }
 
     private static String encodePlainCursor(String entityId) {

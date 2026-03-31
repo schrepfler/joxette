@@ -1,12 +1,16 @@
 package com.joxette.replay;
 
+import org.jooq.BatchBindStep;
+import org.jooq.DSLContext;
+import org.jooq.Field;
+import org.jooq.Table;
+import org.jooq.impl.DSL;
 import org.springframework.stereotype.Repository;
 
-import java.sql.Connection;
-import java.sql.PreparedStatement;
 import java.sql.SQLException;
-import java.sql.Timestamp;
 import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.List;
 
 /**
@@ -23,35 +27,28 @@ import java.util.List;
  * {@code entity_bucket} are immutable once the entity is registered: bucket
  * assignment is deterministic (derived from the hash of the entity type and
  * ID) so it will never differ on a subsequent sighting.
- *
- * <h2>Thread safety</h2>
- * <p>All methods synchronize on the shared DuckDB {@link Connection}. DuckDB
- * serialises writes internally, but acquiring the monitor prevents interleaved
- * statement execution from concurrent pipeline threads sharing the same
- * connection.
  */
 @Repository
 public class KnownEntitiesRepository {
 
-    private static final String UPSERT_SQL = """
-            INSERT INTO lake.known_entities
-                (entity_type, entity_id, entity_bucket, first_seen, last_seen)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT (entity_type, entity_id) DO UPDATE SET
-                last_seen = excluded.last_seen
-            """;
+    private static final Table<?>              TABLE         = DSL.table(DSL.name("lake", "known_entities"));
+    private static final Field<String>         F_ENTITY_TYPE = DSL.field(DSL.name("entity_type"),   String.class);
+    private static final Field<String>         F_ENTITY_ID   = DSL.field(DSL.name("entity_id"),     String.class);
+    private static final Field<Integer>        F_ENTITY_BUCKET = DSL.field(DSL.name("entity_bucket"), Integer.class);
+    private static final Field<OffsetDateTime> F_FIRST_SEEN  = DSL.field(DSL.name("first_seen"),    OffsetDateTime.class);
+    private static final Field<OffsetDateTime> F_LAST_SEEN   = DSL.field(DSL.name("last_seen"),     OffsetDateTime.class);
 
-    private final Connection duckDB;
+    private final DSLContext dsl;
 
-    public KnownEntitiesRepository(Connection duckDB) {
-        this.duckDB = duckDB;
+    public KnownEntitiesRepository(DSLContext dsl) {
+        this.dsl = dsl;
     }
 
     /**
      * Upserts all distinct (entityType, entityId) pairs found in {@code routes}
      * using {@code observedAt} as the candidate {@code last_seen} timestamp.
      *
-     * <p>Executes as a single JDBC batch to amortise round-trip overhead.
+     * <p>Executes as a single jOOQ batch to amortise round-trip overhead.
      * The caller is responsible for deduplicating {@code routes} if desired;
      * duplicate pairs in the same batch are safe but redundant.
      *
@@ -63,19 +60,22 @@ public class KnownEntitiesRepository {
         if (routes.isEmpty()) {
             return;
         }
-        Timestamp ts = Timestamp.from(observedAt);
-        synchronized (duckDB) {
-            try (PreparedStatement ps = duckDB.prepareStatement(UPSERT_SQL)) {
-                for (EntityRoute route : routes) {
-                    ps.setString(1, route.entityType());
-                    ps.setString(2, route.entityId());
-                    ps.setInt(3, route.entityBucket());
-                    ps.setTimestamp(4, ts); // first_seen – ignored on conflict
-                    ps.setTimestamp(5, ts); // last_seen  – updated on conflict
-                    ps.addBatch();
-                }
-                ps.executeBatch();
-            }
+        OffsetDateTime odt = observedAt.atOffset(ZoneOffset.UTC);
+
+        // Template upsert: null placeholders are replaced per-row by BatchBindStep.bind()
+        var template = dsl
+                .insertInto(TABLE)
+                .columns(F_ENTITY_TYPE, F_ENTITY_ID, F_ENTITY_BUCKET, F_FIRST_SEEN, F_LAST_SEEN)
+                .values((String) null, (String) null, (Integer) null,
+                        (OffsetDateTime) null, (OffsetDateTime) null)
+                .onConflict(F_ENTITY_TYPE, F_ENTITY_ID)
+                .doUpdate()
+                .set(F_LAST_SEEN, DSL.excluded(F_LAST_SEEN));
+
+        BatchBindStep batch = dsl.batch(template);
+        for (EntityRoute route : routes) {
+            batch = batch.bind(route.entityType(), route.entityId(), route.entityBucket(), odt, odt);
         }
+        batch.execute();
     }
 }

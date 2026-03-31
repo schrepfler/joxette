@@ -1,9 +1,20 @@
 package com.joxette.replay;
 
+import org.jooq.Condition;
+import org.jooq.DSLContext;
+import org.jooq.Field;
+import org.jooq.Record;
+import org.jooq.Table;
+import org.jooq.exception.DataAccessException;
+import org.jooq.impl.DSL;
+import org.jooq.impl.SQLDataType;
 import org.springframework.stereotype.Service;
 
-import java.sql.*;
+import java.sql.Array;
+import java.sql.SQLException;
 import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
@@ -18,28 +29,49 @@ import java.util.function.Function;
  * <h2>Deduplication</h2>
  * <p>DuckDB does not enforce primary-key uniqueness, so the same
  * {@code (topic, partition, offset)} triple may appear more than once after
- * concurrent or replayed writes. Every query wraps the base scan in a
+ * concurrent or replayed writes. Every query uses
  * {@code QUALIFY ROW_NUMBER() OVER (PARTITION BY topic, partition, "offset"
- * ORDER BY recorded_at DESC) = 1} clause to keep only the most-recently
- * recorded copy.
+ * ORDER BY recorded_at DESC) = 1} to keep only the most-recently recorded copy.
+ * Partition is cast to BIGINT in the window to avoid a DuckDB 1.5 type-binding
+ * bug when BIGINT offset-filter parameters are combined with INTEGER columns.
  *
  * <h2>Cursor encoding</h2>
  * <p>The cursor encodes {@code (timestamp, partition, offset)} as URL-safe
- * base64(JSON). Keyset pagination uses a lexicographic tuple comparison on
- * those three columns, matching the {@code ORDER BY} of the query.
- *
- * <h2>Thread safety</h2>
- * <p>All database access is serialised via {@code synchronized(duckDB)}.
+ * base64(JSON). Keyset pagination uses jOOQ's {@code seekAfter} which generates
+ * the correct tuple comparison on those three columns, matching the
+ * {@code ORDER BY} of the query.
  */
 @Service
 public class TopicReplayService {
 
     private static final int STREAM_PAGE_SIZE = 500;
 
-    private final Connection duckDB;
+    // -------------------------------------------------------------------------
+    // Table and field references for lake.cassette
+    // -------------------------------------------------------------------------
 
-    public TopicReplayService(Connection duckDB) {
-        this.duckDB = duckDB;
+    private static final Table<?> CASSETTE     = DSL.table(DSL.name("lake", "cassette"));
+    private static final Field<String>         F_TOPIC       = DSL.field(DSL.name("topic"),       String.class);
+    private static final Field<Integer>        F_PARTITION   = DSL.field(DSL.name("partition"),   Integer.class);
+    private static final Field<Long>           F_OFFSET      = DSL.field(DSL.name("offset"),      Long.class);
+    private static final Field<OffsetDateTime> F_TIMESTAMP   = DSL.field(DSL.name("timestamp"),   OffsetDateTime.class);
+    private static final Field<OffsetDateTime> F_RECORDED_AT = DSL.field(DSL.name("recorded_at"), OffsetDateTime.class);
+    private static final Field<String>         F_KEY         = DSL.field(DSL.name("key"),         String.class);
+    private static final Field<byte[]>         F_VALUE       = DSL.field(DSL.name("value"),       byte[].class);
+    private static final Field<Object>         F_HEADERS     = DSL.field(DSL.name("headers"),     Object.class);
+
+    // QUALIFY deduplication: keep the row with the latest recorded_at per
+    // (topic, partition, offset). Partition is cast to BIGINT to avoid the
+    // DuckDB 1.5 window-function type-binding bug (see class Javadoc).
+    private static final Condition QUALIFY_DEDUP = DSL.rowNumber().over(
+            DSL.partitionBy(F_TOPIC, F_PARTITION.cast(SQLDataType.BIGINT), F_OFFSET)
+               .orderBy(F_RECORDED_AT.desc())
+    ).eq(1);
+
+    private final DSLContext dsl;
+
+    public TopicReplayService(DSLContext dsl) {
+        this.dsl = dsl;
     }
 
     /**
@@ -60,61 +92,34 @@ public class TopicReplayService {
     ) throws SQLException {
         TopicCursor decoded = cursor != null ? TopicCursor.decode(cursor) : null;
 
-        var sql = new StringBuilder("""
-                SELECT topic, partition, "offset", timestamp, recorded_at, key, value, headers
-                FROM (
-                    SELECT topic, partition, "offset", timestamp, recorded_at, key, value, headers
-                    FROM lake.cassette
-                    WHERE topic = ?
-                """);
-        List<Object> params = new ArrayList<>();
-        params.add(topic);
+        Condition cond = F_TOPIC.eq(topic);
+        if (from != null)       cond = cond.and(F_TIMESTAMP.ge(from.atOffset(ZoneOffset.UTC)));
+        if (to != null)         cond = cond.and(F_TIMESTAMP.le(to.atOffset(ZoneOffset.UTC)));
+        if (partition != null)  cond = cond.and(F_PARTITION.eq(partition));
+        if (offsetFrom != null) cond = cond.and(F_OFFSET.ge(offsetFrom));
+        if (offsetTo != null)   cond = cond.and(F_OFFSET.le(offsetTo));
 
-        if (from != null) {
-            sql.append("      AND timestamp >= ?\n");
-            params.add(Timestamp.from(from));
-        }
-        if (to != null) {
-            sql.append("      AND timestamp <= ?\n");
-            params.add(Timestamp.from(to));
-        }
-        if (partition != null) {
-            sql.append("      AND partition = ?\n");
-            params.add(partition);
-        }
-        if (offsetFrom != null) {
-            sql.append("      AND \"offset\" >= ?\n");
-            params.add(offsetFrom);
-        }
-        if (offsetTo != null) {
-            sql.append("      AND \"offset\" <= ?\n");
-            params.add(offsetTo);
-        }
+        var selectBase = dsl
+                .select(F_TOPIC, F_PARTITION, F_OFFSET, F_TIMESTAMP, F_RECORDED_AT, F_KEY, F_VALUE, F_HEADERS)
+                .from(CASSETTE)
+                .where(cond)
+                .qualify(QUALIFY_DEDUP)
+                .orderBy(F_TIMESTAMP.asc(), F_PARTITION.asc(), F_OFFSET.asc());
 
-        // Cast partition to BIGINT in the PARTITION BY to avoid a DuckDB 1.5 type-binding
-        // bug that surfaces when BIGINT parameters (offset filters) are combined with
-        // INTEGER columns in QUALIFY window functions.
-        sql.append("""
-                    QUALIFY ROW_NUMBER() OVER (PARTITION BY topic, CAST(partition AS BIGINT), "offset" ORDER BY recorded_at DESC) = 1
-                ) deduped
-                """);
-
+        List<CassetteRecord> records;
         if (decoded != null) {
-            sql.append("""
-                    WHERE (timestamp > ?)
-                       OR (timestamp = ? AND partition > ?)
-                       OR (timestamp = ? AND partition = ? AND "offset" > ?)
-                    """);
-            Timestamp ts = Timestamp.from(decoded.timestamp());
-            params.add(ts);
-            params.add(ts); params.add(decoded.partition());
-            params.add(ts); params.add(decoded.partition()); params.add(decoded.offset());
+            records = selectBase
+                    .seekAfter(decoded.timestamp().atOffset(ZoneOffset.UTC),
+                               decoded.partition(),
+                               decoded.offset())
+                    .limit(limit + 1)
+                    .fetch(TopicReplayService::mapRecord);
+        } else {
+            records = selectBase
+                    .limit(limit + 1)
+                    .fetch(TopicReplayService::mapRecord);
         }
 
-        sql.append("ORDER BY timestamp ASC, partition ASC, \"offset\" ASC\nLIMIT ?\n");
-        params.add(limit + 1);
-
-        List<CassetteRecord> records = executeQuery(sql.toString(), params);
         return buildPage(records, limit,
                 r -> new TopicCursor(r.timestamp(), r.partition(), r.offset()).encode());
     }
@@ -142,42 +147,29 @@ public class TopicReplayService {
     }
 
     // -------------------------------------------------------------------------
-    // JDBC helpers
+    // Record mapping
     // -------------------------------------------------------------------------
 
-    private List<CassetteRecord> executeQuery(String sql, List<Object> params) throws SQLException {
-        List<CassetteRecord> records = new ArrayList<>();
-        synchronized (duckDB) {
-            try (PreparedStatement ps = duckDB.prepareStatement(sql)) {
-                bindParams(ps, params);
-                try (ResultSet rs = ps.executeQuery()) {
-                    while (rs.next()) {
-                        records.add(mapRecord(rs));
-                    }
-                }
-            }
+    private static CassetteRecord mapRecord(Record r) {
+        try {
+            return new CassetteRecord(
+                    r.get(F_TOPIC),
+                    r.get(F_PARTITION),
+                    r.get(F_OFFSET),
+                    r.get(F_TIMESTAMP).toInstant(),
+                    r.get(F_RECORDED_AT).toInstant(),
+                    r.get(F_KEY),
+                    encodeBlob(r.get(F_VALUE)),
+                    mapHeaders(r.get(F_HEADERS))
+            );
+        } catch (SQLException e) {
+            throw new DataAccessException("Failed to map cassette record headers", e);
         }
-        return records;
     }
 
-    private static CassetteRecord mapRecord(ResultSet rs) throws SQLException {
-        // Use positional index for "value" (column 7) to avoid a DuckDB JDBC bug:
-        // rs.getBytes("value") incorrectly matches the struct sub-field named "value"
-        // inside the headers LIST(STRUCT(key VARCHAR, value BLOB)) instead of the
-        // top-level BLOB column named "value".
-        // SELECT order: topic(1), partition(2), "offset"(3), timestamp(4),
-        //               recorded_at(5), key(6), value(7), headers(8)
-        return new CassetteRecord(
-                rs.getString("topic"),
-                rs.getInt("partition"),
-                rs.getLong("offset"),
-                rs.getTimestamp("timestamp").toInstant(),
-                rs.getTimestamp("recorded_at").toInstant(),
-                rs.getString("key"),
-                encodeBlob(rs.getBytes(7)),
-                mapHeaders(rs.getObject("headers"))
-        );
-    }
+    // -------------------------------------------------------------------------
+    // Package-visible helpers (used by EntityReplayService)
+    // -------------------------------------------------------------------------
 
     static String encodeBlob(byte[] bytes) {
         return bytes == null ? null
@@ -204,12 +196,6 @@ public class TopicReplayService {
             }
         }
         return headers;
-    }
-
-    static void bindParams(PreparedStatement ps, List<Object> params) throws SQLException {
-        for (int i = 0; i < params.size(); i++) {
-            ps.setObject(i + 1, params.get(i));
-        }
     }
 
     static <T> PagedResponse<T> buildPage(

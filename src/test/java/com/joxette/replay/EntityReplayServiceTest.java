@@ -1,6 +1,9 @@
 package com.joxette.replay;
 
 import com.joxette.support.DuckDBTestSupport;
+import org.jooq.DSLContext;
+import org.jooq.SQLDialect;
+import org.jooq.impl.DSL;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -40,7 +43,7 @@ class EntityReplayServiceTest {
     void setUp() throws Exception {
         duckDB = DuckDBTestSupport.newConnection();
         DuckDBTestSupport.createEntityTable(duckDB, ENTITY_TYPE);
-        service = new EntityReplayService(duckDB);
+        service = new EntityReplayService(DSL.using(duckDB, SQLDialect.DUCKDB));
     }
 
     @AfterEach

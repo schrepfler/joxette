@@ -1,6 +1,9 @@
 package com.joxette.replay;
 
 import com.joxette.support.DuckDBTestSupport;
+import org.jooq.DSLContext;
+import org.jooq.SQLDialect;
+import org.jooq.impl.DSL;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -34,7 +37,7 @@ class TopicReplayServiceTest {
     @BeforeEach
     void setUp() throws Exception {
         duckDB = DuckDBTestSupport.newConnection();
-        service = new TopicReplayService(duckDB);
+        service = new TopicReplayService(DSL.using(duckDB, SQLDialect.DUCKDB));
     }
 
     @AfterEach
