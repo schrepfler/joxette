@@ -35,7 +35,7 @@ public class SchemaManager {
     /** Only lower-case letters, digits, and underscores are valid in entity type names. */
     public static final Pattern SAFE_IDENTIFIER = Pattern.compile("[a-z][a-z0-9_]*");
 
-    private static final String HEADERS_TYPE = "LIST(STRUCT(key VARCHAR, value BLOB))";
+    private static final String HEADERS_TYPE = "STRUCT(key VARCHAR, value BLOB)[]";
 
     private final Connection duckDB;
     private final JoxetteProperties properties;
@@ -165,9 +165,11 @@ public class SchemaManager {
     }
 
     private static void createCompactionHistoryTable(Statement st) throws SQLException {
+        // DuckDB 1.5 does not implement GENERATED ALWAYS AS IDENTITY; use a sequence instead.
+        st.execute("CREATE SEQUENCE IF NOT EXISTS lake.compaction_history_id_seq START 1");
         st.execute("""
                 CREATE TABLE IF NOT EXISTS lake.compaction_history (
-                    id              BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+                    id              BIGINT      DEFAULT nextval('lake.compaction_history_id_seq') PRIMARY KEY,
                     started_at      TIMESTAMPTZ NOT NULL,
                     completed_at    TIMESTAMPTZ,
                     status          VARCHAR     NOT NULL,

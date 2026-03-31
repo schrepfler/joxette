@@ -79,8 +79,11 @@ public class EntityReplayService {
             params.add(Timestamp.from(to));
         }
 
+        // Cast partition to BIGINT in the PARTITION BY to avoid a DuckDB 1.5 type-binding
+        // bug that surfaces when BIGINT parameters are combined with INTEGER columns in
+        // QUALIFY window functions.
         sql.append("""
-                    QUALIFY ROW_NUMBER() OVER (PARTITION BY topic, partition, "offset" ORDER BY recorded_at DESC) = 1
+                    QUALIFY ROW_NUMBER() OVER (PARTITION BY topic, CAST(partition AS BIGINT), "offset" ORDER BY recorded_at DESC) = 1
                 ) deduped
                 """);
 
@@ -317,6 +320,12 @@ public class EntityReplayService {
     }
 
     private static EntityRecord mapEntityRecord(ResultSet rs) throws SQLException {
+        // Use positional index for "value" (column 9) to avoid a DuckDB JDBC bug
+        // where rs.getBytes("value") incorrectly matches the struct sub-field named
+        // "value" inside headers STRUCT(key VARCHAR, value BLOB)[] instead of the
+        // top-level BLOB column. SELECT order:
+        // entity_id(1), entity_bucket(2), topic(3), partition(4), "offset"(5),
+        // timestamp(6), recorded_at(7), key(8), value(9), headers(10)
         return new EntityRecord(
                 rs.getString("entity_id"),
                 rs.getInt("entity_bucket"),
@@ -326,7 +335,7 @@ public class EntityReplayService {
                 rs.getTimestamp("timestamp").toInstant(),
                 rs.getTimestamp("recorded_at").toInstant(),
                 rs.getString("key"),
-                TopicReplayService.encodeBlob(rs.getBytes("value")),
+                TopicReplayService.encodeBlob(rs.getBytes(9)),
                 TopicReplayService.mapHeaders(rs.getObject("headers"))
         );
     }

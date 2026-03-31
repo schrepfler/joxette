@@ -408,7 +408,7 @@ public class CompactionService {
 
     /**
      * Returns the number of distinct row groups for a table in the {@code lake}
-     * schema using {@code duckdb_storage_info()}.
+     * schema using {@code pragma_storage_info()}.
      *
      * <p>Row groups are the closest DuckDB proxy for DuckLake Parquet data files.
      * The count is used to estimate per-bucket / per-partition file density.
@@ -417,8 +417,7 @@ public class CompactionService {
         synchronized (duckDB) {
             try (PreparedStatement ps = duckDB.prepareStatement("""
                     SELECT COUNT(DISTINCT row_group_id) AS rg_count
-                    FROM duckdb_storage_info()
-                    WHERE schema_name = 'lake' AND table_name = ?
+                    FROM pragma_storage_info('lake.' || ?)
                     """)) {
                 ps.setString(1, tableName);
                 try (ResultSet rs = ps.executeQuery()) {

@@ -91,8 +91,11 @@ public class TopicReplayService {
             params.add(offsetTo);
         }
 
+        // Cast partition to BIGINT in the PARTITION BY to avoid a DuckDB 1.5 type-binding
+        // bug that surfaces when BIGINT parameters (offset filters) are combined with
+        // INTEGER columns in QUALIFY window functions.
         sql.append("""
-                    QUALIFY ROW_NUMBER() OVER (PARTITION BY topic, partition, "offset" ORDER BY recorded_at DESC) = 1
+                    QUALIFY ROW_NUMBER() OVER (PARTITION BY topic, CAST(partition AS BIGINT), "offset" ORDER BY recorded_at DESC) = 1
                 ) deduped
                 """);
 
@@ -158,6 +161,12 @@ public class TopicReplayService {
     }
 
     private static CassetteRecord mapRecord(ResultSet rs) throws SQLException {
+        // Use positional index for "value" (column 7) to avoid a DuckDB JDBC bug:
+        // rs.getBytes("value") incorrectly matches the struct sub-field named "value"
+        // inside the headers LIST(STRUCT(key VARCHAR, value BLOB)) instead of the
+        // top-level BLOB column named "value".
+        // SELECT order: topic(1), partition(2), "offset"(3), timestamp(4),
+        //               recorded_at(5), key(6), value(7), headers(8)
         return new CassetteRecord(
                 rs.getString("topic"),
                 rs.getInt("partition"),
@@ -165,7 +174,7 @@ public class TopicReplayService {
                 rs.getTimestamp("timestamp").toInstant(),
                 rs.getTimestamp("recorded_at").toInstant(),
                 rs.getString("key"),
-                encodeBlob(rs.getBytes("value")),
+                encodeBlob(rs.getBytes(7)),
                 mapHeaders(rs.getObject("headers"))
         );
     }

@@ -1,0 +1,26 @@
+joxette:
+  # Use in-memory DuckDB for integration tests — no disk I/O, clean per-test-run.
+  catalog:
+    path: ":memory:"
+
+  # Empty bootstrap: the test wires its own topics and entities via the REST API
+  # or direct DuckDB inserts to keep tests self-contained.
+  bootstrap:
+    topics: []
+    entities: []
+
+  # Faster batch flushing so tests don't wait a full second for the first batch.
+  recording:
+    batch-size: 10
+    batch-timeout-ms: 100
+
+  # Compaction schedule that never fires during a short-lived test run.
+  # (Spring 6-field cron: <sec> <min> <hour> <dom> <month> <dow>)
+  # Feb 30 never exists, so this cron is effectively disabled.
+  compaction:
+    schedule: "0 0 3 30 2 *"
+    entity:
+      min-files-per-bucket: 1
+      lookback-days: 0
+    general:
+      enabled: false

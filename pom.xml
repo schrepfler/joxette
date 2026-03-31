@@ -18,11 +18,11 @@
     <description>Kafka Topic Cassette Recorder backed by DuckLake</description>
 
     <properties>
-        <java.version>26</java.version>
-        <jox.core.version>0.2.1</jox.core.version>
-        <jox.flows.version>0.4.0</jox.flows.version>
+        <java.version>25</java.version>
+        <jox.channels.version>1.1.2</jox.channels.version>
+        <jox.flows.version>0.5.3</jox.flows.version>
         <duckdb.version>1.5.1.0</duckdb.version>
-        <testcontainers.version>1.21.0</testcontainers.version>
+        <testcontainers.version>1.21.4</testcontainers.version>
     </properties>
 
     <dependencyManagement>
@@ -63,11 +63,11 @@
             <optional>true</optional>
         </dependency>
 
-        <!-- Jox core: virtual-thread channels -->
+        <!-- Jox channels: virtual-thread channels -->
         <dependency>
             <groupId>com.softwaremill.jox</groupId>
-            <artifactId>core</artifactId>
-            <version>${jox.core.version}</version>
+            <artifactId>channels</artifactId>
+            <version>${jox.channels.version}</version>
         </dependency>
 
         <!-- Jox flows: reactive-style pipeline operators -->
@@ -147,6 +147,21 @@
                     <compilerArgs>
                         <arg>--enable-preview</arg>
                     </compilerArgs>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <!-- jox-structured is compiled with Java 25 preview (69.65535);
+                         use the Java 25 JVM so enable-preview accepts those classes. -->
+                    <jvm>${env.JAVA_25_HOME}/bin/java</jvm>
+                    <argLine>--enable-preview</argLine>
+                    <systemPropertyVariables>
+                        <!-- Skip Spring's classpath scanner failing on preview anonymous
+                             classes (e.g. ParameterizedTypeReference<>(){}) -->
+                        <spring.classformat.ignore>true</spring.classformat.ignore>
+                    </systemPropertyVariables>
                 </configuration>
             </plugin>
             <plugin>
