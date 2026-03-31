@@ -22,6 +22,7 @@
         <jox.channels.version>1.1.2</jox.channels.version>
         <jox.flows.version>0.5.3</jox.flows.version>
         <duckdb.version>1.5.1.0</duckdb.version>
+        <jooq.version>3.19.18</jooq.version>
         <testcontainers.version>1.21.4</testcontainers.version>
     </properties>
 
@@ -97,6 +98,13 @@
             <version>${duckdb.version}</version>
         </dependency>
 
+        <!-- jOOQ: type-safe SQL DSL -->
+        <dependency>
+            <groupId>org.jooq</groupId>
+            <artifactId>jooq</artifactId>
+            <version>${jooq.version}</version>
+        </dependency>
+
         <!-- Jackson for JSON handling in REST API -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
@@ -169,6 +177,56 @@
                 <artifactId>spring-boot-maven-plugin</artifactId>
                 <configuration>
                     <jvmArguments>--enable-preview</jvmArguments>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.jooq</groupId>
+                <artifactId>jooq-codegen-maven</artifactId>
+                <version>${jooq.version}</version>
+                <executions>
+                    <execution>
+                        <id>jooq-codegen</id>
+                        <phase>generate-sources</phase>
+                        <goals>
+                            <goal>generate</goal>
+                        </goals>
+                    </execution>
+                </executions>
+                <dependencies>
+                    <!-- DuckDB JDBC driver must be on the plugin classpath for codegen -->
+                    <dependency>
+                        <groupId>org.duckdb</groupId>
+                        <artifactId>duckdb_jdbc</artifactId>
+                        <version>${duckdb.version}</version>
+                    </dependency>
+                </dependencies>
+                <configuration>
+                    <jdbc>
+                        <driver>org.duckdb.DuckDBDriver</driver>
+                        <!-- In-memory DuckDB instance: ephemeral, no file I/O during build -->
+                        <url>jdbc:duckdb:</url>
+                    </jdbc>
+                    <generator>
+                        <database>
+                            <name>org.jooq.meta.duckdb.DuckDBDatabase</name>
+                            <!-- Default schema for plain DuckDB (not DuckLake) -->
+                            <inputSchema>main</inputSchema>
+                            <!-- Config tables + known_entities (placed in main for codegen) -->
+                            <includes>
+                                topic_configs
+                                | entity_type_configs
+                                | entity_source_mappings
+                                | compaction_history
+                                | known_entities
+                            </includes>
+                            <!-- Bootstrap the in-memory DB with the codegen schema -->
+                            <initScript>src/main/resources/db/jooq-codegen-schema.sql</initScript>
+                        </database>
+                        <target>
+                            <packageName>com.joxette.db.jooq</packageName>
+                            <directory>target/generated-sources/jooq</directory>
+                        </target>
+                    </generator>
                 </configuration>
             </plugin>
         </plugins>

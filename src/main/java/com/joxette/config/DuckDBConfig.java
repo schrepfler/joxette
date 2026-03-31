@@ -1,5 +1,8 @@
 package com.joxette.config;
 
+import org.jooq.DSLContext;
+import org.jooq.SQLDialect;
+import org.jooq.impl.DSL;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -42,5 +45,21 @@ public class DuckDBConfig {
         }
 
         return DriverManager.getConnection("jdbc:duckdb:" + catalogPath);
+    }
+
+    /**
+     * jOOQ {@link DSLContext} backed by the shared DuckDB connection.
+     *
+     * <p>{@link SQLDialect#DUCKDB} enables DuckDB-specific SQL rendering
+     * (e.g. {@code TIMESTAMPTZ}, {@code BLOB}, array/struct literals) and
+     * correct handling of DuckDB's sequence and type system in generated queries.
+     *
+     * <p>The context is stateless and safe to share across threads; all
+     * mutable state (transactions, cursors) lives in the {@link Connection}
+     * which DuckDB serialises internally.
+     */
+    @Bean
+    public DSLContext dslContext(Connection duckDbConnection) {
+        return DSL.using(duckDbConnection, SQLDialect.DUCKDB);
     }
 }
