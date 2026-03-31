@@ -3,6 +3,13 @@ package com.joxette.management;
 import com.joxette.config.JoxetteProperties;
 import com.joxette.recording.RecordingCoordinator;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.ExampleObject;
+import io.swagger.v3.oas.annotations.media.Schema;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.responses.ApiResponses;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.ListOffsetsResult;
 import org.apache.kafka.clients.admin.OffsetSpec;
@@ -31,6 +38,8 @@ import java.util.concurrent.TimeoutException;
  * GET /metrics  – Prometheus scrape endpoint (mirrors /actuator/prometheus)
  * </pre>
  */
+@Tag(name = "Observability",
+     description = "Liveness probe and observability endpoints for monitoring the Joxette recording pipeline.")
 @RestController
 public class HealthController {
 
@@ -40,14 +49,43 @@ public class HealthController {
      * @param totalLag       sum of per-partition lag; {@code -1} if Kafka is unreachable
      * @param lagByPartition per-partition lag values (empty when totalLag is -1)
      */
-    public record TopicLag(String topic, long totalLag, Map<Integer, Long> lagByPartition) {}
+    @Schema(description = "Consumer-lag summary for one active Kafka topic",
+            example = "{\"topic\": \"orders\", \"totalLag\": 150, \"lagByPartition\": {\"0\": 80, \"1\": 70}}")
+    public record TopicLag(
+            @Schema(description = "Kafka topic name", example = "orders")
+            String topic,
+            @Schema(description = "Sum of per-partition lag; -1 if Kafka is unreachable", example = "150")
+            long totalLag,
+            @Schema(description = "Per-partition lag values; empty when totalLag is -1",
+                    example = "{\"0\": 80, \"1\": 70}")
+            Map<Integer, Long> lagByPartition) {}
 
+    @Schema(description = "Liveness and observability response from GET /health", example = """
+            {
+              "status": "UP",
+              "activeRecorders": ["orders", "payments"],
+              "consumerLag": [
+                {"topic": "orders", "totalLag": 150, "lagByPartition": {"0": 80, "1": 70}},
+                {"topic": "payments", "totalLag": 0, "lagByPartition": {"0": 0}}
+              ],
+              "catalogSizeBytes": 1073741824,
+              "inlinedDataSizeBytes": 52428800,
+              "catalogPath": "./data/joxette.ducklake"
+            }""")
     public record HealthStatus(
+            @Schema(description = "Liveness status; always 'UP' when the endpoint responds", example = "UP")
             String status,
+            @Schema(description = "Sorted list of Kafka topics currently being recorded",
+                    example = "[\"orders\", \"payments\"]")
             List<String> activeRecorders,
+            @Schema(description = "Consumer lag per active topic; empty when no topics are active")
             List<TopicLag> consumerLag,
+            @Schema(description = "Size of the DuckDB catalog file in bytes; -1 if unreadable", example = "1073741824")
             long catalogSizeBytes,
+            @Schema(description = "Estimated bytes of data buffered inline in the DuckDB catalog (not yet flushed to Parquet); -1 on error",
+                    example = "52428800")
             long inlinedDataSizeBytes,
+            @Schema(description = "Filesystem path to the DuckDB catalog file", example = "./data/joxette.ducklake")
             String catalogPath
     ) {}
 
@@ -70,6 +108,30 @@ public class HealthController {
         this.metricsRegistry = metricsRegistry;
     }
 
+    @Operation(
+        operationId = "getHealth",
+        summary = "Liveness probe",
+        description = "Returns the liveness status of the Joxette service along with observability metrics: " +
+                      "active recorder topics, per-topic Kafka consumer lag, catalog file size, and the amount " +
+                      "of data buffered inline in the DuckDB catalog that has not yet been flushed to Parquet."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Service is alive",
+            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                schema = @Schema(implementation = HealthStatus.class),
+                examples = @ExampleObject(name = "healthy", value = """
+                    {
+                      "status": "UP",
+                      "activeRecorders": ["orders", "payments"],
+                      "consumerLag": [
+                        {"topic": "orders", "totalLag": 150, "lagByPartition": {"0": 80, "1": 70}},
+                        {"topic": "payments", "totalLag": 0, "lagByPartition": {"0": 0}}
+                      ],
+                      "catalogSizeBytes": 1073741824,
+                      "inlinedDataSizeBytes": 52428800,
+                      "catalogPath": "./data/joxette.ducklake"
+                    }""")))
+    })
     @GetMapping(value = "/health", produces = MediaType.APPLICATION_JSON_VALUE)
     public HealthStatus health() {
         List<String> active = coordinator.activeTopics().stream().sorted().toList();
