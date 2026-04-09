@@ -2,7 +2,7 @@ package com.joxette.compaction;
 
 import com.joxette.config.JoxetteProperties;
 import com.joxette.management.ConfigRepository;
-import com.joxette.replay.SchemaManager;
+import com.joxette.db.SchemaManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.DependsOn;
@@ -45,7 +45,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * {@link AtomicBoolean} guard prevents overlapping runs.
  */
 @Service
-@DependsOn("schemaManager")
+@DependsOn("dbSchemaManager")
 public class CompactionService {
 
     private static final Logger log = LoggerFactory.getLogger(CompactionService.class);
@@ -147,7 +147,7 @@ public class CompactionService {
             try (PreparedStatement ps = duckDB.prepareStatement("""
                     SELECT id, started_at, completed_at, status, triggered_by, targets,
                            entity_buckets_compacted, general_partitions_compacted, error_message
-                    FROM lake.compaction_history
+                    FROM compaction_history
                     ORDER BY started_at DESC
                     LIMIT ?
                     """)) {
@@ -167,7 +167,7 @@ public class CompactionService {
             try (PreparedStatement ps = duckDB.prepareStatement("""
                     SELECT id, started_at, completed_at, status, triggered_by, targets,
                            entity_buckets_compacted, general_partitions_compacted, error_message
-                    FROM lake.compaction_history WHERE id = ?
+                    FROM compaction_history WHERE id = ?
                     """)) {
                 ps.setLong(1, id);
                 try (ResultSet rs = ps.executeQuery()) {
@@ -235,10 +235,10 @@ public class CompactionService {
         long totalRowGroups = countTableRowGroups("entity_" + entityType);
         if (totalRowGroups == 0) return List.of();
 
-        String coldSql = "SELECT entity_bucket, COUNT(*) AS cnt"
-                + " FROM lake.entity_" + entityType
+        String coldSql = "SELECT bucket, COUNT(*) AS cnt"
+                + " FROM lake.main.entity_" + entityType
                 + " WHERE recorded_at < CURRENT_TIMESTAMP - INTERVAL '" + lookbackDays + " days'"
-                + " GROUP BY entity_bucket ORDER BY entity_bucket";
+                + " GROUP BY bucket ORDER BY bucket";
 
         Map<Integer, Long> bucketCounts = new LinkedHashMap<>();
         long totalColdRows = 0;
@@ -247,7 +247,7 @@ public class CompactionService {
                  ResultSet rs = st.executeQuery(coldSql)) {
                 while (rs.next()) {
                     long cnt = rs.getLong("cnt");
-                    bucketCounts.put(rs.getInt("entity_bucket"), cnt);
+                    bucketCounts.put(rs.getInt("bucket"), cnt);
                     totalColdRows += cnt;
                 }
             }
@@ -277,8 +277,8 @@ public class CompactionService {
      * </ol>
      */
     private void compactEntityBucket(String entityType, int bucket, int lookbackDays) throws SQLException {
-        String src     = "lake.entity_" + entityType;
-        String tmp     = "lake._cmp_" + entityType + "_b" + bucket;
+        String src     = "lake.main.entity_" + entityType;
+        String tmp     = "lake.main._cmp_" + entityType + "_b" + bucket;
         String cutoff  = "CURRENT_TIMESTAMP - INTERVAL '" + lookbackDays + " days'";
         log.debug("Compacting entity_type='{}' bucket={}", entityType, bucket);
 
@@ -291,8 +291,8 @@ public class CompactionService {
                 try (PreparedStatement ps = duckDB.prepareStatement(
                         "INSERT INTO " + tmp
                         + " SELECT * FROM " + src
-                        + " WHERE entity_bucket = ? AND recorded_at < " + cutoff
-                        + " ORDER BY entity_id, timestamp, recorded_at")) {
+                        + " WHERE bucket = ? AND recorded_at < " + cutoff
+                        + " ORDER BY entity_id, kafka_timestamp, recorded_at")) {
                     ps.setInt(1, bucket);
                     ps.executeUpdate();
                 }
@@ -300,7 +300,7 @@ public class CompactionService {
                 // 3. Delete cold rows from source
                 try (PreparedStatement ps = duckDB.prepareStatement(
                         "DELETE FROM " + src
-                        + " WHERE entity_bucket = ? AND recorded_at < " + cutoff)) {
+                        + " WHERE bucket = ? AND recorded_at < " + cutoff)) {
                     ps.setInt(1, bucket);
                     ps.executeUpdate();
                 }
@@ -328,78 +328,90 @@ public class CompactionService {
         int lookbackDays = props.getCompaction().getGeneral().getLookbackDays();
         int minFiles     = props.getCompaction().getGeneral().getMinFilesPerPartition();
 
-        long totalRowGroups = countTableRowGroups("cassette");
-        if (totalRowGroups == 0) return 0;
-
-        String coldSql = "SELECT topic, partition, COUNT(*) AS cnt"
-                + " FROM lake.cassette"
-                + " WHERE recorded_at < CURRENT_TIMESTAMP - INTERVAL '" + lookbackDays + " days'"
-                + " GROUP BY topic, partition"
-                + " ORDER BY topic, partition";
-
-        Map<TopicPartitionKey, Long> partitionCounts = new LinkedHashMap<>();
-        long totalColdRows = 0;
-        synchronized (duckDB) {
-            try (Statement st = duckDB.createStatement();
-                 ResultSet rs = st.executeQuery(coldSql)) {
-                while (rs.next()) {
-                    long cnt = rs.getLong("cnt");
-                    partitionCounts.put(
-                            new TopicPartitionKey(rs.getString("topic"), rs.getInt("partition")), cnt);
-                    totalColdRows += cnt;
-                }
-            }
-        }
-        if (totalColdRows == 0) return 0;
+        // Collect all configured topics that have general cassette tables
+        List<String> topics = configRepo.listTopics().stream()
+                .filter(tc -> "general".equals(tc.mode()) || "both".equals(tc.mode()))
+                .map(tc -> tc.topic())
+                .toList();
 
         int compacted = 0;
-        for (Map.Entry<TopicPartitionKey, Long> entry : partitionCounts.entrySet()) {
-            long estimated = Math.round((double) entry.getValue() / totalColdRows * totalRowGroups);
-            if (estimated >= minFiles) {
-                compactGeneralPartition(entry.getKey().topic(), entry.getKey().partition(), lookbackDays);
-                compacted++;
+        for (String topic : topics) {
+            String tableName = "general_" + normalizeTopicName(topic);
+            long totalRowGroups = countTableRowGroups(tableName);
+            if (totalRowGroups == 0) continue;
+
+            String coldSql = "SELECT kafka_partition AS partition, COUNT(*) AS cnt"
+                    + " FROM lake.main." + tableName
+                    + " WHERE recorded_at < CURRENT_TIMESTAMP - INTERVAL '" + lookbackDays + " days'"
+                    + " GROUP BY kafka_partition"
+                    + " ORDER BY kafka_partition";
+
+            Map<Integer, Long> partitionCounts = new LinkedHashMap<>();
+            long totalColdRows = 0;
+            synchronized (duckDB) {
+                try (Statement st = duckDB.createStatement();
+                     ResultSet rs = st.executeQuery(coldSql)) {
+                    while (rs.next()) {
+                        long cnt = rs.getLong("cnt");
+                        partitionCounts.put(rs.getInt("partition"), cnt);
+                        totalColdRows += cnt;
+                    }
+                }
+            }
+            if (totalColdRows == 0) continue;
+
+            for (Map.Entry<Integer, Long> entry : partitionCounts.entrySet()) {
+                long estimated = Math.round((double) entry.getValue() / totalColdRows * totalRowGroups);
+                if (estimated >= minFiles) {
+                    compactGeneralPartition(topic, tableName, entry.getKey(), lookbackDays);
+                    compacted++;
+                }
             }
         }
         return compacted;
     }
 
     /**
-     * Re-writes cold data for one {@code (topic, partition)} slice of
-     * {@code lake.cassette}, sorted by {@code (timestamp, partition, offset)}.
+     * Re-writes cold data for one {@code (kafka_partition)} slice of a
+     * general cassette table, sorted by {@code (kafka_timestamp, kafka_partition, kafka_offset)}.
      */
-    private void compactGeneralPartition(String topic, int partition, int lookbackDays) throws SQLException {
-        // Derive a collision-resistant temp-table name from the topic+partition hash
+    private void compactGeneralPartition(String topic, String tableName, int partition, int lookbackDays)
+            throws SQLException {
+        String src    = "lake.main." + tableName;
         String hex    = Integer.toHexString(Math.abs((topic + partition).hashCode()));
-        String tmp    = "lake._cmp_cassette_" + hex;
+        String tmp    = "lake.main._cmp_general_" + hex;
         String cutoff = "CURRENT_TIMESTAMP - INTERVAL '" + lookbackDays + " days'";
         log.debug("Compacting general cassette topic='{}' partition={}", topic, partition);
 
         synchronized (duckDB) {
             try (Statement st = duckDB.createStatement()) {
-                st.execute("CREATE OR REPLACE TABLE " + tmp + " AS SELECT * FROM lake.cassette LIMIT 0");
+                st.execute("CREATE OR REPLACE TABLE " + tmp + " AS SELECT * FROM " + src + " LIMIT 0");
 
                 try (PreparedStatement ps = duckDB.prepareStatement(
                         "INSERT INTO " + tmp
-                        + " SELECT * FROM lake.cassette"
-                        + " WHERE topic = ? AND partition = ? AND recorded_at < " + cutoff
-                        + " ORDER BY timestamp, partition, \"offset\"")) {
-                    ps.setString(1, topic);
-                    ps.setInt(2, partition);
+                        + " SELECT * FROM " + src
+                        + " WHERE kafka_partition = ? AND recorded_at < " + cutoff
+                        + " ORDER BY kafka_timestamp, kafka_partition, kafka_offset")) {
+                    ps.setInt(1, partition);
                     ps.executeUpdate();
                 }
 
                 try (PreparedStatement ps = duckDB.prepareStatement(
-                        "DELETE FROM lake.cassette"
-                        + " WHERE topic = ? AND partition = ? AND recorded_at < " + cutoff)) {
-                    ps.setString(1, topic);
-                    ps.setInt(2, partition);
+                        "DELETE FROM " + src
+                        + " WHERE kafka_partition = ? AND recorded_at < " + cutoff)) {
+                    ps.setInt(1, partition);
                     ps.executeUpdate();
                 }
 
-                st.execute("INSERT INTO lake.cassette SELECT * FROM " + tmp);
+                st.execute("INSERT INTO " + src + " SELECT * FROM " + tmp);
                 st.execute("DROP TABLE IF EXISTS " + tmp);
             }
         }
+    }
+
+    /** Normalises a topic name to {@code [a-z0-9_]}, matching {@code SchemaManager.normalize}. */
+    private static String normalizeTopicName(String topic) {
+        return topic.toLowerCase().replaceAll("[^a-z0-9_]", "_");
     }
 
     // =========================================================================
@@ -417,7 +429,7 @@ public class CompactionService {
         synchronized (duckDB) {
             try (PreparedStatement ps = duckDB.prepareStatement("""
                     SELECT COUNT(DISTINCT row_group_id) AS rg_count
-                    FROM pragma_storage_info('lake.' || ?)
+                    FROM pragma_storage_info('lake.main.' || ?)
                     """)) {
                 ps.setString(1, tableName);
                 try (ResultSet rs = ps.executeQuery()) {
@@ -427,9 +439,25 @@ public class CompactionService {
         }
     }
 
+    /**
+     * Flushes inlined DuckLake data to Parquet on object storage, then
+     * issues a DuckDB CHECKPOINT to persist the updated catalog metadata.
+     *
+     * <p>{@code CALL ducklake_flush_inlined_data('lake')} triggers DuckLake to write all
+     * buffered inline rows as Parquet files to the configured DATA_PATH (S3).
+     * The subsequent CHECKPOINT ensures the catalog SQLite/DuckDB file is
+     * durable on local disk as well.
+     */
     private void checkpoint() throws SQLException {
         synchronized (duckDB) {
             try (Statement st = duckDB.createStatement()) {
+                // Flush inlined rows → Parquet on S3 (the key step for DuckLake)
+                st.execute("CALL ducklake_flush_inlined_data('lake')");
+            } catch (SQLException e) {
+                log.warn("ducklake_flush failed ({}); data may remain inlined", e.getMessage());
+            }
+            try (Statement st = duckDB.createStatement()) {
+                // Persist catalog metadata to local disk
                 st.execute("CHECKPOINT");
             }
         }
@@ -442,7 +470,7 @@ public class CompactionService {
     private long insertRunRecord(String triggeredBy, List<String> targets) throws SQLException {
         synchronized (duckDB) {
             try (PreparedStatement ps = duckDB.prepareStatement("""
-                    INSERT INTO lake.compaction_history
+                    INSERT INTO compaction_history
                         (started_at, status, triggered_by, targets,
                          entity_buckets_compacted, general_partitions_compacted)
                     VALUES (?, 'running', ?, ?, 0, 0)
@@ -468,7 +496,7 @@ public class CompactionService {
                                   String errorMessage) throws SQLException {
         synchronized (duckDB) {
             try (PreparedStatement ps = duckDB.prepareStatement("""
-                    UPDATE lake.compaction_history
+                    UPDATE compaction_history
                     SET completed_at = ?,
                         status = ?,
                         entity_buckets_compacted = ?,
@@ -493,7 +521,7 @@ public class CompactionService {
                  ResultSet rs = st.executeQuery("""
                     SELECT id, started_at, completed_at, status, triggered_by, targets,
                            entity_buckets_compacted, general_partitions_compacted, error_message
-                    FROM lake.compaction_history
+                    FROM compaction_history
                     ORDER BY started_at DESC LIMIT 1
                     """)) {
                 return rs.next() ? mapRun(rs) : null;

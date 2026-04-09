@@ -7,6 +7,7 @@ import {
   createColumnHelper,
 } from '@tanstack/react-table'
 import { useState } from 'react'
+import { VisualJson, TreeView, type JsonValue } from '@visual-json/react'
 import { cassettesApi, type EntityRecord } from '../../../api/client'
 import { Layout } from '../../../components/Layout'
 import { LoadingSpinner } from '../../../components/LoadingSpinner'
@@ -18,6 +19,64 @@ import { useDebounce } from '../../../hooks/useDebounce'
 export const Route = createFileRoute('/entities/$entityType/$entityId')({
   component: EntityInstancePage,
 })
+
+// ── JSON viewer (same as topics page) ─────────────────────────────────────────
+function tryDecodeBase64(s: string): string | null {
+  try {
+    if (!/^[A-Za-z0-9+/\-_]+=*$/.test(s)) return null
+    return atob(s.replace(/-/g, '+').replace(/_/g, '/'))
+  } catch {
+    return null
+  }
+}
+
+function tryParseValue(s: string | null): { parsed: JsonValue; raw: string } | null {
+  if (!s) return null
+  try { return { parsed: JSON.parse(s) as JsonValue, raw: s } } catch { /* continue */ }
+  const decoded = tryDecodeBase64(s)
+  if (decoded) {
+    try { return { parsed: JSON.parse(decoded) as JsonValue, raw: decoded } } catch { /* continue */ }
+  }
+  return null
+}
+
+function ValueCell({ raw }: { raw: string | null }) {
+  const [open, setOpen] = useState(false)
+  if (!raw) return <span style={{ color: '#a0aec0' }}>—</span>
+  const result = tryParseValue(raw)
+  const isJson = result !== null
+  const preview = raw.length > 80 ? raw.slice(0, 80) + '…' : raw
+
+  if (!isJson) return <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{preview}</span>
+
+  const decodedPreview = result.raw.length > 80 ? result.raw.slice(0, 80) + '…' : result.raw
+
+  return (
+    <div>
+      <span
+        onClick={() => setOpen(o => !o)}
+        title={open ? 'Collapse' : 'Expand JSON'}
+        style={{
+          cursor: 'pointer',
+          fontFamily: 'monospace',
+          fontSize: 12,
+          color: '#2b6cb0',
+          userSelect: 'none',
+        }}
+      >
+        <span style={{ marginRight: 4, fontSize: 10, display: 'inline-block', transform: open ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.15s' }}>▶</span>
+        {open ? (result.raw !== raw ? 'JSON (base64-decoded)' : 'JSON') : decodedPreview}
+      </span>
+      {open && (
+        <div style={vjTheme}>
+          <VisualJson value={result.parsed}>
+            <TreeView showValues showCounts />
+          </VisualJson>
+        </div>
+      )}
+    </div>
+  )
+}
 
 const colHelper = createColumnHelper<EntityRecord>()
 
@@ -63,13 +122,28 @@ function EntityInstancePage() {
   })
 
   const columns = [
-    colHelper.accessor('timestamp', { header: 'Timestamp', cell: i => i.getValue().slice(0, 19).replace('T', ' ') }),
+    colHelper.accessor('timestamp', {
+      header: 'Timestamp',
+      cell: i => i.getValue().slice(0, 19).replace('T', ' '),
+    }),
+    colHelper.accessor('messageType', {
+      header: 'Message Type',
+      cell: i => i.getValue()
+        ? <span style={{ background: '#ebf8ff', border: '1px solid #bee3f8', borderRadius: 4, padding: '1px 6px', fontSize: 12, whiteSpace: 'nowrap' }}>{i.getValue()}</span>
+        : <span style={{ color: '#a0aec0' }}>—</span>,
+    }),
     colHelper.accessor('topic', { header: 'Topic' }),
-    colHelper.accessor('partition', { header: 'Partition' }),
+    colHelper.accessor('partition', { header: 'Part.' }),
     colHelper.accessor('offset', { header: 'Offset' }),
-    colHelper.accessor('key', { header: 'Key', cell: i => trunc(i.getValue(), 40) }),
-    colHelper.accessor('value', { header: 'Value', cell: i => trunc(i.getValue(), 80) }),
-    colHelper.accessor('recordedAt', { header: 'Recorded At', cell: i => i.getValue().slice(0, 19).replace('T', ' ') }),
+    colHelper.accessor('key', { header: 'Key', cell: i => trunc(i.getValue(), 30) }),
+    colHelper.accessor('value', {
+      header: 'Value',
+      cell: i => <ValueCell raw={i.getValue()} />,
+    }),
+    colHelper.accessor('recordedAt', {
+      header: 'Recorded At',
+      cell: i => i.getValue().slice(0, 19).replace('T', ' '),
+    }),
   ]
 
   const table = useReactTable({ data: recordsQuery.data?.data ?? [], columns, getCoreRowModel: getCoreRowModel() })
@@ -196,3 +270,39 @@ const secondaryBtnStyle: React.CSSProperties = { padding: '0.35rem 0.8rem', back
 const tableStyle: React.CSSProperties = { width: '100%', borderCollapse: 'collapse', background: '#fff', fontSize: 13 }
 const thStyle: React.CSSProperties = { textAlign: 'left', padding: '0.5rem 0.6rem', background: '#edf2f7', fontWeight: 600, color: '#4a5568', borderBottom: '1px solid #e2e8f0' }
 const tdStyle: React.CSSProperties = { padding: '0.45rem 0.6rem', borderBottom: '1px solid #e2e8f0' }
+
+// ── @visual-json/react theme ───────────────────────────────────────────────────
+const vjTheme: React.CSSProperties = {
+  marginTop: 4,
+  borderRadius: 6,
+  overflow: 'hidden',
+  border: '1px solid #cbd5e0',
+  // Base colours
+  ['--vj-bg' as string]: '#f7fafc',
+  ['--vj-text' as string]: '#1a202c',
+  ['--vj-text-muted' as string]: '#4a5568',
+  // Selected row: light blue + dark text
+  ['--vj-text-selected' as string]: '#1a202c',
+  ['--vj-bg-hover' as string]: '#ebf8ff',
+  ['--vj-bg-selected' as string]: '#bee3f8',
+  ['--vj-bg-selected-muted' as string]: '#e6f6ff',
+  // Search/match highlights
+  ['--vj-bg-match' as string]: '#fefcbf',
+  ['--vj-bg-match-active' as string]: '#f6e05e',
+  // Inline button bar (copy/expand)
+  ['--vj-btn-bg' as string]: '#ffffff',
+  ['--vj-btn-text' as string]: '#2d3748',
+  ['--vj-btn-bg-hover' as string]: '#edf2f7',
+  // Popup / context menu
+  ['--vj-menu-bg' as string]: '#ffffff',
+  ['--vj-menu-text' as string]: '#1a202c',
+  ['--vj-menu-bg-hover' as string]: '#edf2f7',
+  ['--vj-menu-text-hover' as string]: '#1a202c',
+  ['--vj-menu-border' as string]: '#e2e8f0',
+  ['--vj-menu-shadow' as string]: '0 4px 16px rgba(0,0,0,0.12)',
+  // Accent & value colours
+  ['--vj-accent' as string]: '#3182ce',
+  ['--vj-string' as string]: '#276749',
+  ['--vj-number' as string]: '#2b6cb0',
+  ['--vj-font' as string]: '"Manrope", ui-sans-serif, system-ui, sans-serif',
+}

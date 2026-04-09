@@ -1,0 +1,37 @@
+%% Joxette — Kafka Topic Cassette Recorder
+flowchart TB
+    subgraph kafka ["Apache Kafka"]
+        K[("Kafka Topics")]
+    end
+
+    subgraph joxette ["Joxette Service"]
+        subgraph recording ["Recording Pipeline (per topic)"]
+            C["Kafka Consumer\n(Jox KafkaSource)"]
+            R["Router\n(entity extract + route)"]
+            W["DuckLake Writer\n(bulk INSERT)"]
+            C -->|"Flow&lt;KafkaMessage&gt;"| R
+            R -->|"Flow&lt;RoutedBatch&gt;"| W
+        end
+
+        API["REST API\n(replay · manage · compact)"]
+        CRON["Cron Scheduler"]
+        DB[("DuckDB + DuckLake\ncatalog + inline storage")]
+
+        W    --> DB
+        API  --> DB
+        CRON -->|compact trigger| DB
+    end
+
+    subgraph storage ["Persistent Storage"]
+        CAT[("DuckDB Catalog\n.ducklake file")]
+        S3[("Object Storage\nS3 / GCS / Azure\nParquet files")]
+    end
+
+    K -->|consume| C
+    DB -->|catalog ops| CAT
+    DB -->|"Parquet flush (httpfs + DuckLake)"| S3
+
+    style joxette   fill:#f0f4ff,stroke:#6674cc,stroke-width:2px
+    style recording fill:#e8f5e9,stroke:#43a047,stroke-width:1px
+    style kafka     fill:#fff8e1,stroke:#f9a825,stroke-width:2px
+    style storage   fill:#fce4ec,stroke:#e91e63,stroke-width:2px

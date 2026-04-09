@@ -74,6 +74,17 @@
   }
 }
 
+/* ── @visual-json/react popup override ──────────────────────────────────────
+   The context menu is position:fixed and escapes scoped CSS vars.
+   Override the two vars it hard-codes here at :root so the popup is
+   rendered with a white background and dark text on light-mode pages.
+*/
+:root {
+  --vj-bg-panel: #ffffff;
+  --vj-border: #e2e8f0;
+  --vj-text: #1a202c;
+}
+
 * {
   box-sizing: border-box;
 }

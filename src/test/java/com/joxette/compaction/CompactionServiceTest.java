@@ -2,22 +2,15 @@ package com.joxette.compaction;
 
 import com.joxette.config.JoxetteProperties;
 import com.joxette.management.ConfigRepository;
-import com.joxette.recording.RecordingCoordinator;
 import com.joxette.support.DuckDBTestSupport;
-import org.apache.kafka.clients.consumer.ConsumerConfig;
-import org.apache.kafka.common.serialization.ByteArrayDeserializer;
-import org.apache.kafka.common.serialization.StringDeserializer;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
-import java.sql.Timestamp;
 import java.time.Instant;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -34,7 +27,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *   <li>Status and history queries</li>
  * </ul>
  *
- * <p>Note: {@link com.joxette.compaction.CompactionService#findEntityBucketsNeedingCompaction}
+ * <p>Note: the bucket-needs-compaction check in {@code CompactionService}
  * uses {@code duckdb_storage_info()} to count row groups.  In-memory DuckDB
  * may report 0 row groups for small datasets, meaning no bucket qualifies for
  * compaction — the tests therefore focus on run tracking and data integrity
@@ -52,10 +45,12 @@ class CompactionServiceTest {
     void setUp() throws Exception {
         duckDB = DuckDBTestSupport.newConnection();
         DuckDBTestSupport.createEntityTable(duckDB, ENTITY_TYPE);
+        // General cassette table needed by insertCassetteRows / executeRun_preservesGeneralCassetteData
+        DuckDBTestSupport.createGeneralCassetteTable(duckDB, "orders.events");
 
-        // Seed config tables so ConfigRepository.listEntityTypes() works.
+        // Seed entity_type_configs in main schema so ConfigRepository.listEntityTypes() works.
         try (PreparedStatement ps = duckDB.prepareStatement(
-                "INSERT INTO lake.config_entities (entity_type, buckets) VALUES (?, ?)")) {
+                "INSERT INTO entity_type_configs (entity_type, bucket_count) VALUES (?, ?)")) {
             ps.setString(1, ENTITY_TYPE);
             ps.setInt(2, 64);
             ps.executeUpdate();
@@ -63,19 +58,7 @@ class CompactionServiceTest {
 
         JoxetteProperties props = testProperties();
 
-        // ConfigRepository needs a RecordingCoordinator.  We use a real one
-        // pointed at a non-existent Kafka broker so it never actually connects;
-        // no topics are in the DB so startTopic() is never called from initialize().
-        // This avoids Mockito's ByteBuddy instrumentation, which fails when Jox
-        // classes compiled with an older Java preview version are on the classpath.
-        Map<String, Object> kafkaProps = new HashMap<>();
-        kafkaProps.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:9999");
-        kafkaProps.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
-        kafkaProps.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class);
-        kafkaProps.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
-
-        RecordingCoordinator coordinator = new RecordingCoordinator(props, kafkaProps, duckDB);
-        configRepo = new ConfigRepository(duckDB, props, coordinator);
+        configRepo = new ConfigRepository(duckDB, props);
         service = new CompactionService(duckDB, props, configRepo);
     }
 
@@ -224,13 +207,13 @@ class CompactionServiceTest {
         int rows = 10;
         insertEntityRows(rows);
 
-        long countBefore = DuckDBTestSupport.countRows(duckDB, "lake.entity_" + ENTITY_TYPE);
+        long countBefore = DuckDBTestSupport.countRows(duckDB, "lake.main.entity_" + ENTITY_TYPE);
         assertThat(countBefore).isEqualTo(rows);
 
         CompactionRun run = service.beginRun("test", List.of(ENTITY_TYPE));
         service.executeRun(run.id(), List.of(ENTITY_TYPE));
 
-        long countAfter = DuckDBTestSupport.countRows(duckDB, "lake.entity_" + ENTITY_TYPE);
+        long countAfter = DuckDBTestSupport.countRows(duckDB, "lake.main.entity_" + ENTITY_TYPE);
         assertThat(countAfter).isEqualTo(rows);
     }
 
@@ -239,13 +222,14 @@ class CompactionServiceTest {
         int rows = 8;
         insertCassetteRows(rows);
 
-        long countBefore = DuckDBTestSupport.countRows(duckDB, "lake.cassette");
+        // insertCassetteRows uses topic "orders.events" → table lake.main.general_orders_events
+        long countBefore = DuckDBTestSupport.countRows(duckDB, "lake.main.general_orders_events");
         assertThat(countBefore).isEqualTo(rows);
 
         CompactionRun run = service.beginRun("test", null);
         service.executeRun(run.id(), null);
 
-        long countAfter = DuckDBTestSupport.countRows(duckDB, "lake.cassette");
+        long countAfter = DuckDBTestSupport.countRows(duckDB, "lake.main.general_orders_events");
         assertThat(countAfter).isEqualTo(rows);
     }
 
@@ -286,7 +270,7 @@ class CompactionServiceTest {
         Instant ts = Instant.parse("2020-01-01T00:00:00Z"); // cold data
         for (int i = 0; i < count; i++) {
             DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE,
-                    "ORD-" + i, i % 64,
+                    "ORD-" + i, i % 64, "order",
                     "orders.events", 0, i,
                     ts, ts,
                     "k" + i, ("v" + i).getBytes());

@@ -62,6 +62,13 @@ public class SchemaManager {
 
         createConfigTables(conn);
         registerMacros(conn);
+
+        if (!isCatalogAttached(conn, catalog)) {
+            throw new SQLException(
+                "DuckLake catalog '" + catalog + "' is not attached. " +
+                "Check that the ducklake extension loaded successfully and that the ATTACH statement " +
+                "in DuckLakeManager did not fail silently (look for earlier WARN/ERROR log lines).");
+        }
         createLakeTables(conn, catalog);
 
         log.info("Schema initialisation complete");
@@ -75,20 +82,60 @@ public class SchemaManager {
      * Tests whether VARIANT survives a full DuckLake write/read round-trip.
      * Creates a temporary DuckLake probe table, inserts one row, reads it back,
      * and drops the table.  Returns {@code false} on any failure.
+     *
+     * <p>The catalog is verified to exist before any DDL is attempted.  If the catalog
+     * is absent (e.g. ATTACH failed silently), the method returns {@code false}
+     * immediately without issuing any SQL against the catalog, avoiding the DuckDB
+     * "pending query" connection-corruption that occurs when a statement against a
+     * non-existent catalog fails.
+     *
+     * <p>On any other failure the connection is reset via {@link Connection#rollback()}
+     * to clear the pending-query flag before returning.
      */
     private boolean probeVariant(Connection conn, String catalog) {
+        // Guard: verify the catalog is actually attached before issuing any DDL against it.
+        if (!isCatalogAttached(conn, catalog)) {
+            log.warn("DuckLake catalog '{}' is not attached; skipping VARIANT probe, falling back to JSON", catalog);
+            return false;
+        }
+
         String probeTable = catalog + ".main.__variant_probe";
-        try (Statement stmt = conn.createStatement()) {
-            stmt.execute("CREATE TABLE " + probeTable + " (v VARIANT)");
-            stmt.execute("INSERT INTO " + probeTable + " VALUES ('{\"probe\":true}'::VARIANT)");
-            stmt.execute("SELECT v FROM " + probeTable);
-            stmt.execute("DROP TABLE " + probeTable);
+        try {
+            exec(conn, "DROP TABLE IF EXISTS " + probeTable);
+            exec(conn, "CREATE TABLE " + probeTable + " (v VARIANT)");
+            exec(conn, "INSERT INTO " + probeTable + " VALUES ('{\"probe\":true}'::VARIANT)");
+            try (Statement stmt = conn.createStatement();
+                 var rs = stmt.executeQuery("SELECT v FROM " + probeTable)) {
+                // consume result set so the connection is not left in a pending state
+                rs.next();
+            }
+            exec(conn, "DROP TABLE IF EXISTS " + probeTable);
             return true;
         } catch (SQLException e) {
             log.warn("VARIANT probe failed ({}); falling back to JSON for flexible columns", e.getMessage());
-            try (Statement cleanup = conn.createStatement()) {
-                cleanup.execute("DROP TABLE IF EXISTS " + probeTable);
-            } catch (SQLException ignored) {}
+            // Reset DuckDB connection state – a failed statement leaves a "pending query"
+            // error on the connection that will break every subsequent execute() call.
+            try {
+                conn.rollback();
+            } catch (SQLException rollbackEx) {
+                log.debug("Rollback after VARIANT probe failed: {}", rollbackEx.getMessage());
+            }
+            return false;
+        }
+    }
+
+    /**
+     * Returns {@code true} if {@code catalogName} appears in {@code duckdb_databases()}.
+     * Uses a fresh {@link Statement} so a failure here cannot leave a pending-query state
+     * that would corrupt subsequent DDL on the shared connection.
+     */
+    private boolean isCatalogAttached(Connection conn, String catalogName) {
+        try (Statement stmt = conn.createStatement();
+             var rs = stmt.executeQuery(
+                 "SELECT database_name FROM duckdb_databases() WHERE database_name = '" + catalogName + "'")) {
+            return rs.next();
+        } catch (SQLException e) {
+            log.debug("Could not query duckdb_databases(): {}", e.getMessage());
             return false;
         }
     }
@@ -105,6 +152,7 @@ public class SchemaManager {
                     topic      VARCHAR PRIMARY KEY,
                     mode       VARCHAR NOT NULL
                                  CHECK (mode IN ('general', 'entity_only', 'both')),
+                    paused     BOOLEAN NOT NULL DEFAULT false,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
                 )
@@ -122,15 +170,45 @@ public class SchemaManager {
 
             stmt.execute("""
                 CREATE TABLE IF NOT EXISTS entity_source_mappings (
-                    id                   INTEGER PRIMARY KEY
-                                           DEFAULT nextval('seq_entity_source_mappings'),
-                    entity_type          VARCHAR NOT NULL,
-                    topic                VARCHAR NOT NULL,
-                    entity_id_source     VARCHAR NOT NULL
-                                           CHECK (entity_id_source IN ('key', 'value', 'headers')),
-                    entity_id_expression VARCHAR NOT NULL,
-                    created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    id          INTEGER PRIMARY KEY
+                                  DEFAULT nextval('seq_entity_source_mappings'),
+                    entity_type VARCHAR NOT NULL,
+                    topic       VARCHAR NOT NULL,
+                    mode        VARCHAR NOT NULL DEFAULT 'entity_only'
+                                  CHECK (mode IN ('entity_only', 'both')),
+                    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
                     UNIQUE (entity_type, topic)
+                )
+                """);
+
+            stmt.execute("CREATE SEQUENCE IF NOT EXISTS seq_entity_source_matchers START 1");
+
+            // Each source mapping can have multiple matchers — one per message variant
+            // that carries the entity ID (e.g. marketSet, resultSet, coverage all carry
+            // fixtureId for the same logical fixture entity).
+            stmt.execute("""
+                CREATE TABLE IF NOT EXISTS entity_source_matchers (
+                    id           INTEGER PRIMARY KEY
+                                   DEFAULT nextval('seq_entity_source_matchers'),
+                    entity_type  VARCHAR NOT NULL,
+                    topic        VARCHAR NOT NULL,
+                    message_type VARCHAR NOT NULL,
+                    id_source    VARCHAR NOT NULL
+                                   CHECK (id_source IN ('key', 'value', 'headers')),
+                    id_expression VARCHAR,
+                    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    UNIQUE (entity_type, topic, message_type)
+                )
+                """);
+
+            // Known-entities registry: plain DuckDB so ON CONFLICT is enforced.
+            stmt.execute("""
+                CREATE TABLE IF NOT EXISTS known_entities (
+                    entity_type  VARCHAR NOT NULL,
+                    entity_id    VARCHAR NOT NULL,
+                    first_seen   TIMESTAMPTZ NOT NULL,
+                    last_seen    TIMESTAMPTZ NOT NULL,
+                    PRIMARY KEY (entity_type, entity_id)
                 )
                 """);
 
@@ -138,19 +216,31 @@ public class SchemaManager {
 
             stmt.execute("""
                 CREATE TABLE IF NOT EXISTS compaction_history (
-                    id           INTEGER PRIMARY KEY
-                                   DEFAULT nextval('seq_compaction_history'),
-                    table_name   VARCHAR NOT NULL,
-                    started_at   TIMESTAMPTZ NOT NULL,
-                    completed_at TIMESTAMPTZ,
-                    files_before INTEGER,
-                    files_after  INTEGER,
-                    bytes_before BIGINT,
-                    bytes_after  BIGINT,
-                    status       VARCHAR NOT NULL
-                                   CHECK (status IN ('running', 'completed', 'failed'))
+                    id              INTEGER PRIMARY KEY
+                                      DEFAULT nextval('seq_compaction_history'),
+                    started_at      TIMESTAMPTZ NOT NULL,
+                    completed_at    TIMESTAMPTZ,
+                    status          VARCHAR NOT NULL
+                                      CHECK (status IN ('running', 'completed', 'failed')),
+                    triggered_by    VARCHAR NOT NULL DEFAULT 'unknown',
+                    targets         VARCHAR[],
+                    entity_buckets_compacted     INTEGER NOT NULL DEFAULT 0,
+                    general_partitions_compacted INTEGER NOT NULL DEFAULT 0,
+                    error_message   VARCHAR
                 )
                 """);
+
+            stmt.execute("""
+                CREATE TABLE IF NOT EXISTS snapshots (
+                    name        VARCHAR     NOT NULL PRIMARY KEY,
+                    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    size_bytes  BIGINT
+                )
+                """);
+
+            // Migration: add columns introduced after the initial lake-schema version.
+            // ALTER TABLE ADD COLUMN IF NOT EXISTS is idempotent.
+            migrateCompactionHistory(conn);
 
             log.debug("Config tables ready");
         }
@@ -210,8 +300,6 @@ public class SchemaManager {
     private void createLakeTables(Connection conn, String catalog) throws SQLException {
         String flexType = variantSupported ? "VARIANT" : "JSON";
 
-        createKnownEntitiesTable(conn, catalog);
-
         List<TopicEntry> topics = properties.getBootstrap().getTopics();
         if (topics != null) {
             for (TopicEntry t : topics) {
@@ -233,24 +321,6 @@ public class SchemaManager {
     }
 
     /**
-     * Stores all entities seen across all entity types.
-     * Append-only (no primary key) because DuckLake tables are columnar.
-     * Deduplication is handled at query time or via compaction.
-     */
-    private void createKnownEntitiesTable(Connection conn, String catalog) throws SQLException {
-        exec(conn, String.format("""
-            CREATE TABLE IF NOT EXISTS %s.main.known_entities (
-                entity_type VARCHAR NOT NULL,
-                entity_id   VARCHAR NOT NULL,
-                bucket      INTEGER NOT NULL,
-                first_seen  TIMESTAMPTZ NOT NULL,
-                last_seen   TIMESTAMPTZ NOT NULL
-            )
-            """, catalog));
-        log.debug("DuckLake table ready: {}.main.known_entities", catalog);
-    }
-
-    /**
      * Records every raw Kafka message from a topic verbatim.
      * {@code metadata} holds any decoded JSON/VARIANT envelope for ad-hoc queries.
      */
@@ -267,7 +337,7 @@ public class SchemaManager {
                 kafka_value     BLOB,
                 kafka_value_str VARCHAR,
                 metadata        %s,
-                headers         STRUCT(key VARCHAR, value BLOB)[]
+                headers         STRUCT(key VARCHAR, value VARCHAR)[]
             )
             """, catalog, tableName, flexType));
         log.debug("DuckLake table ready: {}.main.{}", catalog, tableName);
@@ -285,6 +355,7 @@ public class SchemaManager {
                 recorded_at     TIMESTAMPTZ NOT NULL,
                 entity_id       VARCHAR     NOT NULL,
                 bucket          INTEGER     NOT NULL,
+                message_type    VARCHAR,
                 topic           VARCHAR     NOT NULL,
                 kafka_offset    BIGINT      NOT NULL,
                 kafka_partition INTEGER     NOT NULL,
@@ -293,15 +364,80 @@ public class SchemaManager {
                 kafka_value     BLOB,
                 kafka_value_str VARCHAR,
                 metadata        %s,
-                headers         STRUCT(key VARCHAR, value BLOB)[]
+                headers         STRUCT(key VARCHAR, value VARCHAR)[]
             )
             """, catalog, tableName, flexType));
         log.debug("DuckLake table ready: {}.main.{}", catalog, tableName);
     }
 
     // -------------------------------------------------------------------------
+    // Dynamic entity table management (called at runtime from EntityController)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Creates the {@code <catalog>.main.entity_{type}} cassette table if it does not
+     * yet exist. Idempotent – safe to call when the table already exists.
+     */
+    public void createEntityTable(String type) throws SQLException {
+        validateEntityType(type);
+        Connection conn   = duckLakeManager.getConnection();
+        String    catalog = duckLakeManager.getCatalogName();
+        String    flexType = variantSupported ? "VARIANT" : "JSON";
+        createEntityCassetteTable(conn, catalog, "entity_" + type, flexType);
+        log.info("Entity cassette table created/verified: {}.main.entity_{}", catalog, type);
+    }
+
+    /**
+     * Drops the {@code <catalog>.main.entity_{type}} cassette table.
+     * Destructive and irreversible – callers must confirm intent before invoking.
+     */
+    public void dropEntityTable(String type) throws SQLException {
+        validateEntityType(type);
+        Connection conn   = duckLakeManager.getConnection();
+        String    catalog = duckLakeManager.getCatalogName();
+        exec(conn, "DROP TABLE IF EXISTS " + catalog + ".main.entity_" + type);
+        log.info("Entity cassette table dropped: {}.main.entity_{}", catalog, type);
+    }
+
+    /**
+     * Guards against SQL injection in dynamically constructed table names.
+     * Entity type names must match {@code [a-z][a-z0-9_]*}.
+     */
+    public static void validateEntityType(String type) {
+        if (type == null || !type.matches("[a-z][a-z0-9_]*")) {
+            throw new IllegalArgumentException(
+                "Invalid entity type name '%s': must match [a-z][a-z0-9_]*".formatted(type));
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
+
+    /**
+     * Idempotent migration: adds columns to {@code compaction_history} that did
+     * not exist in the original lake-schema version of the table.
+     * Each ALTER TABLE is attempted individually; failures are swallowed so a
+     * column that already exists does not abort startup.
+     */
+    private void migrateCompactionHistory(Connection conn) {
+        String[][] migrations = {
+            { "triggered_by",    "ALTER TABLE compaction_history ADD COLUMN triggered_by VARCHAR NOT NULL DEFAULT 'unknown'" },
+            { "targets",         "ALTER TABLE compaction_history ADD COLUMN targets VARCHAR[]" },
+            { "entity_buckets_compacted",     "ALTER TABLE compaction_history ADD COLUMN entity_buckets_compacted INTEGER NOT NULL DEFAULT 0" },
+            { "general_partitions_compacted", "ALTER TABLE compaction_history ADD COLUMN general_partitions_compacted INTEGER NOT NULL DEFAULT 0" },
+            { "error_message",   "ALTER TABLE compaction_history ADD COLUMN error_message VARCHAR" },
+        };
+        for (String[] m : migrations) {
+            try (Statement st = conn.createStatement()) {
+                st.execute(m[1]);
+                log.debug("compaction_history migration applied: {}", m[0]);
+            } catch (SQLException e) {
+                // Column already exists or DDL not supported — safe to skip
+                log.debug("compaction_history migration skipped ({}): {}", m[0], e.getMessage());
+            }
+        }
+    }
 
     private void exec(Connection conn, String sql) throws SQLException {
         try (Statement stmt = conn.createStatement()) {

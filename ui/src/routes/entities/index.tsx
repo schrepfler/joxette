@@ -8,7 +8,7 @@ import {
 } from '@tanstack/react-table'
 import { useForm } from '@tanstack/react-form'
 import { useState } from 'react'
-import { entitiesApi, type EntityTypeConfig, type CreateEntityRequest } from '../../api/client'
+import { entitiesApi, cassettesApi, type EntityTypeConfig, type CreateEntityRequest } from '../../api/client'
 import { Layout } from '../../components/Layout'
 import { LoadingSpinner } from '../../components/LoadingSpinner'
 import { ErrorMessage } from '../../components/ErrorMessage'
@@ -85,12 +85,19 @@ function EntitiesPage() {
   const { addToast } = useToast()
   const [showAdd, setShowAdd] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  const [confirmRebuild, setConfirmRebuild] = useState(false)
 
   const { data, isLoading, error } = useQuery({ queryKey: ['entities'], queryFn: entitiesApi.list })
 
   const deleteMutation = useMutation({
     mutationFn: (type: string) => entitiesApi.delete(type),
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ['entities'] }); addToast('Entity type deleted', 'success') },
+    onError: (e: Error) => addToast(e.message, 'error'),
+  })
+
+  const rebuildMutation = useMutation({
+    mutationFn: () => cassettesApi.rebuildKnownEntities(),
+    onSuccess: (d) => addToast(`Rebuilt ${d.rebuilt.toLocaleString()} entity rows`, 'success'),
     onError: (e: Error) => addToast(e.message, 'error'),
   })
 
@@ -118,7 +125,17 @@ function EntitiesPage() {
     <Layout>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
         <h1 style={pageTitle}>Entities</h1>
-        <button style={primaryBtnStyle} onClick={() => setShowAdd(true)}>+ Add Entity Type</button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button
+            style={{ ...primaryBtnStyle, background: '#dd6b20' }}
+            onClick={() => setConfirmRebuild(true)}
+            disabled={rebuildMutation.isPending}
+            title="Rebuild known_entities registry from cassette data on object storage"
+          >
+            {rebuildMutation.isPending ? 'Rebuilding…' : '⟳ Rebuild Known Entities'}
+          </button>
+          <button style={primaryBtnStyle} onClick={() => setShowAdd(true)}>+ Add Entity Type</button>
+        </div>
       </div>
       {isLoading && <LoadingSpinner />}
       {error && <ErrorMessage message={(error as Error).message} />}
@@ -147,6 +164,13 @@ function EntitiesPage() {
         </table>
       )}
       {showAdd && <AddEntityModal onClose={() => setShowAdd(false)} />}
+      {confirmRebuild && (
+        <ConfirmDialog
+          message="Rebuild the known_entities registry from all entity cassette tables? This will delete all existing registry rows and re-scan the cassette data. Use this to recover after losing the catalog file."
+          onConfirm={() => { rebuildMutation.mutate(); setConfirmRebuild(false) }}
+          onCancel={() => setConfirmRebuild(false)}
+        />
+      )}
       {confirmDelete && (
         <ConfirmDialog
           message={`Delete entity type "${confirmDelete}"?`}

@@ -138,7 +138,6 @@ function EntityTypeDetailPage() {
 
   const entityColumns = [
     entityColHelper.accessor('entityId', { header: 'Entity ID' }),
-    entityColHelper.accessor('entityBucket', { header: 'Bucket' }),
     entityColHelper.accessor('firstSeen', { header: 'First Seen', cell: i => i.getValue().slice(0, 19).replace('T', ' ') }),
     entityColHelper.accessor('lastSeen', { header: 'Last Seen', cell: i => i.getValue().slice(0, 19).replace('T', ' ') }),
   ]

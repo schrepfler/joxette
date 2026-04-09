@@ -67,7 +67,6 @@ class EntityReplayServiceTest {
         assertThat(page.data()).hasSize(1);
         EntityRecord r = page.data().get(0);
         assertThat(r.entityId()).isEqualTo("ORD-1");
-        assertThat(r.entityBucket()).isEqualTo(42);
         assertThat(r.topic()).isEqualTo("orders.events");
         assertThat(r.offset()).isEqualTo(0L);
         assertThat(Base64.getUrlDecoder().decode(r.value()))
@@ -319,7 +318,7 @@ class EntityReplayServiceTest {
     private void insertEntityRowAt(String entityId, int bucket, String topic,
             int partition, long offset, Instant timestamp, Instant recordedAt, byte[] value)
             throws Exception {
-        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, entityId, bucket,
+        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, entityId, bucket, "testEvent",
                 topic, partition, offset, timestamp, recordedAt, entityId, value);
     }
 
@@ -327,16 +326,15 @@ class EntityReplayServiceTest {
             String firstSeen) throws Exception {
         Instant fs = Instant.parse(firstSeen);
         try (PreparedStatement ps = duckDB.prepareStatement("""
-                INSERT INTO lake.known_entities
-                    (entity_type, entity_id, entity_bucket, first_seen, last_seen)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO known_entities
+                    (entity_type, entity_id, first_seen, last_seen)
+                VALUES (?, ?, ?, ?)
                 ON CONFLICT DO NOTHING
                 """)) {
             ps.setString(1, entityType);
             ps.setString(2, entityId);
-            ps.setInt(3, bucket);
+            ps.setTimestamp(3, Timestamp.from(fs));
             ps.setTimestamp(4, Timestamp.from(fs));
-            ps.setTimestamp(5, Timestamp.from(fs));
             ps.executeUpdate();
         }
     }

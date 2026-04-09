@@ -1,17 +1,19 @@
 package com.joxette.model;
 
 /**
- * Domain model that maps a Kafka topic to an entity type, describing how
- * to extract the entity ID from each message.
+ * Domain model that maps a Kafka topic to an entity type, describing the
+ * recording mode for each source.
  *
- * @param entityType          the entity type this mapping belongs to
- * @param topic               the Kafka topic to consume
- * @param entityIdSource      where to extract the entity ID from: "key", "value", or "header"
- * @param entityIdExpression  JSONPath expression applied to {@code entityIdSource}
+ * <p>The per-message-type ID extraction rules (formerly {@code entityIdSource}
+ * and {@code entityIdExpression}) were moved to {@code entity_source_matchers}
+ * and are no longer part of this mapping record.
+ *
+ * @param entityType  the entity type this mapping belongs to
+ * @param topic       the Kafka topic to consume
+ * @param mode        recording mode: "entity_only" or "both"
  */
 public record EntitySourceMapping(
         String entityType,
         String topic,
-        String entityIdSource,
-        String entityIdExpression
+        String mode
 ) {}

@@ -8,10 +8,31 @@ import java.time.Instant;
 /**
  * Utility for creating and seeding an in-memory DuckDB connection in tests.
  *
- * <p>Each call to {@link #newConnection()} returns a fresh, isolated in-memory
- * database with the full schema already applied.  Tests should close the
- * returned connection in {@code @AfterEach} / try-with-resources to release
- * DuckDB resources promptly.
+ * <h2>Schema layout</h2>
+ * <p>Matches production exactly:
+ * <ul>
+ *   <li>A secondary in-memory DuckDB database is ATTACHed as {@code lake}, giving
+ *       three-part name support: {@code lake.main.<table>}.</li>
+ *   <li>Config and compaction tables ({@code topic_configs}, {@code entity_type_configs},
+ *       {@code entity_source_mappings}, {@code entity_source_matchers},
+ *       {@code known_entities}, {@code compaction_history}, {@code snapshots}) live in
+ *       the primary connection's {@code main} schema — matching
+ *       {@code SchemaManager.createConfigTables()}.</li>
+ *   <li>Cassette tables ({@code general_{topic}}, {@code entity_{type}}) live in
+ *       {@code lake.main} — matching {@code SchemaManager.createGeneralCassetteTable()}
+ *       and {@code SchemaManager.createEntityCassetteTable()}.</li>
+ * </ul>
+ *
+ * <h2>Column types</h2>
+ * <ul>
+ *   <li>{@code headers} is {@code STRUCT(key VARCHAR, value VARCHAR)[]} — UTF-8 strings,
+ *       matching the production write path in {@code CassetteBatchWriter}.</li>
+ *   <li>{@code kafka_value} / {@code kafka_key} are {@code BLOB} / {@code VARCHAR} as
+ *       in production.</li>
+ * </ul>
+ *
+ * <p>Each call to {@link #newConnection()} returns a fresh, isolated pair of
+ * in-memory databases.  Close the connection in {@code @AfterEach} to release resources.
  */
 public final class DuckDBTestSupport {
 
@@ -22,11 +43,17 @@ public final class DuckDBTestSupport {
     // -------------------------------------------------------------------------
 
     /**
-     * Opens a new in-memory DuckDB connection, registers header macros, and
-     * creates the full lake schema.
+     * Opens a new in-memory DuckDB connection, attaches a second in-memory database
+     * as {@code lake}, registers header macros, and creates all tables matching the
+     * production schema.
      */
     public static Connection newConnection() throws SQLException {
         Connection conn = DriverManager.getConnection("jdbc:duckdb:");
+        // Attach a second in-memory DB as 'lake' so three-part names (lake.main.*)
+        // resolve correctly — mirroring how DuckLake is attached in production.
+        try (Statement st = conn.createStatement()) {
+            st.execute("ATTACH ':memory:' AS lake");
+        }
         HeadersHelper.registerMacros(conn);
         initSchema(conn);
         return conn;
@@ -36,102 +63,148 @@ public final class DuckDBTestSupport {
     // Schema DDL
     // -------------------------------------------------------------------------
 
-    /** Creates all lake.* tables in the supplied connection. */
+    /**
+     * Creates all tables in the supplied connection, matching the production schema
+     * created by {@code SchemaManager}.
+     *
+     * <p>Config tables go in {@code main} (plain DuckDB).
+     * Cassette tables go in {@code lake.main} (simulates DuckLake).
+     */
     public static void initSchema(Connection conn) throws SQLException {
         try (Statement st = conn.createStatement()) {
-            st.execute("CREATE SCHEMA IF NOT EXISTS lake");
 
-            // General cassette — no PRIMARY KEY so deduplication tests can insert
-            // duplicate (topic, partition, offset) rows, matching DuckDB's behaviour
-            // in older versions where PK uniqueness was not enforced.
-            // Deduplication is handled at query time via QUALIFY ROW_NUMBER().
+            // -----------------------------------------------------------------
+            // Config tables — main schema (plain DuckDB, unqualified)
+            // -----------------------------------------------------------------
+
             st.execute("""
-                    CREATE TABLE IF NOT EXISTS lake.cassette (
-                        topic        VARCHAR      NOT NULL,
-                        partition    INTEGER      NOT NULL,
-                        "offset"     BIGINT       NOT NULL,
-                        timestamp    TIMESTAMPTZ  NOT NULL,
-                        recorded_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
-                        key          VARCHAR,
-                        value        BLOB,
-                        headers      STRUCT(key VARCHAR, value BLOB)[]
+                    CREATE TABLE IF NOT EXISTS topic_configs (
+                        topic      VARCHAR PRIMARY KEY,
+                        mode       VARCHAR NOT NULL DEFAULT 'general',
+                        paused     BOOLEAN NOT NULL DEFAULT false,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
                     )""");
 
-            // Entity registry
             st.execute("""
-                    CREATE TABLE IF NOT EXISTS lake.known_entities (
-                        entity_type   VARCHAR      NOT NULL,
-                        entity_id     VARCHAR      NOT NULL,
-                        entity_bucket INTEGER      NOT NULL,
-                        first_seen    TIMESTAMPTZ  NOT NULL,
-                        last_seen     TIMESTAMPTZ  NOT NULL,
+                    CREATE TABLE IF NOT EXISTS entity_type_configs (
+                        entity_type  VARCHAR PRIMARY KEY,
+                        bucket_count INTEGER NOT NULL DEFAULT 256,
+                        created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+                    )""");
+
+            st.execute("CREATE SEQUENCE IF NOT EXISTS seq_entity_source_mappings START 1");
+            st.execute("""
+                    CREATE TABLE IF NOT EXISTS entity_source_mappings (
+                        id          INTEGER PRIMARY KEY
+                                      DEFAULT nextval('seq_entity_source_mappings'),
+                        entity_type VARCHAR NOT NULL,
+                        topic       VARCHAR NOT NULL,
+                        mode        VARCHAR NOT NULL DEFAULT 'entity_only',
+                        created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        UNIQUE (entity_type, topic)
+                    )""");
+
+            st.execute("CREATE SEQUENCE IF NOT EXISTS seq_entity_source_matchers START 1");
+            st.execute("""
+                    CREATE TABLE IF NOT EXISTS entity_source_matchers (
+                        id           INTEGER PRIMARY KEY
+                                       DEFAULT nextval('seq_entity_source_matchers'),
+                        entity_type  VARCHAR NOT NULL,
+                        topic        VARCHAR NOT NULL,
+                        message_type VARCHAR NOT NULL,
+                        id_source    VARCHAR NOT NULL DEFAULT 'value',
+                        id_expression VARCHAR,
+                        created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        UNIQUE (entity_type, topic, message_type)
+                    )""");
+
+            // Known-entities registry: plain DuckDB in main so ON CONFLICT is enforced
+            st.execute("""
+                    CREATE TABLE IF NOT EXISTS known_entities (
+                        entity_type  VARCHAR NOT NULL,
+                        entity_id    VARCHAR NOT NULL,
+                        first_seen   TIMESTAMPTZ NOT NULL,
+                        last_seen    TIMESTAMPTZ NOT NULL,
                         PRIMARY KEY (entity_type, entity_id)
                     )""");
 
-            // Config tables
+            st.execute("CREATE SEQUENCE IF NOT EXISTS seq_compaction_history START 1");
             st.execute("""
-                    CREATE TABLE IF NOT EXISTS lake.config_topics (
-                        topic  VARCHAR NOT NULL PRIMARY KEY,
-                        mode   VARCHAR NOT NULL DEFAULT 'general',
-                        paused BOOLEAN NOT NULL DEFAULT FALSE
-                    )""");
-            st.execute("""
-                    CREATE TABLE IF NOT EXISTS lake.config_entities (
-                        entity_type VARCHAR  NOT NULL PRIMARY KEY,
-                        buckets     INTEGER  NOT NULL DEFAULT 256
-                    )""");
-            st.execute("""
-                    CREATE TABLE IF NOT EXISTS lake.config_entity_sources (
-                        entity_type   VARCHAR NOT NULL,
-                        topic         VARCHAR NOT NULL,
-                        id_source     VARCHAR NOT NULL DEFAULT 'value',
-                        id_expression VARCHAR,
-                        PRIMARY KEY (entity_type, topic)
-                    )""");
-
-            // Snapshot and compaction tables
-            st.execute("""
-                    CREATE TABLE IF NOT EXISTS lake.snapshots (
-                        name        VARCHAR     NOT NULL PRIMARY KEY,
-                        created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-                        size_bytes  BIGINT
-                    )""");
-            st.execute("CREATE SEQUENCE IF NOT EXISTS lake.compaction_history_id_seq START 1");
-            st.execute("""
-                    CREATE TABLE IF NOT EXISTS lake.compaction_history (
-                        id              BIGINT      DEFAULT nextval('lake.compaction_history_id_seq') PRIMARY KEY,
+                    CREATE TABLE IF NOT EXISTS compaction_history (
+                        id              INTEGER PRIMARY KEY
+                                          DEFAULT nextval('seq_compaction_history'),
                         started_at      TIMESTAMPTZ NOT NULL,
                         completed_at    TIMESTAMPTZ,
-                        status          VARCHAR     NOT NULL,
-                        triggered_by    VARCHAR     NOT NULL,
+                        status          VARCHAR NOT NULL,
+                        triggered_by    VARCHAR NOT NULL DEFAULT 'unknown',
                         targets         VARCHAR[],
                         entity_buckets_compacted     INTEGER NOT NULL DEFAULT 0,
                         general_partitions_compacted INTEGER NOT NULL DEFAULT 0,
                         error_message   VARCHAR
                     )""");
+
+            st.execute("""
+                    CREATE TABLE IF NOT EXISTS snapshots (
+                        name        VARCHAR     NOT NULL PRIMARY KEY,
+                        created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        size_bytes  BIGINT
+                    )""");
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // DuckLake-schema cassette tables (lake.main.*)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Creates the general cassette table {@code lake.main.general_{normalizedTopic}}.
+     *
+     * <p>Column names and types match {@code SchemaManager.createGeneralCassetteTable()}.
+     * No PRIMARY KEY — deduplication is handled at query time via QUALIFY ROW_NUMBER().
+     */
+    public static void createGeneralCassetteTable(Connection conn, String topic) throws SQLException {
+        String tableName = "general_" + normalizeTopicName(topic);
+        try (Statement st = conn.createStatement()) {
+            st.execute(String.format("""
+                    CREATE TABLE IF NOT EXISTS lake.main.%s (
+                        recorded_at     TIMESTAMPTZ NOT NULL,
+                        kafka_offset    BIGINT      NOT NULL,
+                        kafka_partition INTEGER     NOT NULL,
+                        kafka_timestamp TIMESTAMPTZ NOT NULL,
+                        kafka_key       VARCHAR,
+                        kafka_value     BLOB,
+                        kafka_value_str VARCHAR,
+                        metadata        VARCHAR,
+                        headers         STRUCT(key VARCHAR, value VARCHAR)[]
+                    )""", tableName));
         }
     }
 
     /**
-     * Creates the {@code lake.entity_{type}} cassette table.
-     * No PRIMARY KEY so deduplication tests can insert duplicate source offsets;
-     * deduplication happens at query time via QUALIFY ROW_NUMBER().
+     * Creates the entity cassette table {@code lake.main.entity_{type}}.
+     *
+     * <p>Column names and types match {@code SchemaManager.createEntityCassetteTable()}.
+     * No PRIMARY KEY — deduplication at query time via QUALIFY ROW_NUMBER().
      */
     public static void createEntityTable(Connection conn, String type) throws SQLException {
         try (Statement st = conn.createStatement()) {
-            st.execute("""
-                    CREATE TABLE IF NOT EXISTS lake.entity_%s (
-                        entity_id     VARCHAR      NOT NULL,
-                        entity_bucket INTEGER      NOT NULL,
-                        topic         VARCHAR      NOT NULL,
-                        partition     INTEGER      NOT NULL,
-                        "offset"      BIGINT       NOT NULL,
-                        timestamp     TIMESTAMPTZ  NOT NULL,
-                        recorded_at   TIMESTAMPTZ  NOT NULL DEFAULT now(),
-                        key           VARCHAR,
-                        value         BLOB,
-                        headers       STRUCT(key VARCHAR, value BLOB)[]
-                    )""".formatted(type));
+            st.execute(String.format("""
+                    CREATE TABLE IF NOT EXISTS lake.main.entity_%s (
+                        recorded_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        entity_id       VARCHAR     NOT NULL,
+                        bucket          INTEGER     NOT NULL,
+                        message_type    VARCHAR,
+                        topic           VARCHAR     NOT NULL,
+                        kafka_offset    BIGINT      NOT NULL,
+                        kafka_partition INTEGER     NOT NULL,
+                        kafka_timestamp TIMESTAMPTZ NOT NULL,
+                        kafka_key       VARCHAR,
+                        kafka_value     BLOB,
+                        kafka_value_str VARCHAR,
+                        metadata        VARCHAR,
+                        headers         STRUCT(key VARCHAR, value VARCHAR)[]
+                    )""", type));
         }
     }
 
@@ -140,63 +213,78 @@ public final class DuckDBTestSupport {
     // -------------------------------------------------------------------------
 
     /**
-     * Inserts a row into {@code lake.cassette}.
-     * DuckDB does not enforce PK uniqueness, so the same
-     * {@code (topic, partition, offset)} can be inserted multiple times
-     * (useful for deduplication tests).
+     * Inserts a row into {@code lake.main.general_{normalizedTopic}}.
+     *
+     * <p>Column names match the production schema:
+     * {@code kafka_partition}, {@code kafka_offset}, {@code kafka_timestamp},
+     * {@code kafka_key}, {@code kafka_value}.
      */
     public static void insertCassetteRow(Connection conn,
             String topic, int partition, long offset,
             Instant timestamp, Instant recordedAt,
             String key, byte[] value) throws SQLException {
-        try (PreparedStatement ps = conn.prepareStatement("""
-                INSERT INTO lake.cassette
-                    (topic, partition, "offset", timestamp, recorded_at, key, value, headers)
-                VALUES (?, ?, ?, ?, ?, ?, ?, [])
-                """)) {
-            ps.setString(1, topic);
-            ps.setInt(2, partition);
-            ps.setLong(3, offset);
+        String tableName = "lake.main.general_" + normalizeTopicName(topic);
+        try (PreparedStatement ps = conn.prepareStatement(String.format("""
+                INSERT INTO %s
+                    (recorded_at, kafka_offset, kafka_partition, kafka_timestamp,
+                     kafka_key, kafka_value, kafka_value_str, metadata, headers)
+                VALUES (?, ?, ?, ?, ?, ?, ?, NULL, [])
+                """, tableName))) {
+            ps.setTimestamp(1, Timestamp.from(recordedAt));
+            ps.setLong(2, offset);
+            ps.setInt(3, partition);
             ps.setTimestamp(4, Timestamp.from(timestamp));
-            ps.setTimestamp(5, Timestamp.from(recordedAt));
-            ps.setString(6, key);
-            ps.setBytes(7, value);
+            ps.setString(5, key);
+            ps.setBytes(6, value);
+            ps.setString(7, value != null ? new String(value) : null);
             ps.executeUpdate();
         }
     }
 
     /**
-     * Inserts a row into {@code lake.entity_{type}}.
+     * Inserts a row into {@code lake.main.entity_{type}}.
      */
     public static void insertEntityRow(Connection conn,
-            String entityType, String entityId, int entityBucket,
+            String entityType, String entityId, int entityBucket, String messageType,
             String topic, int partition, long offset,
             Instant timestamp, Instant recordedAt,
             String key, byte[] value) throws SQLException {
-        try (PreparedStatement ps = conn.prepareStatement("""
-                INSERT INTO lake.entity_%s
-                    (entity_id, entity_bucket, topic, partition, "offset",
-                     timestamp, recorded_at, key, value, headers)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, [])
-                """.formatted(entityType))) {
-            ps.setString(1, entityId);
-            ps.setInt(2, entityBucket);
-            ps.setString(3, topic);
-            ps.setInt(4, partition);
-            ps.setLong(5, offset);
-            ps.setTimestamp(6, Timestamp.from(timestamp));
-            ps.setTimestamp(7, Timestamp.from(recordedAt));
-            ps.setString(8, key);
-            ps.setBytes(9, value);
+        try (PreparedStatement ps = conn.prepareStatement(String.format("""
+                INSERT INTO lake.main.entity_%s
+                    (recorded_at, entity_id, bucket, message_type, topic,
+                     kafka_offset, kafka_partition, kafka_timestamp,
+                     kafka_key, kafka_value, kafka_value_str, metadata, headers)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, [])
+                """, entityType))) {
+            ps.setTimestamp(1, Timestamp.from(recordedAt));
+            ps.setString(2, entityId);
+            ps.setInt(3, entityBucket);
+            ps.setString(4, messageType);
+            ps.setString(5, topic);
+            ps.setLong(6, offset);
+            ps.setInt(7, partition);
+            ps.setTimestamp(8, Timestamp.from(timestamp));
+            ps.setString(9, key);
+            ps.setBytes(10, value);
+            ps.setString(11, value != null ? new String(value) : null);
             ps.executeUpdate();
         }
     }
 
-    /** Counts rows in any lake.* table by name. */
+    /** Counts rows in any table by fully-qualified name (e.g. {@code lake.main.entity_order}). */
     public static long countRows(Connection conn, String qualifiedTable) throws SQLException {
         try (Statement st = conn.createStatement();
              ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM " + qualifiedTable)) {
             return rs.next() ? rs.getLong(1) : 0;
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // Helpers
+    // -------------------------------------------------------------------------
+
+    /** Normalises a topic name to {@code [a-z0-9_]}. */
+    private static String normalizeTopicName(String topic) {
+        return topic.toLowerCase().replaceAll("[^a-z0-9_]", "_");
     }
 }

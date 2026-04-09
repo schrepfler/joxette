@@ -6,19 +6,16 @@ import com.joxette.support.DuckDBTestSupport;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.admin.NewTopic;
-import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
-import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
-import org.apache.kafka.common.serialization.StringDeserializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.web.client.TestRestTemplate;
+import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
@@ -26,6 +23,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.web.client.RestTemplate;
 import org.testcontainers.containers.KafkaContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -79,8 +77,12 @@ class RecordReplayRoundTripIT {
         registry.add("joxette.kafka.bootstrap-servers", kafka::getBootstrapServers);
     }
 
-    @Autowired
-    private TestRestTemplate restTemplate;
+    @LocalServerPort
+    private int port;
+
+    private RestTemplate restTemplate;
+
+    private String baseUrl;
 
     /** Shared DuckDB connection from the Spring context — same instance used by all services. */
     @Autowired
@@ -90,6 +92,8 @@ class RecordReplayRoundTripIT {
 
     @BeforeEach
     void setUp() throws Exception {
+        restTemplate = new RestTemplate();
+        baseUrl = "http://localhost:" + port;
         // Ensure lake.cassette is empty before each test (schema was created by SchemaManager).
         try (Statement st = duckDB.createStatement()) {
             st.execute("DELETE FROM lake.cassette");
@@ -110,7 +114,7 @@ class RecordReplayRoundTripIT {
                 "{\"order_id\":\"ORD-2\"}".getBytes(StandardCharsets.UTF_8));
 
         ResponseEntity<PagedResponse<CassetteRecord>> response = restTemplate.exchange(
-                "/cassettes/topics/" + TEST_TOPIC,
+                baseUrl + "/cassettes/topics/" + TEST_TOPIC,
                 HttpMethod.GET,
                 null,
                 new ParameterizedTypeReference<>() {});
@@ -132,7 +136,7 @@ class RecordReplayRoundTripIT {
     @Test
     void replayApi_emptyTopic_returnsEmptyPage() {
         ResponseEntity<PagedResponse<CassetteRecord>> response = restTemplate.exchange(
-                "/cassettes/topics/" + TEST_TOPIC,
+                baseUrl + "/cassettes/topics/" + TEST_TOPIC,
                 HttpMethod.GET,
                 null,
                 new ParameterizedTypeReference<>() {});
@@ -152,7 +156,7 @@ class RecordReplayRoundTripIT {
         }
 
         ResponseEntity<PagedResponse<CassetteRecord>> page1 = restTemplate.exchange(
-                "/cassettes/topics/" + TEST_TOPIC + "?limit=2",
+                baseUrl + "/cassettes/topics/" + TEST_TOPIC + "?limit=2",
                 HttpMethod.GET, null, new ParameterizedTypeReference<>() {});
 
         assertThat(page1.getBody()).isNotNull();
@@ -162,7 +166,7 @@ class RecordReplayRoundTripIT {
         assertThat(cursor).isNotNull();
 
         ResponseEntity<PagedResponse<CassetteRecord>> page2 = restTemplate.exchange(
-                "/cassettes/topics/" + TEST_TOPIC + "?limit=2&cursor=" + cursor,
+                baseUrl + "/cassettes/topics/" + TEST_TOPIC + "?limit=2&cursor=" + cursor,
                 HttpMethod.GET, null, new ParameterizedTypeReference<>() {});
 
         assertThat(page2.getBody()).isNotNull();
@@ -171,7 +175,7 @@ class RecordReplayRoundTripIT {
 
         String cursor2 = page2.getBody().nextCursor();
         ResponseEntity<PagedResponse<CassetteRecord>> page3 = restTemplate.exchange(
-                "/cassettes/topics/" + TEST_TOPIC + "?limit=2&cursor=" + cursor2,
+                baseUrl + "/cassettes/topics/" + TEST_TOPIC + "?limit=2&cursor=" + cursor2,
                 HttpMethod.GET, null, new ParameterizedTypeReference<>() {});
 
         assertThat(page3.getBody()).isNotNull();
@@ -189,7 +193,7 @@ class RecordReplayRoundTripIT {
                 Instant.parse("2024-09-01T12:00:05Z"), "new-key", b("new"));
 
         ResponseEntity<PagedResponse<CassetteRecord>> response = restTemplate.exchange(
-                "/cassettes/topics/" + TEST_TOPIC,
+                baseUrl + "/cassettes/topics/" + TEST_TOPIC,
                 HttpMethod.GET, null, new ParameterizedTypeReference<>() {});
 
         assertThat(response.getBody()).isNotNull();
@@ -234,7 +238,7 @@ class RecordReplayRoundTripIT {
     @Test
     void healthEndpoint_returnsUp() {
         ResponseEntity<Map> response =
-                restTemplate.getForEntity("/actuator/health", Map.class);
+                restTemplate.getForEntity(baseUrl + "/actuator/health", Map.class);
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody()).isNotNull();
         assertThat(response.getBody().get("status")).isEqualTo("UP");
@@ -249,7 +253,7 @@ class RecordReplayRoundTripIT {
         Map<String, Object> body = new HashMap<>();
         body.put("topic", topic);
         body.put("mode", mode);
-        restTemplate.postForEntity("/topics", body, Object.class);
+        restTemplate.postForEntity(baseUrl + "/topics", body, Object.class);
     }
 
     private void createKafkaTopic(String topic, int partitions) throws Exception {

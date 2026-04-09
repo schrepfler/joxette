@@ -23,17 +23,20 @@ import java.util.function.Consumer;
 import java.util.function.Function;
 
 /**
- * Queries the general cassette ({@code lake.cassette}) with cursor-based
- * pagination and optional column filters.
+ * Queries the general cassette table ({@code lake.main.general_{topic}}) for a
+ * specific topic, with cursor-based pagination and optional column filters.
+ *
+ * <h2>Table naming</h2>
+ * <p>Each topic has its own DuckLake table {@code lake.main.general_{normalized_topic}},
+ * created by {@link com.joxette.db.SchemaManager}.  The topic name is normalised
+ * to {@code [a-z0-9_]} before constructing the table reference.
  *
  * <h2>Deduplication</h2>
  * <p>DuckDB does not enforce primary-key uniqueness, so the same
- * {@code (topic, partition, offset)} triple may appear more than once after
+ * {@code (kafka_partition, kafka_offset)} triple may appear more than once after
  * concurrent or replayed writes. Every query uses
- * {@code QUALIFY ROW_NUMBER() OVER (PARTITION BY topic, partition, "offset"
+ * {@code QUALIFY ROW_NUMBER() OVER (PARTITION BY kafka_partition, kafka_offset
  * ORDER BY recorded_at DESC) = 1} to keep only the most-recently recorded copy.
- * Partition is cast to BIGINT in the window to avoid a DuckDB 1.5 type-binding
- * bug when BIGINT offset-filter parameters are combined with INTEGER columns.
  *
  * <h2>Cursor encoding</h2>
  * <p>The cursor encodes {@code (timestamp, partition, offset)} as URL-safe
@@ -47,24 +50,21 @@ public class TopicReplayService {
     private static final int STREAM_PAGE_SIZE = 500;
 
     // -------------------------------------------------------------------------
-    // Table and field references for lake.cassette
+    // Field references for lake.main.general_{topic}
     // -------------------------------------------------------------------------
 
-    private static final Table<?> CASSETTE     = DSL.table(DSL.name("lake", "cassette"));
-    private static final Field<String>         F_TOPIC       = DSL.field(DSL.name("topic"),       String.class);
-    private static final Field<Integer>        F_PARTITION   = DSL.field(DSL.name("partition"),   Integer.class);
-    private static final Field<Long>           F_OFFSET      = DSL.field(DSL.name("offset"),      Long.class);
-    private static final Field<OffsetDateTime> F_TIMESTAMP   = DSL.field(DSL.name("timestamp"),   OffsetDateTime.class);
-    private static final Field<OffsetDateTime> F_RECORDED_AT = DSL.field(DSL.name("recorded_at"), OffsetDateTime.class);
-    private static final Field<String>         F_KEY         = DSL.field(DSL.name("key"),         String.class);
-    private static final Field<byte[]>         F_VALUE       = DSL.field(DSL.name("value"),       byte[].class);
-    private static final Field<Object>         F_HEADERS     = DSL.field(DSL.name("headers"),     Object.class);
+    private static final Field<Integer>        F_PARTITION   = DSL.field(DSL.name("kafka_partition"),  Integer.class);
+    private static final Field<Long>           F_OFFSET      = DSL.field(DSL.name("kafka_offset"),     Long.class);
+    private static final Field<OffsetDateTime> F_TIMESTAMP   = DSL.field(DSL.name("kafka_timestamp"),  OffsetDateTime.class);
+    private static final Field<OffsetDateTime> F_RECORDED_AT = DSL.field(DSL.name("recorded_at"),      OffsetDateTime.class);
+    private static final Field<String>         F_KEY         = DSL.field(DSL.name("kafka_key"),        String.class);
+    private static final Field<byte[]>         F_VALUE       = DSL.field(DSL.name("kafka_value"),      byte[].class);
+    private static final Field<Object>         F_HEADERS     = DSL.field(DSL.name("headers"),          Object.class);
 
     // QUALIFY deduplication: keep the row with the latest recorded_at per
-    // (topic, partition, offset). Partition is cast to BIGINT to avoid the
-    // DuckDB 1.5 window-function type-binding bug (see class Javadoc).
+    // (kafka_partition, kafka_offset).
     private static final Condition QUALIFY_DEDUP = DSL.rowNumber().over(
-            DSL.partitionBy(F_TOPIC, F_PARTITION.cast(SQLDataType.BIGINT), F_OFFSET)
+            DSL.partitionBy(F_PARTITION.cast(SQLDataType.BIGINT), F_OFFSET)
                .orderBy(F_RECORDED_AT.desc())
     ).eq(1);
 
@@ -75,7 +75,7 @@ public class TopicReplayService {
     }
 
     /**
-     * Returns one page of records from {@code lake.cassette} for {@code topic}.
+     * Returns one page of records from {@code lake.main.general_{topic}}.
      *
      * @param limit   max records to return; one extra is fetched internally to
      *                detect whether more pages exist
@@ -90,9 +90,10 @@ public class TopicReplayService {
             int limit,
             String cursor
     ) throws SQLException {
+        Table<?> table = tableFor(topic);
         TopicCursor decoded = cursor != null ? TopicCursor.decode(cursor) : null;
 
-        Condition cond = F_TOPIC.eq(topic);
+        Condition cond = DSL.noCondition();
         if (from != null)       cond = cond.and(F_TIMESTAMP.ge(from.atOffset(ZoneOffset.UTC)));
         if (to != null)         cond = cond.and(F_TIMESTAMP.le(to.atOffset(ZoneOffset.UTC)));
         if (partition != null)  cond = cond.and(F_PARTITION.eq(partition));
@@ -100,12 +101,13 @@ public class TopicReplayService {
         if (offsetTo != null)   cond = cond.and(F_OFFSET.le(offsetTo));
 
         var selectBase = dsl
-                .select(F_TOPIC, F_PARTITION, F_OFFSET, F_TIMESTAMP, F_RECORDED_AT, F_KEY, F_VALUE, F_HEADERS)
-                .from(CASSETTE)
+                .select(F_PARTITION, F_OFFSET, F_TIMESTAMP, F_RECORDED_AT, F_KEY, F_VALUE, F_HEADERS)
+                .from(table)
                 .where(cond)
                 .qualify(QUALIFY_DEDUP)
                 .orderBy(F_TIMESTAMP.asc(), F_PARTITION.asc(), F_OFFSET.asc());
 
+        final String topicFinal = topic;
         List<CassetteRecord> records;
         if (decoded != null) {
             records = selectBase
@@ -113,11 +115,11 @@ public class TopicReplayService {
                                decoded.partition(),
                                decoded.offset())
                     .limit(limit + 1)
-                    .fetch(TopicReplayService::mapRecord);
+                    .fetch(r -> mapRecord(topicFinal, r));
         } else {
             records = selectBase
                     .limit(limit + 1)
-                    .fetch(TopicReplayService::mapRecord);
+                    .fetch(r -> mapRecord(topicFinal, r));
         }
 
         return buildPage(records, limit,
@@ -125,9 +127,9 @@ public class TopicReplayService {
     }
 
     /**
-     * Streams all matching records from {@code lake.cassette} by internally
-     * paginating with {@link #STREAM_PAGE_SIZE} and feeding each record to
-     * {@code sink}. Releases the DB lock between pages.
+     * Streams all matching records from the topic's general cassette table by
+     * internally paginating with {@link #STREAM_PAGE_SIZE} and feeding each
+     * record to {@code sink}. Releases the DB lock between pages.
      */
     public void streamAll(
             String topic,
@@ -147,13 +149,34 @@ public class TopicReplayService {
     }
 
     // -------------------------------------------------------------------------
+    // Table reference
+    // -------------------------------------------------------------------------
+
+    /**
+     * Builds a jOOQ {@link Table} reference for the per-topic general cassette:
+     * {@code lake.main.general_{normalized_topic}}.
+     */
+    private static Table<?> tableFor(String topic) {
+        String tableName = "general_" + normalizeTopicName(topic);
+        return DSL.table(DSL.name("lake", "main", tableName));
+    }
+
+    /**
+     * Normalises a topic name to {@code [a-z0-9_]}, matching
+     * .
+     */
+    static String normalizeTopicName(String topic) {
+        return topic.toLowerCase().replaceAll("[^a-z0-9_]", "_");
+    }
+
+    // -------------------------------------------------------------------------
     // Record mapping
     // -------------------------------------------------------------------------
 
-    private static CassetteRecord mapRecord(Record r) {
+    private static CassetteRecord mapRecord(String topic, Record r) {
         try {
             return new CassetteRecord(
-                    r.get(F_TOPIC),
+                    topic,
                     r.get(F_PARTITION),
                     r.get(F_OFFSET),
                     r.get(F_TIMESTAMP).toInstant(),
@@ -176,6 +199,15 @@ public class TopicReplayService {
                 : Base64.getUrlEncoder().withoutPadding().encodeToString(bytes);
     }
 
+    /**
+     * Maps the {@code headers} column ({@code STRUCT(key VARCHAR, value VARCHAR)[]})
+     * from a jOOQ record into a list of {@link CassetteRecord.Header}.
+     *
+     * <p>Both key and value are plain strings — no base64 encoding is applied here.
+     * Values that were originally non-UTF-8 binary were base64-encoded on write
+     * (see {@code CassetteBatchWriter.decodeHeaderValue}); that encoding is preserved
+     * verbatim in the response so callers can detect and decode if needed.
+     */
     @SuppressWarnings("unchecked")
     static List<CassetteRecord.Header> mapHeaders(Object headersObj) throws SQLException {
         if (headersObj == null) return List.of();
@@ -190,9 +222,10 @@ public class TopicReplayService {
         List<CassetteRecord.Header> headers = new ArrayList<>(arr.length);
         for (Object elem : arr) {
             if (elem instanceof Map<?, ?> struct) {
-                String key = (String) struct.get("key");
-                byte[] value = (byte[]) struct.get("value");
-                headers.add(new CassetteRecord.Header(key, encodeBlob(value)));
+                String key   = (String) struct.get("key");
+                // value is VARCHAR — no BLOB cast or base64 encoding needed
+                String value = struct.get("value") instanceof String s ? s : "";
+                headers.add(new CassetteRecord.Header(key, value));
             }
         }
         return headers;

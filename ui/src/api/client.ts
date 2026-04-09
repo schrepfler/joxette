@@ -72,7 +72,7 @@ export interface CassetteRecord {
 
 export interface EntityRecord {
   entityId: string
-  entityBucket: number
+  messageType: string | null
   topic: string
   partition: number
   offset: number
@@ -92,7 +92,6 @@ export interface PagedResponse<T> {
 export interface EntityInfo {
   entityType: string
   entityId: string
-  entityBucket: number
   firstSeen: string
   lastSeen: string
 }
@@ -264,6 +263,15 @@ export const cassettesApi = {
     request<SnapshotInfo>('/cassettes/snapshots', { method: 'POST', body: JSON.stringify(body ?? {}) }),
   restoreSnapshot: (name: string) =>
     request<void>(`/cassettes/snapshots/${encodeURIComponent(name)}/restore`, { method: 'POST' }),
+  /** Export catalog snapshot directly to the configured object-storage bucket. */
+  exportSnapshotToObjectStore: (body?: { name?: string }) =>
+    request<SnapshotInfo>('/cassettes/snapshots/export-to-object-store', {
+      method: 'POST',
+      body: JSON.stringify(body ?? {}),
+    }),
+  /** Rebuild the known_entities registry by scanning all entity cassette tables. */
+  rebuildKnownEntities: () =>
+    request<{ rebuilt: number }>('/cassettes/entities/rebuild-known-entities', { method: 'POST' }),
 }
 
 // ---- Compaction ----

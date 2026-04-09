@@ -14,6 +14,7 @@ public class JoxetteProperties {
     private Kafka kafka = new Kafka();
     private Recording recording = new Recording();
     private Bootstrap bootstrap = new Bootstrap();
+    private S3 s3 = new S3();
 
     // -----------------------------------------------------------------------
     // Catalog
@@ -160,15 +161,46 @@ public class JoxetteProperties {
             private int buckets = 256;
             private List<SourceMapping> sources = new ArrayList<>();
 
+            /**
+             * One source-topic mapping for an entity type.
+             *
+             * <p>A single topic can carry many different message variants that all refer
+             * to the same logical entity (e.g. a "fixture" entity can appear as
+             * {@code marketSet}, {@code resultSet}, {@code coverage}, etc.).  Each variant
+             * is expressed as a {@link Matcher} under this mapping.  The router tries every
+             * matcher in declaration order and routes on the first one that yields an ID.
+             */
             public static class SourceMapping {
                 private String topic;
-                private EntityIdSpec entityId = new EntityIdSpec();
+                /**
+                 * Whether messages from this topic are written only to the entity cassette
+                 * ({@code "entity_only"}, default) or to both the entity and general cassettes
+                 * ({@code "both"}).
+                 */
+                private String mode = "entity_only";
+                /** One or more message-variant matchers.  At least one is required. */
+                private List<Matcher> matchers = new ArrayList<>();
 
-                public static class EntityIdSpec {
+                /**
+                 * Describes how to recognise one message variant and extract the entity ID.
+                 *
+                 * <p>{@code messageType} is a logical label stored in the {@code message_type}
+                 * column of the entity cassette so that consumers can distinguish variants
+                 * (e.g. {@code "marketSet"} vs {@code "resultSet"}).
+                 */
+                public static class Matcher {
+                    /**
+                     * Logical name for this message variant (e.g. {@code "marketSet"}).
+                     * Stored verbatim in the {@code message_type} column of the cassette.
+                     */
+                    private String messageType;
                     /** "key", "value", or "header" */
                     private String source = "value";
-                    /** JSONPath expression to extract the entity ID. */
+                    /** JSONPath expression (for value source) or header name (for header source). */
                     private String expression;
+
+                    public String getMessageType() { return messageType; }
+                    public void setMessageType(String messageType) { this.messageType = messageType; }
 
                     public String getSource() { return source; }
                     public void setSource(String source) { this.source = source; }
@@ -180,8 +212,11 @@ public class JoxetteProperties {
                 public String getTopic() { return topic; }
                 public void setTopic(String topic) { this.topic = topic; }
 
-                public EntityIdSpec getEntityId() { return entityId; }
-                public void setEntityId(EntityIdSpec entityId) { this.entityId = entityId; }
+                public String getMode() { return mode; }
+                public void setMode(String mode) { this.mode = mode; }
+
+                public List<Matcher> getMatchers() { return matchers; }
+                public void setMatchers(List<Matcher> matchers) { this.matchers = matchers; }
             }
 
             public String getType() { return type; }
@@ -199,6 +234,45 @@ public class JoxetteProperties {
 
         public List<EntityEntry> getEntities() { return entities; }
         public void setEntities(List<EntityEntry> entities) { this.entities = entities; }
+    }
+
+    // -----------------------------------------------------------------------
+    // S3 / object-storage credentials
+    // -----------------------------------------------------------------------
+
+    /**
+     * S3-compatible object storage credentials and endpoint override.
+     *
+     * <p>When {@code endpoint} is set DuckDB's S3 secret is configured with
+     * {@code USE_SSL false} and {@code URL_STYLE path} so it works with
+     * local S3-compatible servers (RustFS, MinIO, etc.).
+     * Leave all fields blank in production and rely on the standard AWS credential
+     * chain (instance profile, env vars, ~/.aws/credentials).
+     */
+    public static class S3 {
+        /** Override the S3 endpoint, e.g. {@code http://localhost:9000}. Leave blank for real AWS. */
+        private String endpoint = "";
+        /** S3 access key / access key ID. */
+        private String accessKey = "";
+        /** S3 secret key. */
+        private String secretKey = "";
+        /** AWS region passed to DuckDB. */
+        private String region = "us-east-1";
+
+        public String getEndpoint() { return endpoint; }
+        public void setEndpoint(String endpoint) { this.endpoint = endpoint; }
+
+        public String getAccessKey() { return accessKey; }
+        public void setAccessKey(String accessKey) { this.accessKey = accessKey; }
+
+        public String getSecretKey() { return secretKey; }
+        public void setSecretKey(String secretKey) { this.secretKey = secretKey; }
+
+        public String getRegion() { return region; }
+        public void setRegion(String region) { this.region = region; }
+
+        /** Returns {@code true} when an explicit endpoint override is configured. */
+        public boolean hasEndpoint() { return endpoint != null && !endpoint.isBlank(); }
     }
 
     // -----------------------------------------------------------------------
@@ -222,4 +296,7 @@ public class JoxetteProperties {
 
     public Bootstrap getBootstrap() { return bootstrap; }
     public void setBootstrap(Bootstrap bootstrap) { this.bootstrap = bootstrap; }
+
+    public S3 getS3() { return s3; }
+    public void setS3(S3 s3) { this.s3 = s3; }
 }

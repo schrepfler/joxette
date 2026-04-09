@@ -133,12 +133,10 @@ public class ConfigRepository {
         dsl.insertInto(ENTITY_SOURCE_MAPPINGS)
                 .set(ENTITY_SOURCE_MAPPINGS.ENTITY_TYPE, mapping.entityType())
                 .set(ENTITY_SOURCE_MAPPINGS.TOPIC, mapping.topic())
-                .set(ENTITY_SOURCE_MAPPINGS.ENTITY_ID_SOURCE, mapping.entityIdSource())
-                .set(ENTITY_SOURCE_MAPPINGS.ENTITY_ID_EXPRESSION, mapping.entityIdExpression())
+                .set(ENTITY_SOURCE_MAPPINGS.MODE, mapping.mode())
                 .onConflict(ENTITY_SOURCE_MAPPINGS.ENTITY_TYPE, ENTITY_SOURCE_MAPPINGS.TOPIC)
                 .doUpdate()
-                .set(ENTITY_SOURCE_MAPPINGS.ENTITY_ID_SOURCE, mapping.entityIdSource())
-                .set(ENTITY_SOURCE_MAPPINGS.ENTITY_ID_EXPRESSION, mapping.entityIdExpression())
+                .set(ENTITY_SOURCE_MAPPINGS.MODE, mapping.mode())
                 .execute();
     }
 
@@ -171,8 +169,7 @@ public class ConfigRepository {
         return new EntitySourceMapping(
                 r.getEntityType(),
                 r.getTopic(),
-                r.getEntityIdSource(),
-                r.getEntityIdExpression()
+                r.getMode()
         );
     }
 }

@@ -1,0 +1,21 @@
+---
+# Jikkou resource file – declares Kafka topics for the local dev environment.
+# Apply with:
+#   jikkou apply --files jikkou/topics.yml
+#
+# Or in reconcile (diff + apply) mode:
+#   jikkou reconcile --files jikkou/topics.yml --selector "resource.name in (events)"
+apiVersion: "kafka.jikkou.io/v1beta2"
+kind: KafkaTopic
+metadata:
+  name: events
+spec:
+  partitions: 3
+  replicas: 1
+  configs:
+    # Retain messages for 7 days
+    retention.ms: "604800000"
+    # 64 MB per segment
+    segment.bytes: "67108864"
+    # Compact + delete: keep latest value per key, delete old segments
+    cleanup.policy: "delete"

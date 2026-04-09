@@ -1,7 +1,6 @@
 package com.joxette.management;
 
 import com.joxette.config.JoxetteProperties;
-import com.joxette.recording.RecordingCoordinator;
 import jakarta.annotation.PostConstruct;
 import org.springframework.context.annotation.DependsOn;
 import org.springframework.stereotype.Repository;
@@ -15,41 +14,29 @@ import java.util.*;
  * <p>On startup ({@link #initialize()}):
  * <ol>
  *   <li>Bootstrap entries from {@code application.yml} are seeded into the
- *       {@code lake.config_*} tables (idempotent — conflicts are ignored).</li>
- *   <li>All non-paused topics are started via {@link RecordingCoordinator}.</li>
+ *       config tables (idempotent — conflicts are ignored).</li>
  * </ol>
  *
- * <p>All public methods synchronise on the shared DuckDB connection, matching
- * the pattern used throughout the rest of the codebase.
- *
- * <p>{@code @DependsOn("schemaManager")} guarantees that the config tables
- * exist before this bean's {@link PostConstruct} runs.
+ * <p>Topic recording is started by {@link RecordingStartupRunner} after the
+ * full application context is ready, avoiding circular bean dependencies.
  */
-@Repository
-@DependsOn("schemaManager")
+@Repository("managementConfigRepository")
+@DependsOn("dbSchemaManager")
 public class ConfigRepository {
 
     private static final Set<String> VALID_MODES = Set.of("general", "entity_only", "both");
 
     private final Connection duckDB;
     private final JoxetteProperties properties;
-    private final RecordingCoordinator coordinator;
 
-    public ConfigRepository(Connection duckDB, JoxetteProperties properties,
-                            RecordingCoordinator coordinator) {
-        this.duckDB      = duckDB;
-        this.properties  = properties;
-        this.coordinator = coordinator;
+    public ConfigRepository(Connection duckDB, JoxetteProperties properties) {
+        this.duckDB     = duckDB;
+        this.properties = properties;
     }
 
     @PostConstruct
     public void initialize() throws SQLException {
         seedFromBootstrap();
-        for (TopicConfig tc : listTopics()) {
-            if (!tc.paused()) {
-                coordinator.startTopic(tc.topic());
-            }
-        }
     }
 
     // -------------------------------------------------------------------------
@@ -58,15 +45,13 @@ public class ConfigRepository {
 
     public List<TopicConfig> listTopics() throws SQLException {
         List<TopicConfig> result = new ArrayList<>();
-        Set<String> active = coordinator.activeTopics();
         synchronized (duckDB) {
             try (Statement st = duckDB.createStatement();
                  ResultSet rs = st.executeQuery(
-                         "SELECT topic, mode, paused FROM lake.config_topics ORDER BY topic")) {
+                         "SELECT topic, mode, paused FROM topic_configs ORDER BY topic")) {
                 while (rs.next()) {
-                    String topic = rs.getString("topic");
-                    result.add(new TopicConfig(topic, rs.getString("mode"),
-                            rs.getBoolean("paused"), active.contains(topic)));
+                    result.add(new TopicConfig(rs.getString("topic"), rs.getString("mode"),
+                            rs.getBoolean("paused"), false));
                 }
             }
         }
@@ -74,16 +59,14 @@ public class ConfigRepository {
     }
 
     public Optional<TopicConfig> findTopic(String topic) throws SQLException {
-        Set<String> active = coordinator.activeTopics();
         synchronized (duckDB) {
             try (PreparedStatement ps = duckDB.prepareStatement(
-                    "SELECT topic, mode, paused FROM lake.config_topics WHERE topic = ?")) {
+                    "SELECT topic, mode, paused FROM topic_configs WHERE topic = ?")) {
                 ps.setString(1, topic);
                 try (ResultSet rs = ps.executeQuery()) {
                     if (rs.next()) {
                         return Optional.of(new TopicConfig(rs.getString("topic"),
-                                rs.getString("mode"), rs.getBoolean("paused"),
-                                active.contains(topic)));
+                                rs.getString("mode"), rs.getBoolean("paused"), false));
                     }
                 }
             }
@@ -95,7 +78,7 @@ public class ConfigRepository {
         validateMode(mode);
         synchronized (duckDB) {
             try (PreparedStatement ps = duckDB.prepareStatement("""
-                    INSERT INTO lake.config_topics (topic, mode, paused) VALUES (?, ?, ?)
+                    INSERT INTO topic_configs (topic, mode, paused) VALUES (?, ?, ?)
                     ON CONFLICT (topic) DO UPDATE SET mode = excluded.mode, paused = excluded.paused
                     """)) {
                 ps.setString(1, topic);
@@ -104,13 +87,13 @@ public class ConfigRepository {
                 ps.executeUpdate();
             }
         }
-        return new TopicConfig(topic, mode, paused, coordinator.activeTopics().contains(topic));
+        return new TopicConfig(topic, mode, paused, false);
     }
 
     public boolean deleteTopic(String topic) throws SQLException {
         synchronized (duckDB) {
             try (PreparedStatement ps = duckDB.prepareStatement(
-                    "DELETE FROM lake.config_topics WHERE topic = ?")) {
+                    "DELETE FROM topic_configs WHERE topic = ?")) {
                 ps.setString(1, topic);
                 return ps.executeUpdate() > 0;
             }
@@ -120,7 +103,7 @@ public class ConfigRepository {
     public boolean setPaused(String topic, boolean paused) throws SQLException {
         synchronized (duckDB) {
             try (PreparedStatement ps = duckDB.prepareStatement(
-                    "UPDATE lake.config_topics SET paused = ? WHERE topic = ?")) {
+                    "UPDATE topic_configs SET paused = ? WHERE topic = ?")) {
                 ps.setBoolean(1, paused);
                 ps.setString(2, topic);
                 return ps.executeUpdate() > 0;
@@ -137,7 +120,7 @@ public class ConfigRepository {
         synchronized (duckDB) {
             try (Statement st = duckDB.createStatement();
                  ResultSet rs = st.executeQuery(
-                         "SELECT entity_type, buckets FROM lake.config_entities ORDER BY entity_type")) {
+                         "SELECT entity_type, bucket_count AS buckets FROM entity_type_configs ORDER BY entity_type")) {
                 while (rs.next()) {
                     result.add(new EntityTypeConfig(rs.getString("entity_type"),
                             rs.getInt("buckets")));
@@ -150,7 +133,7 @@ public class ConfigRepository {
     public Optional<EntityTypeConfig> findEntityType(String type) throws SQLException {
         synchronized (duckDB) {
             try (PreparedStatement ps = duckDB.prepareStatement(
-                    "SELECT entity_type, buckets FROM lake.config_entities WHERE entity_type = ?")) {
+                    "SELECT entity_type, bucket_count AS buckets FROM entity_type_configs WHERE entity_type = ?")) {
                 ps.setString(1, type);
                 try (ResultSet rs = ps.executeQuery()) {
                     if (rs.next()) {
@@ -166,8 +149,8 @@ public class ConfigRepository {
     public EntityTypeConfig upsertEntityType(String type, int buckets) throws SQLException {
         synchronized (duckDB) {
             try (PreparedStatement ps = duckDB.prepareStatement("""
-                    INSERT INTO lake.config_entities (entity_type, buckets) VALUES (?, ?)
-                    ON CONFLICT (entity_type) DO UPDATE SET buckets = excluded.buckets
+                    INSERT INTO entity_type_configs (entity_type, bucket_count) VALUES (?, ?)
+                    ON CONFLICT (entity_type) DO UPDATE SET bucket_count = excluded.bucket_count
                     """)) {
                 ps.setString(1, type);
                 ps.setInt(2, buckets);
@@ -180,12 +163,17 @@ public class ConfigRepository {
     public boolean deleteEntityType(String type) throws SQLException {
         synchronized (duckDB) {
             try (PreparedStatement ps = duckDB.prepareStatement(
-                    "DELETE FROM lake.config_entity_sources WHERE entity_type = ?")) {
+                    "DELETE FROM entity_source_matchers WHERE entity_type = ?")) {
                 ps.setString(1, type);
                 ps.executeUpdate();
             }
             try (PreparedStatement ps = duckDB.prepareStatement(
-                    "DELETE FROM lake.config_entities WHERE entity_type = ?")) {
+                    "DELETE FROM entity_source_mappings WHERE entity_type = ?")) {
+                ps.setString(1, type);
+                ps.executeUpdate();
+            }
+            try (PreparedStatement ps = duckDB.prepareStatement(
+                    "DELETE FROM entity_type_configs WHERE entity_type = ?")) {
                 ps.setString(1, type);
                 return ps.executeUpdate() > 0;
             }
@@ -196,54 +184,117 @@ public class ConfigRepository {
     // Entity source CRUD
     // -------------------------------------------------------------------------
 
+    /**
+     * Lists all source mappings (with their matchers) for {@code entityType}.
+     */
     public List<EntitySourceConfig> listSources(String entityType) throws SQLException {
-        List<EntitySourceConfig> result = new ArrayList<>();
+        // Load mappings first
+        Map<String, EntitySourceConfig.Builder> builders = new LinkedHashMap<>();
         synchronized (duckDB) {
             try (PreparedStatement ps = duckDB.prepareStatement("""
-                    SELECT entity_type, topic, id_source, id_expression
-                    FROM lake.config_entity_sources
+                    SELECT entity_type, topic, mode
+                    FROM entity_source_mappings
                     WHERE entity_type = ?
                     ORDER BY topic
                     """)) {
                 ps.setString(1, entityType);
                 try (ResultSet rs = ps.executeQuery()) {
                     while (rs.next()) {
-                        result.add(new EntitySourceConfig(
-                                rs.getString("entity_type"),
-                                rs.getString("topic"),
-                                rs.getString("id_source"),
-                                rs.getString("id_expression")));
+                        String topic = rs.getString("topic");
+                        builders.put(topic, new EntitySourceConfig.Builder(
+                                rs.getString("entity_type"), topic, rs.getString("mode")));
+                    }
+                }
+            }
+            // Load matchers and attach to their mappings
+            try (PreparedStatement ps = duckDB.prepareStatement("""
+                    SELECT topic, message_type, id_source, id_expression
+                    FROM entity_source_matchers
+                    WHERE entity_type = ?
+                    ORDER BY topic, id
+                    """)) {
+                ps.setString(1, entityType);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        String topic = rs.getString("topic");
+                        EntitySourceConfig.Builder b = builders.get(topic);
+                        if (b != null) {
+                            b.addMatcher(new EntitySourceConfig.MatcherConfig(
+                                    rs.getString("message_type"),
+                                    rs.getString("id_source"),
+                                    rs.getString("id_expression")));
+                        }
                     }
                 }
             }
         }
-        return result;
+        return builders.values().stream().map(EntitySourceConfig.Builder::build).toList();
     }
 
+    /**
+     * Upserts the mapping header ({@code entity_source_mappings}) and replaces
+     * all matchers for this {@code (entityType, topic)} pair.
+     */
     public EntitySourceConfig upsertSource(String entityType, String topic,
-                                           String idSource, String idExpression) throws SQLException {
+                                            String mode,
+                                            List<EntitySourceConfig.MatcherConfig> matchers)
+            throws SQLException {
+        String resolvedMode = "both".equals(mode) ? "both" : "entity_only";
         synchronized (duckDB) {
+            // Upsert the mapping header
             try (PreparedStatement ps = duckDB.prepareStatement("""
-                    INSERT INTO lake.config_entity_sources (entity_type, topic, id_source, id_expression)
-                    VALUES (?, ?, ?, ?)
-                    ON CONFLICT (entity_type, topic) DO UPDATE SET
-                        id_source = excluded.id_source,
-                        id_expression = excluded.id_expression
+                    INSERT INTO entity_source_mappings (entity_type, topic, mode)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT (entity_type, topic) DO UPDATE SET mode = excluded.mode
                     """)) {
                 ps.setString(1, entityType);
                 ps.setString(2, topic);
-                ps.setString(3, idSource);
-                ps.setString(4, idExpression);
+                ps.setString(3, resolvedMode);
                 ps.executeUpdate();
             }
+            // Replace all matchers for this mapping
+            try (PreparedStatement ps = duckDB.prepareStatement(
+                    "DELETE FROM entity_source_matchers WHERE entity_type = ? AND topic = ?")) {
+                ps.setString(1, entityType);
+                ps.setString(2, topic);
+                ps.executeUpdate();
+            }
+            if (matchers != null && !matchers.isEmpty()) {
+                try (PreparedStatement ps = duckDB.prepareStatement("""
+                        INSERT INTO entity_source_matchers
+                            (entity_type, topic, message_type, id_source, id_expression)
+                        VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT (entity_type, topic, message_type) DO UPDATE SET
+                            id_source = excluded.id_source,
+                            id_expression = excluded.id_expression
+                        """)) {
+                    for (EntitySourceConfig.MatcherConfig m : matchers) {
+                        ps.setString(1, entityType);
+                        ps.setString(2, topic);
+                        ps.setString(3, m.messageType());
+                        ps.setString(4, m.idSource());
+                        ps.setString(5, m.idExpression());
+                        ps.addBatch();
+                    }
+                    ps.executeBatch();
+                }
+            }
         }
-        return new EntitySourceConfig(entityType, topic, idSource, idExpression);
+        List<EntitySourceConfig.MatcherConfig> resolved =
+                matchers != null ? List.copyOf(matchers) : List.of();
+        return new EntitySourceConfig(entityType, topic, resolvedMode, resolved);
     }
 
     public boolean deleteSource(String entityType, String topic) throws SQLException {
         synchronized (duckDB) {
             try (PreparedStatement ps = duckDB.prepareStatement(
-                    "DELETE FROM lake.config_entity_sources WHERE entity_type = ? AND topic = ?")) {
+                    "DELETE FROM entity_source_matchers WHERE entity_type = ? AND topic = ?")) {
+                ps.setString(1, entityType);
+                ps.setString(2, topic);
+                ps.executeUpdate();
+            }
+            try (PreparedStatement ps = duckDB.prepareStatement(
+                    "DELETE FROM entity_source_mappings WHERE entity_type = ? AND topic = ?")) {
                 ps.setString(1, entityType);
                 ps.setString(2, topic);
                 return ps.executeUpdate() > 0;
@@ -257,8 +308,9 @@ public class ConfigRepository {
 
     private void seedFromBootstrap() throws SQLException {
         synchronized (duckDB) {
+            // Topics
             try (PreparedStatement ps = duckDB.prepareStatement("""
-                    INSERT INTO lake.config_topics (topic, mode, paused) VALUES (?, ?, false)
+                    INSERT INTO topic_configs (topic, mode, paused) VALUES (?, ?, false)
                     ON CONFLICT DO NOTHING
                     """)) {
                 for (var e : properties.getBootstrap().getTopics()) {
@@ -268,8 +320,9 @@ public class ConfigRepository {
                 }
                 ps.executeBatch();
             }
+            // Entity types
             try (PreparedStatement ps = duckDB.prepareStatement("""
-                    INSERT INTO lake.config_entities (entity_type, buckets) VALUES (?, ?)
+                    INSERT INTO entity_type_configs (entity_type, bucket_count) VALUES (?, ?)
                     ON CONFLICT DO NOTHING
                     """)) {
                 for (var e : properties.getBootstrap().getEntities()) {
@@ -279,21 +332,38 @@ public class ConfigRepository {
                 }
                 ps.executeBatch();
             }
-            try (PreparedStatement ps = duckDB.prepareStatement("""
-                    INSERT INTO lake.config_entity_sources (entity_type, topic, id_source, id_expression)
-                    VALUES (?, ?, ?, ?)
+            // Source mappings + matchers
+            try (PreparedStatement psMapping = duckDB.prepareStatement("""
+                    INSERT INTO entity_source_mappings (entity_type, topic, mode)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT DO NOTHING
+                    """);
+                 PreparedStatement psMatcher = duckDB.prepareStatement("""
+                    INSERT INTO entity_source_matchers
+                        (entity_type, topic, message_type, id_source, id_expression)
+                    VALUES (?, ?, ?, ?, ?)
                     ON CONFLICT DO NOTHING
                     """)) {
                 for (var e : properties.getBootstrap().getEntities()) {
                     for (var src : e.getSources()) {
-                        ps.setString(1, e.getType());
-                        ps.setString(2, src.getTopic());
-                        ps.setString(3, src.getEntityId().getSource());
-                        ps.setString(4, src.getEntityId().getExpression());
-                        ps.addBatch();
+                        String m = "both".equals(src.getMode()) ? "both" : "entity_only";
+                        psMapping.setString(1, e.getType());
+                        psMapping.setString(2, src.getTopic());
+                        psMapping.setString(3, m);
+                        psMapping.addBatch();
+
+                        for (var matcher : src.getMatchers()) {
+                            psMatcher.setString(1, e.getType());
+                            psMatcher.setString(2, src.getTopic());
+                            psMatcher.setString(3, matcher.getMessageType());
+                            psMatcher.setString(4, matcher.getSource());
+                            psMatcher.setString(5, matcher.getExpression());
+                            psMatcher.addBatch();
+                        }
                     }
                 }
-                ps.executeBatch();
+                psMapping.executeBatch();
+                psMatcher.executeBatch();
             }
         }
     }

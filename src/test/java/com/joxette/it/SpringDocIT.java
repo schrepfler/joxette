@@ -1,14 +1,15 @@
 package com.joxette.it;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.web.client.TestRestTemplate;
+import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.web.client.RestTemplate;
 import org.testcontainers.containers.KafkaContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -36,20 +37,30 @@ class SpringDocIT {
         registry.add("joxette.kafka.bootstrap-servers", kafka::getBootstrapServers);
     }
 
-    @Autowired
-    private TestRestTemplate restTemplate;
+    @LocalServerPort
+    private int port;
+
+    private RestTemplate restTemplate;
+
+    private String baseUrl;
+
+    @BeforeEach
+    void setUp() {
+        restTemplate = new RestTemplate();
+        baseUrl = "http://localhost:" + port;
+    }
 
     @Test
     void apiDocs_returnsOkWithNonEmptyPaths() {
-        ResponseEntity<Map> response = restTemplate.getForEntity("/v3/api-docs", Map.class);
+        ResponseEntity<Map> response = restTemplate.getForEntity(baseUrl + "/v3/api-docs", Map.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
 
-        Map<?, ?> body = response.getBody();
+        Map body = response.getBody();
         assertThat(body).isNotNull();
         assertThat(body).containsKey("paths");
 
-        Map<?, ?> paths = (Map<?, ?>) body.get("paths");
+        Map paths = (Map) body.get("paths");
         assertThat(paths).isNotEmpty();
     }
 }

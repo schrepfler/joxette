@@ -11,25 +11,26 @@ import java.util.List;
 import java.util.regex.Pattern;
 
 /**
- * Initialises the DuckDB schema on application startup.
+ * <strong>Legacy schema manager – superseded by {@code com.joxette.db.SchemaManager}.</strong>
  *
- * <p>Runs once, after Spring has wired all beans, via {@link PostConstruct}.
- * Any {@link SQLException} propagates as an unchecked wrapper so that the
- * application context fails fast rather than silently starting with an
- * incomplete schema.
+ * <p>This class is kept as a plain class (not a Spring bean) so that
+ * {@link com.joxette.management.EntityController} and
+ * {@link com.joxette.compaction.CompactionService} can still call
+ * {@link #createEntityTable} and {@link #dropEntityTable} via the
+ * {@code com.joxette.db.SchemaManager} subtype.  The {@code @PostConstruct}
+ * initialisation is intentionally disabled: all DDL is now handled by
+ * {@code com.joxette.db.SchemaManager}.
  *
- * <h2>Schema layout</h2>
- * <pre>
- * lake.cassette               – general-mode messages (all topics that include general routing)
- * lake.entity_{type}          – per-entity-type cassette (one table per configured entity)
- * lake.known_entities         – registry of observed (entity_type, entity_id) pairs
- * lake.config_topics          – runtime topic configuration (mode, paused flag)
- * lake.config_entities        – runtime entity-type configuration (buckets)
- * lake.config_entity_sources  – entity-type ↔ source-topic mappings
- * lake.snapshots              – metadata for EXPORT DATABASE snapshots
- * </pre>
+ * <p>The old {@code CREATE SCHEMA IF NOT EXISTS lake} call caused an
+ * "Ambiguous reference" error once the DuckLake catalog named {@code lake}
+ * was attached, because DuckDB cannot distinguish a schema named {@code lake}
+ * inside the main database from the attached DuckLake catalog of the same name.
+ *
+ * @deprecated Use {@code com.joxette.db.SchemaManager} directly.
  */
-@Component
+@Deprecated(since = "DuckLake migration", forRemoval = true)
+// NOT annotated with @Component – Spring must not instantiate this class.
+// The bean named "schemaManager" is now com.joxette.db.SchemaManager (bean id "dbSchemaManager").
 public class SchemaManager {
 
     /** Only lower-case letters, digits, and underscores are valid in entity type names. */

@@ -1,14 +1,12 @@
 spring:
   application:
     name: joxette
+  main:
+    allow-circular-references: true
   # Disable Spring auto-config for Kafka (we use Jox Kafka directly)
   autoconfigure:
     exclude:
       - org.springframework.boot.autoconfigure.kafka.KafkaAutoConfiguration
-  jackson:
-    serialization:
-      write-dates-as-timestamps: false
-
 server:
   port: 8080
 
@@ -33,67 +31,96 @@ management:
 
 # ---------------------------------------------------------------------------
 # Joxette configuration
-# All values below are defaults; override via environment variables or
-# a profile-specific application-{profile}.yml file.
 # ---------------------------------------------------------------------------
 joxette:
 
-  # DuckLake catalog: the DuckDB file acts as the lakehouse catalog.
-  # object-storage-path is where DuckLake flushes inlined data to Parquet.
   catalog:
     path: "./data/joxette.ducklake"
-    object-storage-path: "s3://my-bucket/joxette/data"
+    object-storage-path: "s3://joxette-data/"
 
-  # DuckLake inline-buffering thresholds.
-  # Data is buffered inside the catalog DB until one of these limits is hit,
-  # then flushed to Parquet on object storage automatically by DuckLake.
   inline:
     threshold-mb: 4
     threshold-records: 50000
 
-  # Compaction: merges small Parquet files to reduce read amplification.
   compaction:
-    # Spring 6-field cron: <sec> <min> <hour> <dom> <month> <dow>
-    schedule: "0 0 3 * * *"  # daily at 03:00:00
+    schedule: "0 0 3 * * *"
     entity:
       min-files-per-bucket: 10
       target-file-size-mb: 256
-      lookback-days: 30      # only compact data older than N days
+      lookback-days: 30
     general:
-      enabled: false         # general cassette compaction disabled by default
+      enabled: false
       min-files-per-partition: 20
       target-file-size-mb: 256
-      lookback-days: 30      # only compact data older than N days
+      lookback-days: 30
 
-  # Kafka bootstrap config (used to build per-topic KafkaConsumer instances).
   kafka:
     bootstrap-servers: "localhost:9092"
 
-  # Recording pipeline batching.
   recording:
-    batch-size: 10000        # flush after N messages
-    batch-timeout-ms: 1000  # flush after N ms even if batch not full
+    batch-size: 10000
+    batch-timeout-ms: 1000
 
+  cors:
+    allowed-origins:
+      - http://localhost:5173
+      - http://localhost:4173
+
+  s3:
+    endpoint: "http://localhost:9000"
+    access-key: "joxettedev"
+    secret-key: "joxettedev123"
+    region: "us-east-1"
+
+  # ---------------------------------------------------------------------------
   # Bootstrap seed: loaded only on first start when config tables are empty.
-  # After first start, use the REST API to manage topics and entities.
+  #
+  # Domain model:
+  #   entity.type  — the logical entity name (e.g. "fixture").
+  #                  One DuckLake table is created per entity type:
+  #                  lake.entity_<type>
+  #
+  #   sources      — topics that carry messages about this entity.
+  #     matchers   — one entry per message variant that references this entity.
+  #                  The router tries matchers in declaration order and stops
+  #                  at the first one that yields an ID.
+  #       message-type  — label stored in the cassette's message_type column.
+  #       source        — where to extract the ID: key | value | headers
+  #       expression    — JSONPath (for value) or header name (for headers)
+  #
+  # All message variants for the same entity feed into the SAME cassette,
+  # giving a unified timeline across message types.
+  # ---------------------------------------------------------------------------
   bootstrap:
     topics:
-      - topic: "orders.events"
-        mode: "both"          # record general stream AND route to entity cassettes
-      - topic: "audit.log"
-        mode: "general"       # raw stream only, no entity extraction
-      - topic: "payments.events"
-        mode: "entity_only"   # extract entities only, discard unmatched messages
+      - topic: "events"
+        mode: "both"   # record to general cassette AND index entities
 
     entities:
-      - type: "order"
+      # All sports-data entity types share the same topic ("events") and
+      # use fixtureId as their identity key.  Each message variant is one
+      # matcher under the single source mapping.
+      - type: "fixture"
         buckets: 256
         sources:
-          - topic: "orders.events"
-            entity-id:
-              source: value
-              expression: "$.order_id"
-          - topic: "payments.events"
-            entity-id:
-              source: value
-              expression: "$.payment.order_id"
+          - topic: "events"
+            mode: "entity_only"
+            matchers:
+              - message-type: "fixture"
+                source: "value"
+                expression: "$.fixture.id"
+              - message-type: "marketSet"
+                source: "value"
+                expression: "$.marketSet.fixtureId"
+              - message-type: "footballMatchSummary"
+                source: "value"
+                expression: "$.footballMatchSummary.fixtureId"
+              - message-type: "resultSet"
+                source: "value"
+                expression: "$.resultSet.fixtureId"
+              - message-type: "coverage"
+                source: "value"
+                expression: "$.coverage.fixtureId"
+              - message-type: "footballMatchDetails"
+                source: "value"
+                expression: "$.footballMatchDetails.fixtureId"

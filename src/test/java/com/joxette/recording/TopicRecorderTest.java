@@ -28,6 +28,11 @@ import java.util.Map;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
+import com.joxette.management.ConfigRepository;
+import com.joxette.management.TopicConfig;
+import com.joxette.replay.EntityIdExtractor;
+import com.joxette.replay.MessageRouter;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -50,15 +55,49 @@ class TopicRecorderTest {
 
     private static final String TOPIC = "recorder.test.events";
     private static final String SANITIZED = "recorder_test_events";
-    private static final String CASSETTE_TABLE = "lake.cassette_" + SANITIZED;
+    // CassetteBatchWriter writes to lake.main.general_{normalized_topic}
+    private static final String CASSETTE_TABLE = "lake.main.general_" + SANITIZED;
 
     private Connection duckDB;
     private TopicRecorder recorder;
     private Thread recorderThread;
+    /** Routes all messages to the general cassette (no entity routing). */
+    private MessageRouter generalRouter;
+    /** No-op registry — not tested here. */
+    private com.joxette.replay.KnownEntitiesRepository noopEntities;
 
     @BeforeEach
     void setUp() throws Exception {
         duckDB = DriverManager.getConnection("jdbc:duckdb:");
+        // Attach a secondary in-memory DB as 'lake' so CassetteBatchWriter can resolve
+        // three-part names (lake.main.general_*).
+        try (java.sql.Statement st = duckDB.createStatement()) {
+            st.execute("ATTACH ':memory:' AS lake");
+        }
+        // Pre-create the cassette tables that CassetteBatchWriter will INSERT into.
+        // SchemaManager does this in production; here we replicate it for the test.
+        com.joxette.support.DuckDBTestSupport.createGeneralCassetteTable(duckDB, TOPIC);
+        // Also create the multi-partition topic table used by recorder_batchesMultiplePartitions
+        com.joxette.support.DuckDBTestSupport.createGeneralCassetteTable(duckDB, "recorder.multi.test");
+
+        // Build a minimal schema for config tables so ConfigRepository can be constructed
+        com.joxette.support.DuckDBTestSupport.initSchema(duckDB);
+
+        // Seed both test topics as mode=general so MessageRouter routes to the general cassette
+        try (java.sql.PreparedStatement ps = duckDB.prepareStatement(
+                "INSERT INTO topic_configs (topic, mode) VALUES (?, 'general') ON CONFLICT DO NOTHING")) {
+            ps.setString(1, TOPIC);
+            ps.addBatch();
+            ps.setString(1, "recorder.multi.test");
+            ps.addBatch();
+            ps.executeBatch();
+        }
+
+        ConfigRepository configRepo = new ConfigRepository(duckDB, new com.joxette.config.JoxetteProperties());
+        generalRouter  = new MessageRouter(configRepo, new EntityIdExtractor());
+        noopEntities   = new com.joxette.replay.KnownEntitiesRepository(
+                org.jooq.impl.DSL.using(duckDB, org.jooq.SQLDialect.DUCKDB));
+
         createKafkaTopic(TOPIC, 1);
     }
 
@@ -87,7 +126,7 @@ class TopicRecorderTest {
             }
         }
 
-        recorder = new TopicRecorder(TOPIC, consumerProps(), duckDB, 100, 200);
+        recorder = new TopicRecorder(TOPIC, consumerProps(), duckDB, 100, 200, generalRouter, noopEntities);
         recorderThread = Thread.ofVirtual().name("test-recorder").start(() -> {
             try {
                 recorder.run();
@@ -105,11 +144,11 @@ class TopicRecorderTest {
         // Verify all rows are present with correct content.
         try (Statement st = duckDB.createStatement();
              ResultSet rs = st.executeQuery(
-                     "SELECT partition, \"offset\", key, value FROM " + CASSETTE_TABLE
-                             + " ORDER BY \"offset\"")) {
+                     "SELECT kafka_partition, kafka_offset, kafka_key, kafka_value FROM " + CASSETTE_TABLE
+                             + " ORDER BY kafka_offset")) {
             for (int i = 0; i < msgCount; i++) {
                 assertThat(rs.next()).isTrue();
-                assertThat(rs.getString("key")).isEqualTo("key-" + i);
+                assertThat(rs.getString("kafka_key")).isEqualTo("key-" + i);
                 // Use positional index: DuckDB JDBC 1.5.x does not support getBytes(String) for BLOB
                 byte[] value = rs.getBytes(4);
                 assertThat(new String(value, StandardCharsets.UTF_8))
@@ -128,7 +167,7 @@ class TopicRecorderTest {
             producer.send(rec).get();
         }
 
-        recorder = new TopicRecorder(TOPIC, consumerProps(), duckDB, 10, 200);
+        recorder = new TopicRecorder(TOPIC, consumerProps(), duckDB, 10, 200, generalRouter, noopEntities);
         recorderThread = Thread.ofVirtual().name("test-recorder-hdr").start(() -> {
             try { recorder.run(); } catch (Exception ignored) {}
         });
@@ -140,10 +179,10 @@ class TopicRecorderTest {
 
         try (Statement st = duckDB.createStatement();
              ResultSet rs = st.executeQuery(
-                     "SELECT key, headers FROM " + CASSETTE_TABLE)) {
+                     "SELECT kafka_key, headers FROM " + CASSETTE_TABLE)) {
             assertThat(rs.next()).isTrue();
-            assertThat(rs.getString("key")).isNull();
-            // Headers are stored as JSON by CassetteBatchWriter.
+            assertThat(rs.getString("kafka_key")).isNull();
+            // Headers are stored as STRUCT(key VARCHAR, value VARCHAR)[] by CassetteBatchWriter.
             String headers = rs.getString("headers");
             assertThat(headers).contains("x-source");
         }
@@ -164,12 +203,12 @@ class TopicRecorderTest {
             }
         }
 
-        TopicRecorder multiRecorder = new TopicRecorder(multiTopic, consumerProps(), duckDB, 20, 300);
+        TopicRecorder multiRecorder = new TopicRecorder(multiTopic, consumerProps(), duckDB, 20, 300, generalRouter, noopEntities);
         Thread multiThread = Thread.ofVirtual().name("test-multi-recorder").start(() -> {
             try { multiRecorder.run(); } catch (Exception ignored) {}
         });
 
-        String table = "lake.cassette_" + multiSanitized;
+        String table = "lake.main.general_" + multiSanitized;
         awaitRowCount(table, total, Duration.ofSeconds(15));
 
         multiRecorder.stop();
@@ -178,7 +217,7 @@ class TopicRecorderTest {
         // All 3 partitions should have data.
         try (Statement st = duckDB.createStatement();
              ResultSet rs = st.executeQuery(
-                     "SELECT COUNT(DISTINCT partition) AS p FROM " + table)) {
+                     "SELECT COUNT(DISTINCT kafka_partition) AS p FROM " + table)) {
             assertThat(rs.next()).isTrue();
             assertThat(rs.getLong("p")).isEqualTo(3);
         }

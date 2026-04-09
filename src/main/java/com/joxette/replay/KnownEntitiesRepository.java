@@ -14,7 +14,7 @@ import java.time.ZoneOffset;
 import java.util.List;
 
 /**
- * Maintains the {@code lake.known_entities} registry.
+ * Maintains the {@code known_entities} registry (plain DuckDB, main schema).
  *
  * <p>The table records the first time and most recent time each
  * (entity_type, entity_id) pair was observed in the recording pipeline.
@@ -22,21 +22,23 @@ import java.util.List;
  * successfully, so the registry is always a subset of what is stored in the
  * entity cassettes.
  *
+ * <p>Because {@code known_entities} is a plain DuckDB table (not DuckLake),
+ * the {@code PRIMARY KEY (entity_type, entity_id)} constraint is enforced and
+ * {@code ON CONFLICT ... DO UPDATE} works correctly. This avoids the silent
+ * duplicate-append problem that occurred when the table was DuckLake-backed.
+ *
  * <h2>Upsert semantics</h2>
- * <p>On conflict, only {@code last_seen} is updated. {@code first_seen} and
- * {@code entity_bucket} are immutable once the entity is registered: bucket
- * assignment is deterministic (derived from the hash of the entity type and
- * ID) so it will never differ on a subsequent sighting.
+ * <p>On conflict, only {@code last_seen} is updated; {@code first_seen} is
+ * immutable once the entity is registered.
  */
 @Repository
 public class KnownEntitiesRepository {
 
-    private static final Table<?>              TABLE         = DSL.table(DSL.name("lake", "known_entities"));
-    private static final Field<String>         F_ENTITY_TYPE = DSL.field(DSL.name("entity_type"),   String.class);
-    private static final Field<String>         F_ENTITY_ID   = DSL.field(DSL.name("entity_id"),     String.class);
-    private static final Field<Integer>        F_ENTITY_BUCKET = DSL.field(DSL.name("entity_bucket"), Integer.class);
-    private static final Field<OffsetDateTime> F_FIRST_SEEN  = DSL.field(DSL.name("first_seen"),    OffsetDateTime.class);
-    private static final Field<OffsetDateTime> F_LAST_SEEN   = DSL.field(DSL.name("last_seen"),     OffsetDateTime.class);
+    private static final Table<?>              TABLE         = DSL.table(DSL.name("known_entities"));
+    private static final Field<String>         F_ENTITY_TYPE = DSL.field(DSL.name("entity_type"),  String.class);
+    private static final Field<String>         F_ENTITY_ID   = DSL.field(DSL.name("entity_id"),    String.class);
+    private static final Field<OffsetDateTime> F_FIRST_SEEN  = DSL.field(DSL.name("first_seen"),   OffsetDateTime.class);
+    private static final Field<OffsetDateTime> F_LAST_SEEN   = DSL.field(DSL.name("last_seen"),    OffsetDateTime.class);
 
     private final DSLContext dsl;
 
@@ -62,11 +64,10 @@ public class KnownEntitiesRepository {
         }
         OffsetDateTime odt = observedAt.atOffset(ZoneOffset.UTC);
 
-        // Template upsert: null placeholders are replaced per-row by BatchBindStep.bind()
         var template = dsl
                 .insertInto(TABLE)
-                .columns(F_ENTITY_TYPE, F_ENTITY_ID, F_ENTITY_BUCKET, F_FIRST_SEEN, F_LAST_SEEN)
-                .values((String) null, (String) null, (Integer) null,
+                .columns(F_ENTITY_TYPE, F_ENTITY_ID, F_FIRST_SEEN, F_LAST_SEEN)
+                .values((String) null, (String) null,
                         (OffsetDateTime) null, (OffsetDateTime) null)
                 .onConflict(F_ENTITY_TYPE, F_ENTITY_ID)
                 .doUpdate()
@@ -74,7 +75,7 @@ public class KnownEntitiesRepository {
 
         BatchBindStep batch = dsl.batch(template);
         for (EntityRoute route : routes) {
-            batch = batch.bind(route.entityType(), route.entityId(), route.entityBucket(), odt, odt);
+            batch = batch.bind(route.entityType(), route.entityId(), odt, odt);
         }
         batch.execute();
     }

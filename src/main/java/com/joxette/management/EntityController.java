@@ -1,6 +1,9 @@
 package com.joxette.management;
 
-import com.joxette.replay.SchemaManager;
+import com.joxette.db.SchemaManager;
+import com.joxette.replay.MessageRouter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -21,21 +24,46 @@ import java.util.List;
  * POST   /entities/{type}/sources       add / update a source-topic mapping
  * DELETE /entities/{type}/sources/{t}   remove a source-topic mapping
  * </pre>
+ *
+ * <p>Every mutating operation ({@code POST}, {@code PUT}, {@code DELETE}) calls
+ * {@link MessageRouter#reload()} so the in-process recording pipeline picks up
+ * the change immediately without a restart.
  */
 @RestController
 @RequestMapping("/entities")
 public class EntityController {
 
+    private static final Logger log = LoggerFactory.getLogger(EntityController.class);
+
     private final ConfigRepository config;
     private final SchemaManager schemaManager;
+    private final MessageRouter messageRouter;
 
     record CreateEntityRequest(String type, int buckets) {}
     record UpdateEntityRequest(int buckets) {}
-    record AddSourceRequest(String topic, String idSource, String idExpression) {}
+    record AddSourceRequest(
+            String topic,
+            String mode,
+            List<EntitySourceConfig.MatcherConfig> matchers
+    ) {}
 
-    public EntityController(ConfigRepository config, SchemaManager schemaManager) {
+    public EntityController(ConfigRepository config, SchemaManager schemaManager,
+                            MessageRouter messageRouter) {
         this.config        = config;
         this.schemaManager = schemaManager;
+        this.messageRouter = messageRouter;
+    }
+
+    // -------------------------------------------------------------------------
+    // Helper — reload router after any mutation and swallow non-fatal errors
+    // -------------------------------------------------------------------------
+
+    private void reloadRouter() {
+        try {
+            messageRouter.reload();
+        } catch (SQLException e) {
+            log.warn("MessageRouter reload failed after config change: {}", e.getMessage());
+        }
     }
 
     @GetMapping(produces = MediaType.APPLICATION_JSON_VALUE)
@@ -58,6 +86,7 @@ public class EntityController {
         int buckets = body.buckets() > 0 ? body.buckets() : 256;
         schemaManager.createEntityTable(body.type());
         EntityTypeConfig etc = config.upsertEntityType(body.type(), buckets);
+        reloadRouter();
         return ResponseEntity.status(201).body(etc);
     }
 
@@ -78,7 +107,9 @@ public class EntityController {
         if (config.findEntityType(type).isEmpty()) {
             return ResponseEntity.notFound().build();
         }
-        return ResponseEntity.ok(config.upsertEntityType(type, body.buckets()));
+        EntityTypeConfig updated = config.upsertEntityType(type, body.buckets());
+        reloadRouter();
+        return ResponseEntity.ok(updated);
     }
 
     @DeleteMapping("/{type}")
@@ -86,6 +117,7 @@ public class EntityController {
         boolean deleted = config.deleteEntityType(type);
         if (deleted) {
             schemaManager.dropEntityTable(type);
+            reloadRouter();
         }
         return deleted ? ResponseEntity.noContent().build() : ResponseEntity.notFound().build();
     }
@@ -115,8 +147,8 @@ public class EntityController {
         if (body.topic() == null || body.topic().isBlank()) {
             return ResponseEntity.badRequest().build();
         }
-        String idSource = body.idSource() != null ? body.idSource() : "value";
-        EntitySourceConfig src = config.upsertSource(type, body.topic(), idSource, body.idExpression());
+        EntitySourceConfig src = config.upsertSource(type, body.topic(), body.mode(), body.matchers());
+        reloadRouter();
         return ResponseEntity.status(201).body(src);
     }
 
@@ -125,6 +157,9 @@ public class EntityController {
             @PathVariable String type,
             @PathVariable String topic) throws SQLException {
         boolean deleted = config.deleteSource(type, topic);
+        if (deleted) {
+            reloadRouter();
+        }
         return deleted ? ResponseEntity.noContent().build() : ResponseEntity.notFound().build();
     }
 

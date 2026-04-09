@@ -1,0 +1,11 @@
+micronaut:
+  application:
+    name: jikkou
+
+jikkou:
+  extensions:
+    provider:
+      enabled: true
+  kafka:
+    client:
+      bootstrap.servers: "${JIKKOU_DEFAULT_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}"

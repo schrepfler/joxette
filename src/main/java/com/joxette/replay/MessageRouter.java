@@ -1,10 +1,14 @@
 package com.joxette.replay;
 
-import com.joxette.config.JoxetteProperties;
-import com.joxette.config.JoxetteProperties.Bootstrap.EntityEntry.SourceMapping;
-import com.joxette.repository.ConfigRepository;
+import com.joxette.management.ConfigRepository;
+import com.joxette.management.EntitySourceConfig;
+import com.joxette.management.EntityTypeConfig;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.context.annotation.DependsOn;
 import org.springframework.stereotype.Component;
 
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -14,119 +18,141 @@ import java.util.stream.Collectors;
 
 /**
  * Routes each {@link KafkaMessage} to its target cassette destinations based
- * on the bootstrap configuration.
+ * on configuration loaded from the {@link ConfigRepository} (DuckDB).
  *
- * <h2>Routing modes</h2>
- * <dl>
- *   <dt>{@code "general"}</dt>
- *   <dd>Message is written only to {@code lake.cassette}.</dd>
- *   <dt>{@code "entity_only"}</dt>
- *   <dd>Message is written only to the matching entity cassette tables
- *       ({@code lake.entity_{type}}). It is <em>not</em> written to the general
- *       cassette.</dd>
- *   <dt>{@code "both"}</dt>
- *   <dd>Message is written to both the general cassette and every matching
- *       entity cassette.</dd>
- * </dl>
+ * <h2>Routing model</h2>
+ * <p>Each entity type has one or more source-topic mappings.  Each source
+ * mapping has a list of {@link EntitySourceConfig.MatcherConfig}s — one per
+ * message variant that can carry the entity's ID (e.g. a {@code fixture}
+ * entity may be referenced by {@code marketSet}, {@code resultSet},
+ * {@code coverage}, etc. messages, all on the same topic).
  *
- * <p>Topics not present in the bootstrap configuration default to
- * {@code "general"} mode.
+ * <p>For each incoming message the router tries every matcher for every entity
+ * mapping whose topic matches.  The first matcher that successfully extracts an
+ * ID produces an {@link EntityRoute} carrying the matched {@code messageType}.
+ * Multiple entity types can independently match the same message.
  *
- * <h2>Entity bucket</h2>
- * <p>{@code entity_bucket = Math.floorMod(Objects.hash(entityType, entityId), buckets)}.
- * {@link Math#floorMod} is used so the result is always in {@code [0, buckets)}.
+ * <h2>General-cassette routing</h2>
+ * <p>Enabled when:
+ * <ul>
+ *   <li>the topic-level mode is {@code "general"} or {@code "both"}, OR</li>
+ *   <li>any matching source mapping has mode {@code "both"}.</li>
+ * </ul>
+ *
+ * <h2>Bucket assignment</h2>
+ * <p>{@code bucket = Math.floorMod(hash(entityType, entityId), buckets)}.
+ *
+ * <h2>Config lifecycle</h2>
+ * <p>Routing tables are loaded from the DB once at startup via
+ * {@link #reload()}.  Call {@link #reload()} again after any REST API change
+ * to entity types or source mappings (e.g. from {@code EntityController}).
  */
 @Component
+@DependsOn("managementConfigRepository")
 public class MessageRouter {
 
-    /** topic → mode ("general" | "entity_only" | "both") */
-    private volatile Map<String, String> topicModes;
+    private static final Logger log = LoggerFactory.getLogger(MessageRouter.class);
 
-    /** topic → ordered list of entity mappings that draw IDs from it */
-    private volatile Map<String, List<EntityMapping>> topicEntityMappings;
-
-    /** entity type → bucket count */
-    private volatile Map<String, Integer> entityBuckets;
-
-    private final EntityIdExtractor extractor;
     private final ConfigRepository configRepo;
+    private final EntityIdExtractor extractor;
 
-    public MessageRouter(JoxetteProperties properties, EntityIdExtractor extractor,
-                         ConfigRepository configRepo) {
-        this.extractor  = extractor;
+    /** Snapshot of routing state, replaced atomically on reload(). */
+    private volatile RoutingTables tables;
+
+    public MessageRouter(ConfigRepository configRepo, EntityIdExtractor extractor) {
         this.configRepo = configRepo;
-
-        Map<String, String> modes = new HashMap<>();
-        for (JoxetteProperties.Bootstrap.TopicEntry te : properties.getBootstrap().getTopics()) {
-            modes.put(te.getTopic(), te.getMode());
+        this.extractor  = extractor;
+        try {
+            reload();
+        } catch (SQLException e) {
+            // Non-fatal at construction: log and start with empty tables.
+            // reload() will be called again by RecordingStartupRunner if needed.
+            log.warn("MessageRouter: initial config load from DB failed ({}); starting with empty routing tables", e.getMessage());
+            this.tables = new RoutingTables(Map.of(), Map.of(), Map.of());
         }
-        this.topicModes = Map.copyOf(modes);
-
-        Map<String, List<EntityMapping>> mappings = new HashMap<>();
-        Map<String, Integer> buckets = new HashMap<>();
-
-        for (JoxetteProperties.Bootstrap.EntityEntry ee : properties.getBootstrap().getEntities()) {
-            buckets.put(ee.getType(), ee.getBuckets());
-            for (SourceMapping sm : ee.getSources()) {
-                mappings.computeIfAbsent(sm.getTopic(), k -> new ArrayList<>())
-                        .add(new EntityMapping(
-                                ee.getType(),
-                                sm.getEntityId().getSource(),
-                                sm.getEntityId().getExpression()));
-            }
-        }
-
-        this.topicEntityMappings = Map.copyOf(mappings);
-        this.entityBuckets = Map.copyOf(buckets);
     }
 
     /**
-     * Reloads routing tables from the database, replacing the bootstrap snapshot.
+     * Reloads all routing configuration from the database.
      *
-     * <p>Each field is assigned an immutable map snapshot so concurrent
-     * {@link #route(KafkaMessage)} calls observe a fully-consistent view
-     * without additional locking.
+     * <p>The swap is atomic: a new {@link RoutingTables} object is built fully
+     * before replacing the field, so in-flight {@link #route} calls always see
+     * a consistent snapshot.
+     *
+     * @throws SQLException if the DB query fails
      */
-    public synchronized void reload() {
-        Map<String, String> modes = new HashMap<>();
-        configRepo.findAllTopics().forEach(tc -> modes.put(tc.topic(), tc.mode()));
+    public void reload() throws SQLException {
+        // 1. Topic modes
+        Map<String, String> topicModes = new HashMap<>();
+        for (var tc : configRepo.listTopics()) {
+            topicModes.put(tc.topic(), tc.mode());
+        }
 
-        Map<String, List<EntityMapping>> mappings = new HashMap<>();
-        Map<String, Integer> buckets = new HashMap<>();
+        // 2. Entity type → bucket count
+        Map<String, Integer> entityBuckets = new HashMap<>();
+        for (EntityTypeConfig etc : configRepo.listEntityTypes()) {
+            entityBuckets.put(etc.entityType(), etc.buckets());
+        }
 
-        configRepo.findAllEntityTypes().forEach(etc -> buckets.put(etc.entityType(), etc.buckets()));
-        configRepo.findAllMappings().forEach(m ->
-                mappings.computeIfAbsent(m.topic(), k -> new ArrayList<>())
-                        .add(new EntityMapping(m.entityType(), m.entityIdSource(), m.entityIdExpression())));
+        // 3. topic → list of EntitySourceEntry (all entity types)
+        Map<String, List<EntitySourceEntry>> topicSourceEntries = new HashMap<>();
+        for (EntityTypeConfig etc : configRepo.listEntityTypes()) {
+            for (EntitySourceConfig src : configRepo.listSources(etc.entityType())) {
+                topicSourceEntries
+                        .computeIfAbsent(src.topic(), k -> new ArrayList<>())
+                        .add(new EntitySourceEntry(etc.entityType(), src.mode(), src.matchers()));
+            }
+        }
 
-        this.topicModes = Map.copyOf(modes);
-        this.topicEntityMappings = mappings.entrySet().stream()
-                .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey, e -> List.copyOf(e.getValue())));
-        this.entityBuckets = Map.copyOf(buckets);
+        this.tables = new RoutingTables(
+                Map.copyOf(topicModes),
+                Map.copyOf(entityBuckets),
+                Map.copyOf(topicSourceEntries));
+
+        log.info("MessageRouter: loaded {} topic mode(s) and {} entity source mapping(s)",
+                topicModes.size(),
+                topicSourceEntries.values().stream().mapToInt(List::size).sum());
     }
 
     /**
      * Computes a {@link RouteDecision} for {@code message}.
      *
-     * <p>Entity ID extraction failures are silently skipped; the returned
-     * {@code entityRoutes} list contains only the successfully resolved routes.
+     * <p>For each source-entry whose topic matches, every matcher is tried in
+     * declaration order.  The first matcher that yields an entity ID produces
+     * one {@link EntityRoute} (with the matched {@code messageType}).  If no
+     * matcher matches, the source-entry produces no route for this message.
      */
     public RouteDecision route(KafkaMessage message) {
-        String mode = topicModes.getOrDefault(message.topic(), "general");
-        boolean routeToGeneral = !"entity_only".equals(mode);
+        RoutingTables t = this.tables;
+
+        String topicMode = t.topicModes().getOrDefault(message.topic(), "general");
+        boolean routeToGeneral = !"entity_only".equals(topicMode);
 
         List<EntityRoute> entityRoutes = new ArrayList<>();
-        if (!"general".equals(mode)) {
-            List<EntityMapping> mappings =
-                    topicEntityMappings.getOrDefault(message.topic(), List.of());
-            for (EntityMapping mapping : mappings) {
-                Optional<String> entityId =
-                        extractor.extract(message, mapping.source(), mapping.expression());
-                entityId.ifPresent(id -> {
-                    int bucketCount = entityBuckets.getOrDefault(mapping.entityType(), 256);
-                    int bucket = computeBucket(mapping.entityType(), id, bucketCount);
-                    entityRoutes.add(new EntityRoute(mapping.entityType(), id, bucket));
-                });
+        if (!"general".equals(topicMode)) {
+            List<EntitySourceEntry> entries =
+                    t.topicSourceEntries().getOrDefault(message.topic(), List.of());
+
+            for (EntitySourceEntry entry : entries) {
+                // Try each matcher in declaration order; stop at first match
+                for (EntitySourceConfig.MatcherConfig matcher : entry.matchers()) {
+                    Optional<String> entityId =
+                            extractor.extract(message, matcher.idSource(), matcher.idExpression());
+                    if (entityId.isPresent()) {
+                        int bucketCount = t.entityBuckets().getOrDefault(entry.entityType(), 256);
+                        int bucket = computeBucket(entry.entityType(), entityId.get(), bucketCount);
+                        entityRoutes.add(new EntityRoute(
+                                entry.entityType(),
+                                entityId.get(),
+                                bucket,
+                                matcher.messageType()));
+                        break; // one route per entity-source entry per message
+                    }
+                }
+                // Per-mapping mode promotion
+                if ("both".equals(entry.mappingMode())) {
+                    routeToGeneral = true;
+                }
             }
         }
 
@@ -135,15 +161,21 @@ public class MessageRouter {
 
     /**
      * Stable bucket assignment: {@code floorMod(hash(entityType, entityId), buckets)}.
-     *
-     * <p>{@link Math#floorMod} guarantees a non-negative result for any
-     * hash value, including {@link Integer#MIN_VALUE}.
      */
     static int computeBucket(String entityType, String entityId, int buckets) {
         int hash = 31 * entityType.hashCode() + entityId.hashCode();
         return Math.floorMod(hash, buckets);
     }
 
-    /** Internal transfer object, not part of the public API. */
-    private record EntityMapping(String entityType, String source, String expression) {}
+    /** Internal transfer object grouping matchers for one (entity_type, topic) pair. */
+    private record EntitySourceEntry(
+            String entityType,
+            String mappingMode,
+            List<EntitySourceConfig.MatcherConfig> matchers) {}
+
+    /** Immutable snapshot of all routing tables, swapped atomically on reload. */
+    private record RoutingTables(
+            Map<String, String> topicModes,
+            Map<String, Integer> entityBuckets,
+            Map<String, List<EntitySourceEntry>> topicSourceEntries) {}
 }

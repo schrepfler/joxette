@@ -13,9 +13,8 @@
 --   2. DuckDB scalar macros  (headers_*)
 --   3. Config tables         (plain DuckDB, main schema)
 --   4. DuckLake tables       (Parquet-backed, lake.main schema)
---      4a. known_entities
---      4b. General cassette template
---      4c. Entity cassette template
+--      4a. General cassette template
+--      4b. Entity cassette template
 -- =============================================================================
 
 
@@ -79,6 +78,7 @@ CREATE TABLE IF NOT EXISTS topic_configs (
     topic      VARCHAR PRIMARY KEY,
     mode       VARCHAR NOT NULL
                  CHECK (mode IN ('general', 'entity_only', 'both')),
+    paused     BOOLEAN NOT NULL DEFAULT false,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -92,30 +92,64 @@ CREATE TABLE IF NOT EXISTS entity_type_configs (
 CREATE SEQUENCE IF NOT EXISTS seq_entity_source_mappings START 1;
 
 CREATE TABLE IF NOT EXISTS entity_source_mappings (
-    id                   INTEGER PRIMARY KEY
-                           DEFAULT nextval('seq_entity_source_mappings'),
-    entity_type          VARCHAR NOT NULL,
-    topic                VARCHAR NOT NULL,
-    entity_id_source     VARCHAR NOT NULL
-                           CHECK (entity_id_source IN ('key', 'value', 'headers')),
-    entity_id_expression VARCHAR NOT NULL,  -- JSONPath expression
-    created_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+    id          INTEGER PRIMARY KEY
+                  DEFAULT nextval('seq_entity_source_mappings'),
+    entity_type VARCHAR NOT NULL,
+    topic       VARCHAR NOT NULL,
+    mode        VARCHAR NOT NULL DEFAULT 'entity_only'
+                  CHECK (mode IN ('entity_only', 'both')),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (entity_type, topic)
+);
+
+CREATE SEQUENCE IF NOT EXISTS seq_entity_source_matchers START 1;
+
+-- Each source mapping can have multiple matchers — one per message variant
+-- that carries the entity ID (e.g. marketSet, resultSet, coverage all carry
+-- fixtureId for the same logical fixture entity).
+CREATE TABLE IF NOT EXISTS entity_source_matchers (
+    id           INTEGER PRIMARY KEY
+                   DEFAULT nextval('seq_entity_source_matchers'),
+    entity_type  VARCHAR NOT NULL,
+    topic        VARCHAR NOT NULL,
+    message_type VARCHAR NOT NULL,
+    id_source    VARCHAR NOT NULL
+                   CHECK (id_source IN ('key', 'value', 'headers')),
+    id_expression VARCHAR,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (entity_type, topic, message_type)
+);
+
+-- Known-entities registry: plain DuckDB so ON CONFLICT is enforced.
+-- PRIMARY KEY (entity_type, entity_id) guarantees deduplication.
+CREATE TABLE IF NOT EXISTS known_entities (
+    entity_type  VARCHAR NOT NULL,
+    entity_id    VARCHAR NOT NULL,
+    first_seen   TIMESTAMPTZ NOT NULL,
+    last_seen    TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (entity_type, entity_id)
 );
 
 CREATE SEQUENCE IF NOT EXISTS seq_compaction_history START 1;
 
 CREATE TABLE IF NOT EXISTS compaction_history (
-    id           INTEGER PRIMARY KEY
-                   DEFAULT nextval('seq_compaction_history'),
-    table_name   VARCHAR NOT NULL,
-    started_at   TIMESTAMPTZ NOT NULL,
-    completed_at TIMESTAMPTZ,
-    files_before INTEGER,
-    files_after  INTEGER,
-    bytes_before BIGINT,
-    bytes_after  BIGINT,
-    status       VARCHAR NOT NULL
-                   CHECK (status IN ('running', 'completed', 'failed'))
+    id              INTEGER PRIMARY KEY
+                      DEFAULT nextval('seq_compaction_history'),
+    started_at      TIMESTAMPTZ NOT NULL,
+    completed_at    TIMESTAMPTZ,
+    status          VARCHAR NOT NULL
+                      CHECK (status IN ('running', 'completed', 'failed')),
+    triggered_by    VARCHAR NOT NULL DEFAULT 'unknown',
+    targets         VARCHAR[],
+    entity_buckets_compacted     INTEGER NOT NULL DEFAULT 0,
+    general_partitions_compacted INTEGER NOT NULL DEFAULT 0,
+    error_message   VARCHAR
+);
+
+CREATE TABLE IF NOT EXISTS snapshots (
+    name        VARCHAR     NOT NULL PRIMARY KEY,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    size_bytes  BIGINT
 );
 
 
@@ -132,20 +166,7 @@ CREATE TABLE IF NOT EXISTS compaction_history (
 -- The templates below show VARIANT; replace with JSON if needed.
 
 
--- 4a. known_entities
--- Append-only log of every entity_id first/last observed per entity type.
--- No PRIMARY KEY: DuckLake tables are columnar and append-optimised.
--- Deduplication happens at query time (e.g. MAX(last_seen) GROUP BY entity_id).
-CREATE TABLE IF NOT EXISTS lake.main.known_entities (
-    entity_type VARCHAR NOT NULL,
-    entity_id   VARCHAR NOT NULL,
-    bucket      INTEGER NOT NULL,
-    first_seen  TIMESTAMPTZ NOT NULL,
-    last_seen   TIMESTAMPTZ NOT NULL
-);
-
-
--- 4b. General cassette table template
+-- 4a. General cassette table template
 -- One table per topic whose mode is 'general' or 'both'.
 -- Actual table name: general_<normalised_topic>  (e.g. general_orders_events)
 --
@@ -158,7 +179,7 @@ CREATE TABLE IF NOT EXISTS lake.main.known_entities (
 --     kafka_value     BLOB,                   -- raw message value bytes
 --     kafka_value_str VARCHAR,                -- UTF-8 decoded value (if valid)
 --     metadata        VARIANT,               -- decoded JSON envelope for queries
---     headers         STRUCT(key VARCHAR, value BLOB)[]
+--     headers         STRUCT(key VARCHAR, value VARCHAR)[]  -- UTF-8 decoded; binary values base64-encoded
 -- );
 CREATE TABLE IF NOT EXISTS lake.main.general_orders_events (
     recorded_at     TIMESTAMPTZ NOT NULL,
@@ -169,7 +190,7 @@ CREATE TABLE IF NOT EXISTS lake.main.general_orders_events (
     kafka_value     BLOB,
     kafka_value_str VARCHAR,
     metadata        VARIANT,
-    headers         STRUCT(key VARCHAR, value BLOB)[]
+    headers         STRUCT(key VARCHAR, value VARCHAR)[]
 );
 
 CREATE TABLE IF NOT EXISTS lake.main.general_audit_log (
@@ -181,11 +202,11 @@ CREATE TABLE IF NOT EXISTS lake.main.general_audit_log (
     kafka_value     BLOB,
     kafka_value_str VARCHAR,
     metadata        VARIANT,
-    headers         STRUCT(key VARCHAR, value BLOB)[]
+    headers         STRUCT(key VARCHAR, value VARCHAR)[]
 );
 
 
--- 4c. Entity cassette table template
+-- 4b. Entity cassette table template
 -- One table per entity type.
 -- Actual table name: entity_<normalised_type>  (e.g. entity_order)
 --
@@ -193,6 +214,7 @@ CREATE TABLE IF NOT EXISTS lake.main.general_audit_log (
 --     recorded_at     TIMESTAMPTZ NOT NULL,   -- wall-clock time of recording
 --     entity_id       VARCHAR     NOT NULL,   -- extracted entity identifier
 --     bucket          INTEGER     NOT NULL,   -- hash(entity_id) mod bucket_count
+--     message_type    VARCHAR,                -- discriminator field from message
 --     topic           VARCHAR     NOT NULL,   -- source Kafka topic
 --     kafka_offset    BIGINT      NOT NULL,
 --     kafka_partition INTEGER     NOT NULL,
@@ -201,12 +223,13 @@ CREATE TABLE IF NOT EXISTS lake.main.general_audit_log (
 --     kafka_value     BLOB,
 --     kafka_value_str VARCHAR,
 --     metadata        VARIANT,
---     headers         STRUCT(key VARCHAR, value BLOB)[]
+--     headers         STRUCT(key VARCHAR, value VARCHAR)[]  -- UTF-8 decoded; binary values base64-encoded
 -- );
 CREATE TABLE IF NOT EXISTS lake.main.entity_order (
     recorded_at     TIMESTAMPTZ NOT NULL,
     entity_id       VARCHAR     NOT NULL,
     bucket          INTEGER     NOT NULL,
+    message_type    VARCHAR,
     topic           VARCHAR     NOT NULL,
     kafka_offset    BIGINT      NOT NULL,
     kafka_partition INTEGER     NOT NULL,
@@ -215,5 +238,5 @@ CREATE TABLE IF NOT EXISTS lake.main.entity_order (
     kafka_value     BLOB,
     kafka_value_str VARCHAR,
     metadata        VARIANT,
-    headers         STRUCT(key VARCHAR, value BLOB)[]
+    headers         STRUCT(key VARCHAR, value VARCHAR)[]
 );

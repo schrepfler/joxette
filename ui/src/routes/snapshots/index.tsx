@@ -62,10 +62,57 @@ function CreateSnapshotModal({ onClose }: { onClose: () => void }) {
   )
 }
 
+function ExportToObjectStoreModal({ onClose }: { onClose: () => void }) {
+  const qc = useQueryClient()
+  const { addToast } = useToast()
+  const mutation = useMutation({
+    mutationFn: (name?: string) => cassettesApi.exportSnapshotToObjectStore(name ? { name } : {}),
+    onSuccess: (d) => {
+      void qc.invalidateQueries({ queryKey: ['snapshots'] })
+      addToast(`Snapshot '${d.name}' exported to object storage`, 'success')
+      onClose()
+    },
+    onError: (e: Error) => addToast(e.message, 'error'),
+  })
+  const form = useForm({
+    defaultValues: { name: '' },
+    onSubmit: async ({ value }) => mutation.mutate(value.name || undefined),
+  })
+  return (
+    <div style={overlayStyle} onClick={onClose}>
+      <div style={modalStyle} onClick={e => e.stopPropagation()}>
+        <h2 style={{ margin: '0 0 0.75rem', fontSize: 18 }}>Export to Object Storage</h2>
+        <p style={{ margin: '0 0 1rem', fontSize: 13, color: '#718096', lineHeight: 1.5 }}>
+          Exports the full catalog (config tables, known_entities, DuckLake metadata) directly to the
+          configured S3 bucket. No local disk space is used. The snapshot is placed under
+          <code style={{ background: '#edf2f7', padding: '1px 4px', borderRadius: 3 }}>&lt;bucket&gt;/snapshots/&lt;name&gt;/</code>.
+        </p>
+        <form onSubmit={e => { e.preventDefault(); void form.handleSubmit() }}>
+          <form.Field name="name">
+            {(f) => (
+              <div style={{ marginBottom: '1rem' }}>
+                <label style={labelStyle}>Name (optional)</label>
+                <input style={inputStyleFull} value={f.state.value} onChange={e => f.handleChange(e.target.value)} placeholder="Auto-generated if empty" />
+              </div>
+            )}
+          </form.Field>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button type="button" onClick={onClose} style={cancelBtnStyle}>Cancel</button>
+            <button type="submit" disabled={mutation.isPending} style={{ ...primaryBtnStyle, background: '#38a169' }}>
+              {mutation.isPending ? 'Exporting…' : '☁ Export to Object Store'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
 function SnapshotsPage() {
   const qc = useQueryClient()
   const { addToast } = useToast()
   const [showCreate, setShowCreate] = useState(false)
+  const [showExport, setShowExport] = useState(false)
   const [confirmRestore, setConfirmRestore] = useState<string | null>(null)
 
   const { data, isLoading, error } = useQuery({
@@ -103,7 +150,12 @@ function SnapshotsPage() {
     <Layout>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
         <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>Snapshots</h1>
-        <button style={primaryBtnStyle} onClick={() => setShowCreate(true)}>+ Create Snapshot</button>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button style={{ ...primaryBtnStyle, background: '#38a169' }} onClick={() => setShowExport(true)}>
+            ☁ Export to Object Store
+          </button>
+          <button style={primaryBtnStyle} onClick={() => setShowCreate(true)}>+ Create Local Snapshot</button>
+        </div>
       </div>
 
       {isLoading && <LoadingSpinner />}
@@ -127,6 +179,7 @@ function SnapshotsPage() {
       )}
 
       {showCreate && <CreateSnapshotModal onClose={() => setShowCreate(false)} />}
+      {showExport && <ExportToObjectStoreModal onClose={() => setShowExport(false)} />}
       {confirmRestore && (
         <ConfirmDialog
           message={`Restore snapshot "${confirmRestore}"? This will overwrite current data.`}

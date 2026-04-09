@@ -24,21 +24,17 @@ import java.util.regex.Pattern;
 
 /**
  * Queries entity cassettes ({@code lake.entity_{type}}) and the
- * {@code lake.known_entities} registry.
+ * {@code known_entities} registry (plain DuckDB, main schema).
  *
  * <h2>Deduplication</h2>
- * <p>The entity cassette PK is {@code (entity_id, timestamp, recorded_at)},
- * so the same {@code (topic, partition, offset)} triple can appear multiple
- * times. A {@code QUALIFY ROW_NUMBER() OVER (PARTITION BY topic, partition,
- * "offset" ORDER BY recorded_at DESC) = 1} clause keeps only the
- * most-recently recorded copy per source Kafka message.
+ * <p>The entity cassette uses a {@code QUALIFY ROW_NUMBER() OVER (PARTITION BY topic, partition,
+ * "offset" ORDER BY recorded_at DESC) = 1} clause to keep only the most-recently
+ * recorded copy per source Kafka message.
  *
  * <h2>Cursor encoding</h2>
  * <p>The entity replay cursor encodes
- * {@code (timestamp, recorded_at, source_topic, source_partition,
- * source_offset)}, matching the five-column {@code ORDER BY} used after
- * deduplication. jOOQ's {@code seekAfter} generates the correct tuple
- * comparison for these five columns.
+ * {@code (timestamp, recorded_at, source_topic, source_partition, source_offset)},
+ * matching the five-column {@code ORDER BY} used after deduplication.
  *
  * <h2>Known-entity pagination</h2>
  * <p>List and search cursors encode only {@code entity_id} (ordering column)
@@ -51,25 +47,28 @@ public class EntityReplayService {
     private static final int STREAM_PAGE_SIZE = 500;
 
     // -------------------------------------------------------------------------
-    // Field references (shared across entity cassette and known_entities)
+    // Field references for entity cassette tables
     // -------------------------------------------------------------------------
 
-    private static final Field<String>         F_ENTITY_ID     = DSL.field(DSL.name("entity_id"),     String.class);
-    private static final Field<Integer>        F_ENTITY_BUCKET = DSL.field(DSL.name("entity_bucket"), Integer.class);
-    private static final Field<String>         F_TOPIC         = DSL.field(DSL.name("topic"),         String.class);
-    private static final Field<Integer>        F_PARTITION     = DSL.field(DSL.name("partition"),     Integer.class);
-    private static final Field<Long>           F_OFFSET        = DSL.field(DSL.name("offset"),        Long.class);
-    private static final Field<OffsetDateTime> F_TIMESTAMP     = DSL.field(DSL.name("timestamp"),     OffsetDateTime.class);
-    private static final Field<OffsetDateTime> F_RECORDED_AT   = DSL.field(DSL.name("recorded_at"),   OffsetDateTime.class);
-    private static final Field<String>         F_KEY           = DSL.field(DSL.name("key"),           String.class);
-    private static final Field<byte[]>         F_VALUE         = DSL.field(DSL.name("value"),         byte[].class);
-    private static final Field<Object>         F_HEADERS       = DSL.field(DSL.name("headers"),       Object.class);
+    private static final Field<String>         F_ENTITY_ID    = DSL.field(DSL.name("entity_id"),       String.class);
+    private static final Field<String>         F_MESSAGE_TYPE = DSL.field(DSL.name("message_type"),    String.class);
+    private static final Field<String>         F_TOPIC        = DSL.field(DSL.name("topic"),           String.class);
+    private static final Field<Integer>        F_PARTITION    = DSL.field(DSL.name("kafka_partition"),  Integer.class);
+    private static final Field<Long>           F_OFFSET       = DSL.field(DSL.name("kafka_offset"),    Long.class);
+    private static final Field<OffsetDateTime> F_TIMESTAMP    = DSL.field(DSL.name("kafka_timestamp"), OffsetDateTime.class);
+    private static final Field<OffsetDateTime> F_RECORDED_AT  = DSL.field(DSL.name("recorded_at"),    OffsetDateTime.class);
+    private static final Field<String>         F_KEY          = DSL.field(DSL.name("kafka_key"),       String.class);
+    private static final Field<byte[]>         F_VALUE        = DSL.field(DSL.name("kafka_value"),     byte[].class);
+    private static final Field<Object>         F_HEADERS      = DSL.field(DSL.name("headers"),         Object.class);
 
-    // known_entities-specific fields
-    private static final Table<?>              KNOWN_ENTITIES  = DSL.table(DSL.name("lake", "known_entities"));
-    private static final Field<String>         F_ENTITY_TYPE   = DSL.field(DSL.name("entity_type"),   String.class);
-    private static final Field<OffsetDateTime> F_FIRST_SEEN    = DSL.field(DSL.name("first_seen"),    OffsetDateTime.class);
-    private static final Field<OffsetDateTime> F_LAST_SEEN     = DSL.field(DSL.name("last_seen"),     OffsetDateTime.class);
+    // -------------------------------------------------------------------------
+    // Field references for known_entities (plain DuckDB, unqualified name)
+    // -------------------------------------------------------------------------
+
+    private static final Table<?>              KNOWN_ENTITIES = DSL.table(DSL.name("known_entities"));
+    private static final Field<String>         F_ENTITY_TYPE  = DSL.field(DSL.name("entity_type"), String.class);
+    private static final Field<OffsetDateTime> F_FIRST_SEEN   = DSL.field(DSL.name("first_seen"),  OffsetDateTime.class);
+    private static final Field<OffsetDateTime> F_LAST_SEEN    = DSL.field(DSL.name("last_seen"),   OffsetDateTime.class);
 
     // QUALIFY deduplication for entity cassette rows
     private static final Condition QUALIFY_DEDUP = DSL.rowNumber().over(
@@ -108,7 +107,7 @@ public class EntityReplayService {
         if (to != null)   cond = cond.and(F_TIMESTAMP.le(to.atOffset(ZoneOffset.UTC)));
 
         var selectBase = dsl
-                .select(F_ENTITY_ID, F_ENTITY_BUCKET, F_TOPIC, F_PARTITION, F_OFFSET,
+                .select(F_ENTITY_ID, F_MESSAGE_TYPE, F_TOPIC, F_PARTITION, F_OFFSET,
                         F_TIMESTAMP, F_RECORDED_AT, F_KEY, F_VALUE, F_HEADERS)
                 .from(entityTable)
                 .where(cond)
@@ -159,7 +158,7 @@ public class EntityReplayService {
     // -------------------------------------------------------------------------
 
     /**
-     * Lists known entities of {@code entityType} from {@code lake.known_entities},
+     * Lists known entities of {@code entityType} from {@code known_entities},
      * ordered by {@code entity_id} ascending.
      */
     public PagedResponse<EntityInfo> listEntities(
@@ -168,7 +167,7 @@ public class EntityReplayService {
         String afterId = cursor != null ? decodePlainCursor(cursor) : null;
 
         var selectBase = dsl
-                .select(F_ENTITY_TYPE, F_ENTITY_ID, F_ENTITY_BUCKET, F_FIRST_SEEN, F_LAST_SEEN)
+                .select(F_ENTITY_TYPE, F_ENTITY_ID, F_FIRST_SEEN, F_LAST_SEEN)
                 .from(KNOWN_ENTITIES)
                 .where(F_ENTITY_TYPE.eq(entityType))
                 .orderBy(F_ENTITY_ID.asc());
@@ -193,7 +192,7 @@ public class EntityReplayService {
         String afterId = cursor != null ? decodePlainCursor(cursor) : null;
 
         var selectBase = dsl
-                .select(F_ENTITY_TYPE, F_ENTITY_ID, F_ENTITY_BUCKET, F_FIRST_SEEN, F_LAST_SEEN)
+                .select(F_ENTITY_TYPE, F_ENTITY_ID, F_FIRST_SEEN, F_LAST_SEEN)
                 .from(KNOWN_ENTITIES)
                 .where(F_ENTITY_TYPE.eq(entityType)
                         .and(F_ENTITY_ID.likeIgnoreCase("%" + escapeLike(q) + "%")))
@@ -218,21 +217,23 @@ public class EntityReplayService {
         validateEntityType(entityType);
         Table<?> entityTable = entityTable(entityType);
 
-        // Deduplicated inner table used by both aggregation sub-queries
+        // Deduplicated inner table used by both aggregation sub-queries.
+        // Alias kafka_timestamp -> timestamp so aggregate field references are simple.
+        Field<OffsetDateTime> tsAlias    = F_TIMESTAMP.as("ts");
+        Field<String>         topicAlias = F_TOPIC.as("topic");
         Table<?> deduped = dsl
-                .select(F_TIMESTAMP, F_TOPIC)
+                .select(tsAlias, topicAlias)
                 .from(entityTable)
                 .where(F_ENTITY_ID.eq(entityId))
                 .qualify(QUALIFY_DEDUP)
                 .asTable("deduped");
 
-        Field<OffsetDateTime> dedupedTs    = DSL.field(DSL.name("timestamp"),   OffsetDateTime.class);
-        Field<String>         dedupedTopic = DSL.field(DSL.name("topic"),        String.class);
+        Field<OffsetDateTime> dedupedTs    = DSL.field(DSL.name("ts"),    OffsetDateTime.class);
+        Field<String>         dedupedTopic = DSL.field(DSL.name("topic"), String.class);
         Field<Integer>        fCnt         = DSL.count().as("cnt");
         Field<OffsetDateTime> fFirstMsg    = DSL.min(dedupedTs).as("first_msg");
         Field<OffsetDateTime> fLastMsg     = DSL.max(dedupedTs).as("last_msg");
 
-        // Aggregate count and timestamp range
         long count = 0;
         Instant firstMsg = null;
         Instant lastMsg  = null;
@@ -246,7 +247,6 @@ public class EntityReplayService {
             if (l != null) lastMsg  = l.toInstant();
         }
 
-        // Count per source topic
         Map<String, Long> countByTopic = new LinkedHashMap<>();
         dsl.select(dedupedTopic, fCnt)
                 .from(deduped)
@@ -254,7 +254,6 @@ public class EntityReplayService {
                 .orderBy(dedupedTopic.asc())
                 .forEach(r -> countByTopic.put(r.get(dedupedTopic), r.get(fCnt).longValue()));
 
-        // First / last seen from the entity registry
         Instant firstSeen = null;
         Instant lastSeen  = null;
 
@@ -280,7 +279,7 @@ public class EntityReplayService {
         try {
             return new EntityRecord(
                     r.get(F_ENTITY_ID),
-                    r.get(F_ENTITY_BUCKET),
+                    r.get(F_MESSAGE_TYPE),
                     r.get(F_TOPIC),
                     r.get(F_PARTITION),
                     r.get(F_OFFSET),
@@ -299,7 +298,6 @@ public class EntityReplayService {
         return new EntityInfo(
                 r.get(F_ENTITY_TYPE),
                 r.get(F_ENTITY_ID),
-                r.get(F_ENTITY_BUCKET),
                 r.get(F_FIRST_SEEN).toInstant(),
                 r.get(F_LAST_SEEN).toInstant()
         );
@@ -310,7 +308,7 @@ public class EntityReplayService {
     // -------------------------------------------------------------------------
 
     private static Table<?> entityTable(String entityType) {
-        return DSL.table(DSL.name("lake", "entity_" + entityType));
+        return DSL.table(DSL.name("lake", "main", "entity_" + entityType));
     }
 
     private static String encodePlainCursor(String entityId) {

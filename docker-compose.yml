@@ -1,0 +1,102 @@
+services:
+
+  rustfs:
+    image: rustfs/rustfs:latest
+    container_name: joxette-rustfs
+    ports:
+      - "9000:9000"   # S3-compatible API (used by DuckDB/DuckLake)
+      - "9001:9001"   # Web console (optional, for browsing buckets)
+    environment:
+      RUSTFS_VOLUMES: /data
+      RUSTFS_ACCESS_KEY: joxettedev
+      RUSTFS_SECRET_KEY: joxettedev123
+      RUSTFS_REGION: us-east-1
+      RUSTFS_CONSOLE_ENABLE: "true"
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 9000 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    volumes:
+      - rustfs-data:/data
+
+  # One-shot container: creates the joxette-data bucket once RustFS is healthy.
+  rustfs-init:
+    image: amazon/aws-cli:latest
+    container_name: joxette-rustfs-init
+    depends_on:
+      rustfs:
+        condition: service_healthy
+    environment:
+      AWS_ACCESS_KEY_ID: joxettedev
+      AWS_SECRET_ACCESS_KEY: joxettedev123
+      AWS_DEFAULT_REGION: us-east-1
+    entrypoint: >
+      /bin/sh -c "
+        aws --endpoint-url http://rustfs:9000 s3 mb s3://joxette-data --region us-east-1 2>/dev/null || true;
+        echo 'Bucket joxette-data ready.'
+      "
+    restart: "no"
+
+  kafka:
+    image: apache/kafka-native:latest
+    container_name: joxette-kafka
+    ports:
+      - "9092:9092"       # external client port (used by Joxette / CLI tools)
+      - "9093:9093"       # internal broker-to-broker port
+    environment:
+      # KRaft mode – no ZooKeeper required
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: "1@kafka:9093"
+      KAFKA_LISTENERS: "PLAINTEXT://0.0.0.0:9092,INTERNAL://0.0.0.0:9094,CONTROLLER://0.0.0.0:9093"
+      KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://localhost:9092,INTERNAL://kafka:9094"
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: "PLAINTEXT:PLAINTEXT,INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT"
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"   # topics are managed by Jikkou
+      KAFKA_LOG_RETENTION_HOURS: 168             # 7 days
+      KAFKA_LOG_SEGMENT_BYTES: 67108864          # 64 MB
+      CLUSTER_ID: "joxette-local-cluster-0001"
+    healthcheck:
+      # apache/kafka-native has no shell scripts; use nc to TCP-probe the listener port.
+      test: ["CMD-SHELL", "nc -z localhost 9092 || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+
+  # One-shot container: applies Jikkou topic definitions once Kafka is healthy.
+  # Exits with code 0 on success; docker compose will mark it as "exited" (not a failure).
+  jikkou:
+    image: streamthoughts/jikkou:latest
+    container_name: joxette-jikkou
+    depends_on:
+      kafka:
+        condition: service_healthy
+    # Mount the jikkou/ directory so the container can read topics.yml and jikkou.yml
+    volumes:
+      - ./jikkou:/jikkou:ro   # topics.yml and other resources
+      - jikkou-config:/etc/jikkou  # writable volume so Jikkou can write its context file
+    # Run as root so Jikkou can write to /etc/jikkou/config.
+    user: root
+    # Use a shell entrypoint: create a named context pointing at the internal
+    # Kafka listener, then apply the topic definitions.
+    entrypoint: >
+      /bin/sh -c "
+        jikkou config set-context local --config-props='kafka.client.bootstrap.servers=kafka:9094' &&
+        jikkou config use-context local &&
+        jikkou apply --files /jikkou/topics.yml
+      "
+    restart: "no"   # run once, do not restart after exit
+
+volumes:
+  kafka-data:
+  rustfs-data:
+  jikkou-config:

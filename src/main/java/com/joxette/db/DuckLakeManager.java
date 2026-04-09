@@ -48,26 +48,96 @@ public class DuckLakeManager {
     @PostConstruct
     public void initialize() throws SQLException {
         log.info("Initializing DuckLake catalog...");
+
         try (Statement stmt = connection.createStatement()) {
             stmt.execute("INSTALL ducklake");
+        }
+        try (Statement stmt = connection.createStatement()) {
             stmt.execute("LOAD ducklake");
+        }
 
-            String catalogPath = properties.getCatalog().getPath();
-            String dataPath    = resolveDataPath(catalogPath);
+        configureS3Secret();
 
-            log.debug("Attaching DuckLake catalog at '{}' with DATA_PATH '{}'", catalogPath, dataPath);
-            try {
+        String catalogPath = properties.getCatalog().getPath();
+
+        if (":memory:".equals(catalogPath)) {
+            // In-memory mode (integration tests): attach an ephemeral DuckLake catalog
+            // that stores both metadata and data in memory.
+            log.info("Attaching in-memory DuckLake catalog '{}'", CATALOG_NAME);
+            try (Statement stmt = connection.createStatement()) {
                 stmt.execute(String.format(
-                    "ATTACH IF NOT EXISTS 'ducklake:%s' AS %s (DATA_PATH '%s')",
-                    catalogPath, CATALOG_NAME, dataPath));
-                log.info("DuckLake catalog '{}' ready (data path: {})", CATALOG_NAME, dataPath);
+                    "ATTACH 'ducklake::memory:' AS %s (DATA_PATH ':memory:')",
+                    CATALOG_NAME));
+                log.info("In-memory DuckLake catalog '{}' ready", CATALOG_NAME);
             } catch (SQLException e) {
                 if (isAlreadyAttached(e)) {
-                    log.debug("DuckLake catalog '{}' already attached, skipping", CATALOG_NAME);
+                    log.warn("In-memory DuckLake catalog '{}' already attached. Error: {}", CATALOG_NAME, e.getMessage());
                 } else {
                     throw e;
                 }
             }
+            return;
+        }
+
+        String dataPath = resolveDataPath(catalogPath);
+
+        log.info("Attaching DuckLake catalog at '{}' with DATA_PATH '{}'", catalogPath, dataPath);
+        try (Statement stmt = connection.createStatement()) {
+            stmt.execute(String.format(
+                "ATTACH 'ducklake:%s' AS %s (DATA_PATH '%s', OVERRIDE_DATA_PATH TRUE)",
+                catalogPath, CATALOG_NAME, dataPath));
+            log.info("DuckLake catalog '{}' ready (data path: {})", CATALOG_NAME, dataPath);
+        } catch (SQLException e) {
+            if (isAlreadyAttached(e)) {
+                log.warn("DuckLake catalog '{}' reported as already attached – verify it is visible via duckdb_databases(). Error was: {}",
+                    CATALOG_NAME, e.getMessage());
+            } else {
+                throw e;
+            }
+        }
+    }
+
+    /**
+     * Configures a DuckDB S3 secret when an explicit endpoint override is set.
+     *
+     * <p>For local S3-compatible servers (RustFS, MinIO) we must disable TLS and
+     * switch to path-style URLs.  For production AWS the secret is omitted so
+     * DuckDB falls back to its built-in credential chain.
+     */
+    private void configureS3Secret() throws SQLException {
+        JoxetteProperties.S3 s3 = properties.getS3();
+        if (!s3.hasEndpoint()) {
+            log.debug("No S3 endpoint override configured – using DuckDB default credential chain");
+            return;
+        }
+
+        log.info("Configuring DuckDB S3 secret for endpoint '{}'", s3.getEndpoint());
+
+        // Drop any pre-existing secret so re-starts don't fail on "already exists".
+        try (Statement stmt = connection.createStatement()) {
+            stmt.execute("DROP SECRET IF EXISTS joxette_s3");
+        }
+
+        String sql = String.format(
+            "CREATE SECRET joxette_s3 (" +
+            "  TYPE S3," +
+            "  KEY_ID '%s'," +
+            "  SECRET '%s'," +
+            "  REGION '%s'," +
+            "  ENDPOINT '%s'," +
+            "  USE_SSL false," +
+            "  URL_STYLE 'path'" +
+            ")",
+            s3.getAccessKey(),
+            s3.getSecretKey(),
+            s3.getRegion(),
+            // DuckDB expects host:port without the http:// scheme
+            s3.getEndpoint().replaceFirst("https?://", "")
+        );
+
+        try (Statement stmt = connection.createStatement()) {
+            stmt.execute(sql);
+            log.info("DuckDB S3 secret 'joxette_s3' configured (endpoint: {})", s3.getEndpoint());
         }
     }
 
@@ -85,9 +155,17 @@ public class DuckLakeManager {
         return base + "_data";
     }
 
+    /**
+     * Returns {@code true} only for the specific DuckDB message that means the
+     * catalog alias is already registered on this connection.  Deliberately narrow
+     * to avoid silently swallowing real ATTACH failures (e.g. missing extension,
+     * S3 credentials, corrupt file) whose messages also contain "already exists".
+     */
     private boolean isAlreadyAttached(SQLException e) {
         String msg = e.getMessage();
-        return msg != null && (msg.contains("already attached") || msg.contains("already exists"));
+        if (msg == null) return false;
+        // DuckDB emits "already attached" when the same alias is attached twice.
+        return msg.contains("already attached");
     }
 
     /** Returns the single shared DuckDB JDBC connection. */

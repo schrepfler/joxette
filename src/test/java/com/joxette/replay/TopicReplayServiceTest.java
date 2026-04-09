@@ -37,6 +37,10 @@ class TopicReplayServiceTest {
     @BeforeEach
     void setUp() throws Exception {
         duckDB = DuckDBTestSupport.newConnection();
+        // Create the general cassette table for the test topic in lake.main.
+        // Also create a second table used by query_filtersOnlyMatchingTopic.
+        DuckDBTestSupport.createGeneralCassetteTable(duckDB, TOPIC);
+        DuckDBTestSupport.createGeneralCassetteTable(duckDB, "other.topic");
         service = new TopicReplayService(DSL.using(duckDB, SQLDialect.DUCKDB));
     }
 

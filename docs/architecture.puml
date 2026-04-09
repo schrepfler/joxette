@@ -1,0 +1,38 @@
+@startuml Joxette Architecture
+!theme plain
+skinparam linetype ortho
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName monospaced
+
+title Joxette — Kafka Topic Cassette Recorder
+
+rectangle "Joxette Service" {
+
+  rectangle "Recording" {
+    component [Kafka Consumer\n(per topic)] as consumer
+    component [Router\n(entity extract\n+ route)] as router
+    component [DuckLake Writer\n(inline + flush)] as writer
+  }
+
+  component [REST API\n(replay, manage,\ncompact)] as api
+  component [Cron Scheduler] as scheduler
+
+  database "DuckDB + DuckLake\n(catalog + inline\nstorage)" as duckdb
+}
+
+cloud "Apache Kafka" as kafka
+database "DuckDB Catalog\n(.ducklake)" as catalog
+storage "Object Storage\n(S3 / GCS / Azure)" as s3
+
+kafka    --> consumer   : consume
+consumer --> router     : Flow<KafkaMessage>
+router   --> writer     : Flow<RoutedBatch>
+writer   --> duckdb     : bulk INSERT
+
+api      --> duckdb     : query / manage
+scheduler --> duckdb    : compact trigger
+
+duckdb   --> catalog    : catalog ops
+duckdb   --> s3         : Parquet flush\n(httpfs + DuckLake)
+
+@enduml

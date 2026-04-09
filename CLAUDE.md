@@ -1,0 +1,642 @@
+# Joxette — Kafka Topic Cassette Recorder
+
+## Overview
+
+Joxette is a service that records Kafka topics into "cassettes" — replayable archives stored in DuckLake backed by object storage. Cassettes can be **general** (raw topic stream in order) or **entity-specific** (messages grouped by a business entity like an order, user, or device across multiple topics).
+
+The service leverages DuckLake's **data inlining** feature to buffer small writes in the catalog database before flushing to Parquet on object storage, reducing S3 PUT costs and avoiding the small files problem.
+
+---
+
+## Tech Stack
+
+| Component | Technology | Version |
+|---|---|---|
+| Language | Java (pure, no Kotlin) | JDK 26 |
+| Framework | Spring Boot | 4.0.5 |
+| Build | Maven | latest |
+| Concurrency/Flows | Jox (softwaremill) | latest |
+| Kafka | Jox Kafka module | latest |
+| Structured concurrency | Jox structured concurrency | latest |
+| Database | DuckDB JDBC | org.duckdb:duckdb_jdbc:1.5.1.0 |
+| Storage format | DuckLake (ducklake extension) | latest |
+| Object storage | Delegated entirely to DuckDB/DuckLake layer |
+| Testing | Testcontainers (Kafka + DuckDB) | latest |
+
+### Key library documentation
+- Jox flows, concurrency, backpressure: https://jox.softwaremill.com/latest/
+- Jox structured concurrency: https://jox.softwaremill.com/latest/structured.html
+- Jox Kafka module: https://jox.softwaremill.com/latest/kafka.html
+
+---
+
+## Core Concepts
+
+### Cassettes
+
+A **cassette** is a replayable recording of Kafka messages. Two types:
+
+- **General cassette**: raw topic stream, one DuckLake table per topic, messages in original order.
+- **Entity cassette**: messages for a specific business entity aggregated across multiple topics, one DuckLake table per entity type.
+
+### Data Inlining
+
+DuckLake buffers small writes in the catalog database (DuckDB file) before flushing to Parquet on object storage. This means:
+- Sub-millisecond writes for small batches
+- Fewer Parquet files on S3 = fewer PUT requests = lower cost
+- Queries transparently read from both inlined data and Parquet files — no application-level UNION needed
+- Replay cursors must be logical (timestamp, partition, offset), not physical (file path, row number), because the same row may move from inlined to Parquet between queries
+
+### DuckDB as Catalog
+
+DuckDB is used as the DuckLake catalog database (not PostgreSQL). This means:
+- Single process only — no multi-process writes
+- All Kafka consumer threads share one DuckDB JDBC connection; DuckDB serializes writes internally
+- Multiple concurrent reads are fine (multiple Statement objects from one Connection)
+- If multi-process writes are needed later, migrate catalog to PostgreSQL — DuckLake schema is the same across backends, so this is a config change not a rewrite
+
+---
+
+## Schema
+
+### General Cassette Table (one per topic, in DuckLake)
+
+Table name: `lake.cassette_{sanitized_topic}`
+
+```sql
+CREATE TABLE IF NOT EXISTS lake.cassette_{sanitized_topic} (
+    topic           VARCHAR NOT NULL,
+    headers         LIST(STRUCT(key VARCHAR, value BLOB)),
+    "timestamp"     TIMESTAMPTZ NOT NULL,
+    "partition"     INTEGER NOT NULL,
+    "offset"        BIGINT NOT NULL,
+    key             VARCHAR,
+    value           JSON,  -- use VARIANT if DuckLake supports it well, JSON as fallback
+    recorded_at     TIMESTAMPTZ NOT NULL
+);
+```
+
+### Entity Cassette Table (one per entity type, in DuckLake)
+
+Table name: `lake.entity_{sanitized_type}`
+
+```sql
+CREATE TABLE IF NOT EXISTS lake.entity_{sanitized_type} (
+    entity_id       VARCHAR NOT NULL,
+    entity_bucket   INTEGER NOT NULL,
+    source_topic    VARCHAR NOT NULL,
+    headers         LIST(STRUCT(key VARCHAR, value BLOB)),
+    "timestamp"     TIMESTAMPTZ NOT NULL,
+    source_partition INTEGER NOT NULL,
+    source_offset   BIGINT NOT NULL,
+    key             VARCHAR,
+    value           JSON,
+    recorded_at     TIMESTAMPTZ NOT NULL
+);
+```
+
+Partitioned in DuckLake by `(entity_bucket, date)`. Entity bucket = `hash(entity_type, entity_id) % configured_bucket_count`.
+
+### Known Entities Registry (in DuckLake)
+
+```sql
+CREATE TABLE IF NOT EXISTS lake.known_entities (
+    entity_type     VARCHAR NOT NULL,
+    entity_id       VARCHAR NOT NULL,
+    first_seen      TIMESTAMPTZ NOT NULL,
+    last_seen       TIMESTAMPTZ NOT NULL,
+    message_count   BIGINT NOT NULL,
+    source_topics   VARCHAR[] NOT NULL,
+    PRIMARY KEY (entity_type, entity_id)
+);
+```
+
+Maintained during ingest: upsert per entity per batch. Powers entity listing, search, and stats endpoints.
+
+### Configuration Tables (plain DuckDB, NOT DuckLake)
+
+These live in the same DuckDB database file but outside DuckLake — they are operational config, not lakehouse data.
+
+```sql
+CREATE TABLE IF NOT EXISTS topic_configs (
+    topic           VARCHAR PRIMARY KEY,
+    mode            VARCHAR NOT NULL,        -- 'general', 'entity_only', 'both'
+    time_partition  VARCHAR DEFAULT 'hour',
+    max_file_size_mb INTEGER DEFAULT 256,
+    max_records_per_file INTEGER DEFAULT 1000000,
+    retention_days  INTEGER DEFAULT 90,
+    consumer_group  VARCHAR,
+    start_from      VARCHAR DEFAULT 'latest',
+    paused          BOOLEAN DEFAULT FALSE,
+    created_at      TIMESTAMPTZ NOT NULL,
+    updated_at      TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS entity_type_configs (
+    entity_type     VARCHAR PRIMARY KEY,
+    buckets         INTEGER DEFAULT 256,
+    retention_days  INTEGER DEFAULT 365,
+    created_at      TIMESTAMPTZ NOT NULL,
+    updated_at      TIMESTAMPTZ NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS entity_source_mappings (
+    entity_type     VARCHAR NOT NULL,
+    topic           VARCHAR NOT NULL,
+    entity_id_source    VARCHAR NOT NULL,     -- 'key', 'value', 'header'
+    entity_id_expression VARCHAR NOT NULL,    -- JSONPath or literal
+    entity_type_source   VARCHAR,            -- null means literal in entity_type_configs
+    entity_type_expression VARCHAR,
+    PRIMARY KEY (entity_type, topic)
+);
+
+CREATE TABLE IF NOT EXISTS compaction_history (
+    id              BIGINT PRIMARY KEY,
+    target          VARCHAR NOT NULL,
+    started_at      TIMESTAMPTZ NOT NULL,
+    completed_at    TIMESTAMPTZ,
+    status          VARCHAR NOT NULL,
+    files_before    INTEGER,
+    files_after     INTEGER,
+    bytes_reclaimed BIGINT
+);
+```
+
+### Headers
+
+Kafka headers allow duplicate keys and binary values. We store as `LIST(STRUCT(key VARCHAR, value BLOB))`.
+
+Provide helper functions (registered as DuckDB macros at startup):
+- `headers_get(headers, 'key')` → first value for that key
+- `headers_get_all(headers, 'key')` → all values for that key as a list
+- `headers_put(headers, 'key', value)` → appends a key-value pair
+- `headers_to_map(headers)` → lossy conversion to `MAP(VARCHAR, VARCHAR)`, last-write-wins on dupes
+
+### VARIANT vs JSON
+
+DuckDB 1.5 supports the VARIANT type (JSON shredded to binary, up to 100x faster queries). Test early whether VARIANT works correctly through DuckLake's Parquet serialization. If it has issues, fall back to the JSON type which is still efficient and queryable.
+
+---
+
+## Entity Routing
+
+### Configuration Model
+
+Entity routing is entity-centric, not topic-centric. One entity type can have messages in multiple topics.
+
+```yaml
+entities:
+  - type: "order"
+    buckets: 256
+    sources:
+      - topic: "orders.events"
+        entity_id:
+          source: value              # 'key', 'value', or 'header'
+          expression: "$.order_id"   # JSONPath
+      - topic: "payments.events"
+        entity_id:
+          source: value
+          expression: "$.payment.order_id"
+```
+
+Both `entity_type` and `entity_id` can be:
+- **literal**: a static string (e.g., entity type is always "order")
+- **expression**: extracted from the message via JSONPath on key, value, or header
+
+### Topic Recording Modes
+
+Each topic has a mode:
+- `general` — record raw topic stream only, no entity extraction
+- `entity_only` — extract entities and write only to entity cassettes, discard unmatched messages
+- `both` — record general stream AND route to entity cassettes
+
+### Cross-Topic Entity Ordering
+
+Entity cassettes aggregate messages from multiple topics. Ordering is by `timestamp` (Kafka producer timestamp) as primary, `recorded_at` (service ingestion time) as tiebreaker. Cross-topic ordering is best-effort based on producer timestamps (clock skew is possible).
+
+### Bucketed Entities
+
+Entity IDs are hashed into a configurable number of buckets (e.g., 256). Parquet files are partitioned by `(entity_bucket, date)`. Replaying one entity scans only its bucket's files. File layout:
+
+```
+/{topic}/{date_or_hour}/{entity_bucket}_{sequence}.parquet
+```
+
+---
+
+## Recording Pipeline (Jox)
+
+```
+Jox KafkaSource (per topic)
+    │
+    ▼
+Flow<KafkaMessage>
+    │
+    ├── .grouped(batchSize, batchTimeout)   ── batching for throughput
+    │
+    ▼
+Flow<List<KafkaMessage>>
+    │
+    ├── .map(batch -> route(batch))         ── entity extraction + routing
+    │
+    ▼
+Flow<RoutedBatch>
+    │
+    ├── .map(batch -> write(batch))         ── DuckLake bulk insert
+    │
+    ▼
+Flow<WriteResult>
+    │
+    ├── .map(result -> commit(result))      ── Kafka offset commit
+    │
+    ▼
+    drain
+```
+
+### Structured Concurrency
+
+Each topic recorder runs in a Jox supervised scope. If DuckLake writer fails → scope cancels Kafka source. If Kafka source disconnects → everything shuts down cleanly. `RecordingCoordinator` manages these scopes and can start/stop them dynamically via REST API.
+
+### Backpressure
+
+Flows naturally: DuckLake writes slow down → batching buffer fills → Kafka consumption slows → consumer lag increases. Lag is the pressure valve.
+
+### At-Least-Once Semantics
+
+Kafka delivers at-least-once. Deduplication on read (not write): the `(topic, partition, offset)` tuple is unique, replay queries can use `QUALIFY` or `DISTINCT ON` to filter duplicates. Duplicates in storage are harmless.
+
+### Batching Config
+
+```yaml
+joxette:
+  recording:
+    batch-size: 10000
+    batch-timeout-ms: 1000
+```
+
+---
+
+## Compaction
+
+### What Gets Compacted
+
+- **Inlined data flush** — handled automatically by DuckLake, controlled by inline threshold settings
+- **General cassette compaction** — off by default, only needed if service restarts leave undersized files
+- **Entity cassette compaction** — most important; merges small files per bucket into larger ones
+
+### Entity Compaction Strategy
+
+1. Scan buckets where file count exceeds threshold (e.g., >10 files per bucket per time window)
+2. Read all files in that bucket, merge, re-sort by `(entity_id, timestamp, recorded_at)`
+3. Write back as fewer, larger files
+4. DuckLake catalog updated to point to new files, old files marked for deletion
+
+### Triggering
+
+- **Cron** — configurable schedule (default: daily at 3am)
+- **REST** — `POST /compaction/trigger` with optional body to scope to specific targets
+- **Lookback** — only compact data older than N days (default: 30) to avoid churning hot data
+
+### Configuration
+
+```yaml
+joxette:
+  compaction:
+    schedule: "0 3 * * *"
+    entity:
+      min-files-per-bucket: 10
+      target-file-size-mb: 256
+      lookback-days: 30
+    general:
+      enabled: false
+      min-files-per-partition: 20
+      target-file-size-mb: 256
+```
+
+---
+
+## REST API
+
+### Topic Recording Management
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/topics` | List all configured topic recordings with mode and status |
+| POST | `/topics` | Register a new topic for recording |
+| GET | `/topics/{topic}` | Get config and stats for a topic |
+| PUT | `/topics/{topic}` | Update topic config |
+| DELETE | `/topics/{topic}` | Stop recording (doesn't delete data) |
+| POST | `/topics/{topic}/pause` | Pause consumption |
+| POST | `/topics/{topic}/resume` | Resume consumption |
+
+### Entity Type Management
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/entities` | List all registered entity types with stats |
+| POST | `/entities` | Register a new entity type |
+| GET | `/entities/{entity_type}` | Get config, source mappings, stats |
+| PUT | `/entities/{entity_type}` | Update entity config |
+| DELETE | `/entities/{entity_type}` | Remove entity type (doesn't delete data) |
+| GET | `/entities/{entity_type}/sources` | List topic→entity mappings |
+| POST | `/entities/{entity_type}/sources` | Add a source topic mapping |
+| DELETE | `/entities/{entity_type}/sources/{topic}` | Remove a source mapping |
+
+### Cassette Replay
+
+All replay endpoints support three response formats via `Accept` header:
+- `application/json` — paginated response (default)
+- `text/event-stream` — SSE streaming
+- `application/x-ndjson` — NDJSON streaming
+
+**General cassettes:**
+
+| Method | Path | Query Params | Description |
+|---|---|---|---|
+| GET | `/cassettes/topics/{topic}` | `from`, `to`, `partition`, `offset_from`, `offset_to`, `limit`, `cursor` | Replay general cassette |
+
+**Entity cassettes:**
+
+| Method | Path | Query Params | Description |
+|---|---|---|---|
+| GET | `/cassettes/entities/{entity_type}` | `prefix`, `limit`, `cursor`, `active_since` | List known entity IDs |
+| GET | `/cassettes/entities/{entity_type}/{entity_id}` | `from`, `to`, `source_topic`, `limit`, `cursor` | Replay entity cassette |
+| GET | `/cassettes/entities/{entity_type}/{entity_id}/stats` | — | Message count, time range, source topics |
+| GET | `/cassettes/entities/{entity_type}/search` | `from`, `to`, `source_topic`, `min_messages`, `limit` | Find entities matching criteria |
+
+### Cassette Lifecycle Management
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/cassettes/topics/{topic}/stats` | Storage stats: file count, size, inlined vs flushed |
+| GET | `/cassettes/entities/{entity_type}/storage` | Storage stats per entity type by bucket |
+| POST | `/cassettes/topics/{topic}/compact` | Trigger general cassette compaction |
+| POST | `/cassettes/entities/{entity_type}/compact` | Trigger entity cassette compaction (optional body: `{"buckets": [12,45], "before": "2025-01-01"}`) |
+| POST | `/cassettes/topics/{topic}/truncate` | Delete data before timestamp |
+| POST | `/cassettes/entities/{entity_type}/truncate` | Delete entity data before timestamp |
+| POST | `/cassettes/entities/{entity_type}/{entity_id}/delete` | Delete all data for specific entity (GDPR) |
+| GET | `/cassettes/snapshots` | List DuckLake snapshots |
+| POST | `/cassettes/snapshots/{snapshot_id}/restore` | Restore a snapshot |
+
+### Compaction & Operations
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/compaction/status` | Running/idle, last run, next scheduled, stats |
+| POST | `/compaction/trigger` | Trigger compaction (optional body: `{"targets": ["orders.events", "entity:order"]}`) |
+| GET | `/compaction/history` | Past compaction runs with stats |
+| GET | `/health` | Liveness, consumer lag, catalog size, inlined data size |
+| GET | `/metrics` | Prometheus-compatible metrics |
+
+### Pagination
+
+Cursor-based pagination. Cursor encodes last message's logical position, stable across physical storage changes.
+
+```json
+{
+  "messages": [...],
+  "cursor": "base64-encoded-position",
+  "has_more": true
+}
+```
+
+General cassette cursor: `(timestamp, partition, offset)`
+Entity cassette cursor: `(timestamp, recorded_at, source_topic, source_partition, source_offset)`
+
+### Replay Message Format
+
+```json
+{
+  "topic": "orders.events",
+  "headers": [
+    {"key": "correlation-id", "value": "abc-123"},
+    {"key": "event-type", "value": "OrderCreated"}
+  ],
+  "timestamp": "2025-01-15T10:30:00.123Z",
+  "partition": 3,
+  "offset": 4567,
+  "key": "order-789",
+  "value": {"order_id": "789", "status": "created", "amount": 99.50},
+  "recorded_at": "2025-01-15T10:30:00.456Z"
+}
+```
+
+Headers with binary values are base64-encoded in JSON responses.
+
+---
+
+## Service Architecture
+
+```
+┌─────────────────────────────────────────────────┐
+│                  Joxette Service                 │
+│                                                  │
+│  ┌──────────┐   ┌───────────┐   ┌────────────┐  │
+│  │  Kafka    │──▶│  Router   │──▶│  DuckLake  │  │
+│  │ Consumer  │   │  (entity  │   │  Writer    │  │
+│  │ (per      │   │  extract  │   │  (inline   │  │
+│  │  topic)   │   │  + route) │   │  + flush)  │  │
+│  └──────────┘   └───────────┘   └─────┬──────┘  │
+│                                       │         │
+│  ┌──────────┐                   ┌─────▼──────┐  │
+│  │  REST    │                   │  DuckDB +  │  │
+│  │  API     │──────────────────▶│  DuckLake  │  │
+│  │ (replay, │                   │  (catalog  │  │
+│  │ manage,  │                   │   + inline │  │
+│  │ compact) │                   │   storage) │  │
+│  └──────────┘                   └─────┬──────┘  │
+│                                       │         │
+│  ┌──────────┐                         │         │
+│  │  Cron    │─── compact trigger ─────┘         │
+│  │ Scheduler│                                   │
+│  └──────────┘                                   │
+└─────────────────────────────────────────────────┘
+          │                          │
+          ▼                          ▼
+   ┌────────────┐           ┌──────────────┐
+   │  DuckDB    │           │   Object     │
+   │  Catalog   │           │   Storage    │
+   │  (.ducklake)│          │   (S3/GCS/   │
+   │            │           │    Azure)    │
+   └────────────┘           └──────────────┘
+```
+
+Single process. DuckDB embedded. Kafka consumer threads write through router into DuckLake. REST API shares same DuckDB instance. Cron triggers compaction on same instance.
+
+### DuckDB Connection Model
+
+One JDBC connection shared across the application. DuckDB serializes writes internally. Multiple concurrent reads via separate Statement objects. Spring manages connection lifecycle.
+
+---
+
+## Bootstrap Configuration
+
+```yaml
+joxette:
+  catalog:
+    path: "./data/joxette.ducklake"
+    object-storage-path: "s3://my-bucket/joxette/data"
+  
+  inline:
+    threshold-mb: 4
+    threshold-records: 50000
+  
+  compaction:
+    schedule: "0 3 * * *"
+    entity:
+      min-files-per-bucket: 10
+      target-file-size-mb: 256
+      lookback-days: 30
+    general:
+      enabled: false
+  
+  kafka:
+    bootstrap-servers: "localhost:9092"
+  
+  recording:
+    batch-size: 10000
+    batch-timeout-ms: 1000
+
+  bootstrap:
+    topics:
+      - topic: "orders.events"
+        mode: "both"
+      - topic: "audit.log"
+        mode: "general"
+    
+    entities:
+      - type: "order"
+        buckets: 256
+        sources:
+          - topic: "orders.events"
+            entity-id:
+              source: value
+              expression: "$.order_id"
+          - topic: "payments.events"
+            entity-id:
+              source: value
+              expression: "$.payment.order_id"
+```
+
+After first start, the REST API is the source of truth for configuration. Bootstrap config is only loaded if the config tables are empty.
+
+---
+
+## Project Structure
+
+```
+joxette/
+├── pom.xml
+├── CLAUDE.md
+├── src/
+│   ├── main/
+│   │   ├── java/
+│   │   │   └── com/joxette/
+│   │   │       ├── JoxetteApplication.java
+│   │   │       ├── config/
+│   │   │       │   ├── JoxetteProperties.java
+│   │   │       │   ├── DuckDBConfig.java
+│   │   │       │   ├── KafkaConfig.java
+│   │   │       │   └── SchedulingConfig.java
+│   │   │       ├── catalog/
+│   │   │       │   ├── CatalogManager.java
+│   │   │       │   ├── ConfigRepository.java
+│   │   │       │   ├── TopicConfig.java
+│   │   │       │   ├── EntityTypeConfig.java
+│   │   │       │   ├── EntitySourceMapping.java
+│   │   │       │   └── KnownEntitiesRepository.java
+│   │   │       ├── recording/
+│   │   │       │   ├── RecordingCoordinator.java
+│   │   │       │   ├── TopicRecorder.java
+│   │   │       │   ├── MessageRouter.java
+│   │   │       │   ├── EntityIdExtractor.java
+│   │   │       │   ├── CassetteBatchWriter.java
+│   │   │       │   └── DeduplicationStrategy.java
+│   │   │       ├── replay/
+│   │   │       │   ├── TopicReplayService.java
+│   │   │       │   ├── EntityReplayService.java
+│   │   │       │   ├── ReplayCursor.java
+│   │   │       │   └── HeadersHelper.java
+│   │   │       ├── compaction/
+│   │   │       │   ├── CompactionService.java
+│   │   │       │   ├── CompactionScheduler.java
+│   │   │       │   ├── CompactionStrategy.java
+│   │   │       │   └── CompactionHistory.java
+│   │   │       ├── api/
+│   │   │       │   ├── TopicController.java
+│   │   │       │   ├── EntityController.java
+│   │   │       │   ├── CassetteController.java
+│   │   │       │   ├── CompactionController.java
+│   │   │       │   ├── HealthController.java
+│   │   │       │   ├── dto/
+│   │   │       │   │   ├── MessageResponse.java
+│   │   │       │   │   ├── PagedResponse.java
+│   │   │       │   │   ├── TopicConfigRequest.java
+│   │   │       │   │   ├── EntityTypeRequest.java
+│   │   │       │   │   ├── CompactionStatusResponse.java
+│   │   │       │   │   └── ...
+│   │   │       │   └── sse/
+│   │   │       │       └── SseReplayHandler.java
+│   │   │       └── storage/
+│   │   │           ├── DuckLakeManager.java
+│   │   │           └── SchemaManager.java
+│   │   └── resources/
+│   │       ├── application.yml
+│   │       └── db/
+│   │           └── init.sql
+│   └── test/
+│       └── java/
+│           └── com/joxette/
+│               ├── JoxetteApplicationTests.java
+│               ├── recording/
+│               │   ├── TopicRecorderTest.java
+│               │   ├── MessageRouterTest.java
+│               │   └── EntityIdExtractorTest.java
+│               ├── replay/
+│               │   ├── TopicReplayServiceTest.java
+│               │   └── EntityReplayServiceTest.java
+│               ├── compaction/
+│               │   └── CompactionServiceTest.java
+│               ├── api/
+│               │   └── ...integration tests...
+│               └── testutil/
+│                   ├── KafkaTestSupport.java
+│                   └── DuckDBTestSupport.java
+```
+
+---
+
+## Implementation Order
+
+1. **Project skeleton** — pom.xml, JoxetteApplication.java, config binding
+2. **DuckDB + DuckLake setup** — connection management, schema creation, verify VARIANT works through DuckLake
+3. **Config repository** — CRUD for topic/entity configs in plain DuckDB tables
+4. **Headers helper** — multimap utility functions registered as DuckDB macros
+5. **Recording pipeline** — Jox Kafka source → batching → DuckLake writer, single topic, general cassette only
+6. **Entity routing** — expression evaluation, entity cassette writes, known entities registry
+7. **Replay API** — paginated + SSE/NDJSON for both general and entity cassettes
+8. **Management API** — topic/entity CRUD endpoints, dynamic start/stop of recorders
+9. **Compaction** — background job, cron scheduling, REST trigger
+10. **Tests** — testcontainers for Kafka + DuckDB integration tests throughout
+
+---
+
+## Important Design Notes
+
+### Unified Read Path
+DuckLake transparently reads from both inlined data (in catalog DB) and Parquet files (on object storage) in a single query. No application-level UNION needed. Replay queries "just work" across all storage tiers.
+
+### Deduplication
+At-least-once from Kafka means possible duplicates. Deduplicate on read, not write. `(topic, partition, offset)` is the unique key. Use `QUALIFY` or `DISTINCT ON` in replay queries.
+
+### Entity Ordering Across Topics
+Order by `timestamp` (Kafka producer timestamp) primary, `recorded_at` (service ingestion time) tiebreaker. Cross-topic ordering is best-effort due to possible clock skew.
+
+### Config Lifecycle
+YAML bootstrap config is loaded only on first start (when config tables are empty). After that, the REST API is the source of truth. Config lives in plain DuckDB tables, not DuckLake.
+
+### Catalog Migration Path
+Starting with DuckDB as DuckLake catalog (simplest, single-process). If multi-process writes needed later, migrate to PostgreSQL — DuckLake catalog schema is identical across backends, only connection config changes.
+
+### Storage Delegation
+All object storage interaction (S3, GCS, Azure) is delegated to DuckDB/DuckLake via the httpfs extension and DuckLake's built-in storage management. No direct S3 SDK usage from Java.

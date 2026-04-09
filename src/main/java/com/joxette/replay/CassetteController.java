@@ -671,6 +671,63 @@ public class CassetteController {
         return ResponseEntity.ok().build();
     }
 
+    @Operation(
+        operationId = "exportSnapshotToObjectStore",
+        summary = "Export catalog snapshot to object storage",
+        description = "Exports the full DuckDB catalog (config tables, known_entities, DuckLake metadata) " +
+                      "directly to the configured object-storage path using DuckDB's `EXPORT DATABASE` command. " +
+                      "The snapshot is placed under `<objectStoragePath>snapshots/<name>/`. " +
+                      "No local disk space is used. Returns 201 Created with the snapshot metadata."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "201", description = "Snapshot exported to object storage",
+            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                schema = @Schema(implementation = SnapshotInfo.class))),
+        @ApiResponse(responseCode = "400", description = "Invalid snapshot name",
+            content = @Content(schema = @Schema(type = "string"))),
+        @ApiResponse(responseCode = "409", description = "Snapshot with that name already exists"),
+        @ApiResponse(responseCode = "500", description = "Export failed or no object-storage path configured",
+            content = @Content(schema = @Schema(type = "string")))
+    })
+    @PostMapping(value = "/snapshots/export-to-object-store",
+                 consumes = MediaType.APPLICATION_JSON_VALUE,
+                 produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<SnapshotInfo> exportSnapshotToObjectStore(
+            @io.swagger.v3.oas.annotations.parameters.RequestBody(
+                description = "Optional snapshot name. If omitted a timestamp-based name is generated.",
+                content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                    examples = @ExampleObject(value = "{\"name\": \"pre-migration-backup\"}")))
+            @RequestBody Map<String, String> body
+    ) throws SQLException {
+        String name = body.getOrDefault("name",
+                "remote-snapshot-" + Instant.now().toEpochMilli());
+        SnapshotInfo info = lifecycle.exportSnapshotToObjectStore(name);
+        return ResponseEntity.status(201).body(info);
+    }
+
+    @Operation(
+        operationId = "rebuildKnownEntities",
+        summary = "Rebuild known_entities registry from cassette data",
+        description = "Scans all entity cassette tables (`lake.main.entity_*`) on object storage and " +
+                      "rebuilds the `known_entities` registry from scratch. " +
+                      "Use this to recover after the local `.ducklake` catalog file was lost. " +
+                      "Returns the number of entity rows upserted."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Rebuild complete",
+            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                schema = @Schema(type = "object"),
+                examples = @ExampleObject(value = "{\"rebuilt\": 4217}"))),
+        @ApiResponse(responseCode = "500", description = "Database error",
+            content = @Content(schema = @Schema(type = "string")))
+    })
+    @PostMapping(value = "/entities/rebuild-known-entities",
+                 produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<Map<String, Long>> rebuildKnownEntities() throws SQLException {
+        long rebuilt = lifecycle.rebuildKnownEntities();
+        return ResponseEntity.ok(Map.of("rebuilt", rebuilt));
+    }
+
     // =========================================================================
     // Error handling
     // =========================================================================

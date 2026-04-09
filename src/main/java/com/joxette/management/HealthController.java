@@ -14,6 +14,7 @@ import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.ListOffsetsResult;
 import org.apache.kafka.clients.admin.OffsetSpec;
 import org.apache.kafka.common.TopicPartition;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -96,7 +97,7 @@ public class HealthController {
     private final PrometheusMeterRegistry metricsRegistry;
 
     public HealthController(
-            RecordingCoordinator coordinator,
+            @Lazy RecordingCoordinator coordinator,
             JoxetteProperties properties,
             AdminClient adminClient,
             Connection duckDB,

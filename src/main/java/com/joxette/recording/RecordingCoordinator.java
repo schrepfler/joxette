@@ -1,10 +1,14 @@
 package com.joxette.recording;
 
 import com.joxette.config.JoxetteProperties;
+import com.joxette.replay.KnownEntitiesRepository;
+import com.joxette.replay.MessageRouter;
 import com.softwaremill.jox.structured.Scopes;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 
 import java.sql.Connection;
@@ -15,26 +19,12 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Manages the lifecycle of per-topic {@link TopicRecorder} instances.
  *
- * <h2>Structured concurrency model</h2>
- * Each active topic recorder runs inside its own Jox
- * {@link Scopes#supervised supervised scope}, which is in turn hosted on a
- * dedicated virtual thread.  Within that scope the supervised design means:
- * <ul>
- *   <li>If the {@link com.joxette.recording.CassetteBatchWriter DuckLake writer}
- *       throws, the exception exits {@link TopicRecorder#run()}, the scope
- *       fails, and the scope's cleanup cancels the Kafka source (via
- *       {@link TopicRecorder#stop()}).</li>
- *   <li>If Kafka disconnects unexpectedly, the poll loop propagates the
- *       exception through the Jox flow, the scope fails, and the virtual
- *       thread terminates — the coordinator marks the topic as no longer
- *       active.</li>
- * </ul>
- *
- * <h2>Dynamic start / stop</h2>
- * {@link #startTopic(String)} and {@link #stopTopic(String)} may be called
- * concurrently (e.g. from a REST controller).  State is kept in a
- * {@link ConcurrentHashMap} of {@link RecorderHandle} records.
+ * <p>Each recorder is started on a dedicated virtual thread inside a Jox
+ * supervised scope.  The {@link MessageRouter} and {@link KnownEntitiesRepository}
+ * are injected so that entity routing and known-entity registration happen inside
+ * every recorder's batch-write loop.
  */
+@Lazy
 @Component
 public class RecordingCoordinator {
 
@@ -43,6 +33,8 @@ public class RecordingCoordinator {
     private final JoxetteProperties properties;
     private final Map<String, Object> baseKafkaConsumerProperties;
     private final Connection duckDbConnection;
+    private final MessageRouter messageRouter;
+    private final KnownEntitiesRepository knownEntities;
 
     /** Live recorders, keyed by topic name. */
     private final ConcurrentHashMap<String, RecorderHandle> activeRecorders =
@@ -50,11 +42,15 @@ public class RecordingCoordinator {
 
     public RecordingCoordinator(
             JoxetteProperties properties,
-            Map<String, Object> baseKafkaConsumerProperties,
-            Connection duckDbConnection) {
+            @Qualifier("baseKafkaConsumerProperties") Map<String, Object> baseKafkaConsumerProperties,
+            Connection duckDbConnection,
+            MessageRouter messageRouter,
+            KnownEntitiesRepository knownEntities) {
         this.properties = properties;
         this.baseKafkaConsumerProperties = baseKafkaConsumerProperties;
         this.duckDbConnection = duckDbConnection;
+        this.messageRouter = messageRouter;
+        this.knownEntities = knownEntities;
     }
 
     // -----------------------------------------------------------------------
@@ -68,7 +64,6 @@ public class RecordingCoordinator {
      *         was already running for this topic.
      */
     public boolean startTopic(String topic) {
-        // Atomically insert; if a handle already exists, do nothing.
         RecorderHandle[] created = {null};
         activeRecorders.computeIfAbsent(topic, t -> {
             created[0] = launchRecorder(t);
@@ -83,11 +78,9 @@ public class RecordingCoordinator {
     }
 
     /**
-     * Stops the recorder for {@code topic} and waits for its virtual thread to
-     * terminate.
+     * Stops the recorder for {@code topic} and waits for its virtual thread to terminate.
      *
-     * @return {@code true} if a recorder was stopped; {@code false} if none was
-     *         running.
+     * @return {@code true} if a recorder was stopped; {@code false} if none was running.
      */
     public boolean stopTopic(String topic) {
         RecorderHandle handle = activeRecorders.remove(topic);
@@ -111,7 +104,6 @@ public class RecordingCoordinator {
     @PreDestroy
     public void stopAll() {
         log.info("Stopping all {} active recorder(s)", activeRecorders.size());
-        // Collect keys first to avoid ConcurrentModificationException.
         activeRecorders.keySet().forEach(this::stopTopic);
     }
 
@@ -126,7 +118,9 @@ public class RecordingCoordinator {
                 baseKafkaConsumerProperties,
                 duckDbConnection,
                 cfg.getBatchSize(),
-                cfg.getBatchTimeoutMs());
+                cfg.getBatchTimeoutMs(),
+                messageRouter,
+                knownEntities);
 
         Thread thread = Thread.ofVirtual()
                 .name("joxette-recorder-" + topic)
@@ -135,24 +129,13 @@ public class RecordingCoordinator {
         return new RecorderHandle(recorder, thread);
     }
 
-    /**
-     * Wraps the recorder in a Jox supervised scope so that any failure inside
-     * the pipeline (writer or Kafka source) is contained to this topic's scope.
-     * When the scope exits (normally or exceptionally), the recorder's resources
-     * are closed and the entry is removed from {@link #activeRecorders}.
-     */
     private void runInSupervisedScope(String topic, TopicRecorder recorder) {
         try {
             Scopes.supervised(scope -> {
-                // Fork the recorder so the scope owns its lifecycle.
-                // If run() throws, the scope propagates the failure; the
-                // scope's structured-concurrency guarantee then cancels any
-                // other forks (none here, but this future-proofs the design).
-                scope.fork(() -> {
+                scope.forkUser(() -> {
                     recorder.run();
                     return null;
                 });
-                // Scope blocks here until the fork completes or fails.
                 return null;
             });
         } catch (InterruptedException e) {
@@ -161,18 +144,17 @@ public class RecordingCoordinator {
         } catch (Exception e) {
             log.error("Recorder for topic '{}' failed; removing from active set", topic, e);
         } finally {
-            // Ensure the map entry is cleaned up even on unexpected exits.
             activeRecorders.remove(topic);
         }
     }
 
     private void shutdownHandle(String topic, RecorderHandle handle) {
-        handle.recorder().stop();          // signal poll loop to exit
-        handle.thread().interrupt();       // wake any park/sleep inside the VT
+        handle.recorder().stop();
         try {
-            handle.thread().join(5_000);   // wait up to 5 s for clean exit
+            handle.thread().join(5_000);
             if (handle.thread().isAlive()) {
-                log.warn("Recorder thread for topic '{}' did not stop within 5 s", topic);
+                log.warn("Recorder thread for topic '{}' did not stop within 5 s; interrupting", topic);
+                handle.thread().interrupt();
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();

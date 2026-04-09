@@ -9,25 +9,25 @@ import org.slf4j.LoggerFactory;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
-import java.sql.Statement;
 import java.sql.Timestamp;
 import java.time.Instant;
-import java.util.Base64;
 import java.util.List;
 
 /**
  * Writes batches of Kafka records to the DuckLake general cassette table for a
- * single topic: {@code lake.cassette_{topic}}.
+ * single topic: {@code lake.main.general_{topic}}.
+ *
+ * <p>The table schema is managed by {@link com.joxette.db.SchemaManager}.
+ * This class assumes the table already exists (created at startup) and only
+ * performs INSERT operations.
  *
  * <p>Each instance owns a duplicated DuckDB connection so that concurrent
  * per-topic writers do not contend on the shared {@code Connection} bean.
  * DuckDB serialises concurrent writers internally.
  *
- * <p>Headers are stored as a JSON array of {@code {"key":"...","value":"<base64>"}}
- * objects in a VARCHAR column.  A migration to the native
- * {@code LIST(STRUCT(key VARCHAR, value BLOB))} type (compatible with
- * {@link com.joxette.replay.HeadersHelper} macros) can be applied once DuckDB
- * JDBC exposes a stable appender API for nested types.
+ * <p>Headers are stored as a {@code STRUCT(key VARCHAR, value VARCHAR)[]} array.
+ * Header values are decoded as UTF-8 on write; non-UTF-8 binary values are
+ * base64-encoded so the round-trip is lossless.
  */
 public class CassetteBatchWriter implements AutoCloseable {
 
@@ -39,40 +39,11 @@ public class CassetteBatchWriter implements AutoCloseable {
 
     public CassetteBatchWriter(String topic, Connection sharedDuckDbConnection) throws SQLException {
         this.topic = topic;
-        this.qualifiedTable = "lake.cassette_" + sanitizeTopicName(topic);
+        this.qualifiedTable = "lake.main.general_" + normalizeTopicName(topic);
         // Duplicate the connection — each writer runs on its own virtual thread.
         DuckDBConnection duckConn = sharedDuckDbConnection.unwrap(DuckDBConnection.class);
         this.conn = duckConn.duplicate();
-        ensureSchema();
-        ensureTable();
-    }
-
-    // -----------------------------------------------------------------------
-    // Schema / table DDL
-    // -----------------------------------------------------------------------
-
-    private void ensureSchema() throws SQLException {
-        try (Statement st = conn.createStatement()) {
-            st.execute("CREATE SCHEMA IF NOT EXISTS lake");
-        }
-    }
-
-    private void ensureTable() throws SQLException {
-        String ddl = """
-                CREATE TABLE IF NOT EXISTS %s (
-                    partition    INTEGER   NOT NULL,
-                    "offset"     BIGINT    NOT NULL,
-                    ts           BIGINT    NOT NULL,
-                    key          VARCHAR,
-                    value        BLOB,
-                    headers      VARCHAR,
-                    recorded_at  TIMESTAMP NOT NULL
-                )
-                """.formatted(qualifiedTable);
-        try (Statement st = conn.createStatement()) {
-            st.execute(ddl);
-        }
-        log.info("Ensured cassette table {} exists", qualifiedTable);
+        log.info("CassetteBatchWriter ready for topic '{}' → {}", topic, qualifiedTable);
     }
 
     // -----------------------------------------------------------------------
@@ -80,31 +51,55 @@ public class CassetteBatchWriter implements AutoCloseable {
     // -----------------------------------------------------------------------
 
     /**
-     * Bulk-inserts {@code batch} into the cassette table in a single JDBC
+     * Bulk-inserts {@code batch} into the general cassette table in a single JDBC
      * batch execution.  Callers should commit Kafka offsets only after this
      * method returns without throwing.
      */
     public void writeBatch(List<ConsumerRecord<String, byte[]>> batch) throws SQLException {
         if (batch.isEmpty()) return;
 
-        String sql = "INSERT INTO " + qualifiedTable +
-                " (partition, \"offset\", ts, key, value, headers, recorded_at)" +
-                " VALUES (?, ?, ?, ?, ?, ?, ?)";
+        // headers column is STRUCT(key VARCHAR, value BLOB)[] — pass a DuckDB struct-array
+        // literal via a VALUES sub-expression so the driver doesn't attempt a VARCHAR cast.
+        // We build one row of parameters per record (7 bound params) and append the headers
+        // struct-array literal inline using DuckDB's list/struct syntax.
+        StringBuilder sql = new StringBuilder(
+                "INSERT INTO " + qualifiedTable +
+                " (recorded_at, kafka_offset, kafka_partition, kafka_timestamp," +
+                "  kafka_key, kafka_value, kafka_value_str, metadata, headers) VALUES ");
 
         Timestamp now = Timestamp.from(Instant.now());
+        boolean first = true;
+        List<Object[]> params = new java.util.ArrayList<>(batch.size());
+        for (ConsumerRecord<String, byte[]> record : batch) {
+            if (!first) sql.append(',');
+            first = false;
+            // 7 bound params; headers and metadata are inlined as literals
+            sql.append("(?, ?, ?, ?, ?, ?, ?, NULL, ")
+               .append(headersToStructLiteral(record))
+               .append(')');
+            params.add(new Object[]{
+                now,
+                record.offset(),
+                record.partition(),
+                new Timestamp(record.timestamp()),
+                record.key(),
+                record.value(),
+                record.value() != null ? new String(record.value()) : null
+            });
+        }
 
-        try (PreparedStatement ps = conn.prepareStatement(sql)) {
-            for (ConsumerRecord<String, byte[]> record : batch) {
-                ps.setInt(1, record.partition());
-                ps.setLong(2, record.offset());
-                ps.setLong(3, record.timestamp());
-                ps.setString(4, record.key());
-                ps.setBytes(5, record.value());
-                ps.setString(6, headersToJson(record));
-                ps.setTimestamp(7, now);
-                ps.addBatch();
+        try (PreparedStatement ps = conn.prepareStatement(sql.toString())) {
+            int idx = 1;
+            for (Object[] row : params) {
+                ps.setTimestamp(idx++, (Timestamp) row[0]);
+                ps.setLong(idx++, (Long) row[1]);
+                ps.setInt(idx++, (Integer) row[2]);
+                ps.setTimestamp(idx++, (Timestamp) row[3]);
+                ps.setString(idx++, (String) row[4]);
+                ps.setBytes(idx++, (byte[]) row[5]);
+                ps.setString(idx++, (String) row[6]);
             }
-            ps.executeBatch();
+            ps.executeUpdate();
         }
 
         log.debug("Wrote batch of {} records to {}", batch.size(), qualifiedTable);
@@ -116,29 +111,86 @@ public class CassetteBatchWriter implements AutoCloseable {
 
     /**
      * Replaces characters that are not valid in a DuckDB identifier with
-     * underscores.  Kafka topic names allow {@code [a-zA-Z0-9._-]}.
+     * underscores, and lowercases the result.
      */
-    static String sanitizeTopicName(String topic) {
-        return topic.replaceAll("[^a-zA-Z0-9_]", "_");
+    static String normalizeTopicName(String topic) {
+        return topic.toLowerCase().replaceAll("[^a-z0-9_]", "_");
     }
 
-    private static String headersToJson(ConsumerRecord<String, byte[]> record) {
+    /**
+     * Serialises the headers of a {@link ConsumerRecord} as a DuckDB
+     * {@code STRUCT(key VARCHAR, value VARCHAR)[]} literal inlined in SQL.
+     *
+     * <p>Header values are decoded as UTF-8. Values that are not valid UTF-8
+     * (binary payloads) are base64-encoded so no data is lost.
+     */
+    static String headersToStructLiteral(ConsumerRecord<String, byte[]> record) {
         StringBuilder sb = new StringBuilder("[");
         boolean first = true;
         for (Header h : record.headers()) {
-            if (!first) sb.append(',');
-            sb.append("{\"key\":\"").append(escapeJson(h.key())).append("\",\"value\":\"");
-            if (h.value() != null) {
-                sb.append(Base64.getEncoder().encodeToString(h.value()));
-            }
-            sb.append("\"}");
+            if (!first) sb.append(", ");
             first = false;
+            appendHeaderEntry(sb, h.key(), h.value());
         }
         return sb.append(']').toString();
     }
 
-    private static String escapeJson(String s) {
-        return s.replace("\\", "\\\\").replace("\"", "\\\"");
+    /**
+     * Serialises a {@link com.joxette.replay.KafkaMessage.Header} list as a DuckDB
+     * {@code STRUCT(key VARCHAR, value VARCHAR)[]} literal inlined in SQL.
+     *
+     * <p>Shared with {@link EntityCassetteBatchWriter}.
+     *
+     * <p>Header values are decoded as UTF-8. Values that are not valid UTF-8
+     * (binary payloads) are base64-encoded so no data is lost.
+     */
+    static String headersToStructLiteral(List<com.joxette.replay.KafkaMessage.Header> headers) {
+        StringBuilder sb = new StringBuilder("[");
+        boolean first = true;
+        for (com.joxette.replay.KafkaMessage.Header h : headers) {
+            if (!first) sb.append(", ");
+            first = false;
+            appendHeaderEntry(sb, h.key(), h.value());
+        }
+        return sb.append(']').toString();
+    }
+
+    /**
+     * Appends one {@code {'key': '...', 'value': '...'}} VARCHAR struct entry.
+     *
+     * <p>The value bytes are decoded as UTF-8. If decoding fails (binary payload),
+     * the bytes are base64-encoded instead. Single quotes in both key and value
+     * are escaped as {@code ''} per SQL standard.
+     */
+    private static void appendHeaderEntry(StringBuilder sb, String key, byte[] value) {
+        sb.append("{'key': '").append(escapeSingleQuote(key)).append("', 'value': '");
+        if (value != null && value.length > 0) {
+            sb.append(escapeSingleQuote(decodeHeaderValue(value)));
+        }
+        sb.append("'}");
+    }
+
+    /**
+     * Decodes header value bytes as UTF-8.  Falls back to base64 for non-UTF-8 binary values.
+     */
+    static String decodeHeaderValue(byte[] bytes) {
+        if (bytes == null || bytes.length == 0) return "";
+        try {
+            // Verify the bytes are valid UTF-8 before converting
+            java.nio.charset.CharsetDecoder decoder = java.nio.charset.StandardCharsets.UTF_8
+                    .newDecoder()
+                    .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT);
+            decoder.decode(java.nio.ByteBuffer.wrap(bytes));
+            return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+        } catch (java.nio.charset.CharacterCodingException e) {
+            // Binary payload — base64-encode so it survives the VARCHAR round-trip
+            return java.util.Base64.getEncoder().encodeToString(bytes);
+        }
+    }
+
+    private static String escapeSingleQuote(String s) {
+        return s.replace("'", "''");
     }
 
     @Override

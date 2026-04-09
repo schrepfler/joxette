@@ -2,12 +2,14 @@ package com.joxette.management;
 
 import com.joxette.recording.RecordingCoordinator;
 import com.joxette.replay.MessageRouter;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.sql.SQLException;
 import java.util.List;
+import java.util.Set;
 
 /**
  * Management API for topic recording configuration.
@@ -33,7 +35,7 @@ public class TopicController {
     record CreateTopicRequest(String topic, String mode) {}
     record UpdateTopicRequest(String mode) {}
 
-    public TopicController(ConfigRepository config, RecordingCoordinator coordinator,
+    public TopicController(ConfigRepository config, @Lazy RecordingCoordinator coordinator,
                            MessageRouter router) {
         this.config      = config;
         this.coordinator = coordinator;
@@ -42,7 +44,10 @@ public class TopicController {
 
     @GetMapping(produces = MediaType.APPLICATION_JSON_VALUE)
     public List<TopicConfig> listTopics() throws SQLException {
-        return config.listTopics();
+        Set<String> active = coordinator.activeTopics();
+        return config.listTopics().stream()
+                .map(tc -> new TopicConfig(tc.topic(), tc.mode(), tc.paused(), active.contains(tc.topic())))
+                .toList();
     }
 
     @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE,
