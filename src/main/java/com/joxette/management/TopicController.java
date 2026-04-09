@@ -34,6 +34,7 @@ public class TopicController {
 
     record CreateTopicRequest(String topic, String mode) {}
     record UpdateTopicRequest(String mode) {}
+    record SetRetentionRequest(Integer days) {}
 
     public TopicController(ConfigRepository config, @Lazy RecordingCoordinator coordinator,
                            MessageRouter router) {
@@ -46,7 +47,8 @@ public class TopicController {
     public List<TopicConfig> listTopics() throws SQLException {
         Set<String> active = coordinator.activeTopics();
         return config.listTopics().stream()
-                .map(tc -> new TopicConfig(tc.topic(), tc.mode(), tc.paused(), active.contains(tc.topic())))
+                .map(tc -> new TopicConfig(tc.topic(), tc.mode(), tc.paused(),
+                        active.contains(tc.topic()), tc.retentionDays()))
                 .toList();
     }
 
@@ -64,7 +66,8 @@ public class TopicController {
         TopicConfig tc = config.upsertTopic(body.topic(), mode, false);
         coordinator.startTopic(tc.topic());
         boolean active = coordinator.activeTopics().contains(tc.topic());
-        return ResponseEntity.status(201).body(new TopicConfig(tc.topic(), tc.mode(), tc.paused(), active));
+        return ResponseEntity.status(201).body(
+                new TopicConfig(tc.topic(), tc.mode(), tc.paused(), active, tc.retentionDays()));
     }
 
     @GetMapping(value = "/{topic}", produces = MediaType.APPLICATION_JSON_VALUE)
@@ -106,6 +109,18 @@ public class TopicController {
         config.setPaused(topic, true);
         return config.findTopic(topic).map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
+    }
+
+    @PutMapping(value = "/{topic}/retention",
+                consumes = MediaType.APPLICATION_JSON_VALUE,
+                produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<TopicConfig> setRetention(
+            @PathVariable String topic,
+            @RequestBody SetRetentionRequest body) throws SQLException {
+        if (config.findTopic(topic).isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        return ResponseEntity.ok(config.setTopicRetentionDays(topic, body.days()));
     }
 
     @PostMapping("/{topic}/resume")

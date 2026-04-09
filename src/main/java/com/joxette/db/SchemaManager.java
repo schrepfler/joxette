@@ -149,22 +149,26 @@ public class SchemaManager {
 
             stmt.execute("""
                 CREATE TABLE IF NOT EXISTS topic_configs (
-                    topic      VARCHAR PRIMARY KEY,
-                    mode       VARCHAR NOT NULL
-                                 CHECK (mode IN ('general', 'entity_only', 'both')),
-                    paused     BOOLEAN NOT NULL DEFAULT false,
-                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                    topic          VARCHAR PRIMARY KEY,
+                    mode           VARCHAR NOT NULL
+                                     CHECK (mode IN ('general', 'entity_only', 'both')),
+                    paused         BOOLEAN NOT NULL DEFAULT false,
+                    retention_days INTEGER,
+                    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
                 )
                 """);
+            stmt.execute("ALTER TABLE topic_configs ADD COLUMN IF NOT EXISTS retention_days INTEGER");
 
             stmt.execute("""
                 CREATE TABLE IF NOT EXISTS entity_type_configs (
-                    entity_type  VARCHAR PRIMARY KEY,
-                    bucket_count INTEGER NOT NULL DEFAULT 256,
-                    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+                    entity_type    VARCHAR PRIMARY KEY,
+                    bucket_count   INTEGER NOT NULL DEFAULT 256,
+                    retention_days INTEGER,
+                    created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
                 )
                 """);
+            stmt.execute("ALTER TABLE entity_type_configs ADD COLUMN IF NOT EXISTS retention_days INTEGER");
 
             stmt.execute("CREATE SEQUENCE IF NOT EXISTS seq_entity_source_mappings START 1");
 
@@ -235,6 +239,24 @@ public class SchemaManager {
                     name        VARCHAR     NOT NULL PRIMARY KEY,
                     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
                     size_bytes  BIGINT
+                )
+                """);
+
+            stmt.execute("CREATE SEQUENCE IF NOT EXISTS seq_retention_history START 1");
+
+            stmt.execute("""
+                CREATE TABLE IF NOT EXISTS retention_history (
+                    id                     INTEGER     PRIMARY KEY
+                                             DEFAULT nextval('seq_retention_history'),
+                    started_at             TIMESTAMPTZ NOT NULL,
+                    completed_at           TIMESTAMPTZ,
+                    status                 VARCHAR     NOT NULL
+                                             CHECK (status IN ('running', 'completed', 'failed')),
+                    triggered_by           VARCHAR     NOT NULL,
+                    entity_rows_deleted    BIGINT      NOT NULL DEFAULT 0,
+                    general_rows_deleted   BIGINT      NOT NULL DEFAULT 0,
+                    known_entities_deleted BIGINT      NOT NULL DEFAULT 0,
+                    error_message          VARCHAR
                 )
                 """);
 
@@ -446,7 +468,7 @@ public class SchemaManager {
     }
 
     /** Converts a topic/entity name to a safe SQL identifier: {@code [a-z0-9_]}. */
-    static String normalize(String name) {
+    public static String normalize(String name) {
         return name.toLowerCase().replaceAll("[^a-z0-9_]", "_");
     }
 

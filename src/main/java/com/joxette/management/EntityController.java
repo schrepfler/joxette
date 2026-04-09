@@ -46,6 +46,7 @@ public class EntityController {
             String mode,
             List<EntitySourceConfig.MatcherConfig> matchers
     ) {}
+    record SetRetentionRequest(Integer days) {}
 
     public EntityController(ConfigRepository config, SchemaManager schemaManager,
                             MessageRouter messageRouter) {
@@ -110,6 +111,18 @@ public class EntityController {
         EntityTypeConfig updated = config.upsertEntityType(type, body.buckets());
         reloadRouter();
         return ResponseEntity.ok(updated);
+    }
+
+    @PutMapping(value = "/{type}/retention",
+                consumes = MediaType.APPLICATION_JSON_VALUE,
+                produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<EntityTypeConfig> setRetention(
+            @PathVariable String type,
+            @RequestBody SetRetentionRequest body) throws SQLException {
+        if (config.findEntityType(type).isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        return ResponseEntity.ok(config.setEntityRetentionDays(type, body.days()));
     }
 
     @DeleteMapping("/{type}")

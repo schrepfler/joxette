@@ -9,5 +9,7 @@ public record TopicConfig(
         /** "general" | "entity_only" | "both" */
         String mode,
         boolean paused,
-        boolean active
+        boolean active,
+        /** Maximum age of records in days; {@code null} means no retention limit. */
+        Integer retentionDays
 ) {}

@@ -48,10 +48,11 @@ public class ConfigRepository {
         synchronized (duckDB) {
             try (Statement st = duckDB.createStatement();
                  ResultSet rs = st.executeQuery(
-                         "SELECT topic, mode, paused FROM topic_configs ORDER BY topic")) {
+                         "SELECT topic, mode, paused, retention_days FROM topic_configs ORDER BY topic")) {
                 while (rs.next()) {
                     result.add(new TopicConfig(rs.getString("topic"), rs.getString("mode"),
-                            rs.getBoolean("paused"), false));
+                            rs.getBoolean("paused"), false,
+                            (Integer) rs.getObject("retention_days")));
                 }
             }
         }
@@ -61,12 +62,13 @@ public class ConfigRepository {
     public Optional<TopicConfig> findTopic(String topic) throws SQLException {
         synchronized (duckDB) {
             try (PreparedStatement ps = duckDB.prepareStatement(
-                    "SELECT topic, mode, paused FROM topic_configs WHERE topic = ?")) {
+                    "SELECT topic, mode, paused, retention_days FROM topic_configs WHERE topic = ?")) {
                 ps.setString(1, topic);
                 try (ResultSet rs = ps.executeQuery()) {
                     if (rs.next()) {
                         return Optional.of(new TopicConfig(rs.getString("topic"),
-                                rs.getString("mode"), rs.getBoolean("paused"), false));
+                                rs.getString("mode"), rs.getBoolean("paused"), false,
+                                (Integer) rs.getObject("retention_days")));
                     }
                 }
             }
@@ -80,14 +82,34 @@ public class ConfigRepository {
             try (PreparedStatement ps = duckDB.prepareStatement("""
                     INSERT INTO topic_configs (topic, mode, paused) VALUES (?, ?, ?)
                     ON CONFLICT (topic) DO UPDATE SET mode = excluded.mode, paused = excluded.paused
+                    RETURNING topic, mode, paused, retention_days
                     """)) {
                 ps.setString(1, topic);
                 ps.setString(2, mode);
                 ps.setBoolean(3, paused);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (rs.next()) {
+                        return new TopicConfig(rs.getString("topic"), rs.getString("mode"),
+                                rs.getBoolean("paused"), false,
+                                (Integer) rs.getObject("retention_days"));
+                    }
+                }
+            }
+        }
+        return new TopicConfig(topic, mode, paused, false, null);
+    }
+
+    public TopicConfig setTopicRetentionDays(String topic, Integer days) throws SQLException {
+        synchronized (duckDB) {
+            try (PreparedStatement ps = duckDB.prepareStatement(
+                    "UPDATE topic_configs SET retention_days = ? WHERE topic = ?")) {
+                ps.setObject(1, days);
+                ps.setString(2, topic);
                 ps.executeUpdate();
             }
         }
-        return new TopicConfig(topic, mode, paused, false);
+        return findTopic(topic).orElseThrow(
+                () -> new NoSuchElementException("Topic not found: " + topic));
     }
 
     public boolean deleteTopic(String topic) throws SQLException {
@@ -120,10 +142,10 @@ public class ConfigRepository {
         synchronized (duckDB) {
             try (Statement st = duckDB.createStatement();
                  ResultSet rs = st.executeQuery(
-                         "SELECT entity_type, bucket_count AS buckets FROM entity_type_configs ORDER BY entity_type")) {
+                         "SELECT entity_type, bucket_count AS buckets, retention_days FROM entity_type_configs ORDER BY entity_type")) {
                 while (rs.next()) {
                     result.add(new EntityTypeConfig(rs.getString("entity_type"),
-                            rs.getInt("buckets")));
+                            rs.getInt("buckets"), (Integer) rs.getObject("retention_days")));
                 }
             }
         }
@@ -133,12 +155,12 @@ public class ConfigRepository {
     public Optional<EntityTypeConfig> findEntityType(String type) throws SQLException {
         synchronized (duckDB) {
             try (PreparedStatement ps = duckDB.prepareStatement(
-                    "SELECT entity_type, bucket_count AS buckets FROM entity_type_configs WHERE entity_type = ?")) {
+                    "SELECT entity_type, bucket_count AS buckets, retention_days FROM entity_type_configs WHERE entity_type = ?")) {
                 ps.setString(1, type);
                 try (ResultSet rs = ps.executeQuery()) {
                     if (rs.next()) {
                         return Optional.of(new EntityTypeConfig(rs.getString("entity_type"),
-                                rs.getInt("buckets")));
+                                rs.getInt("buckets"), (Integer) rs.getObject("retention_days")));
                     }
                 }
             }
@@ -151,13 +173,32 @@ public class ConfigRepository {
             try (PreparedStatement ps = duckDB.prepareStatement("""
                     INSERT INTO entity_type_configs (entity_type, bucket_count) VALUES (?, ?)
                     ON CONFLICT (entity_type) DO UPDATE SET bucket_count = excluded.bucket_count
+                    RETURNING entity_type, bucket_count AS buckets, retention_days
                     """)) {
                 ps.setString(1, type);
                 ps.setInt(2, buckets);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (rs.next()) {
+                        return new EntityTypeConfig(rs.getString("entity_type"),
+                                rs.getInt("buckets"), (Integer) rs.getObject("retention_days"));
+                    }
+                }
+            }
+        }
+        return new EntityTypeConfig(type, buckets, null);
+    }
+
+    public EntityTypeConfig setEntityRetentionDays(String type, Integer days) throws SQLException {
+        synchronized (duckDB) {
+            try (PreparedStatement ps = duckDB.prepareStatement(
+                    "UPDATE entity_type_configs SET retention_days = ? WHERE entity_type = ?")) {
+                ps.setObject(1, days);
+                ps.setString(2, type);
                 ps.executeUpdate();
             }
         }
-        return new EntityTypeConfig(type, buckets);
+        return findEntityType(type).orElseThrow(
+                () -> new NoSuchElementException("Entity type not found: " + type));
     }
 
     public boolean deleteEntityType(String type) throws SQLException {

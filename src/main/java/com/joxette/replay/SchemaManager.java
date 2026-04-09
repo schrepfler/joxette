@@ -62,6 +62,7 @@ public class SchemaManager {
                 createConfigTables(st);
                 createSnapshotsTable(st);
                 createCompactionHistoryTable(st);
+                createRetentionHistoryTable(st);
             }
         }
     }
@@ -133,17 +134,22 @@ public class SchemaManager {
     private static void createConfigTables(Statement st) throws SQLException {
         st.execute("""
                 CREATE TABLE IF NOT EXISTS lake.config_topics (
-                    topic  VARCHAR NOT NULL PRIMARY KEY,
-                    mode   VARCHAR NOT NULL DEFAULT 'general',
-                    paused BOOLEAN NOT NULL DEFAULT FALSE
+                    topic          VARCHAR NOT NULL PRIMARY KEY,
+                    mode           VARCHAR NOT NULL DEFAULT 'general',
+                    paused         BOOLEAN NOT NULL DEFAULT FALSE,
+                    retention_days INTEGER
                 )
                 """);
+        // Idempotent column addition for pre-existing databases
+        st.execute("ALTER TABLE lake.config_topics ADD COLUMN IF NOT EXISTS retention_days INTEGER");
         st.execute("""
                 CREATE TABLE IF NOT EXISTS lake.config_entities (
-                    entity_type VARCHAR  NOT NULL PRIMARY KEY,
-                    buckets     INTEGER  NOT NULL DEFAULT 256
+                    entity_type    VARCHAR NOT NULL PRIMARY KEY,
+                    buckets        INTEGER NOT NULL DEFAULT 256,
+                    retention_days INTEGER
                 )
                 """);
+        st.execute("ALTER TABLE lake.config_entities ADD COLUMN IF NOT EXISTS retention_days INTEGER");
         st.execute("""
                 CREATE TABLE IF NOT EXISTS lake.config_entity_sources (
                     entity_type   VARCHAR NOT NULL,
@@ -151,6 +157,23 @@ public class SchemaManager {
                     id_source     VARCHAR NOT NULL DEFAULT 'value',
                     id_expression VARCHAR,
                     PRIMARY KEY (entity_type, topic)
+                )
+                """);
+    }
+
+    private static void createRetentionHistoryTable(Statement st) throws SQLException {
+        st.execute("CREATE SEQUENCE IF NOT EXISTS lake.retention_history_id_seq START 1");
+        st.execute("""
+                CREATE TABLE IF NOT EXISTS lake.retention_history (
+                    id                     BIGINT      DEFAULT nextval('lake.retention_history_id_seq') PRIMARY KEY,
+                    started_at             TIMESTAMPTZ NOT NULL,
+                    completed_at           TIMESTAMPTZ,
+                    status                 VARCHAR     NOT NULL,
+                    triggered_by           VARCHAR     NOT NULL,
+                    entity_rows_deleted    BIGINT      NOT NULL DEFAULT 0,
+                    general_rows_deleted   BIGINT      NOT NULL DEFAULT 0,
+                    known_entities_deleted BIGINT      NOT NULL DEFAULT 0,
+                    error_message          VARCHAR
                 )
                 """);
     }
