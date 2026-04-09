@@ -2,6 +2,7 @@ package com.joxette.replay;
 
 import com.joxette.config.JoxetteProperties;
 import com.joxette.config.JoxetteProperties.Bootstrap.EntityEntry.SourceMapping;
+import com.joxette.repository.ConfigRepository;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -9,6 +10,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
 /**
  * Routes each {@link KafkaMessage} to its target cassette destinations based
@@ -38,18 +40,21 @@ import java.util.Optional;
 public class MessageRouter {
 
     /** topic → mode ("general" | "entity_only" | "both") */
-    private final Map<String, String> topicModes;
+    private volatile Map<String, String> topicModes;
 
     /** topic → ordered list of entity mappings that draw IDs from it */
-    private final Map<String, List<EntityMapping>> topicEntityMappings;
+    private volatile Map<String, List<EntityMapping>> topicEntityMappings;
 
     /** entity type → bucket count */
-    private final Map<String, Integer> entityBuckets;
+    private volatile Map<String, Integer> entityBuckets;
 
     private final EntityIdExtractor extractor;
+    private final ConfigRepository configRepo;
 
-    public MessageRouter(JoxetteProperties properties, EntityIdExtractor extractor) {
-        this.extractor = extractor;
+    public MessageRouter(JoxetteProperties properties, EntityIdExtractor extractor,
+                         ConfigRepository configRepo) {
+        this.extractor  = extractor;
+        this.configRepo = configRepo;
 
         Map<String, String> modes = new HashMap<>();
         for (JoxetteProperties.Bootstrap.TopicEntry te : properties.getBootstrap().getTopics()) {
@@ -72,6 +77,31 @@ public class MessageRouter {
         }
 
         this.topicEntityMappings = Map.copyOf(mappings);
+        this.entityBuckets = Map.copyOf(buckets);
+    }
+
+    /**
+     * Reloads routing tables from the database, replacing the bootstrap snapshot.
+     *
+     * <p>Each field is assigned an immutable map snapshot so concurrent
+     * {@link #route(KafkaMessage)} calls observe a fully-consistent view
+     * without additional locking.
+     */
+    public synchronized void reload() {
+        Map<String, String> modes = new HashMap<>();
+        configRepo.findAllTopics().forEach(tc -> modes.put(tc.topic(), tc.mode()));
+
+        Map<String, List<EntityMapping>> mappings = new HashMap<>();
+        Map<String, Integer> buckets = new HashMap<>();
+
+        configRepo.findAllEntityTypes().forEach(etc -> buckets.put(etc.entityType(), etc.buckets()));
+        configRepo.findAllMappings().forEach(m ->
+                mappings.computeIfAbsent(m.topic(), k -> new ArrayList<>())
+                        .add(new EntityMapping(m.entityType(), m.entityIdSource(), m.entityIdExpression())));
+
+        this.topicModes = Map.copyOf(modes);
+        this.topicEntityMappings = mappings.entrySet().stream()
+                .collect(Collectors.toUnmodifiableMap(Map.Entry::getKey, e -> List.copyOf(e.getValue())));
         this.entityBuckets = Map.copyOf(buckets);
     }
 

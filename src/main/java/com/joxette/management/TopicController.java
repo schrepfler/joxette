@@ -1,6 +1,7 @@
 package com.joxette.management;
 
 import com.joxette.recording.RecordingCoordinator;
+import com.joxette.replay.MessageRouter;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -27,13 +28,16 @@ public class TopicController {
 
     private final ConfigRepository config;
     private final RecordingCoordinator coordinator;
+    private final MessageRouter router;
 
     record CreateTopicRequest(String topic, String mode) {}
     record UpdateTopicRequest(String mode) {}
 
-    public TopicController(ConfigRepository config, RecordingCoordinator coordinator) {
+    public TopicController(ConfigRepository config, RecordingCoordinator coordinator,
+                           MessageRouter router) {
         this.config      = config;
         this.coordinator = coordinator;
+        this.router      = router;
     }
 
     @GetMapping(produces = MediaType.APPLICATION_JSON_VALUE)
@@ -77,6 +81,7 @@ public class TopicController {
         // Preserve current paused state
         boolean paused = config.findTopic(topic).map(TopicConfig::paused).orElse(false);
         TopicConfig tc = config.upsertTopic(topic, body.mode(), paused);
+        router.reload();
         return ResponseEntity.ok(tc);
     }
 
