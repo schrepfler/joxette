@@ -43,8 +43,8 @@ import static org.assertj.core.api.Assertions.assertThat;
  * The recorder is given {@code auto.offset.reset=earliest} so it captures
  * messages that were published before the consumer subscribed.
  *
- * <p>The batch writer creates its own per-topic table:
- * {@code lake.cassette_<sanitized_topic>}.
+ * <p>The batch writer creates its own per-topic DuckLake table:
+ * {@code lake.main.general_<normalized_topic>}.
  */
 @Testcontainers
 class TopicRecorderTest {

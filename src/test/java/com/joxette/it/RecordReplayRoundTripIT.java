@@ -47,12 +47,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <h2>Strategy</h2>
  * <p>The recording pipeline ({@link com.joxette.recording.TopicRecorder}) writes
- * to per-topic tables ({@code lake.cassette_<topic>}) while the replay API reads
- * from the unified {@code lake.cassette} table.  This test therefore exercises
- * the replay path end-to-end by:
+ * to per-topic DuckLake tables ({@code lake.main.general_<normalized_topic>}).
+ * This test exercises the full round-trip by:
  * <ol>
- *   <li>Inserting records directly into {@code lake.cassette} via the shared
- *       DuckDB connection (simulating what a complete recording pipeline would
+ *   <li>Inserting records directly into {@code lake.main.general_<topic>} via the
+ *       shared DuckDB connection (simulating what a complete recording pipeline would
  *       produce) — this validates the MVC → Service → DuckDB → HTTP response
  *       chain in full.</li>
  *   <li>Additionally starting a live recorder for a test topic, publishing
@@ -94,9 +93,10 @@ class RecordReplayRoundTripIT {
     void setUp() throws Exception {
         restTemplate = new RestTemplate();
         baseUrl = "http://localhost:" + port;
-        // Ensure lake.cassette is empty before each test (schema was created by SchemaManager).
+        // Ensure the per-topic cassette table exists and is empty before each test.
+        DuckDBTestSupport.createGeneralCassetteTable(duckDB, TEST_TOPIC);
         try (Statement st = duckDB.createStatement()) {
-            st.execute("DELETE FROM lake.cassette");
+            st.execute("DELETE FROM lake.main.general_integration_test_events");
         }
     }
 
@@ -221,10 +221,9 @@ class RecordReplayRoundTripIT {
             }
         }
 
-        // The recorder (started by ConfigRepository via the management API call)
-        // writes to lake.cassette_<sanitized>. Wait for rows to appear.
-        String sanitized = recordingTopic.replace(".", "_");
-        String cassetteTable = "lake.cassette_" + sanitized;
+        // The recorder writes to lake.main.general_<normalized_topic>. Wait for rows to appear.
+        String normalized = recordingTopic.toLowerCase().replaceAll("[^a-z0-9_]", "_");
+        String cassetteTable = "lake.main.general_" + normalized;
         awaitRowCount(cassetteTable, msgCount, Duration.ofSeconds(20));
 
         long count = DuckDBTestSupport.countRows(duckDB, cassetteTable);

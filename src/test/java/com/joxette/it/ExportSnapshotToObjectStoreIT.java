@@ -51,7 +51,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <p>The test:
  * <ol>
- *   <li>Seeds {@code lake.cassette} directly via the shared DuckDB connection.</li>
+ *   <li>Seeds {@code lake.main.general_{topic}} directly via the shared DuckDB connection.</li>
  *   <li>Calls {@code POST /cassettes/snapshots/export-to-object-store}.</li>
  *   <li>Verifies exported files are present in the MinIO bucket.</li>
  *   <li>Verifies a snapshot record was inserted into {@code lake.snapshots}.</li>
