@@ -55,12 +55,15 @@ public class CompactionController {
     private static final int DEFAULT_HISTORY_LIMIT = 20;
 
     private final CompactionService compactionService;
+    private final RetentionService retentionService;
     private final TaskScheduler compactionTaskScheduler;
 
     public CompactionController(
             CompactionService compactionService,
+            RetentionService retentionService,
             @Qualifier("compactionTaskScheduler") TaskScheduler compactionTaskScheduler) {
-        this.compactionService      = compactionService;
+        this.compactionService       = compactionService;
+        this.retentionService        = retentionService;
         this.compactionTaskScheduler = compactionTaskScheduler;
     }
 
@@ -164,6 +167,25 @@ public class CompactionController {
                        example = "20")
             @RequestParam(defaultValue = "" + DEFAULT_HISTORY_LIMIT) int limit) throws SQLException {
         return compactionService.getHistory(limit);
+    }
+
+    @Operation(
+        operationId = "getRetentionStatus",
+        summary = "Get retention enforcement status",
+        description = "Returns the current retention status including the most-recent run summary " +
+                      "(with per-table row counts), the next scheduled cron fire time, and whether " +
+                      "a run is currently active."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Current retention status",
+            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                schema = @Schema(implementation = RetentionStatus.class))),
+        @ApiResponse(responseCode = "500", description = "Database error",
+            content = @Content(schema = @Schema(type = "string")))
+    })
+    @GetMapping(value = "/retention-status", produces = MediaType.APPLICATION_JSON_VALUE)
+    public RetentionStatus getRetentionStatus() throws SQLException {
+        return retentionService.getStatus();
     }
 
     // =========================================================================

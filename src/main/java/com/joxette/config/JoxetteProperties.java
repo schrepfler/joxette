@@ -11,6 +11,7 @@ public class JoxetteProperties {
     private Catalog catalog = new Catalog();
     private Inline inline = new Inline();
     private Compaction compaction = new Compaction();
+    private Retention retention = new Retention();
     private Kafka kafka = new Kafka();
     private Recording recording = new Recording();
     private Bootstrap bootstrap = new Bootstrap();
@@ -137,6 +138,22 @@ public class JoxetteProperties {
 
         public General getGeneral() { return general; }
         public void setGeneral(General general) { this.general = general; }
+    }
+
+    // -----------------------------------------------------------------------
+    // Retention
+    // -----------------------------------------------------------------------
+
+    public static class Retention {
+        /**
+         * Cron expression for the scheduled retention enforcement run.
+         * Uses Spring 6-field format: {@code <sec> <min> <hour> <dom> <month> <dow>}.
+         * Default: daily at 01:00:00 (runs two hours before compaction at 03:00).
+         */
+        private String schedule = "0 0 1 * * *";
+
+        public String getSchedule() { return schedule; }
+        public void setSchedule(String schedule) { this.schedule = schedule; }
     }
 
     // -----------------------------------------------------------------------
@@ -360,6 +377,9 @@ public class JoxetteProperties {
 
     public Compaction getCompaction() { return compaction; }
     public void setCompaction(Compaction compaction) { this.compaction = compaction; }
+
+    public Retention getRetention() { return retention; }
+    public void setRetention(Retention retention) { this.retention = retention; }
 
     public Kafka getKafka() { return kafka; }
     public void setKafka(Kafka kafka) { this.kafka = kafka; }

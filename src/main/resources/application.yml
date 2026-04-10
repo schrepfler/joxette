@@ -42,6 +42,9 @@ joxette:
     threshold-mb: 4
     threshold-records: 50000
 
+  retention:
+    schedule: "0 0 1 * * *"
+
   compaction:
     schedule: "0 0 3 * * *"
     entity:

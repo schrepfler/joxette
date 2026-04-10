@@ -1,5 +1,6 @@
 package com.joxette.compaction;
 
+import com.joxette.config.JoxetteProperties;
 import com.joxette.db.SchemaManager;
 import com.joxette.management.ConfigRepository;
 import com.joxette.management.EntityTypeConfig;
@@ -7,10 +8,11 @@ import com.joxette.management.TopicConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.DependsOn;
+import org.springframework.scheduling.support.CronExpression;
 import org.springframework.stereotype.Service;
 
 import java.sql.*;
-import java.time.Instant;
+import java.time.*;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.NoSuchElementException;
@@ -47,11 +49,13 @@ public class RetentionService {
 
     private final Connection duckDB;
     private final ConfigRepository configRepo;
+    private final JoxetteProperties props;
     private final AtomicBoolean running = new AtomicBoolean(false);
 
-    public RetentionService(Connection duckDB, ConfigRepository configRepo) {
+    public RetentionService(Connection duckDB, ConfigRepository configRepo, JoxetteProperties props) {
         this.duckDB     = duckDB;
         this.configRepo = configRepo;
+        this.props      = props;
     }
 
     // =========================================================================
@@ -158,6 +162,12 @@ public class RetentionService {
                 }
             }
         }
+    }
+
+    public RetentionStatus getStatus() throws SQLException {
+        RetentionRun lastRun = queryLastRun();
+        Instant nextScheduledRun = computeNextScheduledRun();
+        return new RetentionStatus(lastRun, nextScheduledRun, running.get());
     }
 
     // =========================================================================
@@ -298,6 +308,33 @@ public class RetentionService {
                 ps.setLong(7, runId);
                 ps.executeUpdate();
             }
+        }
+    }
+
+    private RetentionRun queryLastRun() throws SQLException {
+        synchronized (duckDB) {
+            try (Statement st = duckDB.createStatement();
+                 ResultSet rs = st.executeQuery("""
+                    SELECT id, started_at, completed_at, status, triggered_by,
+                           entity_rows_deleted, general_rows_deleted, known_entities_deleted, error_message
+                    FROM retention_history
+                    ORDER BY started_at DESC LIMIT 1
+                    """)) {
+                return rs.next() ? mapRun(rs) : null;
+            }
+        }
+    }
+
+    private Instant computeNextScheduledRun() {
+        try {
+            CronExpression expr = CronExpression.parse(props.getRetention().getSchedule());
+            LocalDateTime next = expr.next(LocalDateTime.now());
+            if (next == null) return null;
+            return next.atZone(ZoneId.systemDefault()).toInstant();
+        } catch (Exception e) {
+            log.warn("Cannot parse retention cron '{}' to compute next run: {}",
+                    props.getRetention().getSchedule(), e.getMessage());
+            return null;
         }
     }
 
