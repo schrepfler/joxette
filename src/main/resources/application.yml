@@ -85,8 +85,8 @@ joxette:
   #                  The router tries matchers in declaration order and stops
   #                  at the first one that yields an ID.
   #       message-type  — label stored in the cassette's message_type column.
-  #       source        — where to extract the ID: key | value | headers
-  #       expression    — JSONPath (for value) or header name (for headers)
+  #       source        — where to extract the ID: key | value | header
+  #       expression    — JSONPath (for value) or header name (for header)
   #
   # All message variants for the same entity feed into the SAME cassette,
   # giving a unified timeline across message types.

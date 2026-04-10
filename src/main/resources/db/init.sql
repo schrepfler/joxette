@@ -114,7 +114,7 @@ CREATE TABLE IF NOT EXISTS entity_source_matchers (
     topic        VARCHAR NOT NULL,
     message_type VARCHAR NOT NULL,
     id_source    VARCHAR NOT NULL
-                   CHECK (id_source IN ('key', 'value', 'headers')),
+                   CHECK (id_source IN ('key', 'value', 'header')),
     id_expression VARCHAR,
     created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (entity_type, topic, message_type)

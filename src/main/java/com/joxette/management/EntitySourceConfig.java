@@ -32,7 +32,7 @@ public record EntitySourceConfig(
      * Configuration for one message-variant matcher.
      *
      * @param messageType  logical label stored in the cassette's {@code message_type} column
-     * @param idSource     "key" | "value" | "headers"
+     * @param idSource     "key" | "value" | "header"
      * @param idExpression JSONPath (for value source) or header name (for headers source)
      */
     public record MatcherConfig(
