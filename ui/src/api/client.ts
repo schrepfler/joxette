@@ -8,6 +8,7 @@ export interface TopicConfig {
   paused: boolean
   active: boolean
   consumerGroup?: string
+  retentionDays?: number
 }
 
 export interface CreateTopicRequest {
@@ -188,6 +189,8 @@ export const topicsApi = {
   get: (topic: string) => request<TopicConfig>(`/topics/${encodeURIComponent(topic)}`),
   update: (topic: string, body: UpdateTopicRequest) =>
     request<TopicConfig>(`/topics/${encodeURIComponent(topic)}`, { method: 'PUT', body: JSON.stringify(body) }),
+  updateRetention: (topic: string, retentionDays: number) =>
+    request<void>(`/topics/${encodeURIComponent(topic)}/retention`, { method: 'PUT', body: JSON.stringify({ retention_days: retentionDays }) }),
   delete: (topic: string) => request<void>(`/topics/${encodeURIComponent(topic)}`, { method: 'DELETE' }),
   pause: (topic: string) => request<TopicConfig>(`/topics/${encodeURIComponent(topic)}/pause`, { method: 'POST' }),
   resume: (topic: string) => request<TopicConfig>(`/topics/${encodeURIComponent(topic)}/resume`, { method: 'POST' }),
@@ -201,6 +204,8 @@ export const entitiesApi = {
   get: (type: string) => request<EntityTypeConfig>(`/entities/${encodeURIComponent(type)}`),
   update: (type: string, body: UpdateEntityRequest) =>
     request<EntityTypeConfig>(`/entities/${encodeURIComponent(type)}`, { method: 'PUT', body: JSON.stringify(body) }),
+  updateRetention: (type: string, retentionDays: number) =>
+    request<void>(`/entities/${encodeURIComponent(type)}/retention`, { method: 'PUT', body: JSON.stringify({ retention_days: retentionDays }) }),
   delete: (type: string) => request<void>(`/entities/${encodeURIComponent(type)}`, { method: 'DELETE' }),
   getSources: (type: string) => request<EntitySourceConfig[]>(`/entities/${encodeURIComponent(type)}/sources`),
   addSource: (type: string, body: AddSourceRequest) =>

@@ -113,6 +113,12 @@ function EntityTypeDetailPage() {
     onError: (e: Error) => addToast(e.message, 'error'),
   })
 
+  const retentionMutation = useMutation({
+    mutationFn: (days: number) => entitiesApi.updateRetention(entityType, days),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['entities', entityType] }); addToast('Retention updated', 'success') },
+    onError: (e: Error) => addToast(e.message, 'error'),
+  })
+
   const deleteSourceMutation = useMutation({
     mutationFn: (topic: string) => entitiesApi.deleteSource(entityType, topic),
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ['entities', entityType, 'sources'] }); addToast('Source deleted', 'success') },
@@ -122,6 +128,11 @@ function EntityTypeDetailPage() {
   const form = useForm({
     defaultValues: { buckets: String(entityQuery.data?.buckets ?? '') },
     onSubmit: async ({ value }) => updateMutation.mutate(Number(value.buckets)),
+  })
+
+  const retentionForm = useForm({
+    defaultValues: { retentionDays: entityQuery.data?.retentionDays ?? 0 },
+    onSubmit: async ({ value }) => retentionMutation.mutate(value.retentionDays),
   })
 
   const srcColumns = [
@@ -179,6 +190,31 @@ function EntityTypeDetailPage() {
               </form.Field>
               <button type="submit" disabled={updateMutation.isPending} style={primaryBtnStyle}>Save</button>
             </form>
+            <div style={{ borderTop: '1px solid #e2e8f0', marginTop: '0.75rem', paddingTop: '0.75rem' }}>
+              <p style={{ margin: '0 0 0.5rem', fontSize: 13, color: '#718096' }}>
+                {entityQuery.data.retentionDays
+                  ? `Data retained for ${entityQuery.data.retentionDays} days`
+                  : 'No retention limit (unlimited)'}
+              </p>
+              <form onSubmit={e => { e.preventDefault(); void retentionForm.handleSubmit() }} style={{ display: 'flex', gap: 12, alignItems: 'flex-end' }}>
+                <retentionForm.Field name="retentionDays">
+                  {(f) => (
+                    <div>
+                      <label style={labelStyle}>Retention (days, 0 = unlimited)</label>
+                      <input
+                        type="number" min="0"
+                        style={{ ...inputStyle, width: 120 }}
+                        value={f.state.value}
+                        onChange={e => f.handleChange(Number(e.target.value))}
+                      />
+                    </div>
+                  )}
+                </retentionForm.Field>
+                <button type="submit" disabled={retentionMutation.isPending} style={primaryBtnStyle}>
+                  {retentionMutation.isPending ? 'Saving…' : 'Save'}
+                </button>
+              </form>
+            </div>
           </div>
 
           {/* Sources */}
