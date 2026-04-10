@@ -1,7 +1,10 @@
 import { createFileRoute, Link } from '@tanstack/react-router'
 import { useState, useCallback, useMemo } from 'react'
+import {
+  BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer,
+} from 'recharts'
 import { cassettesApi, type EntityRecord } from '../../../api/client'
-import { CassetteTimeline, type TimelineRecord } from '../../../components/CassetteTimeline'
+import { CassetteTimeline, type TimelineRecord, PALETTE } from '../../../components/CassetteTimeline'
 import { Layout } from '../../../components/Layout'
 import { LoadingSpinner } from '../../../components/LoadingSpinner'
 import { ErrorMessage } from '../../../components/ErrorMessage'
@@ -9,6 +12,61 @@ import { ErrorMessage } from '../../../components/ErrorMessage'
 export const Route = createFileRoute('/entities/$entityType/$entityId_/timeline')({
   component: EntityTimelinePage,
 })
+
+function computeTopicBuckets(records: EntityRecord[]): {
+  buckets: Array<Record<string, number | string>>
+  topicKeys: string[]
+} {
+  if (records.length === 0) return { buckets: [], topicKeys: [] }
+  const bucketCount = Math.min(40, Math.max(10, Math.floor(records.length / 5)))
+  const timestamps = records.map(r => new Date(r.timestamp).getTime())
+  const minMs = Math.min(...timestamps)
+  const maxMs = Math.max(...timestamps)
+  const spanMs = maxMs - minMs || 1
+  const topicKeys = [...new Set(records.map(r => r.topic))].sort()
+  const buckets: Array<Record<string, number | string>> = Array.from(
+    { length: bucketCount },
+    (_, i) => {
+      const d = new Date(minMs + (i / bucketCount) * spanMs)
+      const pad = (n: number, l = 2) => String(n).padStart(l, '0')
+      const row: Record<string, number | string> = {
+        time: `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`,
+      }
+      for (const tk of topicKeys) row[tk] = 0
+      return row
+    },
+  )
+  for (let i = 0; i < records.length; i++) {
+    const bi = Math.min(bucketCount - 1, Math.floor(((timestamps[i] - minMs) / spanMs) * bucketCount))
+    const tk = records[i].topic
+    const b = buckets[bi]
+    b[tk] = (b[tk] as number) + 1
+  }
+  return { buckets, topicKeys }
+}
+
+function TopicActivityChart({ records }: { records: EntityRecord[] }) {
+  const { buckets, topicKeys } = computeTopicBuckets(records)
+  if (buckets.length === 0) return null
+  return (
+    <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '0.625rem 0.75rem 0.5rem' }}>
+      <div style={{ fontSize: 11, color: '#a0aec0', marginBottom: 4, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
+        Activity by topic
+      </div>
+      <ResponsiveContainer width="100%" height={180}>
+        <BarChart data={buckets} margin={{ top: 4, right: 4, left: -16, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" vertical={false} />
+          <XAxis dataKey="time" tick={{ fontSize: 10, fill: '#718096' }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
+          <YAxis tick={{ fontSize: 10, fill: '#718096' }} axisLine={false} tickLine={false} width={28} allowDecimals={false} />
+          <Tooltip cursor={{ fill: '#f7fafc' }} contentStyle={{ fontSize: 12, borderRadius: 6, border: '1px solid #e2e8f0' }} />
+          {topicKeys.map((tk, i) => (
+            <Bar key={tk} dataKey={tk} stackId="a" fill={PALETTE[i % PALETTE.length]} isAnimationActive={false} />
+          ))}
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  )
+}
 
 function toTimelineRecord(r: EntityRecord): TimelineRecord {
   return {
@@ -101,20 +159,27 @@ function EntityTimelinePage() {
         ) : loading && records.length === 0 ? (
           <LoadingSpinner />
         ) : (
-          <div style={{ flex: '1 1 0', minHeight: 0, border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'hidden' }}>
-            <CassetteTimeline
-              records={timelineRecords}
-              onLoadAfter={handleLoadAfter}
-              hasMore={hasMoreAfter}
-              loading={loading}
-              title={`${entityType} / ${entityId}`}
-              extraControls={
-                hasMoreAfter && !loading
-                  ? <button style={secondaryBtn} onClick={handleLoadAfter}>Load next page</button>
-                  : undefined
-              }
-            />
-          </div>
+          <>
+            {records.length >= 2 && (
+              <div style={{ flexShrink: 0, marginBottom: 8 }}>
+                <TopicActivityChart records={records} />
+              </div>
+            )}
+            <div style={{ flex: '1 1 0', minHeight: 0, border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'hidden' }}>
+              <CassetteTimeline
+                records={timelineRecords}
+                onLoadAfter={handleLoadAfter}
+                hasMore={hasMoreAfter}
+                loading={loading}
+                title={`${entityType} / ${entityId}`}
+                extraControls={
+                  hasMoreAfter && !loading
+                    ? <button style={secondaryBtn} onClick={handleLoadAfter}>Load next page</button>
+                    : undefined
+                }
+              />
+            </div>
+          </>
         )}
       </div>
     </Layout>

@@ -91,7 +91,7 @@ function msToFullLabel(ms: number): string {
   return d.toISOString().slice(0, 23).replace('T', ' ')
 }
 
-const PALETTE = [
+export const PALETTE = [
   '#3182ce', '#38a169', '#d69e2e', '#e53e3e',
   '#805ad5', '#dd6b20', '#00b5d8', '#e91e8c',
   '#00897b', '#f44336',
