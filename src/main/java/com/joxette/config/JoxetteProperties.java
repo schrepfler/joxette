@@ -15,6 +15,7 @@ public class JoxetteProperties {
     private Recording recording = new Recording();
     private Bootstrap bootstrap = new Bootstrap();
     private S3 s3 = new S3();
+    private ObjectStore objectStore = new ObjectStore();
 
     // -----------------------------------------------------------------------
     // Catalog
@@ -237,7 +238,7 @@ public class JoxetteProperties {
     }
 
     // -----------------------------------------------------------------------
-    // S3 / object-storage credentials
+    // S3 / object-storage credentials (DuckDB httpfs / DuckLake DATA_PATH)
     // -----------------------------------------------------------------------
 
     /**
@@ -276,6 +277,48 @@ public class JoxetteProperties {
     }
 
     // -----------------------------------------------------------------------
+    // Object store (S3-compatible) for snapshot export via AWS SDK
+    // -----------------------------------------------------------------------
+
+    public static class ObjectStore {
+        /** Override the S3 endpoint URL (e.g. for MinIO or LocalStack). Null uses AWS default. */
+        private String endpointUrl;
+        /** AWS access key ID. Null falls back to the default credential provider chain. */
+        private String accessKey;
+        /** AWS secret access key. Null falls back to the default credential provider chain. */
+        private String secretKey;
+        /** AWS region. */
+        private String region = "us-east-1";
+        /** Bucket where snapshot exports are uploaded. */
+        private String bucket;
+        /** Key prefix prepended to every uploaded object (no trailing slash needed). */
+        private String prefix = "snapshots";
+        /** Use path-style S3 URLs. Required for MinIO and LocalStack. */
+        private boolean forcePathStyle = false;
+
+        public String getEndpointUrl() { return endpointUrl; }
+        public void setEndpointUrl(String endpointUrl) { this.endpointUrl = endpointUrl; }
+
+        public String getAccessKey() { return accessKey; }
+        public void setAccessKey(String accessKey) { this.accessKey = accessKey; }
+
+        public String getSecretKey() { return secretKey; }
+        public void setSecretKey(String secretKey) { this.secretKey = secretKey; }
+
+        public String getRegion() { return region; }
+        public void setRegion(String region) { this.region = region; }
+
+        public String getBucket() { return bucket; }
+        public void setBucket(String bucket) { this.bucket = bucket; }
+
+        public String getPrefix() { return prefix; }
+        public void setPrefix(String prefix) { this.prefix = prefix; }
+
+        public boolean isForcePathStyle() { return forcePathStyle; }
+        public void setForcePathStyle(boolean forcePathStyle) { this.forcePathStyle = forcePathStyle; }
+    }
+
+    // -----------------------------------------------------------------------
     // Root getters/setters
     // -----------------------------------------------------------------------
 
@@ -299,4 +342,7 @@ public class JoxetteProperties {
 
     public S3 getS3() { return s3; }
     public void setS3(S3 s3) { this.s3 = s3; }
+
+    public ObjectStore getObjectStore() { return objectStore; }
+    public void setObjectStore(ObjectStore objectStore) { this.objectStore = objectStore; }
 }

@@ -5,15 +5,20 @@ import com.joxette.management.ConfigRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import software.amazon.awssdk.core.sync.RequestBody;
+import software.amazon.awssdk.services.s3.S3Client;
 
 import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.*;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.NoSuchElementException;
+import java.util.Optional;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
@@ -45,14 +50,18 @@ public class CassetteLifecycleService {
 
     private final Connection duckDB;
     private final Path snapshotsBase;
-    /** Object-storage root, e.g. {@code s3://joxette-data/} — used for remote snapshots. */
+    /** Object-storage root, e.g. {@code s3://joxette-data/} — used for DuckLake DATA_PATH. */
     private final String objectStoragePath;
     private final ConfigRepository configRepo;
+    private final JoxetteProperties properties;
+    private final S3Client s3Client;
 
     public CassetteLifecycleService(Connection duckDB, JoxetteProperties properties,
-                                    ConfigRepository configRepo) {
+                                    ConfigRepository configRepo, Optional<S3Client> s3Client) {
         this.duckDB            = duckDB;
         this.configRepo        = configRepo;
+        this.properties        = properties;
+        this.s3Client          = s3Client.orElse(null);
         this.objectStoragePath = properties.getCatalog().getObjectStoragePath();
         Path catalogPath = Path.of(properties.getCatalog().getPath());
         Path parent = catalogPath.getParent();
@@ -244,54 +253,54 @@ public class CassetteLifecycleService {
         }
     }
 
-    // -------------------------------------------------------------------------
-    // Object-store snapshot export
-    // -------------------------------------------------------------------------
-
     /**
-     * Exports the full DuckDB catalog to the configured object-storage path using
-     * {@code EXPORT DATABASE 's3://...'}.
+     * Creates a local {@code EXPORT DATABASE} snapshot, uploads all its files to an
+     * S3-compatible object store, records the snapshot in {@code lake.snapshots}, and
+     * then removes the local directory (it's now safely in object storage).
      *
-     * <p>DuckDB's httpfs extension handles the S3 write directly — no local disk
-     * space is consumed.  The snapshot is placed under
-     * {@code <objectStoragePath>snapshots/<name>/}.
+     * <p>Requires {@code joxette.object-store.bucket} to be configured; throws
+     * {@link IllegalStateException} otherwise.
      *
-     * <p>Because DuckDB writes directly to S3, no local directory is created
-     * and no size can be computed locally; {@link SnapshotInfo#sizeBytes()} is
-     * returned as {@code -1}.
-     *
-     * @param name snapshot label — must match {@code [a-zA-Z0-9_-]+}
-     * @return metadata record for the created snapshot
-     * @throws IllegalStateException if no object-storage path is configured
-     * @throws SQLException if the EXPORT DATABASE command fails
+     * @param name snapshot name — must match {@code [a-zA-Z0-9_-]+}
+     * @return metadata including the S3 base URI
      */
-    public SnapshotInfo exportSnapshotToObjectStore(String name) throws SQLException {
-        validateSnapshotName(name);
-        if (objectStoragePath == null || objectStoragePath.isBlank()) {
+    public ObjectStoreSnapshotInfo exportSnapshotToObjectStore(String name) throws SQLException {
+        if (s3Client == null) {
             throw new IllegalStateException(
-                    "No object-storage path configured (joxette.catalog.object-storage-path)");
+                    "Object store not configured — set joxette.object-store.bucket to enable exports");
         }
-        // Ensure trailing slash before appending the sub-path
-        String base = objectStoragePath.endsWith("/") ? objectStoragePath : objectStoragePath + "/";
-        String remotePath = base + "snapshots/" + name;
+        // Create the local snapshot first (validates name, runs EXPORT DATABASE, inserts metadata row).
+        SnapshotInfo snapshot = createSnapshot(name);
+        Path snapshotDir = snapshotsBase.resolve(name);
 
-        log.info("Exporting catalog snapshot '{}' to object store: {}", name, remotePath);
-        synchronized (duckDB) {
-            try (Statement st = duckDB.createStatement()) {
-                st.execute("EXPORT DATABASE '" + remotePath + "'");
-            }
-            // Record the snapshot in the local registry so it shows up in listSnapshots()
-            try (PreparedStatement ps = duckDB.prepareStatement("""
-                    INSERT INTO snapshots (name, created_at, size_bytes)
-                    VALUES (?, now(), -1)
-                    ON CONFLICT (name) DO UPDATE SET created_at = now()
-                    """)) {
-                ps.setString(1, name);
-                ps.executeUpdate();
-            }
+        var os = properties.getObjectStore();
+        String keyPrefix = (os.getPrefix() != null && !os.getPrefix().isBlank()
+                ? os.getPrefix() + "/" : "") + name + "/";
+
+        // Collect all files before streaming to avoid interleaving with directory walk.
+        List<Path> files;
+        try (Stream<Path> walk = Files.walk(snapshotDir)) {
+            files = walk.filter(Files::isRegularFile).toList();
+        } catch (IOException e) {
+            throw new RuntimeException("Cannot read snapshot directory: " + snapshotDir, e);
         }
-        log.info("Snapshot '{}' exported to {}", name, remotePath);
-        return new SnapshotInfo(name, Instant.now(), -1L);
+
+        for (Path file : files) {
+            String relPath = snapshotDir.relativize(file).toString().replace('\\', '/');
+            String key = keyPrefix + relPath;
+            s3Client.putObject(req -> req.bucket(os.getBucket()).key(key),
+                    RequestBody.fromFile(file));
+        }
+
+        // Local directory is no longer needed — the object store is the source of truth.
+        try {
+            deleteDirectory(snapshotDir);
+        } catch (IOException e) {
+            // Non-fatal: stale local directory, but the upload succeeded.
+        }
+
+        String uri = "s3://" + os.getBucket() + "/" + keyPrefix;
+        return new ObjectStoreSnapshotInfo(snapshot.name(), snapshot.createdAt(), snapshot.sizeBytes(), uri);
     }
 
     // -------------------------------------------------------------------------
@@ -377,6 +386,18 @@ public class CassetteLifecycleService {
         if (name == null || !SNAPSHOT_NAME.matcher(name).matches()) {
             throw new IllegalArgumentException(
                     "Invalid snapshot name '%s': must match [a-zA-Z0-9_-]+".formatted(name));
+        }
+    }
+
+    private static void deleteDirectory(Path dir) throws IOException {
+        try (Stream<Path> walk = Files.walk(dir)) {
+            walk.sorted(Comparator.reverseOrder()).forEach(p -> {
+                try {
+                    Files.delete(p);
+                } catch (IOException e) {
+                    throw new UncheckedIOException(e);
+                }
+            });
         }
     }
 

@@ -662,6 +662,44 @@ public class CassetteController {
         @ApiResponse(responseCode = "500", description = "Database error",
             content = @Content(schema = @Schema(type = "string")))
     })
+    @Operation(
+        operationId = "exportSnapshotToObjectStore",
+        summary = "Export snapshot to object store",
+        description = "Creates a named DuckDB `EXPORT DATABASE` snapshot, uploads all exported files to the " +
+                      "configured S3-compatible object store, then removes the local snapshot directory. " +
+                      "Requires `joxette.object-store.bucket` to be set. " +
+                      "Returns the snapshot metadata including the S3 base URI."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "201", description = "Snapshot exported to object store",
+            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                schema = @Schema(implementation = ObjectStoreSnapshotInfo.class),
+                examples = @ExampleObject(name = "exported", value = """
+                    {
+                      "name": "snap-before-deploy",
+                      "createdAt": "2024-06-01T00:00:00Z",
+                      "sizeBytes": 1073741824,
+                      "objectStoreUri": "s3://my-bucket/snapshots/snap-before-deploy/"
+                    }"""))),
+        @ApiResponse(responseCode = "500", description = "Object store not configured or upload failed",
+            content = @Content(schema = @Schema(type = "string")))
+    })
+    @PostMapping(value = "/snapshots/export-to-object-store",
+                 consumes = MediaType.APPLICATION_JSON_VALUE,
+                 produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<ObjectStoreSnapshotInfo> exportSnapshotToObjectStore(
+            @io.swagger.v3.oas.annotations.parameters.RequestBody(
+                description = "Optional snapshot name. If omitted a timestamp-based name is used.",
+                content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                    schema = @Schema(type = "object"),
+                    examples = @ExampleObject(value = "{\"name\": \"snap-before-deploy\"}")))
+            @RequestBody Map<String, String> body
+    ) throws SQLException {
+        String name = body.getOrDefault("name", "snapshot-" + Instant.now().toEpochMilli());
+        ObjectStoreSnapshotInfo info = lifecycle.exportSnapshotToObjectStore(name);
+        return ResponseEntity.status(201).body(info);
+    }
+
     @PostMapping(value = "/snapshots/{name}/restore")
     public ResponseEntity<Void> restoreSnapshot(
             @Parameter(description = "Snapshot name to restore", required = true, example = "snapshot-before-migration")
@@ -669,40 +707,6 @@ public class CassetteController {
     ) throws SQLException {
         lifecycle.restoreSnapshot(name);
         return ResponseEntity.ok().build();
-    }
-
-    @Operation(
-        operationId = "exportSnapshotToObjectStore",
-        summary = "Export catalog snapshot to object storage",
-        description = "Exports the full DuckDB catalog (config tables, known_entities, DuckLake metadata) " +
-                      "directly to the configured object-storage path using DuckDB's `EXPORT DATABASE` command. " +
-                      "The snapshot is placed under `<objectStoragePath>snapshots/<name>/`. " +
-                      "No local disk space is used. Returns 201 Created with the snapshot metadata."
-    )
-    @ApiResponses({
-        @ApiResponse(responseCode = "201", description = "Snapshot exported to object storage",
-            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-                schema = @Schema(implementation = SnapshotInfo.class))),
-        @ApiResponse(responseCode = "400", description = "Invalid snapshot name",
-            content = @Content(schema = @Schema(type = "string"))),
-        @ApiResponse(responseCode = "409", description = "Snapshot with that name already exists"),
-        @ApiResponse(responseCode = "500", description = "Export failed or no object-storage path configured",
-            content = @Content(schema = @Schema(type = "string")))
-    })
-    @PostMapping(value = "/snapshots/export-to-object-store",
-                 consumes = MediaType.APPLICATION_JSON_VALUE,
-                 produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<SnapshotInfo> exportSnapshotToObjectStore(
-            @io.swagger.v3.oas.annotations.parameters.RequestBody(
-                description = "Optional snapshot name. If omitted a timestamp-based name is generated.",
-                content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-                    examples = @ExampleObject(value = "{\"name\": \"pre-migration-backup\"}")))
-            @RequestBody Map<String, String> body
-    ) throws SQLException {
-        String name = body.getOrDefault("name",
-                "remote-snapshot-" + Instant.now().toEpochMilli());
-        SnapshotInfo info = lifecycle.exportSnapshotToObjectStore(name);
-        return ResponseEntity.status(201).body(info);
     }
 
     @Operation(
