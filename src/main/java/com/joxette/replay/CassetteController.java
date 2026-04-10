@@ -54,16 +54,19 @@ public class CassetteController {
     private final EntityReplayService entityService;
     private final SseReplayHandler sseHandler;
     private final CassetteLifecycleService lifecycle;
+    private final ReplayToTopicService replayToTopicService;
 
     public CassetteController(
             TopicReplayService topicService,
             EntityReplayService entityService,
             SseReplayHandler sseHandler,
-            CassetteLifecycleService lifecycle) {
-        this.topicService  = topicService;
-        this.entityService = entityService;
-        this.sseHandler    = sseHandler;
-        this.lifecycle     = lifecycle;
+            CassetteLifecycleService lifecycle,
+            ReplayToTopicService replayToTopicService) {
+        this.topicService        = topicService;
+        this.entityService       = entityService;
+        this.sseHandler          = sseHandler;
+        this.lifecycle           = lifecycle;
+        this.replayToTopicService = replayToTopicService;
     }
 
     // =========================================================================
@@ -757,6 +760,177 @@ public class CassetteController {
     public ResponseEntity<Map<String, Long>> rebuildKnownEntities() throws SQLException {
         long rebuilt = lifecycle.rebuildKnownEntities();
         return ResponseEntity.ok(Map.of("rebuilt", rebuilt));
+    }
+
+    // =========================================================================
+    // Replay-to-topic
+    // =========================================================================
+
+    @Operation(
+        operationId = "replayTopicToTopicJson",
+        summary     = "Replay general cassette back to a Kafka topic (JSON)",
+        description = "Reads every matching record from the general cassette for `sourceTopic` in " +
+                      "`kafka_timestamp ASC` order and produces each one to `targetTopic`, " +
+                      "preserving the original Kafka timestamp. " +
+                      "Blocks until all records have been sent, then returns the final " +
+                      "`ReplayProgress` summary. " +
+                      "For a live progress stream use `Accept: text/event-stream`."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Replay complete – final progress summary",
+            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                schema = @Schema(implementation = ReplayProgress.class),
+                examples = @ExampleObject(name = "done", value = """
+                    {
+                      "status": "completed",
+                      "targetTopic": "orders-replay",
+                      "sentCount": 42000,
+                      "errorCount": 0,
+                      "currentTimestamp": "2024-06-01T12:00:00Z"
+                    }"""))),
+        @ApiResponse(responseCode = "400", description = "Missing or invalid targetTopic",
+            content = @Content(schema = @Schema(type = "string"))),
+        @ApiResponse(responseCode = "500", description = "Database or Kafka error",
+            content = @Content(schema = @Schema(type = "string")))
+    })
+    @PostMapping(value = "/topics/{topic}/replay-to-topic",
+                 consumes = MediaType.APPLICATION_JSON_VALUE,
+                 produces = MediaType.APPLICATION_JSON_VALUE)
+    public ReplayProgress replayTopicToTopicJson(
+            @Parameter(description = "Source Kafka topic name (cassette to replay from)",
+                       required = true, example = "orders")
+            @PathVariable String topic,
+            @io.swagger.v3.oas.annotations.parameters.RequestBody(
+                description = "Target topic and optional filters",
+                content = @Content(schema = @Schema(implementation = ReplayToTopicRequest.class)))
+            @RequestBody ReplayToTopicRequest req
+    ) throws SQLException {
+        ReplayProgress[] result = {null};
+        replayToTopicService.replayTopicToKafka(topic, req, p -> result[0] = p);
+        return result[0];
+    }
+
+    @Operation(
+        operationId = "replayTopicToTopicSse",
+        summary     = "Replay general cassette back to a Kafka topic (SSE)",
+        description = "Streams `ReplayProgress` events as Server-Sent Events while replaying " +
+                      "the general cassette for `sourceTopic` to `targetTopic`. " +
+                      "A progress event is emitted every 100 records. " +
+                      "The final event has `status: completed` (or `status: failed` on error). " +
+                      "Use `Accept: application/json` for a blocking single-response variant."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "SSE stream of ReplayProgress events",
+            content = @Content(mediaType = MediaType.TEXT_EVENT_STREAM_VALUE,
+                schema = @Schema(type = "string"),
+                examples = @ExampleObject(name = "event", value =
+                    "data: {\"status\":\"in_progress\",\"targetTopic\":\"orders-replay\"," +
+                          "\"sentCount\":100,\"errorCount\":0," +
+                          "\"currentTimestamp\":\"2024-01-01T00:01:40Z\"}\n\n"))),
+        @ApiResponse(responseCode = "400", description = "Missing or invalid targetTopic",
+            content = @Content(schema = @Schema(type = "string")))
+    })
+    @PostMapping(value = "/topics/{topic}/replay-to-topic",
+                 consumes = MediaType.APPLICATION_JSON_VALUE,
+                 produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter replayTopicToTopicSse(
+            @Parameter(description = "Source Kafka topic name (cassette to replay from)",
+                       required = true, example = "orders")
+            @PathVariable String topic,
+            @io.swagger.v3.oas.annotations.parameters.RequestBody(
+                description = "Target topic and optional filters",
+                content = @Content(schema = @Schema(implementation = ReplayToTopicRequest.class)))
+            @RequestBody ReplayToTopicRequest req
+    ) {
+        return sseHandler.<ReplayProgress>streamSse(
+                sink -> replayToTopicService.replayTopicToKafka(topic, req, sink));
+    }
+
+    @Operation(
+        operationId = "replayEntityToTopicJson",
+        summary     = "Replay entity cassette back to a Kafka topic (JSON)",
+        description = "Reads every matching event for `entityId` from the entity cassette " +
+                      "`lake.main.entity_{entityType}` and produces each one to `targetTopic`. " +
+                      "Events span multiple source topics and are merge-sorted by " +
+                      "`kafka_timestamp ASC` before producing. " +
+                      "Blocks until all records have been sent, then returns the final " +
+                      "`ReplayProgress` summary. " +
+                      "For a live progress stream use `Accept: text/event-stream`."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Replay complete – final progress summary",
+            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                schema = @Schema(implementation = ReplayProgress.class),
+                examples = @ExampleObject(name = "done", value = """
+                    {
+                      "status": "completed",
+                      "targetTopic": "customer-replay",
+                      "sentCount": 17,
+                      "errorCount": 0,
+                      "currentTimestamp": "2024-06-01T10:00:00Z"
+                    }"""))),
+        @ApiResponse(responseCode = "400", description = "Invalid entity type or missing targetTopic",
+            content = @Content(schema = @Schema(type = "string"))),
+        @ApiResponse(responseCode = "500", description = "Database or Kafka error",
+            content = @Content(schema = @Schema(type = "string")))
+    })
+    @PostMapping(value = "/entities/{entityType}/{entityId}/replay-to-topic",
+                 consumes = MediaType.APPLICATION_JSON_VALUE,
+                 produces = MediaType.APPLICATION_JSON_VALUE)
+    public ReplayProgress replayEntityToTopicJson(
+            @Parameter(description = "Entity type (must match `[a-z][a-z0-9_]*`)",
+                       required = true, example = "customer")
+            @PathVariable String entityType,
+            @Parameter(description = "Entity identifier", required = true, example = "cust-042")
+            @PathVariable String entityId,
+            @io.swagger.v3.oas.annotations.parameters.RequestBody(
+                description = "Target topic and optional timestamp filters",
+                content = @Content(schema = @Schema(implementation = ReplayToTopicRequest.class)))
+            @RequestBody ReplayToTopicRequest req
+    ) throws SQLException {
+        ReplayProgress[] result = {null};
+        replayToTopicService.replayEntityToKafka(entityType, entityId, req, p -> result[0] = p);
+        return result[0];
+    }
+
+    @Operation(
+        operationId = "replayEntityToTopicSse",
+        summary     = "Replay entity cassette back to a Kafka topic (SSE)",
+        description = "Streams `ReplayProgress` events as Server-Sent Events while replaying " +
+                      "the entity cassette for `entityId` to `targetTopic`. " +
+                      "Events from all source topics are merge-sorted by `kafka_timestamp` before " +
+                      "being produced. " +
+                      "A progress event is emitted every 100 records. " +
+                      "The final event has `status: completed` (or `status: failed` on error). " +
+                      "Use `Accept: application/json` for a blocking single-response variant."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "SSE stream of ReplayProgress events",
+            content = @Content(mediaType = MediaType.TEXT_EVENT_STREAM_VALUE,
+                schema = @Schema(type = "string"),
+                examples = @ExampleObject(name = "event", value =
+                    "data: {\"status\":\"completed\",\"targetTopic\":\"customer-replay\"," +
+                          "\"sentCount\":17,\"errorCount\":0," +
+                          "\"currentTimestamp\":\"2024-06-01T10:00:00Z\"}\n\n"))),
+        @ApiResponse(responseCode = "400", description = "Invalid entity type or missing targetTopic",
+            content = @Content(schema = @Schema(type = "string")))
+    })
+    @PostMapping(value = "/entities/{entityType}/{entityId}/replay-to-topic",
+                 consumes = MediaType.APPLICATION_JSON_VALUE,
+                 produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter replayEntityToTopicSse(
+            @Parameter(description = "Entity type (must match `[a-z][a-z0-9_]*`)",
+                       required = true, example = "customer")
+            @PathVariable String entityType,
+            @Parameter(description = "Entity identifier", required = true, example = "cust-042")
+            @PathVariable String entityId,
+            @io.swagger.v3.oas.annotations.parameters.RequestBody(
+                description = "Target topic and optional timestamp filters",
+                content = @Content(schema = @Schema(implementation = ReplayToTopicRequest.class)))
+            @RequestBody ReplayToTopicRequest req
+    ) {
+        return sseHandler.<ReplayProgress>streamSse(
+                sink -> replayToTopicService.replayEntityToKafka(entityType, entityId, req, sink));
     }
 
     // =========================================================================
