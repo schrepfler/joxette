@@ -75,6 +75,12 @@ public class ReplayToTopicService {
      * Pass {@code Double.MAX_VALUE} or any very large value to replay with no
      * intentional delay.
      *
+     * <p>If {@code req.transforms()} is non-null and non-identity, a
+     * {@link MessageTransformer} is constructed once for this invocation and
+     * applied to each record before the Kafka send (restamp + field substitutions).
+     * Inter-message delays are always computed from the original recorded timestamps,
+     * independent of any restamp transform.
+     *
      * <p>The {@code progressSink} is invoked with an {@code "in_progress"}
      * snapshot every {@value #PROGRESS_INTERVAL} records and with a final
      * {@code "completed"} or {@code "failed"} event when the replay ends.
@@ -92,6 +98,8 @@ public class ReplayToTopicService {
         Instant[] lastTs  = {null};
         Instant[] prevTs  = {null};
 
+        MessageTransformer transformer = transformerFor(req);
+
         try {
             topicReplayService.streamAll(
                     sourceTopic, req.from(), req.to(),
@@ -99,8 +107,9 @@ public class ReplayToTopicService {
                     record -> {
                         applyDelay(prevTs[0], record.timestamp(), speedMultiplier);
                         prevTs[0] = record.timestamp();
-                        lastTs[0] = record.timestamp();
-                        doSend(() -> kafkaProducerService.send(req.targetTopic(), record), counts);
+                        CassetteRecord r = transformer != null ? transformer.transform(record) : record;
+                        lastTs[0] = r.timestamp();
+                        doSend(() -> kafkaProducerService.send(req.targetTopic(), r), counts);
                         if (counts[0] % PROGRESS_INTERVAL == 0) {
                             progressSink.accept(inProgress(req.targetTopic(), counts, lastTs[0]));
                         }
@@ -131,6 +140,12 @@ public class ReplayToTopicService {
      * <p>Inter-message delays are scaled by {@code speedMultiplier} identically
      * to {@link #replayTopicToKafka}.
      *
+     * <p>If {@code req.transforms()} is non-null and non-identity, a
+     * {@link MessageTransformer} is constructed once for this invocation and
+     * applied to each event before the Kafka send.
+     * Inter-message delays are always computed from the original recorded timestamps,
+     * independent of any restamp transform.
+     *
      * <p>The {@code progressSink} contract is identical to
      * {@link #replayTopicToKafka}.
      *
@@ -148,14 +163,17 @@ public class ReplayToTopicService {
         Instant[] lastTs = {null};
         Instant[] prevTs = {null};
 
+        MessageTransformer transformer = transformerFor(req);
+
         try {
             entityReplayService.streamEntityEvents(
                     entityType, entityId, req.from(), req.to(),
                     record -> {
                         applyDelay(prevTs[0], record.timestamp(), speedMultiplier);
                         prevTs[0] = record.timestamp();
-                        lastTs[0] = record.timestamp();
-                        doSend(() -> kafkaProducerService.send(req.targetTopic(), record), counts);
+                        EntityRecord r = transformer != null ? transformer.transform(record) : record;
+                        lastTs[0] = r.timestamp();
+                        doSend(() -> kafkaProducerService.send(req.targetTopic(), r), counts);
                         if (counts[0] % PROGRESS_INTERVAL == 0) {
                             progressSink.accept(inProgress(req.targetTopic(), counts, lastTs[0]));
                         }
@@ -198,6 +216,18 @@ public class ReplayToTopicService {
             Thread.currentThread().interrupt();
             throw new RuntimeException("Replay interrupted during inter-message delay", e);
         }
+    }
+
+    /**
+     * Returns a {@link MessageTransformer} for the given request, or {@code null}
+     * if no transforms are configured (avoiding an extra object allocation per record).
+     */
+    private static MessageTransformer transformerFor(ReplayToTopicRequest req) {
+        ReplayTransformConfig cfg = req.transforms();
+        if (cfg == null || cfg.isIdentity()) {
+            return null;
+        }
+        return new MessageTransformer(cfg);
     }
 
     @FunctionalInterface

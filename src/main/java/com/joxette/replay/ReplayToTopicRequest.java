@@ -14,13 +14,25 @@ import java.time.Instant;
  * the corresponding cassette replay endpoints.  The {@code partition},
  * {@code offsetFrom}, and {@code offsetTo} fields apply only to general
  * (topic) cassette replays; they are ignored for entity cassette replays.
+ *
+ * <p>The optional {@code transforms} block enables message mutations before
+ * producing: timestamp re-anchoring ({@code restamp}) and JSONPath field
+ * substitutions ({@code fieldSubstitutions}).  Omit or set to {@code null} to
+ * replay messages verbatim.
  */
 @Schema(description = "Request body for replay-to-topic operations",
         example = """
             {
               "targetTopic": "orders-replay",
               "from": "2024-01-01T00:00:00Z",
-              "to":   "2024-12-31T23:59:59Z"
+              "to":   "2024-12-31T23:59:59Z",
+              "transforms": {
+                "restamp": true,
+                "fieldSubstitutions": [
+                  {"path": "$.order_id",    "generate": "uuid"},
+                  {"path": "$.environment", "value":    "staging"}
+                ]
+              }
             }""")
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record ReplayToTopicRequest(
@@ -44,7 +56,11 @@ public record ReplayToTopicRequest(
         Long offsetFrom,
 
         @Schema(description = "Replay only records with Kafka offset <= this value (topic replay only)")
-        Long offsetTo
+        Long offsetTo,
+
+        @Schema(description = "Optional transforms applied to each message before producing. " +
+                              "Omit or set to null to replay messages verbatim.")
+        ReplayTransformConfig transforms
 
 ) {
     public ReplayToTopicRequest {
