@@ -81,6 +81,9 @@ function toTimelineRecord(r: EntityRecord): TimelineRecord {
       ...(r.key ? { key: r.key } : {}),
       recorded: r.recordedAt.slice(0, 19).replace('T', ' '),
     },
+    headers: r.headers,
+    sourceTopic: r.topic,
+    entityId: r.entityId,
   }
 }
 

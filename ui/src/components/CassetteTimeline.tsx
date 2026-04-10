@@ -37,6 +37,12 @@ export interface TimelineRecord {
   value: string | null
   /** Any extra metadata to show in the detail panel (key-value pairs) */
   meta: Record<string, string>
+  /** Kafka headers — used by the Header group-by dimension */
+  headers?: Array<{ key: string; value: string }>
+  /** The originating Kafka topic — used by the Source topic group-by dimension */
+  sourceTopic?: string
+  /** The business entity ID — used by the Entity ID group-by dimension */
+  entityId?: string
 }
 
 export interface CassetteTimelineProps {
@@ -100,6 +106,136 @@ export const PALETTE = [
 function colorForKey(key: string, allKeys: string[]): string {
   const idx = allKeys.indexOf(key)
   return PALETTE[idx % PALETTE.length] ?? '#718096'
+}
+
+// ─── Group-by dimensions ─────────────────────────────────────────────────────
+
+type GroupByMode =
+  | { kind: 'colorKey' }
+  | { kind: 'entityId' }
+  | { kind: 'topic' }
+  | { kind: 'header'; headerKey: string }
+  | { kind: 'jsonpath'; expression: string }
+
+/** Evaluate a simple dot-path JSONPath expression (e.g. $.field, $.a.b.c) */
+function evalJsonPath(rawValue: string | null, expr: string): string | null {
+  if (!rawValue || !expr.startsWith('$.')) return null
+  const parsed = tryParseJson(rawValue)
+  if (!parsed) return null
+  const parts = expr.slice(2).split('.')
+  let node: unknown = parsed.parsed
+  for (const part of parts) {
+    if (part === '') continue
+    if (node == null || typeof node !== 'object') return null
+    node = (node as Record<string, unknown>)[part]
+  }
+  if (node == null) return null
+  if (typeof node === 'object') return JSON.stringify(node)
+  return String(node)
+}
+
+function getEffectiveColorKey(record: TimelineRecord, mode: GroupByMode): string {
+  switch (mode.kind) {
+    case 'colorKey':
+      return record.colorKey
+    case 'entityId':
+      return record.entityId ?? '(none)'
+    case 'topic':
+      return record.sourceTopic ?? '(none)'
+    case 'header': {
+      const match = (record.headers ?? []).find(h => h.key === mode.headerKey)
+      return match?.value ?? '(none)'
+    }
+    case 'jsonpath':
+      return evalJsonPath(record.value, mode.expression) ?? '(none)'
+  }
+}
+
+// ─── GroupBySelector ─────────────────────────────────────────────────────────
+
+interface GroupBySelectorProps {
+  mode: GroupByMode
+  availableHeaderKeys: string[]
+  onChange: (mode: GroupByMode) => void
+}
+
+function GroupBySelector({ mode, availableHeaderKeys, onChange }: GroupBySelectorProps) {
+  const [draftExpr, setDraftExpr] = useState(
+    mode.kind === 'jsonpath' ? mode.expression : '',
+  )
+
+  function commitExpr(expr: string) {
+    onChange({ kind: 'jsonpath', expression: expr.trim() || '$.' })
+  }
+
+  function handleDimensionChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    const val = e.target.value
+    if (val === 'colorKey') { onChange({ kind: 'colorKey' }); return }
+    if (val === 'entityId') { onChange({ kind: 'entityId' }); return }
+    if (val === 'topic') { onChange({ kind: 'topic' }); return }
+    if (val === 'header') {
+      const firstKey = availableHeaderKeys[0] ?? ''
+      onChange({ kind: 'header', headerKey: firstKey })
+      return
+    }
+    if (val === 'jsonpath') {
+      const expr = mode.kind === 'jsonpath' ? mode.expression : '$.'
+      setDraftExpr(expr)
+      onChange({ kind: 'jsonpath', expression: expr })
+      return
+    }
+  }
+
+  const dimensionValue = mode.kind
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      <span style={{ fontSize: 11, color: '#718096', fontWeight: 600 }}>Group by</span>
+      <select
+        value={dimensionValue}
+        onChange={handleDimensionChange}
+        style={selectStyle}
+        title="Choose how to colour-code messages"
+      >
+        <option value="colorKey">Default</option>
+        <option value="entityId">Entity ID</option>
+        <option value="topic">Source topic</option>
+        <option value="header">Header value</option>
+        <option value="jsonpath">JSONPath</option>
+      </select>
+
+      {mode.kind === 'header' && (
+        <select
+          value={mode.headerKey}
+          onChange={e => onChange({ kind: 'header', headerKey: e.target.value })}
+          style={selectStyle}
+          title="Header key to group by"
+        >
+          {availableHeaderKeys.length === 0
+            ? <option value="">(no headers in loaded messages)</option>
+            : availableHeaderKeys.map(k => <option key={k} value={k}>{k}</option>)
+          }
+        </select>
+      )}
+
+      {mode.kind === 'jsonpath' && (
+        <input
+          type="text"
+          value={draftExpr}
+          placeholder="$.field"
+          onChange={e => setDraftExpr(e.target.value)}
+          onBlur={e => commitExpr(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') commitExpr(draftExpr) }}
+          style={{
+            ...selectStyle,
+            width: 120,
+            fontFamily: 'monospace',
+          }}
+          title="JSONPath expression (e.g. $.status, $.type)"
+        />
+      )}
+    </div>
+  )
 }
 
 // ─── Canvas timeline ─────────────────────────────────────────────────────────
@@ -494,13 +630,24 @@ export function CassetteTimeline({
 }: CassetteTimelineProps) {
   const [selectedIdx, setSelectedIdx] = useState(0)
   const [fitKey, setFitKey] = useState(0)
+  const [groupByMode, setGroupByMode] = useState<GroupByMode>({ kind: 'colorKey' })
 
-  const colorKeys = useMemo(
-    () => [...new Set(records.map(r => r.colorKey))].sort(),
+  const availableHeaderKeys = useMemo(
+    () => [...new Set(records.flatMap(r => (r.headers ?? []).map(h => h.key)))].sort(),
     [records],
   )
 
-  const selectedRecord = records[selectedIdx] ?? null
+  const effectiveRecords = useMemo(
+    () => records.map(r => ({ ...r, colorKey: getEffectiveColorKey(r, groupByMode) })),
+    [records, groupByMode],
+  )
+
+  const colorKeys = useMemo(
+    () => [...new Set(effectiveRecords.map(r => r.colorKey))].sort(),
+    [effectiveRecords],
+  )
+
+  const selectedRecord = effectiveRecords[selectedIdx] ?? null
 
   // Keyboard navigation
   useEffect(() => {
@@ -561,6 +708,11 @@ export function CassetteTimeline({
         <button style={btnStyle} onClick={() => setFitKey(k => k + 1)} title="Zoom to fit all messages">
           ⊡ Fit
         </button>
+        <GroupBySelector
+          mode={groupByMode}
+          availableHeaderKeys={availableHeaderKeys}
+          onChange={setGroupByMode}
+        />
         {loading && (
           <span style={{ fontSize: 12, color: '#718096' }}>Loading…</span>
         )}
@@ -594,7 +746,7 @@ export function CassetteTimeline({
           )}
         </div>
         <TimelineCanvas
-          records={records}
+          records={effectiveRecords}
           selectedIdx={selectedIdx}
           colorKeys={colorKeys}
           onSelect={handleSelect}
@@ -616,6 +768,16 @@ const btnStyle: React.CSSProperties = {
   cursor: 'pointer',
   fontSize: 12,
   fontWeight: 500,
+}
+
+const selectStyle: React.CSSProperties = {
+  padding: '0.25rem 0.5rem',
+  background: '#fff',
+  color: '#4a5568',
+  border: '1px solid #cbd5e0',
+  borderRadius: 4,
+  fontSize: 12,
+  cursor: 'pointer',
 }
 
 const VJ_THEME: React.CSSProperties = {
