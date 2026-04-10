@@ -222,7 +222,7 @@ class TopicRecorderTest {
         // Capture time just before the recorder writes so we can bound recorded_at.
         java.time.Instant beforeRecord = java.time.Instant.now();
 
-        recorder = new TopicRecorder(TOPIC, consumerProps(), duckDB, 100, 200, generalRouter, noopEntities);
+        recorder = new TopicRecorder(TOPIC, consumerProps(), duckDB, 100, 200, generalRouter, noopEntities, "latest");
         recorderThread = Thread.ofVirtual().name("test-recorder-fields").start(() -> {
             try { recorder.run(); } catch (Exception ignored) {}
         });

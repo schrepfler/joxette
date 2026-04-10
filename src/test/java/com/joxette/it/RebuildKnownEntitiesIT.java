@@ -5,12 +5,13 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.web.client.TestRestTemplate;
+import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.web.client.RestTemplate;
 import org.testcontainers.containers.MinIOContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -84,10 +85,17 @@ class RebuildKnownEntitiesIT {
         registry.add("joxette.s3.secret-key", () -> password);
     }
 
-    @Autowired private TestRestTemplate restTemplate;
+    @LocalServerPort
+    private int port;
+
+    private final RestTemplate restTemplate = new RestTemplate();
 
     /** Shared DuckDB connection from the Spring context — same instance used by all services. */
     @Autowired private Connection duckDB;
+
+    private String url(String path) {
+        return "http://localhost:" + port + path;
+    }
 
     @BeforeEach
     void setUp() throws Exception {
@@ -116,13 +124,13 @@ class RebuildKnownEntitiesIT {
         Instant t3 = Instant.parse("2024-01-02T08:00:00Z");
         // cust-001: single event → first_seen = last_seen = t1
         DuckDBTestSupport.insertEntityRow(duckDB, "order",    "order-001", 0,
-                "orders", 0, 0L, t1, Instant.now(), "order-001", null);
+                "order_created", "orders", 0, 0L, t1, Instant.now(), "order-001", null);
         DuckDBTestSupport.insertEntityRow(duckDB, "order",    "order-001", 0,
-                "orders", 0, 1L, t2, Instant.now(), "order-001", null);
+                "order_created", "orders", 0, 1L, t2, Instant.now(), "order-001", null);
         DuckDBTestSupport.insertEntityRow(duckDB, "order",    "order-002", 1,
-                "orders", 0, 2L, t3, Instant.now(), "order-002", null);
+                "order_created", "orders", 0, 2L, t3, Instant.now(), "order-002", null);
         DuckDBTestSupport.insertEntityRow(duckDB, "customer", "cust-001",  0,
-                "customers", 0, 0L, t1, Instant.now(), "cust-001", null);
+                "customer_created", "customers", 0, 0L, t1, Instant.now(), "cust-001", null);
 
         // Flush inline data to Parquet in MinIO before wiping and rebuilding.
         try (Statement st = duckDB.createStatement()) {
@@ -131,7 +139,7 @@ class RebuildKnownEntitiesIT {
 
         // known_entities was already wiped by @BeforeEach — rebuild from cassettes.
         ResponseEntity<Map> response = restTemplate.postForEntity(
-                "/cassettes/entities/rebuild-known-entities", null, Map.class);
+                url("/cassettes/entities/rebuild-known-entities"), null, Map.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody()).isNotNull();
@@ -149,7 +157,7 @@ class RebuildKnownEntitiesIT {
     void rebuildKnownEntities_emptyEntityTables_returns0AndLeavesRegistryEmpty() throws Exception {
         // Entity tables exist but contain no rows (wiped in @BeforeEach).
         ResponseEntity<Map> response = restTemplate.postForEntity(
-                "/cassettes/entities/rebuild-known-entities", null, Map.class);
+                url("/cassettes/entities/rebuild-known-entities"), null, Map.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(((Number) response.getBody().get("rebuilt")).longValue()).isEqualTo(0L);
@@ -160,13 +168,13 @@ class RebuildKnownEntitiesIT {
     void rebuildKnownEntities_idempotent_secondCallGivesSameResult() throws Exception {
         Instant ts = Instant.parse("2024-06-01T09:00:00Z");
         DuckDBTestSupport.insertEntityRow(duckDB, "order", "order-X", 3,
-                "orders", 0, 0L, ts, Instant.now(), "order-X", null);
+                "order_created", "orders", 0, 0L, ts, Instant.now(), "order-X", null);
 
         // First rebuild
-        restTemplate.postForEntity("/cassettes/entities/rebuild-known-entities", null, Map.class);
+        restTemplate.postForEntity(url("/cassettes/entities/rebuild-known-entities"), null, Map.class);
         // Second rebuild should produce identical state
         ResponseEntity<Map> second = restTemplate.postForEntity(
-                "/cassettes/entities/rebuild-known-entities", null, Map.class);
+                url("/cassettes/entities/rebuild-known-entities"), null, Map.class);
 
         assertThat(second.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(((Number) second.getBody().get("rebuilt")).longValue()).isEqualTo(1L);

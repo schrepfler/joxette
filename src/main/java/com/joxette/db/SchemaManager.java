@@ -160,7 +160,7 @@ public class SchemaManager {
                 )
                 """);
             stmt.execute("ALTER TABLE topic_configs ADD COLUMN IF NOT EXISTS retention_days INTEGER");
-            stmt.execute("ALTER TABLE topic_configs ADD COLUMN IF NOT EXISTS start_from VARCHAR NOT NULL DEFAULT 'latest'");
+            stmt.execute("ALTER TABLE topic_configs ADD COLUMN IF NOT EXISTS start_from VARCHAR DEFAULT 'latest'");
 
             stmt.execute("""
                 CREATE TABLE IF NOT EXISTS entity_type_configs (
@@ -446,10 +446,10 @@ public class SchemaManager {
      */
     private void migrateCompactionHistory(Connection conn) {
         String[][] migrations = {
-            { "triggered_by",    "ALTER TABLE compaction_history ADD COLUMN triggered_by VARCHAR NOT NULL DEFAULT 'unknown'" },
+            { "triggered_by",    "ALTER TABLE compaction_history ADD COLUMN triggered_by VARCHAR DEFAULT 'unknown'" },
             { "targets",         "ALTER TABLE compaction_history ADD COLUMN targets VARCHAR[]" },
-            { "entity_buckets_compacted",     "ALTER TABLE compaction_history ADD COLUMN entity_buckets_compacted INTEGER NOT NULL DEFAULT 0" },
-            { "general_partitions_compacted", "ALTER TABLE compaction_history ADD COLUMN general_partitions_compacted INTEGER NOT NULL DEFAULT 0" },
+            { "entity_buckets_compacted",     "ALTER TABLE compaction_history ADD COLUMN entity_buckets_compacted INTEGER DEFAULT 0" },
+            { "general_partitions_compacted", "ALTER TABLE compaction_history ADD COLUMN general_partitions_compacted INTEGER DEFAULT 0" },
             { "error_message",   "ALTER TABLE compaction_history ADD COLUMN error_message VARCHAR" },
         };
         for (String[] m : migrations) {

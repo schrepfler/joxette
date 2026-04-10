@@ -459,6 +459,9 @@ public class CompactionService {
             try (Statement st = duckDB.createStatement()) {
                 // Persist catalog metadata to local disk
                 st.execute("CHECKPOINT");
+            } catch (SQLException e) {
+                // In-memory DuckDB (e.g. in tests) does not support CHECKPOINT — safe to ignore.
+                log.warn("CHECKPOINT failed ({}); catalog metadata may not be persisted", e.getMessage());
             }
         }
     }

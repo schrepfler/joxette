@@ -18,7 +18,9 @@ import { Route as EntitiesIndexRouteImport } from './routes/entities/index'
 import { Route as CompactionIndexRouteImport } from './routes/compaction/index'
 import { Route as TopicsTopicRouteImport } from './routes/topics/$topic'
 import { Route as EntitiesEntityTypeIndexRouteImport } from './routes/entities/$entityType/index'
+import { Route as TopicsTopicTimelineRouteImport } from './routes/topics/$topic_.timeline'
 import { Route as EntitiesEntityTypeEntityIdRouteImport } from './routes/entities/$entityType/$entityId'
+import { Route as EntitiesEntityTypeEntityIdTimelineRouteImport } from './routes/entities/$entityType/$entityId_.timeline'
 
 const AboutRoute = AboutRouteImport.update({
   id: '/about',
@@ -65,10 +67,21 @@ const EntitiesEntityTypeIndexRoute = EntitiesEntityTypeIndexRouteImport.update({
   path: '/entities/$entityType/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const TopicsTopicTimelineRoute = TopicsTopicTimelineRouteImport.update({
+  id: '/topics/$topic_/timeline',
+  path: '/topics/$topic/timeline',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const EntitiesEntityTypeEntityIdRoute =
   EntitiesEntityTypeEntityIdRouteImport.update({
     id: '/entities/$entityType/$entityId',
     path: '/entities/$entityType/$entityId',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const EntitiesEntityTypeEntityIdTimelineRoute =
+  EntitiesEntityTypeEntityIdTimelineRouteImport.update({
+    id: '/entities/$entityType/$entityId_/timeline',
+    path: '/entities/$entityType/$entityId/timeline',
     getParentRoute: () => rootRouteImport,
   } as any)
 
@@ -82,7 +95,9 @@ export interface FileRoutesByFullPath {
   '/snapshots/': typeof SnapshotsIndexRoute
   '/topics/': typeof TopicsIndexRoute
   '/entities/$entityType/$entityId': typeof EntitiesEntityTypeEntityIdRoute
+  '/topics/$topic/timeline': typeof TopicsTopicTimelineRoute
   '/entities/$entityType/': typeof EntitiesEntityTypeIndexRoute
+  '/entities/$entityType/$entityId/timeline': typeof EntitiesEntityTypeEntityIdTimelineRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -94,7 +109,9 @@ export interface FileRoutesByTo {
   '/snapshots': typeof SnapshotsIndexRoute
   '/topics': typeof TopicsIndexRoute
   '/entities/$entityType/$entityId': typeof EntitiesEntityTypeEntityIdRoute
+  '/topics/$topic/timeline': typeof TopicsTopicTimelineRoute
   '/entities/$entityType': typeof EntitiesEntityTypeIndexRoute
+  '/entities/$entityType/$entityId/timeline': typeof EntitiesEntityTypeEntityIdTimelineRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -107,7 +124,9 @@ export interface FileRoutesById {
   '/snapshots/': typeof SnapshotsIndexRoute
   '/topics/': typeof TopicsIndexRoute
   '/entities/$entityType/$entityId': typeof EntitiesEntityTypeEntityIdRoute
+  '/topics/$topic_/timeline': typeof TopicsTopicTimelineRoute
   '/entities/$entityType/': typeof EntitiesEntityTypeIndexRoute
+  '/entities/$entityType/$entityId_/timeline': typeof EntitiesEntityTypeEntityIdTimelineRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -121,7 +140,9 @@ export interface FileRouteTypes {
     | '/snapshots/'
     | '/topics/'
     | '/entities/$entityType/$entityId'
+    | '/topics/$topic/timeline'
     | '/entities/$entityType/'
+    | '/entities/$entityType/$entityId/timeline'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -133,7 +154,9 @@ export interface FileRouteTypes {
     | '/snapshots'
     | '/topics'
     | '/entities/$entityType/$entityId'
+    | '/topics/$topic/timeline'
     | '/entities/$entityType'
+    | '/entities/$entityType/$entityId/timeline'
   id:
     | '__root__'
     | '/'
@@ -145,7 +168,9 @@ export interface FileRouteTypes {
     | '/snapshots/'
     | '/topics/'
     | '/entities/$entityType/$entityId'
+    | '/topics/$topic_/timeline'
     | '/entities/$entityType/'
+    | '/entities/$entityType/$entityId_/timeline'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -158,7 +183,9 @@ export interface RootRouteChildren {
   SnapshotsIndexRoute: typeof SnapshotsIndexRoute
   TopicsIndexRoute: typeof TopicsIndexRoute
   EntitiesEntityTypeEntityIdRoute: typeof EntitiesEntityTypeEntityIdRoute
+  TopicsTopicTimelineRoute: typeof TopicsTopicTimelineRoute
   EntitiesEntityTypeIndexRoute: typeof EntitiesEntityTypeIndexRoute
+  EntitiesEntityTypeEntityIdTimelineRoute: typeof EntitiesEntityTypeEntityIdTimelineRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -226,11 +253,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof EntitiesEntityTypeIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/topics/$topic_/timeline': {
+      id: '/topics/$topic_/timeline'
+      path: '/topics/$topic/timeline'
+      fullPath: '/topics/$topic/timeline'
+      preLoaderRoute: typeof TopicsTopicTimelineRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/entities/$entityType/$entityId': {
       id: '/entities/$entityType/$entityId'
       path: '/entities/$entityType/$entityId'
       fullPath: '/entities/$entityType/$entityId'
       preLoaderRoute: typeof EntitiesEntityTypeEntityIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/entities/$entityType/$entityId_/timeline': {
+      id: '/entities/$entityType/$entityId_/timeline'
+      path: '/entities/$entityType/$entityId/timeline'
+      fullPath: '/entities/$entityType/$entityId/timeline'
+      preLoaderRoute: typeof EntitiesEntityTypeEntityIdTimelineRouteImport
       parentRoute: typeof rootRouteImport
     }
   }
@@ -246,7 +287,10 @@ const rootRouteChildren: RootRouteChildren = {
   SnapshotsIndexRoute: SnapshotsIndexRoute,
   TopicsIndexRoute: TopicsIndexRoute,
   EntitiesEntityTypeEntityIdRoute: EntitiesEntityTypeEntityIdRoute,
+  TopicsTopicTimelineRoute: TopicsTopicTimelineRoute,
   EntitiesEntityTypeIndexRoute: EntitiesEntityTypeIndexRoute,
+  EntitiesEntityTypeEntityIdTimelineRoute:
+    EntitiesEntityTypeEntityIdTimelineRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

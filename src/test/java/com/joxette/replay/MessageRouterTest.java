@@ -51,7 +51,7 @@ class MessageRouterTest {
         }
 
         void addEntityType(String type, int buckets) {
-            entityTypes.add(new EntityTypeConfig(type, buckets));
+            entityTypes.add(new EntityTypeConfig(type, buckets, null));
         }
 
         void addSource(String entityType, String topic, String mode,

@@ -119,7 +119,7 @@ class MessageTransformerTest {
         CassetteRecord out = transformer.transform(r);
 
         Instant after = Instant.now();
-        assertThat(out.timestamp()).isBetween(before, after);
+        assertThat(out.timestamp()).isBetween(before.minusMillis(1), after);
     }
 
     @Test
@@ -295,8 +295,8 @@ class MessageTransformerTest {
         String val = b64("{\"env\":\"prod\"}");
         CassetteRecord out = transformer.transform(record(original, val));
 
-        // Timestamp should be near now
-        assertThat(out.timestamp()).isAfterOrEqualTo(before);
+        // Timestamp should be near now (subtract 1 ms to tolerate sub-millisecond clock jitter)
+        assertThat(out.timestamp()).isAfterOrEqualTo(before.minusMillis(1));
         // Field should be substituted
         assertThat(decode(out.value())).contains("\"test\"");
         assertThat(decode(out.value())).doesNotContain("\"prod\"");

@@ -7,7 +7,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.test.web.client.TestRestTemplate;
+import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
@@ -15,6 +15,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.web.client.RestTemplate;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.KafkaContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
@@ -89,8 +90,10 @@ class ExportSnapshotToObjectStoreIT {
         registry.add("joxette.object-store.force-path-style", () -> "true");
     }
 
-    @Autowired
-    private TestRestTemplate restTemplate;
+    @LocalServerPort
+    private int port;
+
+    private final RestTemplate restTemplate = new RestTemplate();
 
     /** Shared DuckDB connection — same instance used by all services in the Spring context. */
     @Autowired
@@ -99,6 +102,10 @@ class ExportSnapshotToObjectStoreIT {
     /** S3Client wired to MinIO by S3Config (created because the bucket property is set). */
     @Autowired
     private S3Client s3Client;
+
+    private String url(String path) {
+        return "http://localhost:" + port + path;
+    }
 
     @BeforeEach
     void setUp() throws Exception {
@@ -145,7 +152,7 @@ class ExportSnapshotToObjectStoreIT {
 
         // Act: call the export endpoint.
         ResponseEntity<ObjectStoreSnapshotInfo> response = restTemplate.postForEntity(
-                "/cassettes/snapshots/export-to-object-store",
+                url("/cassettes/snapshots/export-to-object-store"),
                 Map.of("name", SNAPSHOT_NAME),
                 ObjectStoreSnapshotInfo.class);
 
@@ -170,7 +177,7 @@ class ExportSnapshotToObjectStoreIT {
 
         // Assert: a snapshot record exists in lake.snapshots (queried via the REST API).
         ResponseEntity<List<SnapshotInfo>> snapshots = restTemplate.exchange(
-                "/cassettes/snapshots",
+                url("/cassettes/snapshots"),
                 HttpMethod.GET, null,
                 new ParameterizedTypeReference<>() {});
         assertThat(snapshots.getStatusCode()).isEqualTo(HttpStatus.OK);

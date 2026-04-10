@@ -1,4 +1,4 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, Link } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   useReactTable,
@@ -310,7 +310,14 @@ function TopicDetailPage() {
           </div>
 
           {/* Actions */}
-          <div style={{ display: 'flex', gap: 8, marginBottom: '1.5rem' }}>
+          <div style={{ display: 'flex', gap: 8, marginBottom: '1.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
+            <Link
+              to="/topics/$topic/timeline"
+              params={{ topic }}
+              style={{ ...primaryBtnStyle, background: '#3182ce', textDecoration: 'none', display: 'inline-block' }}
+            >
+              ⏱ Timeline
+            </Link>
             <button style={{ ...primaryBtnStyle, background: '#805ad5' }} onClick={() => compactMutation.mutate()} disabled={compactMutation.isPending}>
               {compactMutation.isPending ? 'Compacting…' : 'Compact'}
             </button>

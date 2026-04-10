@@ -1,4 +1,4 @@
-import { createFileRoute, useNavigate } from '@tanstack/react-router'
+import { createFileRoute, useNavigate, Link } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   useReactTable,
@@ -239,12 +239,21 @@ function EntityInstancePage() {
           <div style={{ fontSize: 12, color: '#718096', marginBottom: 4 }}>{entityType}</div>
           <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>{entityId}</h1>
         </div>
-        <button
-          style={{ padding: '0.45rem 1rem', background: '#e53e3e', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 14 }}
-          onClick={() => setShowConfirmDelete(true)}
-        >
-          GDPR Delete
-        </button>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <Link
+            to="/entities/$entityType/$entityId/timeline"
+            params={{ entityType, entityId }}
+            style={{ padding: '0.45rem 1rem', background: '#3182ce', color: '#fff', borderRadius: 4, fontSize: 14, textDecoration: 'none', fontWeight: 500 }}
+          >
+            ⏱ Timeline
+          </Link>
+          <button
+            style={{ padding: '0.45rem 1rem', background: '#e53e3e', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 14 }}
+            onClick={() => setShowConfirmDelete(true)}
+          >
+            GDPR Delete
+          </button>
+        </div>
       </div>
 
       {statsQuery.isLoading && <LoadingSpinner />}

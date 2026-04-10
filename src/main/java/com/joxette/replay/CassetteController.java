@@ -474,33 +474,6 @@ public class CassetteController {
     }
 
     // =========================================================================
-    // Known-entity registry rebuild
-    // =========================================================================
-
-    @Operation(
-        operationId = "rebuildKnownEntities",
-        summary = "Rebuild known-entities registry",
-        description = "Scans every `lake.entity_*` cassette table and rebuilds `lake.known_entities` " +
-                      "from scratch. Deletes all existing registry rows, then re-inserts one row per " +
-                      "distinct `(entity_type, entity_id)` derived from the raw event timestamps. " +
-                      "Returns the number of rows inserted."
-    )
-    @ApiResponses({
-        @ApiResponse(responseCode = "200", description = "Registry rebuilt; number of rows inserted",
-            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-                schema = @Schema(type = "object"),
-                examples = @ExampleObject(name = "result", value = "{\"rebuilt\": 42}"))),
-        @ApiResponse(responseCode = "500", description = "Database error",
-            content = @Content(schema = @Schema(type = "string")))
-    })
-    @PostMapping(value = "/entities/rebuild-known-entities",
-                 produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<Map<String, Long>> rebuildKnownEntities() throws SQLException {
-        long rebuilt = lifecycle.rebuildKnownEntities();
-        return ResponseEntity.ok(Map.of("rebuilt", rebuilt));
-    }
-
-    // =========================================================================
     // Cassette lifecycle – stats, compaction, truncation
     // =========================================================================
 
@@ -681,18 +654,6 @@ public class CassetteController {
     }
 
     @Operation(
-        operationId = "restoreSnapshot",
-        summary = "Restore database snapshot",
-        description = "Restores the DuckLake database from a previously created named snapshot using `IMPORT DATABASE`. " +
-                      "All current data is replaced by the snapshot contents."
-    )
-    @ApiResponses({
-        @ApiResponse(responseCode = "200", description = "Snapshot restored successfully"),
-        @ApiResponse(responseCode = "404", description = "Snapshot not found"),
-        @ApiResponse(responseCode = "500", description = "Database error",
-            content = @Content(schema = @Schema(type = "string")))
-    })
-    @Operation(
         operationId = "exportSnapshotToObjectStore",
         summary = "Export snapshot to object store",
         description = "Creates a named DuckDB `EXPORT DATABASE` snapshot, uploads all exported files to the " +
@@ -730,6 +691,18 @@ public class CassetteController {
         return ResponseEntity.status(201).body(info);
     }
 
+    @Operation(
+        operationId = "restoreSnapshot",
+        summary = "Restore database snapshot",
+        description = "Restores the DuckLake database from a previously created named snapshot using `IMPORT DATABASE`. " +
+                      "All current data is replaced by the snapshot contents."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Snapshot restored successfully"),
+        @ApiResponse(responseCode = "404", description = "Snapshot not found"),
+        @ApiResponse(responseCode = "500", description = "Database error",
+            content = @Content(schema = @Schema(type = "string")))
+    })
     @PostMapping(value = "/snapshots/{name}/restore")
     public ResponseEntity<Void> restoreSnapshot(
             @Parameter(description = "Snapshot name to restore", required = true, example = "snapshot-before-migration")

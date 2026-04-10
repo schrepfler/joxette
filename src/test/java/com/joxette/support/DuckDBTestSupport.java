@@ -31,7 +31,7 @@ import java.time.Instant;
  *       in production.</li>
  * </ul>
  *
- * <p>Each call to {@link #newConnection()} returns a fresh, isolated pair of
++nor * <p>Each call to {@link #newConnection()} returns a fresh, isolated pair of
  * in-memory databases.  Close the connection in {@code @AfterEach} to release resources.
  */
 public final class DuckDBTestSupport {
@@ -79,18 +79,20 @@ public final class DuckDBTestSupport {
 
             st.execute("""
                     CREATE TABLE IF NOT EXISTS topic_configs (
-                        topic      VARCHAR PRIMARY KEY,
-                        mode       VARCHAR NOT NULL DEFAULT 'general',
-                        paused     BOOLEAN NOT NULL DEFAULT false,
-                        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                        topic           VARCHAR PRIMARY KEY,
+                        mode            VARCHAR NOT NULL DEFAULT 'general',
+                        paused          BOOLEAN NOT NULL DEFAULT false,
+                        retention_days  INTEGER,
+                        created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
                     )""");
 
             st.execute("""
                     CREATE TABLE IF NOT EXISTS entity_type_configs (
-                        entity_type  VARCHAR PRIMARY KEY,
-                        bucket_count INTEGER NOT NULL DEFAULT 256,
-                        created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+                        entity_type    VARCHAR PRIMARY KEY,
+                        bucket_count   INTEGER NOT NULL DEFAULT 256,
+                        retention_days INTEGER,
+                        created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
                     )""");
 
             st.execute("CREATE SEQUENCE IF NOT EXISTS seq_entity_source_mappings START 1");
