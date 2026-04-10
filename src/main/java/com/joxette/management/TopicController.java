@@ -2,6 +2,8 @@ package com.joxette.management;
 
 import com.joxette.recording.RecordingCoordinator;
 import com.joxette.replay.MessageRouter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -28,6 +30,8 @@ import java.util.Set;
 @RequestMapping("/topics")
 public class TopicController {
 
+    private static final Logger log = LoggerFactory.getLogger(TopicController.class);
+
     private final ConfigRepository config;
     private final RecordingCoordinator coordinator;
     private final MessageRouter router;
@@ -41,6 +45,14 @@ public class TopicController {
         this.config      = config;
         this.coordinator = coordinator;
         this.router      = router;
+    }
+
+    private void reloadRouter() {
+        try {
+            router.reload();
+        } catch (SQLException e) {
+            log.warn("MessageRouter reload failed after topic config change: {}", e.getMessage());
+        }
     }
 
     @GetMapping(produces = MediaType.APPLICATION_JSON_VALUE)
@@ -66,6 +78,7 @@ public class TopicController {
         String startFrom = body.startFrom() != null ? body.startFrom() : "latest";
         TopicConfig tc = config.upsertTopic(body.topic(), mode, false, startFrom);
         coordinator.startTopic(tc.topic(), tc.startFrom());
+        reloadRouter();
         boolean active = coordinator.activeTopics().contains(tc.topic());
         return ResponseEntity.status(201).body(
                 new TopicConfig(tc.topic(), tc.mode(), tc.paused(), active, tc.retentionDays(), tc.startFrom()));
@@ -90,7 +103,7 @@ public class TopicController {
         // Preserve current paused state
         boolean paused = config.findTopic(topic).map(TopicConfig::paused).orElse(false);
         TopicConfig tc = config.upsertTopic(topic, body.mode(), paused);
-        router.reload();
+        reloadRouter();
         return ResponseEntity.ok(tc);
     }
 
@@ -98,6 +111,9 @@ public class TopicController {
     public ResponseEntity<Void> deleteTopic(@PathVariable String topic) throws SQLException {
         coordinator.stopTopic(topic);
         boolean deleted = config.deleteTopic(topic);
+        if (deleted) {
+            reloadRouter();
+        }
         return deleted ? ResponseEntity.noContent().build() : ResponseEntity.notFound().build();
     }
 

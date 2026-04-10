@@ -504,6 +504,41 @@ public class CassetteController {
         return lifecycle.getTopicCassetteStats(topic);
     }
 
+    @Operation(
+        operationId = "getEntityStorageStats",
+        summary = "Entity cassette storage statistics",
+        description = "Returns per-bucket row counts and proportional size estimates for the given entity type's " +
+                      "cassette table (`lake.main.entity_{entityType}`). " +
+                      "Useful for detecting bucket skew and estimating storage usage."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Per-bucket storage statistics",
+            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                schema = @Schema(implementation = EntityStorageStats.class),
+                examples = @ExampleObject(name = "stats", value = """
+                    {
+                      "entityType": "order",
+                      "tableName": "lake.main.entity_order",
+                      "totalRows": 500000,
+                      "totalEstimatedSizeBytes": 134217728,
+                      "buckets": [
+                        {"bucket": 0, "rowCount": 2012, "estimatedSizeBytes": 539648},
+                        {"bucket": 1, "rowCount": 1987, "estimatedSizeBytes": 532941}
+                      ]
+                    }"""))),
+        @ApiResponse(responseCode = "400", description = "Invalid entity type name",
+            content = @Content(schema = @Schema(type = "string"))),
+        @ApiResponse(responseCode = "500", description = "Database error",
+            content = @Content(schema = @Schema(type = "string")))
+    })
+    @GetMapping(value = "/entities/{entityType}/storage", produces = MediaType.APPLICATION_JSON_VALUE)
+    public EntityStorageStats getEntityStorageStats(
+            @Parameter(description = "Entity type name (must match `[a-z][a-z0-9_]*`)", required = true, example = "order")
+            @PathVariable String entityType
+    ) throws SQLException {
+        return lifecycle.getEntityTypeStorageStats(entityType);
+    }
+
     /** Triggers a DuckDB CHECKPOINT to flush the WAL for the given topic's cassette. */
     @Operation(
         operationId = "compactTopicCassette",

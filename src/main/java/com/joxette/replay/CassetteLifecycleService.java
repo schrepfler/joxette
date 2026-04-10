@@ -16,7 +16,9 @@ import java.sql.*;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.Optional;
 import java.util.regex.Pattern;
@@ -96,6 +98,54 @@ public class CassetteLifecycleService {
             }
         }
         return new CassetteStats(topic, qualifiedTable, rowCount, estimatedSize);
+    }
+
+    /**
+     * Returns per-bucket row counts and proportional size estimates for the given
+     * entity type's cassette table ({@code lake.main.entity_{entityType}}).
+     *
+     * <p>Row counts are exact; per-bucket size estimates are proportionally
+     * distributed from the DuckDB-reported table estimate and are approximate.
+     */
+    public EntityStorageStats getEntityTypeStorageStats(String entityType) throws SQLException {
+        com.joxette.db.SchemaManager.validateEntityType(entityType);
+        String tableName = "entity_" + entityType;
+        String qualifiedTable = "lake.main." + tableName;
+
+        Map<Integer, Long> bucketRows = new LinkedHashMap<>();
+        long estimatedSize;
+
+        synchronized (duckDB) {
+            try (Statement st = duckDB.createStatement();
+                 ResultSet rs = st.executeQuery(
+                         "SELECT entity_bucket, COUNT(*) AS row_count FROM " + qualifiedTable +
+                         " GROUP BY entity_bucket ORDER BY entity_bucket")) {
+                while (rs.next()) {
+                    bucketRows.put(rs.getInt("entity_bucket"), rs.getLong("row_count"));
+                }
+            }
+            try (PreparedStatement ps = duckDB.prepareStatement(
+                    "SELECT COALESCE(estimated_size, 0) AS sz " +
+                    "FROM duckdb_tables() WHERE database_name='lake' AND schema_name='main' AND table_name=?")) {
+                ps.setString(1, tableName);
+                try (ResultSet rs = ps.executeQuery()) {
+                    estimatedSize = rs.next() ? rs.getLong("sz") : 0;
+                }
+            }
+        }
+
+        long totalRows = bucketRows.values().stream().mapToLong(Long::longValue).sum();
+        final long total = totalRows;
+        final long size  = estimatedSize;
+
+        List<EntityStorageStats.BucketStats> buckets = bucketRows.entrySet().stream()
+                .map(e -> new EntityStorageStats.BucketStats(
+                        e.getKey(),
+                        e.getValue(),
+                        total > 0 ? (size * e.getValue() / total) : 0L))
+                .toList();
+
+        return new EntityStorageStats(entityType, qualifiedTable, totalRows, estimatedSize, buckets);
     }
 
     // -------------------------------------------------------------------------
