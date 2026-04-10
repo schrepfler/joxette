@@ -94,7 +94,7 @@ function EntityInstancePage() {
   const to = useDebounce(toRaw, 300)
   const [cursor, setCursor] = useState<string | undefined>()
   const [cursors, setCursors] = useState<string[]>([])
-  const [showConfirmDelete, setShowConfirmDelete] = useState(false)
+  const [deleteStep, setDeleteStep] = useState<0 | 1 | 2>(0)
 
   // Streaming state
   const [streamMode, setStreamMode] = useState<StreamMode>('json')
@@ -249,9 +249,9 @@ function EntityInstancePage() {
           </Link>
           <button
             style={{ padding: '0.45rem 1rem', background: '#e53e3e', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 14 }}
-            onClick={() => setShowConfirmDelete(true)}
+            onClick={() => setDeleteStep(1)}
           >
-            GDPR Delete
+            Delete All Data (GDPR)
           </button>
         </div>
       </div>
@@ -382,11 +382,18 @@ function EntityInstancePage() {
         )}
       </div>
 
-      {showConfirmDelete && (
+      {deleteStep === 1 && (
         <ConfirmDialog
-          message={`GDPR delete all data for entity "${entityId}"? This cannot be undone.`}
-          onConfirm={() => { deleteMutation.mutate(); setShowConfirmDelete(false) }}
-          onCancel={() => setShowConfirmDelete(false)}
+          message={`Delete all data for entity "${entityId}"? This cannot be undone.`}
+          onConfirm={() => setDeleteStep(2)}
+          onCancel={() => setDeleteStep(0)}
+        />
+      )}
+      {deleteStep === 2 && (
+        <ConfirmDialog
+          message={`Final confirmation: permanently delete all records for entity "${entityId}"? This is irreversible and cannot be recovered.`}
+          onConfirm={() => { deleteMutation.mutate(); setDeleteStep(0) }}
+          onCancel={() => setDeleteStep(0)}
         />
       )}
     </Layout>

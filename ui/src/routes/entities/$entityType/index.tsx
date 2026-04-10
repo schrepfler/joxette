@@ -19,6 +19,7 @@ import { Layout } from '../../../components/Layout'
 import { LoadingSpinner } from '../../../components/LoadingSpinner'
 import { ErrorMessage } from '../../../components/ErrorMessage'
 import { ConfirmDialog } from '../../../components/ConfirmDialog'
+import { TruncateDialog } from '../../../components/TruncateDialog'
 import { useToast } from '../../../components/Toast'
 import { useDebounce } from '../../../hooks/useDebounce'
 
@@ -91,6 +92,7 @@ function EntityTypeDetailPage() {
   const { addToast } = useToast()
   const [showAddSource, setShowAddSource] = useState(false)
   const [confirmDeleteSource, setConfirmDeleteSource] = useState<string | null>(null)
+  const [showTruncateDialog, setShowTruncateDialog] = useState(false)
   const [searchRaw, setSearchRaw] = useState('')
   const search = useDebounce(searchRaw, 300)
   const [cursor, setCursor] = useState<string | undefined>()
@@ -122,6 +124,12 @@ function EntityTypeDetailPage() {
   const deleteSourceMutation = useMutation({
     mutationFn: (topic: string) => entitiesApi.deleteSource(entityType, topic),
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ['entities', entityType, 'sources'] }); addToast('Source deleted', 'success') },
+    onError: (e: Error) => addToast(e.message, 'error'),
+  })
+
+  const truncateMutation = useMutation({
+    mutationFn: (before: string) => cassettesApi.truncateEntityType(entityType, before),
+    onSuccess: (d) => { void qc.invalidateQueries({ queryKey: ['cassettes', 'entities', entityType] }); addToast(`Deleted ${d.deleted} records`, 'success') },
     onError: (e: Error) => addToast(e.message, 'error'),
   })
 
@@ -174,7 +182,12 @@ function EntityTypeDetailPage() {
       {entityQuery.error && <ErrorMessage message={(entityQuery.error as Error).message} />}
       {entityQuery.data && (
         <>
-          <h1 style={{ margin: '0 0 1.5rem', fontSize: 22, fontWeight: 700 }}>{entityType}</h1>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.5rem' }}>
+            <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>{entityType}</h1>
+            <button style={{ ...primaryBtnStyle, background: '#e53e3e' }} onClick={() => setShowTruncateDialog(true)}>
+              Truncate
+            </button>
+          </div>
 
           {/* Edit form */}
           <div style={cardStyle}>
@@ -291,6 +304,13 @@ function EntityTypeDetailPage() {
           message={`Delete source topic "${confirmDeleteSource}"?`}
           onConfirm={() => { deleteSourceMutation.mutate(confirmDeleteSource); setConfirmDeleteSource(null) }}
           onCancel={() => setConfirmDeleteSource(null)}
+        />
+      )}
+      {showTruncateDialog && (
+        <TruncateDialog
+          label={`entity type "${entityType}"`}
+          onConfirm={(before) => { truncateMutation.mutate(before); setShowTruncateDialog(false) }}
+          onCancel={() => setShowTruncateDialog(false)}
         />
       )}
     </Layout>

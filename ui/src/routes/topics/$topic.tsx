@@ -13,7 +13,7 @@ import { topicsApi, cassettesApi, streamTopicRecords, type CassetteRecord, type 
 import { Layout } from '../../components/Layout'
 import { LoadingSpinner } from '../../components/LoadingSpinner'
 import { ErrorMessage } from '../../components/ErrorMessage'
-import { ConfirmDialog } from '../../components/ConfirmDialog'
+import { TruncateDialog } from '../../components/TruncateDialog'
 import { useToast } from '../../components/Toast'
 import { useDebounce } from '../../hooks/useDebounce'
 
@@ -104,7 +104,7 @@ function TopicDetailPage() {
   const [offsetToRaw, setOffsetToRaw] = useState('')
   const [cursor, setCursor] = useState<string | undefined>()
   const [cursors, setCursors] = useState<string[]>([])
-  const [showConfirmTruncate, setShowConfirmTruncate] = useState(false)
+  const [showTruncateDialog, setShowTruncateDialog] = useState(false)
 
   // Streaming state
   const [streamMode, setStreamMode] = useState<StreamMode>('json')
@@ -165,7 +165,7 @@ function TopicDetailPage() {
   })
 
   const truncateMutation = useMutation({
-    mutationFn: () => cassettesApi.truncateTopic(topic),
+    mutationFn: (before: string) => cassettesApi.truncateTopic(topic, before),
     onSuccess: (d) => { void qc.invalidateQueries({ queryKey: ['cassettes', 'topics', topic] }); addToast(`Deleted ${d.deleted} records`, 'success') },
     onError: (e: Error) => addToast(e.message, 'error'),
   })
@@ -357,7 +357,7 @@ function TopicDetailPage() {
             <button style={{ ...primaryBtnStyle, background: '#805ad5' }} onClick={() => compactMutation.mutate()} disabled={compactMutation.isPending}>
               {compactMutation.isPending ? 'Compacting…' : 'Compact'}
             </button>
-            <button style={{ ...primaryBtnStyle, background: '#e53e3e' }} onClick={() => setShowConfirmTruncate(true)}>
+            <button style={{ ...primaryBtnStyle, background: '#e53e3e' }} onClick={() => setShowTruncateDialog(true)}>
               Truncate
             </button>
           </div>
@@ -464,11 +464,11 @@ function TopicDetailPage() {
           </div>
         </>
       )}
-      {showConfirmTruncate && (
-        <ConfirmDialog
-          message={`Truncate all records for topic "${topic}"? This cannot be undone.`}
-          onConfirm={() => { truncateMutation.mutate(); setShowConfirmTruncate(false) }}
-          onCancel={() => setShowConfirmTruncate(false)}
+      {showTruncateDialog && (
+        <TruncateDialog
+          label={`topic "${topic}"`}
+          onConfirm={(before) => { truncateMutation.mutate(before); setShowTruncateDialog(false) }}
+          onCancel={() => setShowTruncateDialog(false)}
         />
       )}
     </Layout>

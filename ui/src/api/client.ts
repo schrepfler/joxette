@@ -251,8 +251,10 @@ export const cassettesApi = {
     request<CassetteStats>(`/cassettes/topics/${encodeURIComponent(topic)}/stats`),
   compactTopic: (topic: string) =>
     request<void>(`/cassettes/topics/${encodeURIComponent(topic)}/compact`, { method: 'POST' }),
-  truncateTopic: (topic: string) =>
-    request<{ deleted: number }>(`/cassettes/topics/${encodeURIComponent(topic)}/truncate`, { method: 'POST' }),
+  truncateTopic: (topic: string, before: string) =>
+    request<{ deleted: number }>(`/cassettes/topics/${encodeURIComponent(topic)}/truncate`, { method: 'POST', body: JSON.stringify({ before }) }),
+  truncateEntityType: (type: string, before: string) =>
+    request<{ deleted: number }>(`/cassettes/entities/${encodeURIComponent(type)}/truncate`, { method: 'POST', body: JSON.stringify({ before }) }),
   listEntities: (entityType: string, params?: EntityListParams) =>
     request<PagedResponse<EntityInfo>>(`/cassettes/entities/${encodeURIComponent(entityType)}${buildQuery(params ?? {})}`),
   searchEntities: (entityType: string, params?: EntitySearchParams) =>
