@@ -148,6 +148,61 @@ public class CassetteLifecycleService {
     }
 
     // -------------------------------------------------------------------------
+    // Known-entity registry rebuild
+    // -------------------------------------------------------------------------
+
+    /**
+     * Rebuilds {@code lake.known_entities} from all {@code lake.entity_*} cassette tables.
+     *
+     * <p>Deletes every existing known-entity row, then re-inserts one row per
+     * distinct {@code (entity_id, entity_bucket)} pair found in each entity cassette,
+     * deriving {@code first_seen = MIN(timestamp)} and {@code last_seen = MAX(timestamp)}.
+     *
+     * <p>Use this operation to recover the registry after a GDPR wipe, corruption,
+     * or initial bootstrap from a pre-existing DuckLake dataset.
+     *
+     * @return total number of rows inserted across all entity types
+     */
+    public long rebuildKnownEntities() throws SQLException {
+        synchronized (duckDB) {
+            List<String> entityTables = new ArrayList<>();
+            try (Statement st = duckDB.createStatement();
+                 ResultSet rs = st.executeQuery("""
+                     SELECT DISTINCT table_name
+                     FROM duckdb_tables()
+                     WHERE table_name LIKE 'entity_%'
+                       AND (schema_name = 'lake'
+                            OR (database_name = 'lake' AND schema_name = 'main'))
+                     ORDER BY table_name
+                     """)) {
+                while (rs.next()) {
+                    entityTables.add(rs.getString("table_name"));
+                }
+            }
+
+            try (Statement st = duckDB.createStatement()) {
+                st.execute("DELETE FROM lake.known_entities");
+            }
+
+            long totalInserted = 0;
+            for (String tableName : entityTables) {
+                String entityType = tableName.substring("entity_".length());
+                try (PreparedStatement ps = duckDB.prepareStatement("""
+                        INSERT INTO lake.known_entities
+                            (entity_type, entity_id, entity_bucket, first_seen, last_seen)
+                        SELECT ?, entity_id, entity_bucket, MIN(timestamp), MAX(timestamp)
+                        FROM lake.%s
+                        GROUP BY entity_id, entity_bucket
+                        """.formatted(tableName))) {
+                    ps.setString(1, entityType);
+                    totalInserted += ps.executeUpdate();
+                }
+            }
+            return totalInserted;
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // GDPR entity deletion
     // -------------------------------------------------------------------------
 

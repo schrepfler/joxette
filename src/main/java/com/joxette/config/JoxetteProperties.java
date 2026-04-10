@@ -26,12 +26,42 @@ public class JoxetteProperties {
         private String path = "./data/joxette.ducklake";
         /** Root path on object storage where Parquet files are written. */
         private String objectStoragePath;
+        /** Optional S3-compatible storage credentials and endpoint. */
+        private S3 s3 = new S3();
 
         public String getPath() { return path; }
         public void setPath(String path) { this.path = path; }
 
         public String getObjectStoragePath() { return objectStoragePath; }
         public void setObjectStoragePath(String objectStoragePath) { this.objectStoragePath = objectStoragePath; }
+
+        public S3 getS3() { return s3; }
+        public void setS3(S3 s3) { this.s3 = s3; }
+
+        public static class S3 {
+            /** S3 endpoint host (and optional port), e.g. {@code localhost:9000}. */
+            private String endpoint;
+            private String accessKeyId;
+            private String secretAccessKey;
+            private boolean useSsl = true;
+            /** {@code "path"} or {@code "vhost"} (default: vhost). */
+            private String urlStyle = "vhost";
+
+            public String getEndpoint() { return endpoint; }
+            public void setEndpoint(String endpoint) { this.endpoint = endpoint; }
+
+            public String getAccessKeyId() { return accessKeyId; }
+            public void setAccessKeyId(String accessKeyId) { this.accessKeyId = accessKeyId; }
+
+            public String getSecretAccessKey() { return secretAccessKey; }
+            public void setSecretAccessKey(String secretAccessKey) { this.secretAccessKey = secretAccessKey; }
+
+            public boolean isUseSsl() { return useSsl; }
+            public void setUseSsl(boolean useSsl) { this.useSsl = useSsl; }
+
+            public String getUrlStyle() { return urlStyle; }
+            public void setUrlStyle(String urlStyle) { this.urlStyle = urlStyle; }
+        }
     }
 
     // -----------------------------------------------------------------------

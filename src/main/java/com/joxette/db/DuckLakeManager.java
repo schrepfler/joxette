@@ -61,13 +61,17 @@ public class DuckLakeManager {
         String catalogPath = properties.getCatalog().getPath();
 
         if (":memory:".equals(catalogPath)) {
-            // In-memory mode (integration tests): attach an ephemeral DuckLake catalog
-            // that stores both metadata and data in memory.
-            log.info("Attaching in-memory DuckLake catalog '{}'", CATALOG_NAME);
+            // In-memory catalog: metadata is ephemeral. Data path may be in-memory (unit
+            // tests) or S3 (integration tests that wire a MinIO container via
+            // @DynamicPropertySource + joxette.catalog.object-storage-path).
+            String dataPath = resolveDataPath(catalogPath);
+            boolean usesS3  = dataPath != null && dataPath.startsWith("s3://");
+            String effectiveDataPath = usesS3 ? dataPath : ":memory:";
+            log.info("Attaching in-memory DuckLake catalog '{}' (DATA_PATH='{}')", CATALOG_NAME, effectiveDataPath);
             try (Statement stmt = connection.createStatement()) {
                 stmt.execute(String.format(
-                    "ATTACH 'ducklake::memory:' AS %s (DATA_PATH ':memory:')",
-                    CATALOG_NAME));
+                    "ATTACH 'ducklake::memory:' AS %s (DATA_PATH '%s')",
+                    CATALOG_NAME, effectiveDataPath));
                 log.info("In-memory DuckLake catalog '{}' ready", CATALOG_NAME);
             } catch (SQLException e) {
                 if (isAlreadyAttached(e)) {

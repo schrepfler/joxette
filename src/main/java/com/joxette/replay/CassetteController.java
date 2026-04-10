@@ -471,6 +471,33 @@ public class CassetteController {
     }
 
     // =========================================================================
+    // Known-entity registry rebuild
+    // =========================================================================
+
+    @Operation(
+        operationId = "rebuildKnownEntities",
+        summary = "Rebuild known-entities registry",
+        description = "Scans every `lake.entity_*` cassette table and rebuilds `lake.known_entities` " +
+                      "from scratch. Deletes all existing registry rows, then re-inserts one row per " +
+                      "distinct `(entity_type, entity_id)` derived from the raw event timestamps. " +
+                      "Returns the number of rows inserted."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Registry rebuilt; number of rows inserted",
+            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                schema = @Schema(type = "object"),
+                examples = @ExampleObject(name = "result", value = "{\"rebuilt\": 42}"))),
+        @ApiResponse(responseCode = "500", description = "Database error",
+            content = @Content(schema = @Schema(type = "string")))
+    })
+    @PostMapping(value = "/entities/rebuild-known-entities",
+                 produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<Map<String, Long>> rebuildKnownEntities() throws SQLException {
+        long rebuilt = lifecycle.rebuildKnownEntities();
+        return ResponseEntity.ok(Map.of("rebuilt", rebuilt));
+    }
+
+    // =========================================================================
     // Cassette lifecycle – stats, compaction, truncation
     // =========================================================================
 
