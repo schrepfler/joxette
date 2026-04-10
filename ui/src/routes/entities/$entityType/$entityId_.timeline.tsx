@@ -4,7 +4,7 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer,
 } from 'recharts'
 import { cassettesApi, type EntityRecord } from '../../../api/client'
-import { CassetteTimeline, type TimelineRecord, PALETTE } from '../../../components/CassetteTimeline'
+import { CassetteTimeline, type TimelineRecord, type GroupByMode, colorForKey } from '../../../components/CassetteTimeline'
 import { Layout } from '../../../components/Layout'
 import { LoadingSpinner } from '../../../components/LoadingSpinner'
 import { ErrorMessage } from '../../../components/ErrorMessage'
@@ -13,17 +13,22 @@ export const Route = createFileRoute('/entities/$entityType/$entityId_/timeline'
   component: EntityTimelinePage,
 })
 
-function computeTopicBuckets(records: EntityRecord[]): {
+function getSegmentKey(r: EntityRecord, kind: GroupByMode['kind']): string {
+  if (kind === 'messageType') return r.messageType ?? '(unknown)'
+  return r.topic
+}
+
+function computeActivityBuckets(records: EntityRecord[], kind: GroupByMode['kind']): {
   buckets: Array<Record<string, number | string>>
-  topicKeys: string[]
+  segmentKeys: string[]
 } {
-  if (records.length === 0) return { buckets: [], topicKeys: [] }
+  if (records.length === 0) return { buckets: [], segmentKeys: [] }
   const bucketCount = Math.min(40, Math.max(10, Math.floor(records.length / 5)))
   const timestamps = records.map(r => new Date(r.timestamp).getTime())
   const minMs = Math.min(...timestamps)
   const maxMs = Math.max(...timestamps)
   const spanMs = maxMs - minMs || 1
-  const topicKeys = [...new Set(records.map(r => r.topic))].sort()
+  const segmentKeys = [...new Set(records.map(r => getSegmentKey(r, kind)))].sort()
   const buckets: Array<Record<string, number | string>> = Array.from(
     { length: bucketCount },
     (_, i) => {
@@ -32,26 +37,33 @@ function computeTopicBuckets(records: EntityRecord[]): {
       const row: Record<string, number | string> = {
         time: `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`,
       }
-      for (const tk of topicKeys) row[tk] = 0
+      for (const sk of segmentKeys) row[sk] = 0
       return row
     },
   )
   for (let i = 0; i < records.length; i++) {
     const bi = Math.min(bucketCount - 1, Math.floor(((timestamps[i] - minMs) / spanMs) * bucketCount))
-    const tk = records[i].topic
+    const sk = getSegmentKey(records[i], kind)
     const b = buckets[bi]
-    b[tk] = (b[tk] as number) + 1
+    b[sk] = (b[sk] as number) + 1
   }
-  return { buckets, topicKeys }
+  return { buckets, segmentKeys }
 }
 
-function TopicActivityChart({ records }: { records: EntityRecord[] }) {
-  const { buckets, topicKeys } = computeTopicBuckets(records)
+const DIMENSION_LABEL: Partial<Record<GroupByMode['kind'], string>> = {
+  messageType: 'message type',
+  topic: 'topic',
+  colorKey: 'topic',
+}
+
+function TopicActivityChart({ records, groupByKind }: { records: EntityRecord[]; groupByKind: GroupByMode['kind'] }) {
+  const { buckets, segmentKeys } = computeActivityBuckets(records, groupByKind)
   if (buckets.length === 0) return null
+  const label = DIMENSION_LABEL[groupByKind] ?? 'topic'
   return (
     <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '0.625rem 0.75rem 0.5rem' }}>
       <div style={{ fontSize: 11, color: '#a0aec0', marginBottom: 4, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-        Activity by topic
+        Activity by {label}
       </div>
       <ResponsiveContainer width="100%" height={180}>
         <BarChart data={buckets} margin={{ top: 4, right: 4, left: -16, bottom: 0 }}>
@@ -59,8 +71,8 @@ function TopicActivityChart({ records }: { records: EntityRecord[] }) {
           <XAxis dataKey="time" tick={{ fontSize: 10, fill: '#718096' }} axisLine={false} tickLine={false} interval="preserveStartEnd" />
           <YAxis tick={{ fontSize: 10, fill: '#718096' }} axisLine={false} tickLine={false} width={28} allowDecimals={false} />
           <Tooltip cursor={{ fill: '#f7fafc' }} contentStyle={{ fontSize: 12, borderRadius: 6, border: '1px solid #e2e8f0' }} />
-          {topicKeys.map((tk, i) => (
-            <Bar key={tk} dataKey={tk} stackId="a" fill={PALETTE[i % PALETTE.length]} isAnimationActive={false} />
+          {segmentKeys.map((sk) => (
+            <Bar key={sk} dataKey={sk} stackId="a" fill={colorForKey(sk, segmentKeys)} isAnimationActive={false} />
           ))}
         </BarChart>
       </ResponsiveContainer>
@@ -96,6 +108,7 @@ function EntityTimelinePage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [initialLoaded, setInitialLoaded] = useState(false)
+  const [groupByKind, setGroupByKind] = useState<GroupByMode['kind']>('messageType')
 
   const PAGE_SIZE = 200
 
@@ -165,7 +178,7 @@ function EntityTimelinePage() {
           <>
             {records.length >= 2 && (
               <div style={{ flexShrink: 0, marginBottom: 8 }}>
-                <TopicActivityChart records={records} />
+                <TopicActivityChart records={records} groupByKind={groupByKind} />
               </div>
             )}
             <div style={{ flex: '1 1 0', minHeight: 0, border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'hidden' }}>
@@ -176,6 +189,7 @@ function EntityTimelinePage() {
                 loading={loading}
                 title={`${entityType} / ${entityId}`}
                 supportsMessageType={true}
+                onGroupByModeChange={mode => setGroupByKind(mode.kind)}
                 extraControls={
                   hasMoreAfter && !loading
                     ? <button style={secondaryBtn} onClick={handleLoadAfter}>Load next page</button>

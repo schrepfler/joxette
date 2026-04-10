@@ -61,6 +61,8 @@ export interface CassetteTimelineProps {
   extraControls?: ReactNode
   /** Show the "Message type" group-by option (only meaningful for entity cassettes) */
   supportsMessageType?: boolean
+  /** Called whenever the primary group-by mode changes */
+  onGroupByModeChange?: (mode: GroupByMode) => void
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -107,14 +109,14 @@ export const PALETTE = [
 
 const MAX_GROUPS = 12
 
-function colorForKey(key: string, allKeys: string[]): string {
+export function colorForKey(key: string, allKeys: string[]): string {
   const idx = allKeys.indexOf(key)
   return PALETTE[idx % PALETTE.length] ?? '#718096'
 }
 
 // ─── Group-by dimensions ─────────────────────────────────────────────────────
 
-type GroupByMode =
+export type GroupByMode =
   | { kind: 'colorKey' }
   | { kind: 'entityId' }
   | { kind: 'messageType' }
@@ -726,16 +728,24 @@ export function CassetteTimeline({
   title,
   extraControls,
   supportsMessageType,
+  onGroupByModeChange,
 }: CassetteTimelineProps) {
   const [selectedIdx, setSelectedIdx] = useState(0)
   const [fitKey, setFitKey] = useState(0)
-  const [groupByMode, setGroupByMode] = useState<GroupByMode>({ kind: 'colorKey' })
+  const [groupByMode, setGroupByMode] = useState<GroupByMode>(
+    () => supportsMessageType ? { kind: 'messageType' } : { kind: 'colorKey' },
+  )
   const [groupByMode2, setGroupByMode2] = useState<GroupByMode | null>(null)
 
   const availableHeaderKeys = useMemo(
     () => [...new Set(records.flatMap(r => (r.headers ?? []).map(h => h.key)))].sort(),
     [records],
   )
+
+  useEffect(() => {
+    onGroupByModeChange?.(groupByMode)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groupByMode])
 
   const effectiveRecords = useMemo(
     () => records.map(r => ({
