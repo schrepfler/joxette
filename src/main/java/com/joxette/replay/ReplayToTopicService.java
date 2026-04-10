@@ -69,25 +69,36 @@ public class ReplayToTopicService {
      * and produces each one to {@code req.targetTopic()}, preserving
      * {@code kafka_timestamp} ordering.
      *
+     * <p>Inter-message delays are scaled by {@code speedMultiplier}: a value of
+     * {@code 1.0} replays in real-time, {@code 2.0} replays at double speed
+     * (half the delays), {@code 0.5} replays at half speed (double the delays).
+     * Pass {@code Double.MAX_VALUE} or any very large value to replay with no
+     * intentional delay.
+     *
      * <p>The {@code progressSink} is invoked with an {@code "in_progress"}
      * snapshot every {@value #PROGRESS_INTERVAL} records and with a final
      * {@code "completed"} or {@code "failed"} event when the replay ends.
      *
+     * @param speedMultiplier replay speed factor; must be &gt; 0
      * @throws SQLException if the DuckDB read fails before any Kafka sends occur
      */
     public void replayTopicToKafka(
             String sourceTopic,
             ReplayToTopicRequest req,
+            double speedMultiplier,
             Consumer<ReplayProgress> progressSink
     ) throws SQLException {
         long[]    counts  = {0L, 0L};   // [0]=sent [1]=errors
         Instant[] lastTs  = {null};
+        Instant[] prevTs  = {null};
 
         try {
             topicReplayService.streamAll(
                     sourceTopic, req.from(), req.to(),
                     req.partition(), req.offsetFrom(), req.offsetTo(),
                     record -> {
+                        applyDelay(prevTs[0], record.timestamp(), speedMultiplier);
+                        prevTs[0] = record.timestamp();
                         lastTs[0] = record.timestamp();
                         doSend(() -> kafkaProducerService.send(req.targetTopic(), record), counts);
                         if (counts[0] % PROGRESS_INTERVAL == 0) {
@@ -117,24 +128,32 @@ public class ReplayToTopicService {
      * which constitutes a merge-sort across all source topics by
      * {@code kafka_timestamp}.
      *
+     * <p>Inter-message delays are scaled by {@code speedMultiplier} identically
+     * to {@link #replayTopicToKafka}.
+     *
      * <p>The {@code progressSink} contract is identical to
      * {@link #replayTopicToKafka}.
      *
+     * @param speedMultiplier replay speed factor; must be &gt; 0
      * @throws SQLException if the DuckDB read fails before any Kafka sends occur
      */
     public void replayEntityToKafka(
             String entityType,
             String entityId,
             ReplayToTopicRequest req,
+            double speedMultiplier,
             Consumer<ReplayProgress> progressSink
     ) throws SQLException {
         long[]    counts = {0L, 0L};
         Instant[] lastTs = {null};
+        Instant[] prevTs = {null};
 
         try {
             entityReplayService.streamEntityEvents(
                     entityType, entityId, req.from(), req.to(),
                     record -> {
+                        applyDelay(prevTs[0], record.timestamp(), speedMultiplier);
+                        prevTs[0] = record.timestamp();
                         lastTs[0] = record.timestamp();
                         doSend(() -> kafkaProducerService.send(req.targetTopic(), record), counts);
                         if (counts[0] % PROGRESS_INTERVAL == 0) {
@@ -153,6 +172,33 @@ public class ReplayToTopicService {
     // =========================================================================
     // Helpers
     // =========================================================================
+
+    /**
+     * Sleeps for the scaled inter-message delay if {@code prev} is not null and
+     * {@code current} is strictly after {@code prev}.
+     *
+     * <pre>
+     * delay = (current − prev).toMillis() / speedMultiplier
+     * </pre>
+     *
+     * <p>A {@code speedMultiplier} of {@code 1.0} replays in real-time;
+     * {@code 2.0} halves the gaps; {@code 0.5} doubles them.
+     */
+    private static void applyDelay(Instant prev, Instant current, double speedMultiplier) {
+        if (prev == null || !current.isAfter(prev)) {
+            return;
+        }
+        long delayMs = (long) ((current.toEpochMilli() - prev.toEpochMilli()) / speedMultiplier);
+        if (delayMs <= 0) {
+            return;
+        }
+        try {
+            Thread.sleep(delayMs);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException("Replay interrupted during inter-message delay", e);
+        }
+    }
 
     @FunctionalInterface
     private interface SendAction {

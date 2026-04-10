@@ -800,13 +800,20 @@ public class CassetteController {
             @Parameter(description = "Source Kafka topic name (cassette to replay from)",
                        required = true, example = "orders")
             @PathVariable String topic,
+            @Parameter(description = "Replay speed multiplier: 1.0 = real-time, 2.0 = double speed, 0.5 = half speed. " +
+                                     "Inter-message delay = (next_ts − prev_ts) / speed",
+                       example = "1.0")
+            @RequestParam(name = "speed", defaultValue = "1.0") double speed,
             @io.swagger.v3.oas.annotations.parameters.RequestBody(
                 description = "Target topic and optional filters",
                 content = @Content(schema = @Schema(implementation = ReplayToTopicRequest.class)))
             @RequestBody ReplayToTopicRequest req
     ) throws SQLException {
+        if (speed <= 0) {
+            throw new IllegalArgumentException("speed must be greater than 0");
+        }
         ReplayProgress[] result = {null};
-        replayToTopicService.replayTopicToKafka(topic, req, p -> result[0] = p);
+        replayToTopicService.replayTopicToKafka(topic, req, speed, p -> result[0] = p);
         return result[0];
     }
 
@@ -837,13 +844,20 @@ public class CassetteController {
             @Parameter(description = "Source Kafka topic name (cassette to replay from)",
                        required = true, example = "orders")
             @PathVariable String topic,
+            @Parameter(description = "Replay speed multiplier: 1.0 = real-time, 2.0 = double speed, 0.5 = half speed. " +
+                                     "Inter-message delay = (next_ts − prev_ts) / speed",
+                       example = "1.0")
+            @RequestParam(name = "speed", defaultValue = "1.0") double speed,
             @io.swagger.v3.oas.annotations.parameters.RequestBody(
                 description = "Target topic and optional filters",
                 content = @Content(schema = @Schema(implementation = ReplayToTopicRequest.class)))
             @RequestBody ReplayToTopicRequest req
     ) {
+        if (speed <= 0) {
+            throw new IllegalArgumentException("speed must be greater than 0");
+        }
         return sseHandler.<ReplayProgress>streamSse(
-                sink -> replayToTopicService.replayTopicToKafka(topic, req, sink));
+                sink -> replayToTopicService.replayTopicToKafka(topic, req, speed, sink));
     }
 
     @Operation(
@@ -883,13 +897,20 @@ public class CassetteController {
             @PathVariable String entityType,
             @Parameter(description = "Entity identifier", required = true, example = "cust-042")
             @PathVariable String entityId,
+            @Parameter(description = "Replay speed multiplier: 1.0 = real-time, 2.0 = double speed, 0.5 = half speed. " +
+                                     "Inter-message delay = (next_ts − prev_ts) / speed",
+                       example = "1.0")
+            @RequestParam(name = "speed", defaultValue = "1.0") double speed,
             @io.swagger.v3.oas.annotations.parameters.RequestBody(
                 description = "Target topic and optional timestamp filters",
                 content = @Content(schema = @Schema(implementation = ReplayToTopicRequest.class)))
             @RequestBody ReplayToTopicRequest req
     ) throws SQLException {
+        if (speed <= 0) {
+            throw new IllegalArgumentException("speed must be greater than 0");
+        }
         ReplayProgress[] result = {null};
-        replayToTopicService.replayEntityToKafka(entityType, entityId, req, p -> result[0] = p);
+        replayToTopicService.replayEntityToKafka(entityType, entityId, req, speed, p -> result[0] = p);
         return result[0];
     }
 
@@ -924,13 +945,20 @@ public class CassetteController {
             @PathVariable String entityType,
             @Parameter(description = "Entity identifier", required = true, example = "cust-042")
             @PathVariable String entityId,
+            @Parameter(description = "Replay speed multiplier: 1.0 = real-time, 2.0 = double speed, 0.5 = half speed. " +
+                                     "Inter-message delay = (next_ts − prev_ts) / speed",
+                       example = "1.0")
+            @RequestParam(name = "speed", defaultValue = "1.0") double speed,
             @io.swagger.v3.oas.annotations.parameters.RequestBody(
                 description = "Target topic and optional timestamp filters",
                 content = @Content(schema = @Schema(implementation = ReplayToTopicRequest.class)))
             @RequestBody ReplayToTopicRequest req
     ) {
+        if (speed <= 0) {
+            throw new IllegalArgumentException("speed must be greater than 0");
+        }
         return sseHandler.<ReplayProgress>streamSse(
-                sink -> replayToTopicService.replayEntityToKafka(entityType, entityId, req, sink));
+                sink -> replayToTopicService.replayEntityToKafka(entityType, entityId, req, speed, sink));
     }
 
     // =========================================================================
