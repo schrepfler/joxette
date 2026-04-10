@@ -188,6 +188,96 @@ class TopicRecorderTest {
         }
     }
 
+    /**
+     * Feeds one message with a known key, value, and two headers through
+     * {@link TopicRecorder} and asserts that every column in the general
+     * cassette table is populated with the correct value.
+     *
+     * <p>This is the primary "batch → DuckDB write" correctness test.  It
+     * covers fields that the other tests only touch partially:
+     * <ul>
+     *   <li>{@code recorded_at}   — set by the writer, must be after the test started</li>
+     *   <li>{@code kafka_offset}  — 0 for the first message on a fresh topic</li>
+     *   <li>{@code kafka_partition} — 0 (single-partition topic)</li>
+     *   <li>{@code kafka_timestamp} — Kafka producer timestamp, must match exactly</li>
+     *   <li>{@code kafka_key}     — exact string key</li>
+     *   <li>{@code kafka_value}   — exact raw bytes (BLOB)</li>
+     *   <li>{@code kafka_value_str} — UTF-8 string view of the value</li>
+     *   <li>{@code metadata}      — NULL (not set by the writer)</li>
+     *   <li>{@code headers}       — both key <em>and</em> value of every header</li>
+     * </ul>
+     */
+    @Test
+    void recorder_writesAllFieldValuesCorrectlyIncludingHeaders() throws Exception {
+        String msgKey   = "order-99";
+        byte[] msgValue = "{\"order_id\":\"99\"}".getBytes(StandardCharsets.UTF_8);
+        long   producedAtMs;
+        try (KafkaProducer<String, byte[]> producer = newProducer()) {
+            ProducerRecord<String, byte[]> rec = new ProducerRecord<>(TOPIC, msgKey, msgValue);
+            rec.headers().add("x-correlation-id", "corr-42".getBytes(StandardCharsets.UTF_8));
+            rec.headers().add("event-type",        "OrderCreated".getBytes(StandardCharsets.UTF_8));
+            producedAtMs = producer.send(rec).get().timestamp();
+        }
+
+        // Capture time just before the recorder writes so we can bound recorded_at.
+        java.time.Instant beforeRecord = java.time.Instant.now();
+
+        recorder = new TopicRecorder(TOPIC, consumerProps(), duckDB, 100, 200, generalRouter, noopEntities);
+        recorderThread = Thread.ofVirtual().name("test-recorder-fields").start(() -> {
+            try { recorder.run(); } catch (Exception ignored) {}
+        });
+
+        awaitRowCount(CASSETTE_TABLE, 1, Duration.ofSeconds(10));
+        recorder.stop();
+        recorderThread.join(5_000);
+
+        // Query all columns in declaration order so the positional index used for
+        // the BLOB column (kafka_value) is predictable.
+        // Positions: 1=recorded_at, 2=kafka_offset, 3=kafka_partition,
+        //            4=kafka_timestamp, 5=kafka_key, 6=kafka_value (BLOB),
+        //            7=kafka_value_str, 8=metadata, 9=headers
+        try (Statement st = duckDB.createStatement();
+             ResultSet rs = st.executeQuery(
+                     "SELECT recorded_at, kafka_offset, kafka_partition, kafka_timestamp," +
+                     "       kafka_key, kafka_value, kafka_value_str, metadata, headers" +
+                     " FROM " + CASSETTE_TABLE)) {
+
+            assertThat(rs.next()).isTrue();
+
+            // recorded_at is set by CassetteBatchWriter to Instant.now() — must be
+            // at or after the moment we captured before launching the recorder.
+            assertThat(rs.getTimestamp("recorded_at").toInstant())
+                    .isAfterOrEqualTo(beforeRecord.minusMillis(500));
+
+            // First (and only) message on a fresh single-partition topic.
+            assertThat(rs.getInt("kafka_partition")).isEqualTo(0);
+            assertThat(rs.getLong("kafka_offset")).isEqualTo(0L);
+
+            // Kafka stores the producer timestamp; it must survive the write round-trip.
+            assertThat(rs.getTimestamp("kafka_timestamp").getTime()).isEqualTo(producedAtMs);
+
+            assertThat(rs.getString("kafka_key")).isEqualTo(msgKey);
+
+            // kafka_value is BLOB — DuckDB JDBC 1.5.x does not support getBytes(String),
+            // so access by positional index (column 6 in the SELECT above).
+            assertThat(rs.getBytes(6)).isEqualTo(msgValue);
+
+            assertThat(rs.getString("kafka_value_str"))
+                    .isEqualTo(new String(msgValue, StandardCharsets.UTF_8));
+
+            assertThat(rs.getString("metadata")).isNull();
+
+            // Headers are stored as STRUCT(key VARCHAR, value VARCHAR)[].
+            // Verify both the key *and* the value for every header sent.
+            String headers = rs.getString("headers");
+            assertThat(headers)
+                    .contains("x-correlation-id").contains("corr-42")
+                    .contains("event-type").contains("OrderCreated");
+
+            assertThat(rs.next()).isFalse();
+        }
+    }
+
     @Test
     void recorder_batchesMultiplePartitions() throws Exception {
         // Use a topic with 3 partitions to verify per-partition offset tracking.
