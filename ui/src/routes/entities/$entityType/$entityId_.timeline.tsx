@@ -175,6 +175,7 @@ function EntityTimelinePage() {
                 hasMore={hasMoreAfter}
                 loading={loading}
                 title={`${entityType} / ${entityId}`}
+                supportsMessageType={true}
                 extraControls={
                   hasMoreAfter && !loading
                     ? <button style={secondaryBtn} onClick={handleLoadAfter}>Load next page</button>

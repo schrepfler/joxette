@@ -59,6 +59,8 @@ export interface CassetteTimelineProps {
   title?: string
   /** Extra controls rendered next to the "Fit" button */
   extraControls?: ReactNode
+  /** Show the "Message type" group-by option (only meaningful for entity cassettes) */
+  supportsMessageType?: boolean
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -115,6 +117,7 @@ function colorForKey(key: string, allKeys: string[]): string {
 type GroupByMode =
   | { kind: 'colorKey' }
   | { kind: 'entityId' }
+  | { kind: 'messageType' }
   | { kind: 'topic' }
   | { kind: 'header'; headerKey: string }
   | { kind: 'jsonpath'; expression: string }
@@ -142,6 +145,8 @@ function getEffectiveColorKey(record: TimelineRecord, mode: GroupByMode): string
       return record.colorKey
     case 'entityId':
       return record.entityId ?? '(none)'
+    case 'messageType':
+      return record.meta?.type ?? '(unknown)'
     case 'topic':
       return record.sourceTopic ?? '(none)'
     case 'header': {
@@ -158,10 +163,11 @@ function getEffectiveColorKey(record: TimelineRecord, mode: GroupByMode): string
 interface GroupBySelectorProps {
   mode: GroupByMode
   availableHeaderKeys: string[]
+  supportsMessageType?: boolean
   onChange: (mode: GroupByMode) => void
 }
 
-function GroupBySelector({ mode, availableHeaderKeys, onChange }: GroupBySelectorProps) {
+function GroupBySelector({ mode, availableHeaderKeys, supportsMessageType, onChange }: GroupBySelectorProps) {
   const [draftExpr, setDraftExpr] = useState(
     mode.kind === 'jsonpath' ? mode.expression : '',
   )
@@ -174,6 +180,7 @@ function GroupBySelector({ mode, availableHeaderKeys, onChange }: GroupBySelecto
     const val = e.target.value
     if (val === 'colorKey') { onChange({ kind: 'colorKey' }); return }
     if (val === 'entityId') { onChange({ kind: 'entityId' }); return }
+    if (val === 'messageType') { onChange({ kind: 'messageType' }); return }
     if (val === 'topic') { onChange({ kind: 'topic' }); return }
     if (val === 'header') {
       const firstKey = availableHeaderKeys[0] ?? ''
@@ -201,6 +208,7 @@ function GroupBySelector({ mode, availableHeaderKeys, onChange }: GroupBySelecto
       >
         <option value="colorKey">Default</option>
         <option value="entityId">Entity ID</option>
+        {supportsMessageType && <option value="messageType">Message type</option>}
         <option value="topic">Source topic</option>
         <option value="header">Header value</option>
         <option value="jsonpath">JSONPath</option>
@@ -246,10 +254,11 @@ interface AndBySelectorProps {
   mode: GroupByMode | null
   availableHeaderKeys: string[]
   excludeKind: GroupByMode['kind']
+  supportsMessageType?: boolean
   onChange: (mode: GroupByMode | null) => void
 }
 
-function AndBySelector({ mode, availableHeaderKeys, excludeKind, onChange }: AndBySelectorProps) {
+function AndBySelector({ mode, availableHeaderKeys, excludeKind, supportsMessageType, onChange }: AndBySelectorProps) {
   const [draftExpr, setDraftExpr] = useState(
     mode?.kind === 'jsonpath' ? mode.expression : '',
   )
@@ -263,6 +272,7 @@ function AndBySelector({ mode, availableHeaderKeys, excludeKind, onChange }: And
     if (val === '__none__') { onChange(null); return }
     if (val === 'colorKey') { onChange({ kind: 'colorKey' }); return }
     if (val === 'entityId') { onChange({ kind: 'entityId' }); return }
+    if (val === 'messageType') { onChange({ kind: 'messageType' }); return }
     if (val === 'topic') { onChange({ kind: 'topic' }); return }
     if (val === 'header') {
       onChange({ kind: 'header', headerKey: availableHeaderKeys[0] ?? '' })
@@ -290,6 +300,7 @@ function AndBySelector({ mode, availableHeaderKeys, excludeKind, onChange }: And
         <option value="__none__">— none —</option>
         {excludeKind !== 'colorKey' && <option value="colorKey">Default</option>}
         {excludeKind !== 'entityId' && <option value="entityId">Entity ID</option>}
+        {supportsMessageType && excludeKind !== 'messageType' && <option value="messageType">Message type</option>}
         {excludeKind !== 'topic' && <option value="topic">Source topic</option>}
         {excludeKind !== 'header' && <option value="header">Header value</option>}
         {excludeKind !== 'jsonpath' && <option value="jsonpath">JSONPath</option>}
@@ -714,6 +725,7 @@ export function CassetteTimeline({
   loading,
   title,
   extraControls,
+  supportsMessageType,
 }: CassetteTimelineProps) {
   const [selectedIdx, setSelectedIdx] = useState(0)
   const [fitKey, setFitKey] = useState(0)
@@ -817,6 +829,7 @@ export function CassetteTimeline({
         <GroupBySelector
           mode={groupByMode}
           availableHeaderKeys={availableHeaderKeys}
+          supportsMessageType={supportsMessageType}
           onChange={mode => {
             setGroupByMode(mode)
             // Clear secondary when primary changes to the same kind
@@ -827,6 +840,7 @@ export function CassetteTimeline({
           mode={groupByMode2}
           availableHeaderKeys={availableHeaderKeys}
           excludeKind={groupByMode.kind}
+          supportsMessageType={supportsMessageType}
           onChange={setGroupByMode2}
         />
         {tooManyGroups && (
