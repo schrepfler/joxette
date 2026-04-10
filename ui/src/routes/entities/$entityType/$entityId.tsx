@@ -13,6 +13,7 @@ import { Layout } from '../../../components/Layout'
 import { LoadingSpinner } from '../../../components/LoadingSpinner'
 import { ErrorMessage } from '../../../components/ErrorMessage'
 import { ConfirmDialog } from '../../../components/ConfirmDialog'
+import { ReplayToTopicPanel } from '../../../components/ReplayToTopicPanel'
 import { useToast } from '../../../components/Toast'
 import { useDebounce } from '../../../hooks/useDebounce'
 
@@ -289,6 +290,14 @@ function EntityInstancePage() {
           )}
         </div>
       )}
+
+      {/* Replay to Topic panel */}
+      <ReplayToTopicPanel
+        mode="entity"
+        entityType={entityType}
+        entityId={entityId}
+        totalCount={statsQuery.data?.messageCount}
+      />
 
       {/* Replay */}
       <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '1rem 1.25rem' }}>

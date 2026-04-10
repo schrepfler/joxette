@@ -158,6 +158,26 @@ export interface SnapshotInfo {
   sizeBytes: number
 }
 
+// ---- Replay-to-topic types ----
+
+export type ReplaySpeed = 0.5 | 1 | 2 | 5
+
+export interface ReplayToTopicRequest {
+  targetTopic: string
+  from?: string        // ISO-8601 Instant; topic replay only
+  to?: string          // ISO-8601 Instant; topic replay only
+  transforms?: { restamp?: boolean }
+}
+
+export interface ReplayProgress {
+  status: 'in_progress' | 'completed' | 'failed'
+  targetTopic: string
+  sentCount: number
+  errorCount: number
+  currentTimestamp?: string
+  errorMessage?: string
+}
+
 // ---- HTTP helpers ----
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -305,10 +325,14 @@ async function streamLines(
   onDone: () => void,
   onError: (err: Error) => void,
   signal: AbortSignal,
+  postBody?: string,
 ): Promise<void> {
   let res: Response
   try {
-    res = await fetch(url, { headers: { Accept: accept }, signal })
+    res = await fetch(url, postBody != null
+      ? { method: 'POST', headers: { Accept: accept, 'Content-Type': 'application/json' }, body: postBody, signal }
+      : { headers: { Accept: accept }, signal }
+    )
   } catch (e) {
     if ((e as Error).name === 'AbortError') return
     onError(e as Error)
@@ -379,6 +403,39 @@ export function streamEntityRecords(
     if (!data) return
     try { callbacks.onRecord(JSON.parse(data) as EntityRecord) } catch { /* skip malformed line */ }
   }, callbacks.onDone, callbacks.onError, ctrl.signal)
+  return ctrl
+}
+
+export function streamTopicReplay(
+  topic: string,
+  speed: ReplaySpeed,
+  body: ReplayToTopicRequest,
+  callbacks: { onProgress: (p: ReplayProgress) => void; onDone: () => void; onError: (e: Error) => void },
+): AbortController {
+  const url = `${API_BASE}/cassettes/topics/${encodeURIComponent(topic)}/replay-to-topic?speed=${speed}`
+  const ctrl = new AbortController()
+  void streamLines(url, 'text/event-stream', (line) => {
+    const data = extractData(line, true)
+    if (!data) return
+    try { callbacks.onProgress(JSON.parse(data) as ReplayProgress) } catch { /* skip malformed */ }
+  }, callbacks.onDone, callbacks.onError, ctrl.signal, JSON.stringify(body))
+  return ctrl
+}
+
+export function streamEntityReplay(
+  entityType: string,
+  entityId: string,
+  speed: ReplaySpeed,
+  body: ReplayToTopicRequest,
+  callbacks: { onProgress: (p: ReplayProgress) => void; onDone: () => void; onError: (e: Error) => void },
+): AbortController {
+  const url = `${API_BASE}/cassettes/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}/replay-to-topic?speed=${speed}`
+  const ctrl = new AbortController()
+  void streamLines(url, 'text/event-stream', (line) => {
+    const data = extractData(line, true)
+    if (!data) return
+    try { callbacks.onProgress(JSON.parse(data) as ReplayProgress) } catch { /* skip malformed */ }
+  }, callbacks.onDone, callbacks.onError, ctrl.signal, JSON.stringify(body))
   return ctrl
 }
 

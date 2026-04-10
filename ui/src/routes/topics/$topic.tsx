@@ -14,6 +14,7 @@ import { Layout } from '../../components/Layout'
 import { LoadingSpinner } from '../../components/LoadingSpinner'
 import { ErrorMessage } from '../../components/ErrorMessage'
 import { TruncateDialog } from '../../components/TruncateDialog'
+import { ReplayToTopicPanel } from '../../components/ReplayToTopicPanel'
 import { useToast } from '../../components/Toast'
 import { useDebounce } from '../../hooks/useDebounce'
 
@@ -361,6 +362,15 @@ function TopicDetailPage() {
               Truncate
             </button>
           </div>
+
+          {/* Replay to Topic panel */}
+          <ReplayToTopicPanel
+            mode="topic"
+            topic={topic}
+            from={from || undefined}
+            to={to || undefined}
+            totalCount={statsQuery.data?.rowCount}
+          />
 
           {/* Replay panel */}
           <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '1rem 1.25rem' }}>
