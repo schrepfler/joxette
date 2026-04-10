@@ -153,6 +153,15 @@ public final class DuckDBTestSupport {
                         created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
                         size_bytes  BIGINT
                     )""");
+
+            st.execute("""
+                    CREATE TABLE IF NOT EXISTS topic_message_type_matchers (
+                        topic           VARCHAR NOT NULL,
+                        message_type    VARCHAR NOT NULL,
+                        id_source       VARCHAR NOT NULL,
+                        id_expression   VARCHAR NOT NULL,
+                        PRIMARY KEY (topic, message_type)
+                    )""");
         }
     }
 
@@ -179,7 +188,8 @@ public final class DuckDBTestSupport {
                         kafka_value     BLOB,
                         kafka_value_str VARCHAR,
                         metadata        VARCHAR,
-                        headers         STRUCT(key VARCHAR, value VARCHAR)[]
+                        headers         STRUCT(key VARCHAR, value VARCHAR)[],
+                        message_type    VARCHAR
                     )""", tableName));
         }
     }

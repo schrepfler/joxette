@@ -1,6 +1,7 @@
 package com.joxette.recording;
 
 import com.joxette.replay.EntityRoute;
+import com.joxette.replay.GeneralRoute;
 import com.joxette.replay.KafkaMessage;
 import com.joxette.replay.KnownEntitiesRepository;
 import com.joxette.replay.MessageRouter;
@@ -186,14 +187,17 @@ public class TopicRecorder {
 
         // Separate general-cassette records from entity-routed records
         List<ConsumerRecord<String, byte[]>> generalBatch = new ArrayList<>();
+        List<String> generalMessageTypes = new ArrayList<>();
         List<EntityRoute> allRoutes = new ArrayList<>();
 
         for (ConsumerRecord<String, byte[]> record : batch) {
             KafkaMessage msg = toKafkaMessage(record);
             RouteDecision decision = router.route(msg);
 
-            if (decision.routeToGeneral()) {
+            GeneralRoute gr = decision.generalRoute();
+            if (gr != null) {
                 generalBatch.add(record);
+                generalMessageTypes.add(gr.messageType());
             }
             if (!decision.entityRoutes().isEmpty()) {
                 for (EntityRoute route : decision.entityRoutes()) {
@@ -211,7 +215,7 @@ public class TopicRecorder {
 
         // Write general cassette batch
         if (!generalBatch.isEmpty()) {
-            generalWriter.writeBatch(generalBatch);
+            generalWriter.writeBatch(generalBatch, generalMessageTypes);
         }
 
         // Upsert discovered entities into known_entities

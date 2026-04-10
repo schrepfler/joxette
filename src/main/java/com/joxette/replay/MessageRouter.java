@@ -3,6 +3,7 @@ package com.joxette.replay;
 import com.joxette.management.ConfigRepository;
 import com.joxette.management.EntitySourceConfig;
 import com.joxette.management.EntityTypeConfig;
+import com.joxette.management.TopicMatcherConfig;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.DependsOn;
@@ -68,7 +69,7 @@ public class MessageRouter {
             // Non-fatal at construction: log and start with empty tables.
             // reload() will be called again by RecordingStartupRunner if needed.
             log.warn("MessageRouter: initial config load from DB failed ({}); starting with empty routing tables", e.getMessage());
-            this.tables = new RoutingTables(Map.of(), Map.of(), Map.of());
+            this.tables = new RoutingTables(Map.of(), Map.of(), Map.of(), Map.of());
         }
     }
 
@@ -104,14 +105,24 @@ public class MessageRouter {
             }
         }
 
+        // 4. topic → ordered list of message-type matchers for general cassette tagging
+        Map<String, List<TopicMatcherEntry>> topicMatchers = new HashMap<>();
+        for (TopicMatcherConfig m : configRepo.listAllTopicMatchers()) {
+            topicMatchers
+                    .computeIfAbsent(m.topic(), k -> new ArrayList<>())
+                    .add(new TopicMatcherEntry(m.messageType(), m.idSource(), m.idExpression()));
+        }
+
         this.tables = new RoutingTables(
                 Map.copyOf(topicModes),
                 Map.copyOf(entityBuckets),
-                Map.copyOf(topicSourceEntries));
+                Map.copyOf(topicSourceEntries),
+                Map.copyOf(topicMatchers));
 
-        log.info("MessageRouter: loaded {} topic mode(s) and {} entity source mapping(s)",
+        log.info("MessageRouter: loaded {} topic mode(s), {} entity source mapping(s), {} topic matcher(s)",
                 topicModes.size(),
-                topicSourceEntries.values().stream().mapToInt(List::size).sum());
+                topicSourceEntries.values().stream().mapToInt(List::size).sum(),
+                topicMatchers.values().stream().mapToInt(List::size).sum());
     }
 
     /**
@@ -156,7 +167,21 @@ public class MessageRouter {
             }
         }
 
-        return new RouteDecision(message, routeToGeneral, List.copyOf(entityRoutes));
+        // Determine message_type for general cassette via topic_message_type_matchers.
+        // Matchers are tried in insertion order; first match wins.
+        GeneralRoute generalRoute = null;
+        if (routeToGeneral) {
+            String messageType = null;
+            for (TopicMatcherEntry m : t.topicMatchers().getOrDefault(message.topic(), List.of())) {
+                if (extractor.extract(message, m.idSource(), m.idExpression()).isPresent()) {
+                    messageType = m.messageType();
+                    break;
+                }
+            }
+            generalRoute = new GeneralRoute(messageType);
+        }
+
+        return new RouteDecision(message, generalRoute, List.copyOf(entityRoutes));
     }
 
     /**
@@ -173,9 +198,13 @@ public class MessageRouter {
             String mappingMode,
             List<EntitySourceConfig.MatcherConfig> matchers) {}
 
+    /** Internal transfer object for one topic_message_type_matchers row. */
+    private record TopicMatcherEntry(String messageType, String idSource, String idExpression) {}
+
     /** Immutable snapshot of all routing tables, swapped atomically on reload. */
     private record RoutingTables(
             Map<String, String> topicModes,
             Map<String, Integer> entityBuckets,
-            Map<String, List<EntitySourceEntry>> topicSourceEntries) {}
+            Map<String, List<EntitySourceEntry>> topicSourceEntries,
+            Map<String, List<TopicMatcherEntry>> topicMatchers) {}
 }

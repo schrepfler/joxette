@@ -213,7 +213,7 @@ class HeadersRoundTripIT {
                 TOPIC, 0, offset, timestamp.toEpochMilli(), TimestampType.CREATE_TIME,
                 -1, -1, key, value, headers, Optional.empty());
         try (CassetteBatchWriter writer = new CassetteBatchWriter(TOPIC, duckDB)) {
-            writer.writeBatch(List.of(record));
+            writer.writeBatch(List.of(record), List.of((String) null));
         }
     }
 

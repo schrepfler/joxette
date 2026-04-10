@@ -17,9 +17,18 @@ import java.util.List;
  * field, null key), that mapping is silently skipped and no {@link EntityRoute}
  * is added. {@code entityRoutes} may therefore be empty even when the topic
  * mode includes entity routing.
+ *
+ * <p>{@code generalRoute} is non-null when the message should be written to
+ * the general cassette. Its {@code messageType} is set from the first matching
+ * {@code topic_message_type_matchers} row, or {@code null} if nothing matched.
  */
 public record RouteDecision(
         KafkaMessage message,
-        boolean routeToGeneral,
+        GeneralRoute generalRoute,
         List<EntityRoute> entityRoutes
-) {}
+) {
+    /** Convenience: true when the message should be written to the general cassette. */
+    public boolean routeToGeneral() {
+        return generalRoute != null;
+    }
+}

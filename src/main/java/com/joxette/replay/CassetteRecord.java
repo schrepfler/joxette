@@ -28,7 +28,8 @@ import java.util.List;
               "value": "eyJvcmRlcklkIjoiNDIiLCJzdGF0dXMiOiJwZW5kaW5nIn0",
               "headers": [
                 {"key": "content-type", "value": "YXBwbGljYXRpb24vanNvbg"}
-              ]
+              ],
+              "messageType": "OrderCreated"
             }""")
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record CassetteRecord(
@@ -57,7 +58,11 @@ public record CassetteRecord(
         String value,
 
         @Schema(description = "Kafka message headers. Null if the message had no headers.")
-        List<Header> headers
+        List<Header> headers,
+
+        @Schema(description = "Message type label matched by a topic_message_type_matchers rule. " +
+                               "Null if no matcher matched.", example = "OrderCreated")
+        String messageType
 ) {
 
     @Schema(description = "A single Kafka message header key/value pair. " +

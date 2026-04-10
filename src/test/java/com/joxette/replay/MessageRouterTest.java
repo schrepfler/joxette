@@ -4,6 +4,7 @@ import com.joxette.management.ConfigRepository;
 import com.joxette.management.EntitySourceConfig;
 import com.joxette.management.EntityTypeConfig;
 import com.joxette.management.TopicConfig;
+import com.joxette.management.TopicMatcherConfig;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -40,6 +41,7 @@ class MessageRouterTest {
         private final List<EntityTypeConfig> entityTypes = new ArrayList<>();
         /** entity_type → sources */
         private final Map<String, List<EntitySourceConfig>> sources = new HashMap<>();
+        private final List<TopicMatcherConfig> topicMatchers = new ArrayList<>();
 
         /** Build with no real DuckDB — we never call the super constructor body. */
         StubConfigRepository() {
@@ -60,9 +62,14 @@ class MessageRouterTest {
                    .add(new EntitySourceConfig(entityType, topic, mode, matchers));
         }
 
-        @Override public List<TopicConfig>      listTopics()               { return List.copyOf(topics); }
-        @Override public List<EntityTypeConfig> listEntityTypes()           { return List.copyOf(entityTypes); }
-        @Override public List<EntitySourceConfig> listSources(String type)  { return sources.getOrDefault(type, List.of()); }
+        void addTopicMatcher(String topic, String messageType, String idSource, String idExpression) {
+            topicMatchers.add(new TopicMatcherConfig(topic, messageType, idSource, idExpression));
+        }
+
+        @Override public List<TopicConfig>        listTopics()               { return List.copyOf(topics); }
+        @Override public List<EntityTypeConfig>   listEntityTypes()           { return List.copyOf(entityTypes); }
+        @Override public List<EntitySourceConfig> listSources(String type)    { return sources.getOrDefault(type, List.of()); }
+        @Override public List<TopicMatcherConfig> listAllTopicMatchers()      { return List.copyOf(topicMatchers); }
 
         // ---- unused methods ----
         @Override public Optional<TopicConfig>      findTopic(String t)       { throw new UnsupportedOperationException(); }

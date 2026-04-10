@@ -152,6 +152,19 @@ CREATE TABLE IF NOT EXISTS snapshots (
     size_bytes  BIGINT
 );
 
+-- Message-type matchers for general cassettes.
+-- Semantics: first matcher (in insertion order) whose id_source/id_expression
+-- extracts a non-null value from a message wins; its message_type is written to
+-- the cassette row.  No match → message_type = NULL.
+CREATE TABLE IF NOT EXISTS topic_message_type_matchers (
+    topic           VARCHAR NOT NULL,
+    message_type    VARCHAR NOT NULL,
+    id_source       VARCHAR NOT NULL
+                      CHECK (id_source IN ('key', 'value', 'header')),
+    id_expression   VARCHAR NOT NULL,
+    PRIMARY KEY (topic, message_type)
+);
+
 
 -- =============================================================================
 -- 4. DuckLake tables  (lake.main schema — Parquet-backed)
@@ -179,7 +192,8 @@ CREATE TABLE IF NOT EXISTS snapshots (
 --     kafka_value     BLOB,                   -- raw message value bytes
 --     kafka_value_str VARCHAR,                -- UTF-8 decoded value (if valid)
 --     metadata        VARIANT,               -- decoded JSON envelope for queries
---     headers         STRUCT(key VARCHAR, value VARCHAR)[]  -- UTF-8 decoded; binary values base64-encoded
+--     headers         STRUCT(key VARCHAR, value VARCHAR)[],  -- UTF-8 decoded; binary values base64-encoded
+--     message_type    VARCHAR                -- matched topic_message_type_matchers label, or NULL
 -- );
 CREATE TABLE IF NOT EXISTS lake.main.general_orders_events (
     recorded_at     TIMESTAMPTZ NOT NULL,
@@ -190,7 +204,8 @@ CREATE TABLE IF NOT EXISTS lake.main.general_orders_events (
     kafka_value     BLOB,
     kafka_value_str VARCHAR,
     metadata        VARIANT,
-    headers         STRUCT(key VARCHAR, value VARCHAR)[]
+    headers         STRUCT(key VARCHAR, value VARCHAR)[],
+    message_type    VARCHAR
 );
 
 CREATE TABLE IF NOT EXISTS lake.main.general_audit_log (
@@ -202,7 +217,8 @@ CREATE TABLE IF NOT EXISTS lake.main.general_audit_log (
     kafka_value     BLOB,
     kafka_value_str VARCHAR,
     metadata        VARIANT,
-    headers         STRUCT(key VARCHAR, value VARCHAR)[]
+    headers         STRUCT(key VARCHAR, value VARCHAR)[],
+    message_type    VARCHAR
 );
 
 

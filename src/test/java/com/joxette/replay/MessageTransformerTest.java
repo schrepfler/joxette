@@ -27,7 +27,7 @@ class MessageTransformerTest {
     }
 
     private static CassetteRecord record(Instant ts, String value) {
-        return new CassetteRecord("orders", 0, 1L, ts, ts, "key-1", value, null);
+        return new CassetteRecord("orders", 0, 1L, ts, ts, "key-1", value, null, null);
     }
 
     private static EntityRecord entityRecord(Instant ts, String value) {

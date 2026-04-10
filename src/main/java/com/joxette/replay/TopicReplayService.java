@@ -55,13 +55,14 @@ public class TopicReplayService {
     // Field references for lake.main.general_{topic}
     // -------------------------------------------------------------------------
 
-    private static final Field<Integer>        F_PARTITION   = DSL.field(DSL.name("kafka_partition"),  Integer.class);
-    private static final Field<Long>           F_OFFSET      = DSL.field(DSL.name("kafka_offset"),     Long.class);
-    private static final Field<OffsetDateTime> F_TIMESTAMP   = DSL.field(DSL.name("kafka_timestamp"),  OffsetDateTime.class);
-    private static final Field<OffsetDateTime> F_RECORDED_AT = DSL.field(DSL.name("recorded_at"),      OffsetDateTime.class);
-    private static final Field<String>         F_KEY         = DSL.field(DSL.name("kafka_key"),        String.class);
-    private static final Field<byte[]>         F_VALUE       = DSL.field(DSL.name("kafka_value"),      byte[].class);
-    private static final Field<Object>         F_HEADERS     = DSL.field(DSL.name("headers"),          Object.class);
+    private static final Field<Integer>        F_PARTITION    = DSL.field(DSL.name("kafka_partition"),  Integer.class);
+    private static final Field<Long>           F_OFFSET       = DSL.field(DSL.name("kafka_offset"),     Long.class);
+    private static final Field<OffsetDateTime> F_TIMESTAMP    = DSL.field(DSL.name("kafka_timestamp"),  OffsetDateTime.class);
+    private static final Field<OffsetDateTime> F_RECORDED_AT  = DSL.field(DSL.name("recorded_at"),      OffsetDateTime.class);
+    private static final Field<String>         F_KEY          = DSL.field(DSL.name("kafka_key"),        String.class);
+    private static final Field<byte[]>         F_VALUE        = DSL.field(DSL.name("kafka_value"),      byte[].class);
+    private static final Field<Object>         F_HEADERS      = DSL.field(DSL.name("headers"),          Object.class);
+    private static final Field<String>         F_MESSAGE_TYPE = DSL.field(DSL.name("message_type"),     String.class);
 
     // QUALIFY deduplication: keep the row with the latest recorded_at per
     // (kafka_partition, kafka_offset).
@@ -103,7 +104,7 @@ public class TopicReplayService {
         if (offsetTo != null)   cond = cond.and(F_OFFSET.le(offsetTo));
 
         var selectBase = dsl
-                .select(F_PARTITION, F_OFFSET, F_TIMESTAMP, F_RECORDED_AT, F_KEY, F_VALUE, F_HEADERS)
+                .select(F_PARTITION, F_OFFSET, F_TIMESTAMP, F_RECORDED_AT, F_KEY, F_VALUE, F_HEADERS, F_MESSAGE_TYPE)
                 .from(table)
                 .where(cond)
                 .qualify(QUALIFY_DEDUP)
@@ -185,7 +186,8 @@ public class TopicReplayService {
                     r.get(F_RECORDED_AT).toInstant(),
                     r.get(F_KEY),
                     encodeBlob(r.get(F_VALUE)),
-                    mapHeaders(r.get(F_HEADERS))
+                    mapHeaders(r.get(F_HEADERS)),
+                    r.get(F_MESSAGE_TYPE)
             );
         } catch (SQLException e) {
             throw new DataAccessException("Failed to map cassette record headers", e);

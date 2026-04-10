@@ -54,29 +54,36 @@ public class CassetteBatchWriter implements AutoCloseable {
      * Bulk-inserts {@code batch} into the general cassette table in a single JDBC
      * batch execution.  Callers should commit Kafka offsets only after this
      * method returns without throwing.
+     *
+     * @param batch        the Kafka consumer records to write
+     * @param messageTypes parallel list of {@code message_type} labels (same size as
+     *                     {@code batch}); individual entries may be {@code null} when
+     *                     no {@code topic_message_type_matchers} row matched
      */
-    public void writeBatch(List<ConsumerRecord<String, byte[]>> batch) throws SQLException {
+    public void writeBatch(List<ConsumerRecord<String, byte[]>> batch,
+                           List<String> messageTypes) throws SQLException {
         if (batch.isEmpty()) return;
 
         // headers column is STRUCT(key VARCHAR, value BLOB)[] — pass a DuckDB struct-array
         // literal via a VALUES sub-expression so the driver doesn't attempt a VARCHAR cast.
-        // We build one row of parameters per record (7 bound params) and append the headers
+        // We build one row of parameters per record (8 bound params) and append the headers
         // struct-array literal inline using DuckDB's list/struct syntax.
         StringBuilder sql = new StringBuilder(
                 "INSERT INTO " + qualifiedTable +
                 " (recorded_at, kafka_offset, kafka_partition, kafka_timestamp," +
-                "  kafka_key, kafka_value, kafka_value_str, metadata, headers) VALUES ");
+                "  kafka_key, kafka_value, kafka_value_str, metadata, headers, message_type) VALUES ");
 
         Timestamp now = Timestamp.from(Instant.now());
         boolean first = true;
         List<Object[]> params = new java.util.ArrayList<>(batch.size());
-        for (ConsumerRecord<String, byte[]> record : batch) {
+        for (int i = 0; i < batch.size(); i++) {
+            ConsumerRecord<String, byte[]> record = batch.get(i);
             if (!first) sql.append(',');
             first = false;
-            // 7 bound params; headers and metadata are inlined as literals
+            // 8 bound params; headers and metadata are inlined as literals
             sql.append("(?, ?, ?, ?, ?, ?, ?, NULL, ")
                .append(headersToStructLiteral(record))
-               .append(')');
+               .append(", ?)");
             params.add(new Object[]{
                 now,
                 record.offset(),
@@ -84,7 +91,8 @@ public class CassetteBatchWriter implements AutoCloseable {
                 new Timestamp(record.timestamp()),
                 record.key(),
                 record.value(),
-                record.value() != null ? new String(record.value()) : null
+                record.value() != null ? new String(record.value()) : null,
+                messageTypes.get(i)
             });
         }
 
@@ -98,6 +106,7 @@ public class CassetteBatchWriter implements AutoCloseable {
                 ps.setString(idx++, (String) row[4]);
                 ps.setBytes(idx++, (byte[]) row[5]);
                 ps.setString(idx++, (String) row[6]);
+                ps.setString(idx++, (String) row[7]);
             }
             ps.executeUpdate();
         }

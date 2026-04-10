@@ -75,7 +75,7 @@ public class MessageTransformer {
         return new CassetteRecord(
                 record.topic(), record.partition(), record.offset(),
                 newTs, record.recordedAt(),
-                record.key(), newVal, record.headers());
+                record.key(), newVal, record.headers(), record.messageType());
     }
 
     /**

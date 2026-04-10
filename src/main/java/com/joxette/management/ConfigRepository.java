@@ -354,6 +354,84 @@ public class ConfigRepository {
     }
 
     // -------------------------------------------------------------------------
+    // Topic message-type matchers CRUD
+    // -------------------------------------------------------------------------
+
+    public List<TopicMatcherConfig> listTopicMatchers(String topic) throws SQLException {
+        List<TopicMatcherConfig> result = new ArrayList<>();
+        synchronized (duckDB) {
+            try (PreparedStatement ps = duckDB.prepareStatement(
+                    "SELECT topic, message_type, id_source, id_expression" +
+                    " FROM topic_message_type_matchers WHERE topic = ?" +
+                    " ORDER BY rowid")) {
+                ps.setString(1, topic);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        result.add(new TopicMatcherConfig(
+                                rs.getString("topic"),
+                                rs.getString("message_type"),
+                                rs.getString("id_source"),
+                                rs.getString("id_expression")));
+                    }
+                }
+            }
+        }
+        return result;
+    }
+
+    public List<TopicMatcherConfig> listAllTopicMatchers() throws SQLException {
+        List<TopicMatcherConfig> result = new ArrayList<>();
+        synchronized (duckDB) {
+            try (Statement st = duckDB.createStatement();
+                 ResultSet rs = st.executeQuery(
+                         "SELECT topic, message_type, id_source, id_expression" +
+                         " FROM topic_message_type_matchers ORDER BY topic, rowid")) {
+                while (rs.next()) {
+                    result.add(new TopicMatcherConfig(
+                            rs.getString("topic"),
+                            rs.getString("message_type"),
+                            rs.getString("id_source"),
+                            rs.getString("id_expression")));
+                }
+            }
+        }
+        return result;
+    }
+
+    public TopicMatcherConfig upsertTopicMatcher(String topic, String messageType,
+                                                  String idSource, String idExpression)
+            throws SQLException {
+        validateMatcherSource(idSource);
+        synchronized (duckDB) {
+            try (PreparedStatement ps = duckDB.prepareStatement("""
+                    INSERT INTO topic_message_type_matchers (topic, message_type, id_source, id_expression)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT (topic, message_type) DO UPDATE SET
+                        id_source    = excluded.id_source,
+                        id_expression = excluded.id_expression
+                    """)) {
+                ps.setString(1, topic);
+                ps.setString(2, messageType);
+                ps.setString(3, idSource);
+                ps.setString(4, idExpression);
+                ps.executeUpdate();
+            }
+        }
+        return new TopicMatcherConfig(topic, messageType, idSource, idExpression);
+    }
+
+    public boolean deleteTopicMatcher(String topic, String messageType) throws SQLException {
+        synchronized (duckDB) {
+            try (PreparedStatement ps = duckDB.prepareStatement(
+                    "DELETE FROM topic_message_type_matchers WHERE topic = ? AND message_type = ?")) {
+                ps.setString(1, topic);
+                ps.setString(2, messageType);
+                return ps.executeUpdate() > 0;
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // Bootstrap seeding
     // -------------------------------------------------------------------------
 
@@ -427,6 +505,15 @@ public class ConfigRepository {
         if (!VALID_MODES.contains(mode)) {
             throw new IllegalArgumentException(
                     "Invalid mode '%s': must be one of %s".formatted(mode, VALID_MODES));
+        }
+    }
+
+    private static final Set<String> VALID_ID_SOURCES = Set.of("key", "value", "header");
+
+    private static void validateMatcherSource(String idSource) {
+        if (!VALID_ID_SOURCES.contains(idSource)) {
+            throw new IllegalArgumentException(
+                    "Invalid id_source '%s': must be one of %s".formatted(idSource, VALID_ID_SOURCES));
         }
     }
 }

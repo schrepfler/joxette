@@ -83,3 +83,14 @@ CREATE TABLE snapshots (
     created_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
     size_bytes  BIGINT
 );
+
+-- Message-type matchers for general cassettes.
+-- First matcher (in insertion order) whose id_source/id_expression extracts a
+-- non-null value from a message wins; its message_type is stored in the cassette row.
+CREATE TABLE topic_message_type_matchers (
+    topic           VARCHAR NOT NULL,
+    message_type    VARCHAR NOT NULL,
+    id_source       VARCHAR NOT NULL,
+    id_expression   VARCHAR NOT NULL,
+    PRIMARY KEY (topic, message_type)
+);

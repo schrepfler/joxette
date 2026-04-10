@@ -13,6 +13,7 @@ import java.sql.SQLException;
 import java.util.List;
 import java.util.Set;
 
+
 /**
  * Management API for topic recording configuration.
  *
@@ -39,6 +40,7 @@ public class TopicController {
     record CreateTopicRequest(String topic, String mode, String startFrom) {}
     record UpdateTopicRequest(String mode) {}
     record SetRetentionRequest(Integer days) {}
+    record AddMatcherRequest(String messageType, String idSource, String idExpression) {}
 
     public TopicController(ConfigRepository config, @Lazy RecordingCoordinator coordinator,
                            MessageRouter router) {
@@ -149,6 +151,48 @@ public class TopicController {
         config.findTopic(topic).ifPresent(tc -> coordinator.startTopic(topic, tc.startFrom()));
         return config.findTopic(topic).map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
+    }
+
+    // -------------------------------------------------------------------------
+    // Message-type matchers (general cassette tagging)
+    // -------------------------------------------------------------------------
+
+    @GetMapping(value = "/{topic}/matchers", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<List<TopicMatcherConfig>> listMatchers(
+            @PathVariable String topic) throws SQLException {
+        if (config.findTopic(topic).isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        return ResponseEntity.ok(config.listTopicMatchers(topic));
+    }
+
+    @PostMapping(value = "/{topic}/matchers",
+                 consumes = MediaType.APPLICATION_JSON_VALUE,
+                 produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<TopicMatcherConfig> addMatcher(
+            @PathVariable String topic,
+            @RequestBody AddMatcherRequest body) throws SQLException {
+        if (config.findTopic(topic).isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        if (body.messageType() == null || body.messageType().isBlank()) {
+            return ResponseEntity.badRequest().build();
+        }
+        TopicMatcherConfig m = config.upsertTopicMatcher(
+                topic, body.messageType(), body.idSource(), body.idExpression());
+        reloadRouter();
+        return ResponseEntity.status(201).body(m);
+    }
+
+    @DeleteMapping("/{topic}/matchers/{messageType}")
+    public ResponseEntity<Void> deleteMatcher(
+            @PathVariable String topic,
+            @PathVariable String messageType) throws SQLException {
+        boolean deleted = config.deleteTopicMatcher(topic, messageType);
+        if (deleted) {
+            reloadRouter();
+        }
+        return deleted ? ResponseEntity.noContent().build() : ResponseEntity.notFound().build();
     }
 
     @ExceptionHandler(IllegalArgumentException.class)

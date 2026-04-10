@@ -11,6 +11,7 @@ import org.springframework.stereotype.Component;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -70,6 +71,7 @@ public class SchemaManager {
                 "in DuckLakeManager did not fail silently (look for earlier WARN/ERROR log lines).");
         }
         createLakeTables(conn, catalog);
+        migrateGeneralCassetteTables(conn, catalog);
 
         log.info("Schema initialisation complete");
     }
@@ -244,6 +246,20 @@ public class SchemaManager {
                 )
                 """);
 
+            // Message-type matchers for general cassettes.
+            // Semantics: first matcher whose id_source/id_expression extracts a non-null
+            // value from a message wins; its message_type is stored in the cassette row.
+            stmt.execute("""
+                CREATE TABLE IF NOT EXISTS topic_message_type_matchers (
+                    topic           VARCHAR NOT NULL,
+                    message_type    VARCHAR NOT NULL,
+                    id_source       VARCHAR NOT NULL
+                                      CHECK (id_source IN ('key', 'value', 'header')),
+                    id_expression   VARCHAR NOT NULL,
+                    PRIMARY KEY (topic, message_type)
+                )
+                """);
+
             stmt.execute("CREATE SEQUENCE IF NOT EXISTS seq_retention_history START 1");
 
             stmt.execute("""
@@ -361,7 +377,8 @@ public class SchemaManager {
                 kafka_value     BLOB,
                 kafka_value_str VARCHAR,
                 metadata        %s,
-                headers         STRUCT(key VARCHAR, value VARCHAR)[]
+                headers         STRUCT(key VARCHAR, value VARCHAR)[],
+                message_type    VARCHAR
             )
             """, catalog, tableName, flexType));
         log.debug("DuckLake table ready: {}.main.{}", catalog, tableName);
@@ -459,6 +476,42 @@ public class SchemaManager {
             } catch (SQLException e) {
                 // Column already exists or DDL not supported — safe to skip
                 log.debug("compaction_history migration skipped ({}): {}", m[0], e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * Adds {@code message_type VARCHAR} to every existing
+     * {@code <catalog>.main.general_*} DuckLake table that was created before
+     * this column was introduced.
+     *
+     * <p>Uses {@code duckdb_tables()} to discover tables, then issues
+     * {@code ALTER TABLE … ADD COLUMN IF NOT EXISTS} for each. Errors per table
+     * are swallowed (column may already exist, or DuckLake version may differ).
+     */
+    private void migrateGeneralCassetteTables(Connection conn, String catalog) {
+        List<String> tableNames = new ArrayList<>();
+        try (Statement stmt = conn.createStatement();
+             var rs = stmt.executeQuery(
+                     "SELECT table_name FROM duckdb_tables()" +
+                     " WHERE database_name = '" + catalog + "'" +
+                     " AND schema_name = 'main'" +
+                     " AND table_name LIKE 'general_%'")) {
+            while (rs.next()) {
+                tableNames.add(rs.getString("table_name"));
+            }
+        } catch (SQLException e) {
+            log.warn("Could not list general cassette tables for migration: {}", e.getMessage());
+            return;
+        }
+
+        for (String tableName : tableNames) {
+            try (Statement stmt = conn.createStatement()) {
+                stmt.execute("ALTER TABLE " + catalog + ".main." + tableName +
+                             " ADD COLUMN IF NOT EXISTS message_type VARCHAR");
+                log.debug("Migrated general cassette table {}.main.{}: added message_type", catalog, tableName);
+            } catch (SQLException e) {
+                log.debug("Migration skipped for {}.main.{} ({})", catalog, tableName, e.getMessage());
             }
         }
     }
