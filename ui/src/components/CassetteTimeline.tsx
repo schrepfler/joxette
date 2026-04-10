@@ -103,6 +103,8 @@ export const PALETTE = [
   '#00897b', '#f44336',
 ]
 
+const MAX_GROUPS = 12
+
 function colorForKey(key: string, allKeys: string[]): string {
   const idx = allKeys.indexOf(key)
   return PALETTE[idx % PALETTE.length] ?? '#718096'
@@ -231,6 +233,91 @@ function GroupBySelector({ mode, availableHeaderKeys, onChange }: GroupBySelecto
             width: 120,
             fontFamily: 'monospace',
           }}
+          title="JSONPath expression (e.g. $.status, $.type)"
+        />
+      )}
+    </div>
+  )
+}
+
+// ─── AndBySelector ───────────────────────────────────────────────────────────
+
+interface AndBySelectorProps {
+  mode: GroupByMode | null
+  availableHeaderKeys: string[]
+  excludeKind: GroupByMode['kind']
+  onChange: (mode: GroupByMode | null) => void
+}
+
+function AndBySelector({ mode, availableHeaderKeys, excludeKind, onChange }: AndBySelectorProps) {
+  const [draftExpr, setDraftExpr] = useState(
+    mode?.kind === 'jsonpath' ? mode.expression : '',
+  )
+
+  function commitExpr(expr: string) {
+    onChange({ kind: 'jsonpath', expression: expr.trim() || '$.' })
+  }
+
+  function handleDimensionChange(e: React.ChangeEvent<HTMLSelectElement>) {
+    const val = e.target.value
+    if (val === '__none__') { onChange(null); return }
+    if (val === 'colorKey') { onChange({ kind: 'colorKey' }); return }
+    if (val === 'entityId') { onChange({ kind: 'entityId' }); return }
+    if (val === 'topic') { onChange({ kind: 'topic' }); return }
+    if (val === 'header') {
+      onChange({ kind: 'header', headerKey: availableHeaderKeys[0] ?? '' })
+      return
+    }
+    if (val === 'jsonpath') {
+      const expr = mode?.kind === 'jsonpath' ? mode.expression : '$.'
+      setDraftExpr(expr)
+      onChange({ kind: 'jsonpath', expression: expr })
+      return
+    }
+  }
+
+  const dimensionValue = mode?.kind ?? '__none__'
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      <span style={{ fontSize: 11, color: '#718096', fontWeight: 600 }}>And by</span>
+      <select
+        value={dimensionValue}
+        onChange={handleDimensionChange}
+        style={selectStyle}
+        title="Choose a secondary colour-coding dimension"
+      >
+        <option value="__none__">— none —</option>
+        {excludeKind !== 'colorKey' && <option value="colorKey">Default</option>}
+        {excludeKind !== 'entityId' && <option value="entityId">Entity ID</option>}
+        {excludeKind !== 'topic' && <option value="topic">Source topic</option>}
+        {excludeKind !== 'header' && <option value="header">Header value</option>}
+        {excludeKind !== 'jsonpath' && <option value="jsonpath">JSONPath</option>}
+      </select>
+
+      {mode?.kind === 'header' && (
+        <select
+          value={mode.headerKey}
+          onChange={e => onChange({ kind: 'header', headerKey: e.target.value })}
+          style={selectStyle}
+          title="Header key to group by"
+        >
+          {availableHeaderKeys.length === 0
+            ? <option value="">(no headers in loaded messages)</option>
+            : availableHeaderKeys.map(k => <option key={k} value={k}>{k}</option>)
+          }
+        </select>
+      )}
+
+      {mode?.kind === 'jsonpath' && (
+        <input
+          type="text"
+          value={draftExpr}
+          placeholder="$.field"
+          onChange={e => setDraftExpr(e.target.value)}
+          onBlur={e => commitExpr(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') commitExpr(draftExpr) }}
+          style={{ ...selectStyle, width: 120, fontFamily: 'monospace' }}
           title="JSONPath expression (e.g. $.status, $.type)"
         />
       )}
@@ -631,6 +718,7 @@ export function CassetteTimeline({
   const [selectedIdx, setSelectedIdx] = useState(0)
   const [fitKey, setFitKey] = useState(0)
   const [groupByMode, setGroupByMode] = useState<GroupByMode>({ kind: 'colorKey' })
+  const [groupByMode2, setGroupByMode2] = useState<GroupByMode | null>(null)
 
   const availableHeaderKeys = useMemo(
     () => [...new Set(records.flatMap(r => (r.headers ?? []).map(h => h.key)))].sort(),
@@ -638,14 +726,32 @@ export function CassetteTimeline({
   )
 
   const effectiveRecords = useMemo(
-    () => records.map(r => ({ ...r, colorKey: getEffectiveColorKey(r, groupByMode) })),
-    [records, groupByMode],
+    () => records.map(r => ({
+      ...r,
+      colorKey: groupByMode2
+        ? `${getEffectiveColorKey(r, groupByMode)} / ${getEffectiveColorKey(r, groupByMode2)}`
+        : getEffectiveColorKey(r, groupByMode),
+    })),
+    [records, groupByMode, groupByMode2],
   )
 
-  const colorKeys = useMemo(
+  const allColorKeys = useMemo(
     () => [...new Set(effectiveRecords.map(r => r.colorKey))].sort(),
     [effectiveRecords],
   )
+
+  const tooManyGroups = allColorKeys.length > MAX_GROUPS
+
+  const colorKeys = useMemo(() => {
+    if (!tooManyGroups) return allColorKeys
+    const countMap = new Map<string, number>()
+    effectiveRecords.forEach(r => countMap.set(r.colorKey, (countMap.get(r.colorKey) ?? 0) + 1))
+    return [...countMap.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, MAX_GROUPS)
+      .map(([k]) => k)
+      .sort()
+  }, [allColorKeys, tooManyGroups, effectiveRecords])
 
   const selectedRecord = effectiveRecords[selectedIdx] ?? null
 
@@ -711,8 +817,26 @@ export function CassetteTimeline({
         <GroupBySelector
           mode={groupByMode}
           availableHeaderKeys={availableHeaderKeys}
-          onChange={setGroupByMode}
+          onChange={mode => {
+            setGroupByMode(mode)
+            // Clear secondary when primary changes to the same kind
+            setGroupByMode2(g2 => g2?.kind === mode.kind ? null : g2)
+          }}
         />
+        <AndBySelector
+          mode={groupByMode2}
+          availableHeaderKeys={availableHeaderKeys}
+          excludeKind={groupByMode.kind}
+          onChange={setGroupByMode2}
+        />
+        {tooManyGroups && (
+          <span style={{
+            fontSize: 11, color: '#c05621', background: '#fffaf0',
+            border: '1px solid #fed7aa', borderRadius: 4, padding: '2px 8px',
+          }}>
+            Too many groups — narrow your filter
+          </span>
+        )}
         {loading && (
           <span style={{ fontSize: 12, color: '#718096' }}>Loading…</span>
         )}
