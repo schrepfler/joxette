@@ -96,8 +96,15 @@ function ExportToObjectStoreModal({ onClose }: { onClose: () => void }) {
               </div>
             )}
           </form.Field>
+          {mutation.isPending && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, background: '#f0fff4', border: '1px solid #9ae6b4', borderRadius: 6, padding: '0.6rem 1rem', marginBottom: '1rem' }}>
+              <div style={{ width: 16, height: 16, border: '2px solid #9ae6b4', borderTop: '2px solid #38a169', borderRadius: '50%', animation: 'spin 0.8s linear infinite', flexShrink: 0 }} />
+              <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+              <span style={{ fontSize: 14, color: '#276749', fontWeight: 500 }}>Uploading snapshot to object storage…</span>
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-            <button type="button" onClick={onClose} style={cancelBtnStyle}>Cancel</button>
+            <button type="button" onClick={onClose} disabled={mutation.isPending} style={cancelBtnStyle}>Cancel</button>
             <button type="submit" disabled={mutation.isPending} style={{ ...primaryBtnStyle, background: '#38a169' }}>
               {mutation.isPending ? 'Exporting…' : '☁ Export to Object Store'}
             </button>

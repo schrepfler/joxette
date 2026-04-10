@@ -6,7 +6,7 @@ import {
   flexRender,
   createColumnHelper,
 } from '@tanstack/react-table'
-import { useState } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { compactionApi, type CompactionRun } from '../../api/client'
 import { Layout } from '../../components/Layout'
 import { LoadingSpinner } from '../../components/LoadingSpinner'
@@ -27,7 +27,7 @@ function CompactionPage() {
   const statusQuery = useQuery({
     queryKey: ['compaction', 'status'],
     queryFn: compactionApi.getStatus,
-    refetchInterval: 10_000,
+    refetchInterval: (query) => query.state.data?.running ? 2_000 : 10_000,
   })
 
   const historyQuery = useQuery({
@@ -71,6 +71,21 @@ function CompactionPage() {
   const table = useReactTable({ data: historyQuery.data ?? [], columns, getCoreRowModel: getCoreRowModel() })
   const status = statusQuery.data
 
+  const prevRunningRef = useRef<boolean | undefined>(undefined)
+  useEffect(() => {
+    const running = status?.running
+    if (prevRunningRef.current === true && running === false) {
+      if (status?.lastRun?.status === 'completed') {
+        addToast('Compaction completed successfully', 'success')
+      } else if (status?.lastRun?.status === 'failed') {
+        addToast(`Compaction failed: ${status.lastRun.errorMessage ?? 'unknown error'}`, 'error')
+      }
+      void qc.invalidateQueries({ queryKey: ['compaction', 'history'] })
+    }
+    prevRunningRef.current = running
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status?.running])
+
   return (
     <Layout>
       <h1 style={{ margin: '0 0 1.5rem', fontSize: 22, fontWeight: 700 }}>Compaction</h1>
@@ -81,6 +96,13 @@ function CompactionPage() {
       {status && (
         <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '1rem 1.25rem', marginBottom: '1.5rem' }}>
           <h3 style={{ margin: '0 0 0.75rem', fontSize: 15 }}>Status</h3>
+          {status?.running && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, background: '#ebf8ff', border: '1px solid #bee3f8', borderRadius: 6, padding: '0.6rem 1rem', marginBottom: '0.75rem' }}>
+              <div style={{ width: 16, height: 16, border: '2px solid #bee3f8', borderTop: '2px solid #2b6cb0', borderRadius: '50%', animation: 'spin 0.8s linear infinite', flexShrink: 0 }} />
+              <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+              <span style={{ fontSize: 14, color: '#2b6cb0', fontWeight: 500 }}>Compaction is running — polling every 2 s…</span>
+            </div>
+          )}
           <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: '1rem' }}>
             <div style={statCard}>
               <div style={statLabel}>Running</div>

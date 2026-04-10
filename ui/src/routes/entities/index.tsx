@@ -137,6 +137,13 @@ function EntitiesPage() {
           <button style={primaryBtnStyle} onClick={() => setShowAdd(true)}>+ Add Entity Type</button>
         </div>
       </div>
+      {rebuildMutation.isPending && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, background: '#fffaf0', border: '1px solid #fbd38d', borderRadius: 6, padding: '0.6rem 1rem', marginBottom: '1rem' }}>
+          <div style={{ width: 16, height: 16, border: '2px solid #fbd38d', borderTop: '2px solid #dd6b20', borderRadius: '50%', animation: 'spin 0.8s linear infinite', flexShrink: 0 }} />
+          <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+          <span style={{ fontSize: 14, color: '#c05621', fontWeight: 500 }}>Rebuilding known entities registry — scanning all cassette tables, this may take a while…</span>
+        </div>
+      )}
       {isLoading && <LoadingSpinner />}
       {error && <ErrorMessage message={(error as Error).message} />}
       {!isLoading && !error && (
