@@ -313,6 +313,44 @@ class TopicRecorderTest {
         }
     }
 
+    /**
+     * Verifies that {@code startFrom="earliest"} causes {@link TopicRecorder} to seek
+     * to the beginning of each partition on assignment, picking up messages that were
+     * published before the consumer subscribed.
+     *
+     * <p>The base consumer properties use {@code auto.offset.reset=latest} to prove
+     * that it is TopicRecorder's explicit {@code seekToBeginning()} — not the reset
+     * policy — that captures pre-published messages.
+     */
+    @Test
+    void recorder_startsFromEarliest_picksUpPrePublishedMessages() throws Exception {
+        int msgCount = 4;
+        try (KafkaProducer<String, byte[]> producer = newProducer()) {
+            for (int i = 0; i < msgCount; i++) {
+                producer.send(new ProducerRecord<>(TOPIC, "early-" + i,
+                        ("val-" + i).getBytes(StandardCharsets.UTF_8))).get();
+            }
+        }
+
+        // Base props deliberately use "latest" — TopicRecorder must override via seek.
+        recorder = new TopicRecorder(TOPIC, consumerPropsWithLatestDefault(), duckDB,
+                100, 500, generalRouter, noopEntities, "earliest");
+        recorderThread = Thread.ofVirtual().name("test-recorder-earliest").start(() -> {
+            try { recorder.run(); } catch (Exception ignored) {}
+        });
+
+        awaitRowCount(CASSETTE_TABLE, msgCount, Duration.ofSeconds(15));
+
+        recorder.stop();
+        recorderThread.join(5_000);
+
+        try (Statement st = duckDB.createStatement();
+             ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM " + CASSETTE_TABLE)) {
+            assertThat(rs.next()).isTrue();
+            assertThat(rs.getLong(1)).isEqualTo(msgCount);
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
@@ -325,6 +363,17 @@ class TopicRecorderTest {
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
         // Use earliest so messages published before subscription are captured.
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+        return props;
+    }
+
+    /** Base consumer properties that default to {@code auto.offset.reset=latest}. */
+    private Map<String, Object> consumerPropsWithLatestDefault() {
+        Map<String, Object> props = new HashMap<>();
+        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
+        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
+        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class);
+        props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
+        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest");
         return props;
     }
 

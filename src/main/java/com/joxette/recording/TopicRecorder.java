@@ -10,6 +10,7 @@ import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
+import org.apache.kafka.clients.consumer.OffsetAndTimestamp;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.errors.WakeupException;
 import org.apache.kafka.common.header.Header;
@@ -21,6 +22,8 @@ import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -62,6 +65,7 @@ public class TopicRecorder {
     private final MessageRouter router;
     private final KnownEntitiesRepository knownEntities;
     private final boolean seekToEarliest;
+    private final Instant seekToTimestamp;
 
     private volatile KafkaConsumer<String, byte[]> consumer;
     private volatile boolean stopped = false;
@@ -85,6 +89,16 @@ public class TopicRecorder {
         this.router         = router;
         this.knownEntities  = knownEntities;
         this.seekToEarliest = "earliest".equals(startFrom);
+
+        Instant ts = null;
+        if (!seekToEarliest && startFrom != null && !"latest".equals(startFrom) && !startFrom.isBlank()) {
+            try {
+                ts = Instant.parse(startFrom);
+            } catch (DateTimeParseException e) {
+                log.warn("Unrecognised startFrom='{}' for topic '{}'; defaulting to latest", startFrom, topic);
+            }
+        }
+        this.seekToTimestamp = ts;
 
         Map<String, Object> props = new HashMap<>(kafkaProps);
         props.put(ConsumerConfig.GROUP_ID_CONFIG, "joxette-recorder-" + topic);
@@ -116,6 +130,8 @@ public class TopicRecorder {
                         kafkaConsumer.seekToBeginning(partitions);
                         log.info("Seeked to beginning of {} partition(s) for topic '{}' (startFrom=earliest)",
                                 partitions.size(), topic);
+                    } else if (seekToTimestamp != null) {
+                        seekPartitionsToTimestamp(kafkaConsumer, partitions, seekToTimestamp);
                     }
                 }
             });
@@ -207,6 +223,31 @@ public class TopicRecorder {
                 // Non-fatal: entity registry is best-effort; don't abort the batch
             }
         }
+    }
+
+    private void seekPartitionsToTimestamp(
+            KafkaConsumer<String, byte[]> kafkaConsumer,
+            Collection<TopicPartition> partitions,
+            Instant timestamp) {
+        long epochMs = timestamp.toEpochMilli();
+        Map<TopicPartition, Long> query = new HashMap<>();
+        for (TopicPartition tp : partitions) {
+            query.put(tp, epochMs);
+        }
+        Map<TopicPartition, OffsetAndTimestamp> results = kafkaConsumer.offsetsForTimes(query);
+        for (TopicPartition tp : partitions) {
+            OffsetAndTimestamp ot = results.get(tp);
+            if (ot != null) {
+                kafkaConsumer.seek(tp, ot.offset());
+                log.debug("Seeked {} to offset {} (timestamp {})", tp, ot.offset(), timestamp);
+            } else {
+                // No messages at or after the requested timestamp — seek to end
+                kafkaConsumer.seekToEnd(List.of(tp));
+                log.debug("No messages at or after {} on {}; seeking to end", timestamp, tp);
+            }
+        }
+        log.info("Seeked {} partition(s) for topic '{}' to timestamp {}",
+                partitions.size(), topic, timestamp);
     }
 
     public void stop() {
