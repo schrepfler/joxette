@@ -11,5 +11,7 @@ public record TopicConfig(
         boolean paused,
         boolean active,
         /** Maximum age of records in days; {@code null} means no retention limit. */
-        Integer retentionDays
+        Integer retentionDays,
+        /** "latest" | "earliest" — consumer offset reset strategy for initial start. */
+        String startFrom
 ) {}

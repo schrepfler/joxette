@@ -48,11 +48,12 @@ public class ConfigRepository {
         synchronized (duckDB) {
             try (Statement st = duckDB.createStatement();
                  ResultSet rs = st.executeQuery(
-                         "SELECT topic, mode, paused, retention_days FROM topic_configs ORDER BY topic")) {
+                         "SELECT topic, mode, paused, retention_days, start_from FROM topic_configs ORDER BY topic")) {
                 while (rs.next()) {
                     result.add(new TopicConfig(rs.getString("topic"), rs.getString("mode"),
                             rs.getBoolean("paused"), false,
-                            (Integer) rs.getObject("retention_days")));
+                            (Integer) rs.getObject("retention_days"),
+                            rs.getString("start_from")));
                 }
             }
         }
@@ -62,13 +63,14 @@ public class ConfigRepository {
     public Optional<TopicConfig> findTopic(String topic) throws SQLException {
         synchronized (duckDB) {
             try (PreparedStatement ps = duckDB.prepareStatement(
-                    "SELECT topic, mode, paused, retention_days FROM topic_configs WHERE topic = ?")) {
+                    "SELECT topic, mode, paused, retention_days, start_from FROM topic_configs WHERE topic = ?")) {
                 ps.setString(1, topic);
                 try (ResultSet rs = ps.executeQuery()) {
                     if (rs.next()) {
                         return Optional.of(new TopicConfig(rs.getString("topic"),
                                 rs.getString("mode"), rs.getBoolean("paused"), false,
-                                (Integer) rs.getObject("retention_days")));
+                                (Integer) rs.getObject("retention_days"),
+                                rs.getString("start_from")));
                     }
                 }
             }
@@ -76,27 +78,35 @@ public class ConfigRepository {
         return Optional.empty();
     }
 
-    public TopicConfig upsertTopic(String topic, String mode, boolean paused) throws SQLException {
+    public TopicConfig upsertTopic(String topic, String mode, boolean paused, String startFrom) throws SQLException {
         validateMode(mode);
+        String resolvedStartFrom = "earliest".equals(startFrom) ? "earliest" : "latest";
         synchronized (duckDB) {
             try (PreparedStatement ps = duckDB.prepareStatement("""
-                    INSERT INTO topic_configs (topic, mode, paused) VALUES (?, ?, ?)
+                    INSERT INTO topic_configs (topic, mode, paused, start_from) VALUES (?, ?, ?, ?)
                     ON CONFLICT (topic) DO UPDATE SET mode = excluded.mode, paused = excluded.paused
-                    RETURNING topic, mode, paused, retention_days
+                    RETURNING topic, mode, paused, retention_days, start_from
                     """)) {
                 ps.setString(1, topic);
                 ps.setString(2, mode);
                 ps.setBoolean(3, paused);
+                ps.setString(4, resolvedStartFrom);
                 try (ResultSet rs = ps.executeQuery()) {
                     if (rs.next()) {
                         return new TopicConfig(rs.getString("topic"), rs.getString("mode"),
                                 rs.getBoolean("paused"), false,
-                                (Integer) rs.getObject("retention_days"));
+                                (Integer) rs.getObject("retention_days"),
+                                rs.getString("start_from"));
                     }
                 }
             }
         }
-        return new TopicConfig(topic, mode, paused, false, null);
+        return new TopicConfig(topic, mode, paused, false, null, resolvedStartFrom);
+    }
+
+    /** Convenience overload for callers that don't specify startFrom (defaults to "latest"). */
+    public TopicConfig upsertTopic(String topic, String mode, boolean paused) throws SQLException {
+        return upsertTopic(topic, mode, paused, "latest");
     }
 
     public TopicConfig setTopicRetentionDays(String topic, Integer days) throws SQLException {

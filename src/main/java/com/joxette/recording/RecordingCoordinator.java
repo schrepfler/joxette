@@ -60,21 +60,31 @@ public class RecordingCoordinator {
     /**
      * Starts recording {@code topic} if it is not already active.
      *
+     * @param startFrom "earliest" to seek all partitions to the beginning on first assignment;
+     *                  "latest" (default) to start from the current end of the topic.
      * @return {@code true} if a new recorder was started; {@code false} if one
      *         was already running for this topic.
      */
-    public boolean startTopic(String topic) {
+    public boolean startTopic(String topic, String startFrom) {
         RecorderHandle[] created = {null};
         activeRecorders.computeIfAbsent(topic, t -> {
-            created[0] = launchRecorder(t);
+            created[0] = launchRecorder(t, startFrom);
             return created[0];
         });
         if (created[0] != null) {
-            log.info("Started recorder for topic '{}'", topic);
+            log.info("Started recorder for topic '{}' (startFrom={})", topic, startFrom);
             return true;
         }
         log.debug("Recorder for topic '{}' already running", topic);
         return false;
+    }
+
+    /**
+     * Starts recording {@code topic} with the default offset strategy ("latest").
+     * Use {@link #startTopic(String, String)} to specify "earliest" for backfill.
+     */
+    public boolean startTopic(String topic) {
+        return startTopic(topic, "latest");
     }
 
     /**
@@ -111,7 +121,7 @@ public class RecordingCoordinator {
     // Internal
     // -----------------------------------------------------------------------
 
-    private RecorderHandle launchRecorder(String topic) {
+    private RecorderHandle launchRecorder(String topic, String startFrom) {
         JoxetteProperties.Recording cfg = properties.getRecording();
         TopicRecorder recorder = new TopicRecorder(
                 topic,
@@ -120,7 +130,8 @@ public class RecordingCoordinator {
                 cfg.getBatchSize(),
                 cfg.getBatchTimeoutMs(),
                 messageRouter,
-                knownEntities);
+                knownEntities,
+                startFrom);
 
         Thread thread = Thread.ofVirtual()
                 .name("joxette-recorder-" + topic)

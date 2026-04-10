@@ -126,7 +126,7 @@ class TopicRecorderTest {
             }
         }
 
-        recorder = new TopicRecorder(TOPIC, consumerProps(), duckDB, 100, 200, generalRouter, noopEntities);
+        recorder = new TopicRecorder(TOPIC, consumerProps(), duckDB, 100, 200, generalRouter, noopEntities, "latest");
         recorderThread = Thread.ofVirtual().name("test-recorder").start(() -> {
             try {
                 recorder.run();
@@ -167,7 +167,7 @@ class TopicRecorderTest {
             producer.send(rec).get();
         }
 
-        recorder = new TopicRecorder(TOPIC, consumerProps(), duckDB, 10, 200, generalRouter, noopEntities);
+        recorder = new TopicRecorder(TOPIC, consumerProps(), duckDB, 10, 200, generalRouter, noopEntities, "latest");
         recorderThread = Thread.ofVirtual().name("test-recorder-hdr").start(() -> {
             try { recorder.run(); } catch (Exception ignored) {}
         });
@@ -293,7 +293,7 @@ class TopicRecorderTest {
             }
         }
 
-        TopicRecorder multiRecorder = new TopicRecorder(multiTopic, consumerProps(), duckDB, 20, 300, generalRouter, noopEntities);
+        TopicRecorder multiRecorder = new TopicRecorder(multiTopic, consumerProps(), duckDB, 20, 300, generalRouter, noopEntities, "latest");
         Thread multiThread = Thread.ofVirtual().name("test-multi-recorder").start(() -> {
             try { multiRecorder.run(); } catch (Exception ignored) {}
         });

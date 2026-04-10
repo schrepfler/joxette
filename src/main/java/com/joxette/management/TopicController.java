@@ -32,7 +32,7 @@ public class TopicController {
     private final RecordingCoordinator coordinator;
     private final MessageRouter router;
 
-    record CreateTopicRequest(String topic, String mode) {}
+    record CreateTopicRequest(String topic, String mode, String startFrom) {}
     record UpdateTopicRequest(String mode) {}
     record SetRetentionRequest(Integer days) {}
 
@@ -48,7 +48,7 @@ public class TopicController {
         Set<String> active = coordinator.activeTopics();
         return config.listTopics().stream()
                 .map(tc -> new TopicConfig(tc.topic(), tc.mode(), tc.paused(),
-                        active.contains(tc.topic()), tc.retentionDays()))
+                        active.contains(tc.topic()), tc.retentionDays(), tc.startFrom()))
                 .toList();
     }
 
@@ -63,11 +63,12 @@ public class TopicController {
             return ResponseEntity.status(409).build();
         }
         String mode = body.mode() != null ? body.mode() : "general";
-        TopicConfig tc = config.upsertTopic(body.topic(), mode, false);
-        coordinator.startTopic(tc.topic());
+        String startFrom = body.startFrom() != null ? body.startFrom() : "latest";
+        TopicConfig tc = config.upsertTopic(body.topic(), mode, false, startFrom);
+        coordinator.startTopic(tc.topic(), tc.startFrom());
         boolean active = coordinator.activeTopics().contains(tc.topic());
         return ResponseEntity.status(201).body(
-                new TopicConfig(tc.topic(), tc.mode(), tc.paused(), active, tc.retentionDays()));
+                new TopicConfig(tc.topic(), tc.mode(), tc.paused(), active, tc.retentionDays(), tc.startFrom()));
     }
 
     @GetMapping(value = "/{topic}", produces = MediaType.APPLICATION_JSON_VALUE)
@@ -129,7 +130,7 @@ public class TopicController {
             return ResponseEntity.notFound().build();
         }
         config.setPaused(topic, false);
-        coordinator.startTopic(topic);
+        config.findTopic(topic).ifPresent(tc -> coordinator.startTopic(topic, tc.startFrom()));
         return config.findTopic(topic).map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
     }

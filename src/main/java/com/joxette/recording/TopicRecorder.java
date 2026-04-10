@@ -16,10 +16,13 @@ import org.apache.kafka.common.header.Header;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
+
 import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -58,6 +61,7 @@ public class TopicRecorder {
     private final Duration batchTimeout;
     private final MessageRouter router;
     private final KnownEntitiesRepository knownEntities;
+    private final boolean seekToEarliest;
 
     private volatile KafkaConsumer<String, byte[]> consumer;
     private volatile boolean stopped = false;
@@ -72,16 +76,21 @@ public class TopicRecorder {
             int batchSize,
             long batchTimeoutMs,
             MessageRouter router,
-            KnownEntitiesRepository knownEntities) {
+            KnownEntitiesRepository knownEntities,
+            String startFrom) {
         this.topic          = topic;
         this.duckDbConnection = duckDbConnection;
         this.batchSize      = batchSize;
         this.batchTimeout   = Duration.ofMillis(batchTimeoutMs);
         this.router         = router;
         this.knownEntities  = knownEntities;
+        this.seekToEarliest = "earliest".equals(startFrom);
 
         Map<String, Object> props = new HashMap<>(kafkaProps);
         props.put(ConsumerConfig.GROUP_ID_CONFIG, "joxette-recorder-" + topic);
+        if (seekToEarliest) {
+            props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+        }
         this.kafkaProps = props;
     }
 
@@ -97,7 +106,19 @@ public class TopicRecorder {
              EntityCassetteBatchWriter entityWriter = new EntityCassetteBatchWriter(duckDbConnection)) {
 
             this.consumer = kafkaConsumer;
-            kafkaConsumer.subscribe(List.of(topic));
+            kafkaConsumer.subscribe(List.of(topic), new ConsumerRebalanceListener() {
+                @Override
+                public void onPartitionsRevoked(Collection<TopicPartition> partitions) {}
+
+                @Override
+                public void onPartitionsAssigned(Collection<TopicPartition> partitions) {
+                    if (seekToEarliest) {
+                        kafkaConsumer.seekToBeginning(partitions);
+                        log.info("Seeked to beginning of {} partition(s) for topic '{}' (startFrom=earliest)",
+                                partitions.size(), topic);
+                    }
+                }
+            });
 
             Flows.<ConsumerRecord<String, byte[]>>usingEmit(emit -> {
                         try {

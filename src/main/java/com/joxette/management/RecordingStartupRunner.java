@@ -39,7 +39,7 @@ public class RecordingStartupRunner implements ApplicationRunner {
         int started = 0;
         for (TopicConfig tc : configRepository.listTopics()) {
             if (!tc.paused()) {
-                coordinator.startTopic(tc.topic());
+                coordinator.startTopic(tc.topic(), tc.startFrom());
                 started++;
             }
         }

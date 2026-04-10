@@ -153,12 +153,14 @@ public class SchemaManager {
                     mode           VARCHAR NOT NULL
                                      CHECK (mode IN ('general', 'entity_only', 'both')),
                     paused         BOOLEAN NOT NULL DEFAULT false,
+                    start_from     VARCHAR NOT NULL DEFAULT 'latest',
                     retention_days INTEGER,
                     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
                     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
                 )
                 """);
             stmt.execute("ALTER TABLE topic_configs ADD COLUMN IF NOT EXISTS retention_days INTEGER");
+            stmt.execute("ALTER TABLE topic_configs ADD COLUMN IF NOT EXISTS start_from VARCHAR NOT NULL DEFAULT 'latest'");
 
             stmt.execute("""
                 CREATE TABLE IF NOT EXISTS entity_type_configs (
