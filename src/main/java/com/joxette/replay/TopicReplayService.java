@@ -10,6 +10,8 @@ import org.jooq.impl.DSL;
 import org.jooq.impl.SQLDataType;
 import org.springframework.stereotype.Service;
 
+import org.duckdb.DuckDBStruct;
+
 import java.sql.Array;
 import java.sql.SQLException;
 import java.time.Instant;
@@ -221,7 +223,13 @@ public class TopicReplayService {
         }
         List<CassetteRecord.Header> headers = new ArrayList<>(arr.length);
         for (Object elem : arr) {
-            if (elem instanceof Map<?, ?> struct) {
+            // DuckDB 1.5.x JDBC returns STRUCT elements as DuckDBStruct (not Map).
+            Map<?, ?> struct = switch (elem) {
+                case Map<?, ?> m         -> m;
+                case DuckDBStruct ds     -> ds.getMap();
+                default                  -> null;
+            };
+            if (struct != null) {
                 String key   = (String) struct.get("key");
                 // value is VARCHAR — no BLOB cast or base64 encoding needed
                 String value = struct.get("value") instanceof String s ? s : "";

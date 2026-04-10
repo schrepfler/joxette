@@ -116,10 +116,16 @@ class ExportSnapshotToObjectStoreIT {
             s3Client.createBucket(r -> r.bucket(TEST_BUCKET));
         }
 
+        // Create the general cassette table that the test will seed with rows.
+        // Must be done before any insertCassetteRow() calls; idempotent (IF NOT EXISTS).
+        DuckDBTestSupport.createGeneralCassetteTable(duckDB, "export-test-topic");
+
         // Clear DuckDB state.
+        // general cassette table: lake.main.general_export_test_topic
+        // snapshots registry:     snapshots (plain DuckDB, primary-DB main schema — no lake. prefix)
         try (Statement st = duckDB.createStatement()) {
-            st.execute("DELETE FROM lake.cassette");
-            st.execute("DELETE FROM lake.snapshots");
+            st.execute("DELETE FROM lake.main.general_export_test_topic");
+            st.execute("DELETE FROM snapshots");
         }
 
         // Remove any leftover local snapshot directory from a previous failed run.

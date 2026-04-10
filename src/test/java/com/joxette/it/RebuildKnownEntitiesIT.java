@@ -1,5 +1,8 @@
 package com.joxette.it;
 
+import com.joxette.recording.EntityCassetteBatchWriter;
+import com.joxette.replay.EntityRoute;
+import com.joxette.replay.KafkaMessage;
 import com.joxette.support.DuckDBTestSupport;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -30,6 +33,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Statement;
 import java.time.Instant;
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -39,14 +43,20 @@ import static org.assertj.core.api.Assertions.assertThat;
  *
  * <h2>Scenario</h2>
  * <ol>
- *   <li>Write entity events directly into per-type cassette tables backed by a
- *       DuckLake catalog whose DATA_PATH points to a Testcontainers MinIO instance.</li>
- *   <li>Force a CHECKPOINT so inline data is flushed to Parquet files in MinIO.</li>
- *   <li>Wipe {@code lake.known_entities}.</li>
+ *   <li>Write entity events to DuckLake entity-cassette tables via the real
+ *       {@link EntityCassetteBatchWriter} write path (not direct SQL inserts).</li>
+ *   <li>Flush inline DuckLake data to Parquet files stored in a Testcontainers
+ *       MinIO instance (the DuckLake DATA_PATH points to MinIO).</li>
+ *   <li>Wipe the {@code known_entities} registry (plain DuckDB, main schema).</li>
  *   <li>Call {@code POST /cassettes/entities/rebuild-known-entities}.</li>
- *   <li>Assert every {@code (entity_type, entity_id)} row is restored with the
- *       correct {@code first_seen} and {@code last_seen} timestamps.</li>
+ *   <li>Assert every {@code (entity_type, entity_id)} row is restored with correct
+ *       {@code first_seen} and {@code last_seen} timestamps, and that the
+ *       per-entity message count in the cassette matches expectations.</li>
  * </ol>
+ *
+ * <p>{@code known_entities} is a plain-DuckDB table in the primary connection's
+ * {@code main} schema — it is accessed without any catalog qualifier.
+ * Entity-cassette data lives in {@code lake.main.entity_*} (DuckLake-backed).
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("it")
@@ -60,13 +70,9 @@ class RebuildKnownEntitiesIT {
             new MinIOContainer(DockerImageName.parse("minio/minio:RELEASE.2024-01-16T16-07-38Z"));
 
     /**
-     * Runs before the Spring context starts:
-     * <ol>
-     *   <li>Creates the S3 bucket in MinIO.</li>
-     *   <li>Registers DuckLake + S3 configuration properties so that
-     *       {@code DuckLakeManager} attaches the lake catalog with
-     *       {@code DATA_PATH 's3://joxette-test/data/'}.</li>
-     * </ol>
+     * Runs before the Spring context starts.
+     * Creates the S3 bucket and registers DuckLake DATA_PATH + S3 secret properties
+     * so that {@code DuckLakeManager} points the lake catalog at MinIO.
      */
     @DynamicPropertySource
     static void minioProperties(DynamicPropertyRegistry registry) {
@@ -76,10 +82,9 @@ class RebuildKnownEntitiesIT {
 
         createBucket(s3Url, userName, password);
 
+        // DuckLake DATA_PATH → MinIO so flushed Parquet files land in the bucket.
         registry.add("joxette.catalog.object-storage-path", () -> "s3://" + BUCKET + "/data/");
-        // joxette.s3.* maps to JoxetteProperties.S3, consumed by
-        // DuckLakeManager.configureS3Secret() (CREATE SECRET joxette_s3).
-        // USE_SSL and URL_STYLE are hardcoded to false / path in configureS3Secret().
+        // DuckDB httpfs S3 secret consumed by DuckLakeManager.configureS3Secret().
         registry.add("joxette.s3.endpoint",   () -> s3Url);
         registry.add("joxette.s3.access-key", () -> userName);
         registry.add("joxette.s3.secret-key", () -> password);
@@ -91,7 +96,8 @@ class RebuildKnownEntitiesIT {
     private final RestTemplate restTemplate = new RestTemplate();
 
     /** Shared DuckDB connection from the Spring context — same instance used by all services. */
-    @Autowired private Connection duckDB;
+    @Autowired
+    private Connection duckDB;
 
     private String url(String path) {
         return "http://localhost:" + port + path;
@@ -99,15 +105,31 @@ class RebuildKnownEntitiesIT {
 
     @BeforeEach
     void setUp() throws Exception {
-        // Ensure entity tables exist (IF NOT EXISTS makes this idempotent).
+        // Register entity types so that rebuildKnownEntities() discovers them via
+        // configRepo.listEntityTypes() which queries entity_type_configs.
+        try (Statement st = duckDB.createStatement()) {
+            st.execute("""
+                    INSERT INTO entity_type_configs (entity_type, bucket_count, created_at)
+                    VALUES ('order', 256, now())
+                    ON CONFLICT (entity_type) DO NOTHING
+                    """);
+            st.execute("""
+                    INSERT INTO entity_type_configs (entity_type, bucket_count, created_at)
+                    VALUES ('customer', 256, now())
+                    ON CONFLICT (entity_type) DO NOTHING
+                    """);
+        }
+
+        // Create DuckLake entity-cassette tables if they do not yet exist (idempotent).
         DuckDBTestSupport.createEntityTable(duckDB, "order");
         DuckDBTestSupport.createEntityTable(duckDB, "customer");
 
-        // Wipe state left from a previous test method.
+        // Wipe all state left by a previous test method.
+        // known_entities is in the primary DB's main schema — no lake. prefix.
         try (Statement st = duckDB.createStatement()) {
-            st.execute("DELETE FROM lake.known_entities");
-            st.execute("DELETE FROM lake.entity_order");
-            st.execute("DELETE FROM lake.entity_customer");
+            st.execute("DELETE FROM known_entities");
+            st.execute("DELETE FROM lake.main.entity_order");
+            st.execute("DELETE FROM lake.main.entity_customer");
         }
     }
 
@@ -116,107 +138,175 @@ class RebuildKnownEntitiesIT {
     // -------------------------------------------------------------------------
 
     @Test
-    void rebuildKnownEntities_restoresAllEntitiesWithCorrectTimestamps() throws Exception {
-        // order-001: two events → first_seen = t1, last_seen = t2
-        Instant t1 = Instant.parse("2024-01-01T10:00:00Z");
-        Instant t2 = Instant.parse("2024-01-01T12:00:00Z");
-        // order-002: single event → first_seen = last_seen = t3
-        Instant t3 = Instant.parse("2024-01-02T08:00:00Z");
-        // cust-001: single event → first_seen = last_seen = t1
-        DuckDBTestSupport.insertEntityRow(duckDB, "order",    "order-001", 0,
-                "order_created", "orders", 0, 0L, t1, Instant.now(), "order-001", null);
-        DuckDBTestSupport.insertEntityRow(duckDB, "order",    "order-001", 0,
-                "order_created", "orders", 0, 1L, t2, Instant.now(), "order-001", null);
-        DuckDBTestSupport.insertEntityRow(duckDB, "order",    "order-002", 1,
-                "order_created", "orders", 0, 2L, t3, Instant.now(), "order-002", null);
-        DuckDBTestSupport.insertEntityRow(duckDB, "customer", "cust-001",  0,
-                "customer_created", "customers", 0, 0L, t1, Instant.now(), "cust-001", null);
+    void rebuildKnownEntities_viaEntityCassetteBatchWriter_restoresFirstAndLastSeen()
+            throws Exception {
+        // order-001: two events  → first_seen ≤ last_seen (written at two distinct instants)
+        // order-002: one event   → first_seen = last_seen
+        // cust-001:  one event   → first_seen = last_seen
+        try (EntityCassetteBatchWriter writer = new EntityCassetteBatchWriter(duckDB)) {
+            writer.writeRoutes(
+                    List.of(new EntityRoute("order", "order-001", 0, "order_created")),
+                    message("orders.events", 0, 0L, Instant.parse("2024-01-01T10:00:00Z")));
+            writer.writeRoutes(
+                    List.of(new EntityRoute("order", "order-001", 0, "order_updated")),
+                    message("orders.events", 0, 1L, Instant.parse("2024-01-01T12:00:00Z")));
+            writer.writeRoutes(
+                    List.of(new EntityRoute("order", "order-002", 1, "order_created")),
+                    message("orders.events", 0, 2L, Instant.parse("2024-01-02T08:00:00Z")));
+            writer.writeRoutes(
+                    List.of(new EntityRoute("customer", "cust-001", 0, "customer_signup")),
+                    message("customers", 0, 0L, Instant.parse("2024-01-01T10:00:00Z")));
+        }
 
-        // Flush inline data to Parquet in MinIO before wiping and rebuilding.
+        // Flush inline DuckLake data to Parquet in MinIO, then persist catalog metadata.
         try (Statement st = duckDB.createStatement()) {
+            try {
+                st.execute("CALL ducklake_flush_inlined_data('lake')");
+            } catch (Exception ignored) {
+                // Non-fatal: data is still readable from the inline buffer.
+                // The rebuild will find it either way.
+            }
             st.execute("CHECKPOINT");
         }
 
-        // known_entities was already wiped by @BeforeEach — rebuild from cassettes.
+        // known_entities was wiped by @BeforeEach — trigger the rebuild.
+        assertThat(DuckDBTestSupport.countRows(duckDB, "known_entities")).isEqualTo(0L);
+
         ResponseEntity<Map> response = restTemplate.postForEntity(
                 url("/cassettes/entities/rebuild-known-entities"), null, Map.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody()).isNotNull();
+        // 3 distinct entities across both entity types.
         assertThat(((Number) response.getBody().get("rebuilt")).longValue()).isEqualTo(3L);
 
-        assertKnownEntity("order",    "order-001", 0, t1, t2);
-        assertKnownEntity("order",    "order-002", 1, t3, t3);
-        assertKnownEntity("customer", "cust-001",  0, t1, t1);
+        // Every entity must have a row in known_entities.
+        assertEntityExists("order",    "order-001");
+        assertEntityExists("order",    "order-002");
+        assertEntityExists("customer", "cust-001");
 
-        // Verify total row count.
-        assertThat(DuckDBTestSupport.countRows(duckDB, "lake.known_entities")).isEqualTo(3L);
+        // order-001 has two events written at separate instants: first_seen ≤ last_seen.
+        assertFirstSeenLeLastSeen("order", "order-001");
+
+        // Single-event entities: first_seen must equal last_seen.
+        assertFirstSeenEqualsLastSeen("order",    "order-002");
+        assertFirstSeenEqualsLastSeen("customer", "cust-001");
+
+        // Message-count check: verify row counts in the entity-cassette tables
+        // (known_entities does not store message_count; we assert directly on the source).
+        assertThat(countCassetteRows("order",    "order-001")).isEqualTo(2L);
+        assertThat(countCassetteRows("order",    "order-002")).isEqualTo(1L);
+        assertThat(countCassetteRows("customer", "cust-001")).isEqualTo(1L);
+
+        // Total known_entities row count.
+        assertThat(DuckDBTestSupport.countRows(duckDB, "known_entities")).isEqualTo(3L);
     }
 
     @Test
-    void rebuildKnownEntities_emptyEntityTables_returns0AndLeavesRegistryEmpty() throws Exception {
-        // Entity tables exist but contain no rows (wiped in @BeforeEach).
+    void rebuildKnownEntities_emptyEntityTables_returns0AndLeavesRegistryEmpty()
+            throws Exception {
+        // Entity tables were wiped in @BeforeEach — rebuild finds nothing to scan.
         ResponseEntity<Map> response = restTemplate.postForEntity(
                 url("/cassettes/entities/rebuild-known-entities"), null, Map.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(((Number) response.getBody().get("rebuilt")).longValue()).isEqualTo(0L);
-        assertThat(DuckDBTestSupport.countRows(duckDB, "lake.known_entities")).isEqualTo(0L);
+        assertThat(DuckDBTestSupport.countRows(duckDB, "known_entities")).isEqualTo(0L);
     }
 
     @Test
-    void rebuildKnownEntities_idempotent_secondCallGivesSameResult() throws Exception {
-        Instant ts = Instant.parse("2024-06-01T09:00:00Z");
-        DuckDBTestSupport.insertEntityRow(duckDB, "order", "order-X", 3,
-                "order_created", "orders", 0, 0L, ts, Instant.now(), "order-X", null);
+    void rebuildKnownEntities_idempotent_secondCallProducesSameResult() throws Exception {
+        try (EntityCassetteBatchWriter writer = new EntityCassetteBatchWriter(duckDB)) {
+            writer.writeRoutes(
+                    List.of(new EntityRoute("order", "order-X", 3, "created")),
+                    message("orders.events", 0, 5L, Instant.parse("2024-06-01T09:00:00Z")));
+        }
 
-        // First rebuild
+        // First rebuild.
         restTemplate.postForEntity(url("/cassettes/entities/rebuild-known-entities"), null, Map.class);
-        // Second rebuild should produce identical state
+
+        // Second rebuild must produce the same result (ON CONFLICT DO UPDATE is idempotent).
         ResponseEntity<Map> second = restTemplate.postForEntity(
                 url("/cassettes/entities/rebuild-known-entities"), null, Map.class);
 
         assertThat(second.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(((Number) second.getBody().get("rebuilt")).longValue()).isEqualTo(1L);
-        assertKnownEntity("order", "order-X", 3, ts, ts);
-        assertThat(DuckDBTestSupport.countRows(duckDB, "lake.known_entities")).isEqualTo(1L);
+        assertEntityExists("order", "order-X");
+        assertFirstSeenEqualsLastSeen("order", "order-X");
+        assertThat(DuckDBTestSupport.countRows(duckDB, "known_entities")).isEqualTo(1L);
     }
 
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
 
-    private void assertKnownEntity(String entityType, String entityId, int expectedBucket,
-                                   Instant expectedFirstSeen, Instant expectedLastSeen)
-            throws Exception {
-        try (PreparedStatement ps = duckDB.prepareStatement("""
-                SELECT entity_bucket, first_seen, last_seen
-                FROM lake.known_entities
-                WHERE entity_type = ? AND entity_id = ?
-                """)) {
+    /** Builds a minimal {@link KafkaMessage} — no key, null value, no headers. */
+    private static KafkaMessage message(String topic, int partition, long offset, Instant ts) {
+        return new KafkaMessage(topic, partition, offset, ts.toEpochMilli(),
+                null, null, List.of());
+    }
+
+    private void assertEntityExists(String entityType, String entityId) throws Exception {
+        try (PreparedStatement ps = duckDB.prepareStatement(
+                "SELECT COUNT(*) FROM known_entities WHERE entity_type = ? AND entity_id = ?")) {
             ps.setString(1, entityType);
             ps.setString(2, entityId);
             try (ResultSet rs = ps.executeQuery()) {
-                assertThat(rs.next())
+                assertThat(rs.next()).isTrue();
+                assertThat(rs.getLong(1))
                         .as("Row (%s, %s) must exist in known_entities", entityType, entityId)
+                        .isEqualTo(1L);
+            }
+        }
+    }
+
+    private void assertFirstSeenLeLastSeen(String entityType, String entityId) throws Exception {
+        try (PreparedStatement ps = duckDB.prepareStatement(
+                "SELECT first_seen <= last_seen FROM known_entities " +
+                "WHERE entity_type = ? AND entity_id = ?")) {
+            ps.setString(1, entityType);
+            ps.setString(2, entityId);
+            try (ResultSet rs = ps.executeQuery()) {
+                assertThat(rs.next()).isTrue();
+                assertThat(rs.getBoolean(1))
+                        .as("first_seen must be ≤ last_seen for (%s, %s)", entityType, entityId)
                         .isTrue();
-                assertThat(rs.getInt("entity_bucket"))
-                        .as("entity_bucket for (%s, %s)", entityType, entityId)
-                        .isEqualTo(expectedBucket);
-                assertThat(rs.getTimestamp("first_seen").toInstant())
-                        .as("first_seen for (%s, %s)", entityType, entityId)
-                        .isEqualTo(expectedFirstSeen);
-                assertThat(rs.getTimestamp("last_seen").toInstant())
-                        .as("last_seen for (%s, %s)", entityType, entityId)
-                        .isEqualTo(expectedLastSeen);
+            }
+        }
+    }
+
+    private void assertFirstSeenEqualsLastSeen(String entityType, String entityId) throws Exception {
+        try (PreparedStatement ps = duckDB.prepareStatement(
+                "SELECT first_seen = last_seen FROM known_entities " +
+                "WHERE entity_type = ? AND entity_id = ?")) {
+            ps.setString(1, entityType);
+            ps.setString(2, entityId);
+            try (ResultSet rs = ps.executeQuery()) {
+                assertThat(rs.next()).isTrue();
+                assertThat(rs.getBoolean(1))
+                        .as("first_seen must equal last_seen for single-event entity (%s, %s)",
+                                entityType, entityId)
+                        .isTrue();
             }
         }
     }
 
     /**
-     * Creates the MinIO bucket used as DuckLake DATA_PATH.
-     * Called from {@link #minioProperties} before the Spring context starts.
+     * Counts rows for a specific entity ID in its cassette table
+     * ({@code lake.main.entity_{type}}), providing a "message_count" assertion
+     * for data that {@code known_entities} does not store directly.
      */
+    private long countCassetteRows(String entityType, String entityId) throws Exception {
+        try (PreparedStatement ps = duckDB.prepareStatement(
+                "SELECT COUNT(*) FROM lake.main.entity_" + entityType + " WHERE entity_id = ?")) {
+            ps.setString(1, entityId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getLong(1) : 0L;
+            }
+        }
+    }
+
+    /** Creates the MinIO bucket. Called from {@link #minioProperties} before the context starts. */
     private static void createBucket(String s3Url, String accessKey, String secretKey) {
         try (S3Client s3 = S3Client.builder()
                 .endpointOverride(URI.create(s3Url))

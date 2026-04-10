@@ -11,6 +11,8 @@
     <description>Kafka Topic Cassette Recorder backed by DuckLake</description>
 
     <properties>
+        <!-- jox structured is compiled as Java 25 preview — this project must be built
+             and tested with JDK 25. Use: sdk use java 25.0.2-tem (see .sdkmanrc)         -->
         <java.version>25</java.version>
         <compiler.source>25</compiler.source>
         <compiler.release>25</compiler.release>
@@ -210,9 +212,7 @@
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <configuration>
-                    <!-- jox-structured is compiled with Java 25 preview (69.65535);
-                         use the Java 25 JVM so enable-preview accepts those classes. -->
-                    <jvm>${env.JAVA_25_HOME}/bin/java</jvm>
+                    <jvm>${java.home}/bin/java</jvm>
                     <argLine>--enable-preview</argLine>
                     <systemPropertyVariables>
                         <!-- Skip Spring's classpath scanner failing on preview anonymous
