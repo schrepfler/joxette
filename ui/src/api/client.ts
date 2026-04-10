@@ -274,6 +274,107 @@ export const cassettesApi = {
     request<{ rebuilt: number }>('/cassettes/entities/rebuild-known-entities', { method: 'POST' }),
 }
 
+// ---- Streaming ----
+
+export type StreamMode = 'json' | 'sse' | 'ndjson'
+
+export type TopicStreamParams = {
+  from?: string
+  to?: string
+  partition?: number
+  offset_from?: number
+  offset_to?: number
+}
+
+export type EntityStreamParams = {
+  from?: string
+  to?: string
+}
+
+async function streamLines(
+  url: string,
+  accept: string,
+  onLine: (line: string) => void,
+  onDone: () => void,
+  onError: (err: Error) => void,
+  signal: AbortSignal,
+): Promise<void> {
+  let res: Response
+  try {
+    res = await fetch(url, { headers: { Accept: accept }, signal })
+  } catch (e) {
+    if ((e as Error).name === 'AbortError') return
+    onError(e as Error)
+    return
+  }
+  if (!res.ok) {
+    const text = await res.text().catch(() => '')
+    onError(new Error(`HTTP ${res.status}: ${text}`))
+    return
+  }
+  const reader = res.body!.getReader()
+  const decoder = new TextDecoder()
+  let buf = ''
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      const lines = buf.split('\n')
+      buf = lines.pop() ?? ''
+      for (const line of lines) onLine(line)
+    }
+    if (buf.trim()) onLine(buf)
+    onDone()
+  } catch (e) {
+    if ((e as Error).name === 'AbortError') return
+    onError(e as Error)
+  }
+}
+
+function extractData(line: string, isSse: boolean): string | null {
+  if (isSse) return line.startsWith('data:') ? line.slice(5).trim() : null
+  const t = line.trim()
+  return t || null
+}
+
+export function streamTopicRecords(
+  topic: string,
+  mode: 'sse' | 'ndjson',
+  params: TopicStreamParams,
+  callbacks: { onRecord: (r: CassetteRecord) => void; onDone: () => void; onError: (e: Error) => void },
+): AbortController {
+  const url = `${API_BASE}/cassettes/topics/${encodeURIComponent(topic)}${buildQuery(params)}`
+  const accept = mode === 'sse' ? 'text/event-stream' : 'application/x-ndjson'
+  const isSse = mode === 'sse'
+  const ctrl = new AbortController()
+  void streamLines(url, accept, (line) => {
+    const data = extractData(line, isSse)
+    if (!data) return
+    try { callbacks.onRecord(JSON.parse(data) as CassetteRecord) } catch { /* skip malformed line */ }
+  }, callbacks.onDone, callbacks.onError, ctrl.signal)
+  return ctrl
+}
+
+export function streamEntityRecords(
+  entityType: string,
+  entityId: string,
+  mode: 'sse' | 'ndjson',
+  params: EntityStreamParams,
+  callbacks: { onRecord: (r: EntityRecord) => void; onDone: () => void; onError: (e: Error) => void },
+): AbortController {
+  const url = `${API_BASE}/cassettes/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}${buildQuery(params)}`
+  const accept = mode === 'sse' ? 'text/event-stream' : 'application/x-ndjson'
+  const isSse = mode === 'sse'
+  const ctrl = new AbortController()
+  void streamLines(url, accept, (line) => {
+    const data = extractData(line, isSse)
+    if (!data) return
+    try { callbacks.onRecord(JSON.parse(data) as EntityRecord) } catch { /* skip malformed line */ }
+  }, callbacks.onDone, callbacks.onError, ctrl.signal)
+  return ctrl
+}
+
 // ---- Compaction ----
 
 export const compactionApi = {
