@@ -1,9 +1,9 @@
 package com.joxette.config;
 
+import com.joxette.kafka.ConsumerSettings;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
-import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.springframework.context.annotation.Bean;
@@ -13,42 +13,39 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Base Kafka client configuration for the Jox Kafka integration.
+ * Base Kafka client configuration for the Joxette recording pipeline.
  *
- * <p>Jox Kafka uses raw {@link org.apache.kafka.clients.consumer.KafkaConsumer}
- * instances (not Spring Kafka), so we expose property maps that the recording
- * pipeline can use to construct per-topic consumers.
- *
- * <p>Message keys and values are consumed as raw bytes and decoded later by the
- * routing and storage layers (e.g., JSON parsing for entity extraction).
+ * <p>The recording pipeline uses raw Kafka consumer instances (not Spring Kafka),
+ * configured via {@link ConsumerSettings} from {@code com.joxette.kafka} — a
+ * local package that mirrors the API of the unpublished
+ * {@code com.softwaremill.jox:kafka} module. See {@link ConsumerSettings} for the
+ * migration path once that module is published.
  */
 @Configuration
 public class KafkaConfig {
 
     /**
-     * Base consumer properties shared by all per-topic {@code KafkaConsumer}
+     * Base consumer settings shared by all per-topic {@link com.joxette.kafka.KafkaSource}
      * instances created by the recording pipeline.
      *
-     * <p>Each {@code TopicRecorder} will create its own consumer with these base
-     * properties, overriding {@code group.id} per topic as needed.
+     * <p>Each {@link com.joxette.recording.TopicRecorder} derives its own settings
+     * from this base via {@link ConsumerSettings#withProperty}, overriding
+     * {@code group.id} (and optionally {@code auto.offset.reset}) per topic.
      */
     @Bean
-    public Map<String, Object> baseKafkaConsumerProperties(JoxetteProperties properties) {
+    public ConsumerSettings<String, byte[]> baseKafkaConsumerSettings(JoxetteProperties properties) {
         Map<String, Object> props = new HashMap<>();
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, properties.getKafka().getBootstrapServers());
-        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
-        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class);
         // Disable auto-commit; the pipeline commits offsets explicitly after a
         // successful DuckLake write to guarantee at-least-once semantics.
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest");
-        return props;
+        return ConsumerSettings.create(props, new StringDeserializer(), new ByteArrayDeserializer());
     }
 
     /**
      * Shared {@link AdminClient} used by the health endpoint to compute
-     * consumer lag.  The bean is destroyed automatically by Spring (via the
-     * {@code destroyMethod}) when the application context is closed.
+     * consumer lag. Destroyed automatically by Spring on context close.
      */
     @Bean(destroyMethod = "close")
     public AdminClient kafkaAdminClient(JoxetteProperties properties) {

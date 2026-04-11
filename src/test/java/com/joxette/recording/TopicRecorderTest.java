@@ -1,5 +1,6 @@
 package com.joxette.recording;
 
+import com.joxette.kafka.ConsumerSettings;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.admin.NewTopic;
@@ -126,7 +127,7 @@ class TopicRecorderTest {
             }
         }
 
-        recorder = new TopicRecorder(TOPIC, consumerProps(), duckDB, 100, 200, generalRouter, noopEntities, "latest");
+        recorder = new TopicRecorder(TOPIC, consumerSettings(), duckDB, 100, 200, generalRouter, noopEntities, "latest");
         recorderThread = Thread.ofVirtual().name("test-recorder").start(() -> {
             try {
                 recorder.run();
@@ -167,7 +168,7 @@ class TopicRecorderTest {
             producer.send(rec).get();
         }
 
-        recorder = new TopicRecorder(TOPIC, consumerProps(), duckDB, 10, 200, generalRouter, noopEntities, "latest");
+        recorder = new TopicRecorder(TOPIC, consumerSettings(), duckDB, 10, 200, generalRouter, noopEntities, "latest");
         recorderThread = Thread.ofVirtual().name("test-recorder-hdr").start(() -> {
             try { recorder.run(); } catch (Exception ignored) {}
         });
@@ -222,7 +223,7 @@ class TopicRecorderTest {
         // Capture time just before the recorder writes so we can bound recorded_at.
         java.time.Instant beforeRecord = java.time.Instant.now();
 
-        recorder = new TopicRecorder(TOPIC, consumerProps(), duckDB, 100, 200, generalRouter, noopEntities, "latest");
+        recorder = new TopicRecorder(TOPIC, consumerSettings(), duckDB, 100, 200, generalRouter, noopEntities, "latest");
         recorderThread = Thread.ofVirtual().name("test-recorder-fields").start(() -> {
             try { recorder.run(); } catch (Exception ignored) {}
         });
@@ -293,7 +294,7 @@ class TopicRecorderTest {
             }
         }
 
-        TopicRecorder multiRecorder = new TopicRecorder(multiTopic, consumerProps(), duckDB, 20, 300, generalRouter, noopEntities, "latest");
+        TopicRecorder multiRecorder = new TopicRecorder(multiTopic, consumerSettings(), duckDB, 20, 300, generalRouter, noopEntities, "latest");
         Thread multiThread = Thread.ofVirtual().name("test-multi-recorder").start(() -> {
             try { multiRecorder.run(); } catch (Exception ignored) {}
         });
@@ -333,7 +334,7 @@ class TopicRecorderTest {
         }
 
         // Base props deliberately use "latest" — TopicRecorder must override via seek.
-        recorder = new TopicRecorder(TOPIC, consumerPropsWithLatestDefault(), duckDB,
+        recorder = new TopicRecorder(TOPIC, consumerSettingsWithLatestDefault(), duckDB,
                 100, 500, generalRouter, noopEntities, "earliest");
         recorderThread = Thread.ofVirtual().name("test-recorder-earliest").start(() -> {
             try { recorder.run(); } catch (Exception ignored) {}
@@ -355,26 +356,22 @@ class TopicRecorderTest {
     // Helpers
     // -------------------------------------------------------------------------
 
-    private Map<String, Object> consumerProps() {
+    private ConsumerSettings<String, byte[]> consumerSettings() {
         Map<String, Object> props = new HashMap<>();
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
-        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
-        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class);
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
         // Use earliest so messages published before subscription are captured.
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
-        return props;
+        return ConsumerSettings.create(props, new StringDeserializer(), new ByteArrayDeserializer());
     }
 
-    /** Base consumer properties that default to {@code auto.offset.reset=latest}. */
-    private Map<String, Object> consumerPropsWithLatestDefault() {
+    /** Base consumer settings that default to {@code auto.offset.reset=latest}. */
+    private ConsumerSettings<String, byte[]> consumerSettingsWithLatestDefault() {
         Map<String, Object> props = new HashMap<>();
         props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
-        props.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class);
-        props.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, ByteArrayDeserializer.class);
         props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
         props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest");
-        return props;
+        return ConsumerSettings.create(props, new StringDeserializer(), new ByteArrayDeserializer());
     }
 
     private KafkaProducer<String, byte[]> newProducer() {

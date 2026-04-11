@@ -1,8 +1,9 @@
 package com.joxette.replay;
 
 import com.joxette.config.JoxetteProperties;
+import com.joxette.kafka.KafkaSink;
+import com.joxette.kafka.ProducerSettings;
 import jakarta.annotation.PreDestroy;
-import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
@@ -18,10 +19,10 @@ import java.util.Map;
 import java.util.concurrent.Future;
 
 /**
- * Wraps a {@link KafkaProducer KafkaProducer&lt;byte[], byte[]&gt;} for replay-to-topic operations.
+ * Wraps a {@link KafkaSink KafkaSink&lt;byte[], byte[]&gt;} for replay-to-topic operations.
  *
  * <p>Both {@link CassetteRecord} and {@link EntityRecord} carry their payload as
- * base64url-encoded strings (value field) and plain-string keys.  This service
+ * base64url-encoded strings (value field) and plain-string keys. This service
  * decodes them back to raw bytes before producing so the target topic receives
  * the original wire-format bytes.
  *
@@ -29,7 +30,7 @@ import java.util.concurrent.Future;
  * constructed with the source record's {@code timestamp} so that downstream
  * consumers see event-time ordering identical to the original topic.
  *
- * <p>The producer is configured with {@code acks=all} and idempotence enabled
+ * <p>The sink is configured with {@code acks=all} and idempotence enabled
  * so that every record is durably written exactly once to the target topic.
  */
 @Service
@@ -37,19 +38,18 @@ public class KafkaProducerService {
 
     private static final Base64.Decoder BASE64 = Base64.getUrlDecoder();
 
-    private final KafkaProducer<byte[], byte[]> producer;
+    private final KafkaSink<byte[], byte[]> sink;
 
     public KafkaProducerService(JoxetteProperties properties) {
         Map<String, Object> props = new HashMap<>();
         props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, properties.getKafka().getBootstrapServers());
-        props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class);
-        props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class);
         props.put(ProducerConfig.ACKS_CONFIG, "all");
         props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);
         // Reasonable defaults for replay throughput: larger batches, slight linger
         props.put(ProducerConfig.BATCH_SIZE_CONFIG, 65536);
         props.put(ProducerConfig.LINGER_MS_CONFIG, 5);
-        this.producer = new KafkaProducer<>(props);
+        this.sink = new KafkaSink<>(ProducerSettings.create(
+                props, new ByteArraySerializer(), new ByteArraySerializer()));
     }
 
     /**
@@ -69,7 +69,7 @@ public class KafkaProducerService {
         long   timestamp  = record.timestamp().toEpochMilli();
         var pr = new ProducerRecord<>(targetTopic, null, timestamp, keyBytes, valueBytes,
                 buildHeaders(record.headers()));
-        return producer.send(pr);
+        return sink.send(pr);
     }
 
     /**
@@ -82,7 +82,7 @@ public class KafkaProducerService {
         long   timestamp  = record.timestamp().toEpochMilli();
         var pr = new ProducerRecord<>(targetTopic, null, timestamp, keyBytes, valueBytes,
                 buildHeaders(record.headers()));
-        return producer.send(pr);
+        return sink.send(pr);
     }
 
     private static RecordHeaders buildHeaders(List<CassetteRecord.Header> headerList) {
@@ -102,6 +102,6 @@ public class KafkaProducerService {
 
     @PreDestroy
     public void close() {
-        producer.close();
+        sink.close();
     }
 }

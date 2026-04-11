@@ -90,7 +90,26 @@
             <version>${jox.flows.version}</version>
         </dependency>
 
-        <!-- Apache Kafka clients (required by Jox Kafka; also pulled transitively) -->
+        <!--
+            com.softwaremill.jox:kafka v0.5.3 exists in source at
+            https://github.com/softwaremill/jox/tree/master/kafka
+            but has NOT been published to Maven Central.
+
+            com.joxette.kafka provides an equivalent API surface (KafkaSource,
+            KafkaSink, ConsumerSettings, ProducerSettings) in the interim, mirroring
+            the jox:kafka design so the migration is mechanical when the module ships:
+              1. Add the dependency below.
+              2. Delete src/main/java/com/joxette/kafka/.
+              3. Update the two import sites (KafkaConfig, KafkaProducerService).
+
+            <dependency>
+                <groupId>com.softwaremill.jox</groupId>
+                <artifactId>kafka</artifactId>
+                <version>${jox.flows.version}</version>
+            </dependency>
+        -->
+
+        <!-- Apache Kafka clients (direct dependency until jox:kafka is published) -->
         <dependency>
             <groupId>org.apache.kafka</groupId>
             <artifactId>kafka-clients</artifactId>

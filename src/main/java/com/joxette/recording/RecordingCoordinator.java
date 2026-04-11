@@ -1,6 +1,7 @@
 package com.joxette.recording;
 
 import com.joxette.config.JoxetteProperties;
+import com.joxette.kafka.ConsumerSettings;
 import com.joxette.replay.KnownEntitiesRepository;
 import com.joxette.replay.MessageRouter;
 import com.softwaremill.jox.structured.Scopes;
@@ -12,7 +13,6 @@ import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 
 import java.sql.Connection;
-import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -31,7 +31,7 @@ public class RecordingCoordinator {
     private static final Logger log = LoggerFactory.getLogger(RecordingCoordinator.class);
 
     private final JoxetteProperties properties;
-    private final Map<String, Object> baseKafkaConsumerProperties;
+    private final ConsumerSettings<String, byte[]> baseKafkaConsumerSettings;
     private final Connection duckDbConnection;
     private final MessageRouter messageRouter;
     private final KnownEntitiesRepository knownEntities;
@@ -42,12 +42,12 @@ public class RecordingCoordinator {
 
     public RecordingCoordinator(
             JoxetteProperties properties,
-            @Qualifier("baseKafkaConsumerProperties") Map<String, Object> baseKafkaConsumerProperties,
+            @Qualifier("baseKafkaConsumerSettings") ConsumerSettings<String, byte[]> baseKafkaConsumerSettings,
             Connection duckDbConnection,
             MessageRouter messageRouter,
             KnownEntitiesRepository knownEntities) {
         this.properties = properties;
-        this.baseKafkaConsumerProperties = baseKafkaConsumerProperties;
+        this.baseKafkaConsumerSettings = baseKafkaConsumerSettings;
         this.duckDbConnection = duckDbConnection;
         this.messageRouter = messageRouter;
         this.knownEntities = knownEntities;
@@ -125,7 +125,7 @@ public class RecordingCoordinator {
         JoxetteProperties.Recording cfg = properties.getRecording();
         TopicRecorder recorder = new TopicRecorder(
                 topic,
-                baseKafkaConsumerProperties,
+                baseKafkaConsumerSettings,
                 duckDbConnection,
                 cfg.getBatchSize(),
                 cfg.getBatchTimeoutMs(),
