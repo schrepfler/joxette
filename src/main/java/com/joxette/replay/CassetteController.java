@@ -584,6 +584,32 @@ public class CassetteController {
         return ResponseEntity.ok(Map.of("deleted", deleted));
     }
 
+    /** Deletes all rows from {@code lake.main.entity_{entityType}}. */
+    @Operation(
+        operationId = "truncateEntityCassette",
+        summary = "Truncate entity cassette",
+        description = "Permanently deletes all recorded events for the given entity type from `lake.main.entity_{entityType}`. " +
+                      "Returns the number of deleted rows. This operation cannot be undone."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Number of deleted rows",
+            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                schema = @Schema(type = "object"),
+                examples = @ExampleObject(name = "result", value = "{\"deleted\": 17000}"))),
+        @ApiResponse(responseCode = "400", description = "Invalid entity type name",
+            content = @Content(schema = @Schema(type = "string"))),
+        @ApiResponse(responseCode = "500", description = "Database error",
+            content = @Content(schema = @Schema(type = "string")))
+    })
+    @PostMapping(value = "/entities/{entityType}/truncate", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<Map<String, Long>> truncateEntity(
+            @Parameter(description = "Entity type name (must match `[a-z][a-z0-9_]*`)", required = true, example = "order")
+            @PathVariable String entityType
+    ) throws SQLException {
+        long deleted = lifecycle.truncateEntityCassette(entityType);
+        return ResponseEntity.ok(Map.of("deleted", deleted));
+    }
+
     // =========================================================================
     // GDPR entity deletion
     // =========================================================================

@@ -197,6 +197,22 @@ public class CassetteLifecycleService {
         }
     }
 
+    /**
+     * Deletes all rows from the entity cassette table
+     * ({@code lake.main.entity_{entityType}}).
+     *
+     * @return number of rows deleted
+     */
+    public long truncateEntityCassette(String entityType) throws SQLException {
+        com.joxette.db.SchemaManager.validateEntityType(entityType);
+        String qualifiedTable = "lake.main.entity_" + entityType;
+        synchronized (duckDB) {
+            try (Statement st = duckDB.createStatement()) {
+                return st.executeUpdate("DELETE FROM " + qualifiedTable);
+            }
+        }
+    }
+
     // -------------------------------------------------------------------------
     // GDPR entity deletion
     // -------------------------------------------------------------------------
