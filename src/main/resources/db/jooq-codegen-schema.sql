@@ -13,27 +13,35 @@
 --   - entity_type_configs
 --   - entity_source_mappings
 --   - entity_source_matchers
+--   - topic_message_type_matchers
 --   - known_entities
 --   - compaction_history
+--   - retention_history
 --   - snapshots
+--
+-- Mirrors the production schema in SchemaManager.createConfigTables().
 -- =============================================================================
 
 CREATE SEQUENCE IF NOT EXISTS seq_entity_source_mappings START WITH 1;
 CREATE SEQUENCE IF NOT EXISTS seq_entity_source_matchers START WITH 1;
 CREATE SEQUENCE IF NOT EXISTS seq_compaction_history START WITH 1;
+CREATE SEQUENCE IF NOT EXISTS seq_retention_history START WITH 1;
 
 CREATE TABLE topic_configs (
-    topic      VARCHAR PRIMARY KEY,
-    mode       VARCHAR NOT NULL,
-    paused     BOOLEAN NOT NULL DEFAULT false,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
-    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+    topic          VARCHAR PRIMARY KEY,
+    mode           VARCHAR NOT NULL,
+    paused         BOOLEAN NOT NULL DEFAULT false,
+    start_from     VARCHAR NOT NULL DEFAULT 'latest',
+    retention_days INTEGER,
+    created_at     TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+    updated_at     TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
 );
 
 CREATE TABLE entity_type_configs (
-    entity_type  VARCHAR PRIMARY KEY,
-    bucket_count INTEGER NOT NULL DEFAULT 256,
-    created_at   TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+    entity_type    VARCHAR PRIMARY KEY,
+    bucket_count   INTEGER NOT NULL DEFAULT 256,
+    retention_days INTEGER,
+    created_at     TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
 );
 
 CREATE TABLE entity_source_mappings (
@@ -73,9 +81,22 @@ CREATE TABLE compaction_history (
     completed_at                 TIMESTAMP WITH TIME ZONE,
     status                       VARCHAR NOT NULL,
     triggered_by                 VARCHAR NOT NULL DEFAULT 'unknown',
+    targets                      VARCHAR[],
     entity_buckets_compacted     INTEGER NOT NULL DEFAULT 0,
     general_partitions_compacted INTEGER NOT NULL DEFAULT 0,
     error_message                VARCHAR
+);
+
+CREATE TABLE retention_history (
+    id                     INTEGER PRIMARY KEY DEFAULT nextval('seq_retention_history'),
+    started_at             TIMESTAMP WITH TIME ZONE NOT NULL,
+    completed_at           TIMESTAMP WITH TIME ZONE,
+    status                 VARCHAR NOT NULL,
+    triggered_by           VARCHAR NOT NULL,
+    entity_rows_deleted    BIGINT NOT NULL DEFAULT 0,
+    general_rows_deleted   BIGINT NOT NULL DEFAULT 0,
+    known_entities_deleted BIGINT NOT NULL DEFAULT 0,
+    error_message          VARCHAR
 );
 
 CREATE TABLE snapshots (
