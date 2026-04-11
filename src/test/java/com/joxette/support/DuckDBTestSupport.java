@@ -80,8 +80,10 @@ public final class DuckDBTestSupport {
             st.execute("""
                     CREATE TABLE IF NOT EXISTS topic_configs (
                         topic           VARCHAR PRIMARY KEY,
-                        mode            VARCHAR NOT NULL DEFAULT 'general',
+                        mode            VARCHAR NOT NULL
+                                          CHECK (mode IN ('general', 'entity_only', 'both')),
                         paused          BOOLEAN NOT NULL DEFAULT false,
+                        start_from      VARCHAR NOT NULL DEFAULT 'latest',
                         retention_days  INTEGER,
                         created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
                         updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -116,7 +118,7 @@ public final class DuckDBTestSupport {
                         topic        VARCHAR NOT NULL,
                         message_type VARCHAR NOT NULL,
                         id_source    VARCHAR NOT NULL DEFAULT 'value'
-                                       CHECK (id_source IN ('key', 'value', 'header')),
+                                       CHECK (id_source IN ('key', 'value', 'headers')),
                         id_expression VARCHAR,
                         created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
                         UNIQUE (entity_type, topic, message_type)
@@ -161,6 +163,22 @@ public final class DuckDBTestSupport {
                         id_source       VARCHAR NOT NULL,
                         id_expression   VARCHAR NOT NULL,
                         PRIMARY KEY (topic, message_type)
+                    )""");
+
+            st.execute("CREATE SEQUENCE IF NOT EXISTS seq_retention_history START 1");
+            st.execute("""
+                    CREATE TABLE IF NOT EXISTS retention_history (
+                        id                     INTEGER     PRIMARY KEY
+                                                 DEFAULT nextval('seq_retention_history'),
+                        started_at             TIMESTAMPTZ NOT NULL,
+                        completed_at           TIMESTAMPTZ,
+                        status                 VARCHAR     NOT NULL
+                                                 CHECK (status IN ('running', 'completed', 'failed')),
+                        triggered_by           VARCHAR     NOT NULL,
+                        entity_rows_deleted    BIGINT      NOT NULL DEFAULT 0,
+                        general_rows_deleted   BIGINT      NOT NULL DEFAULT 0,
+                        known_entities_deleted BIGINT      NOT NULL DEFAULT 0,
+                        error_message          VARCHAR
                     )""");
         }
     }
