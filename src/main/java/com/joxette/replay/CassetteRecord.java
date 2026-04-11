@@ -7,7 +7,7 @@ import java.time.Instant;
 import java.util.List;
 
 /**
- * A single row from the general cassette ({@code lake.cassette}).
+ * A single row from the general cassette ({@code lake.main.general_{topic}}).
  *
  * <p>{@code value} and each header {@code value} are base64url-encoded (no
  * padding) because they are raw bytes from the Kafka wire format. A {@code null}
