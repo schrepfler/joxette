@@ -118,10 +118,10 @@ public class CassetteLifecycleService {
         synchronized (duckDB) {
             try (Statement st = duckDB.createStatement();
                  ResultSet rs = st.executeQuery(
-                         "SELECT entity_bucket, COUNT(*) AS row_count FROM " + qualifiedTable +
-                         " GROUP BY entity_bucket ORDER BY entity_bucket")) {
+                         "SELECT bucket, COUNT(*) AS row_count FROM " + qualifiedTable +
+                         " GROUP BY bucket ORDER BY bucket")) {
                 while (rs.next()) {
-                    bucketRows.put(rs.getInt("entity_bucket"), rs.getLong("row_count"));
+                    bucketRows.put(rs.getInt("bucket"), rs.getLong("row_count"));
                 }
             }
             try (PreparedStatement ps = duckDB.prepareStatement(
