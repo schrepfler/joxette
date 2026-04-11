@@ -12,7 +12,7 @@ The service leverages DuckLake's **data inlining** feature to buffer small write
 
 | Component | Technology | Version |
 |---|---|---|
-| Language | Java (pure, no Kotlin) | JDK 26 |
+| Language | Java (pure, no Kotlin) | JDK 25 |
 | Framework | Spring Boot | 4.0.5 |
 | Build | Maven | latest |
 | Concurrency/Flows | Jox (softwaremill) | latest |
