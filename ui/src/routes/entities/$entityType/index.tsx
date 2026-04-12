@@ -14,6 +14,7 @@ import {
   type EntitySourceConfig,
   type EntityInfo,
   type AddSourceRequest,
+  type MatcherConfig,
 } from '../../../api/client'
 import { Layout } from '../../../components/Layout'
 import { LoadingSpinner } from '../../../components/LoadingSpinner'
@@ -30,51 +31,95 @@ export const Route = createFileRoute('/entities/$entityType/')({
 const srcColHelper = createColumnHelper<EntitySourceConfig>()
 const entityColHelper = createColumnHelper<EntityInfo>()
 
+type MatcherRow = { messageType: string; idSource: string; idExpression: string }
+
 function AddSourceModal({ entityType, onClose }: { entityType: string; onClose: () => void }) {
   const qc = useQueryClient()
   const { addToast } = useToast()
+  const [topic, setTopic] = useState('')
+  const [mode, setMode] = useState('entity_only')
+  const [matchers, setMatchers] = useState<MatcherRow[]>([{ messageType: '', idSource: 'value', idExpression: '' }])
+
   const mutation = useMutation({
     mutationFn: (d: AddSourceRequest) => entitiesApi.addSource(entityType, d),
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ['entities', entityType, 'sources'] }); addToast('Source added', 'success'); onClose() },
     onError: (e: Error) => addToast(e.message, 'error'),
   })
-  const form = useForm({
-    defaultValues: { topic: '', idSource: 'value', idExpression: '' },
-    onSubmit: async ({ value }) => mutation.mutate({ topic: value.topic, idSource: value.idSource, idExpression: value.idExpression }),
-  })
+
+  function updateMatcher(i: number, patch: Partial<MatcherRow>) {
+    setMatchers(prev => prev.map((m, idx) => idx === i ? { ...m, ...patch } : m))
+  }
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    const payload: MatcherConfig[] = matchers.map(m => ({
+      messageType: m.messageType || null,
+      idSource: m.idSource,
+      idExpression: m.idExpression,
+    }))
+    mutation.mutate({ topic, mode, matchers: payload })
+  }
+
   return (
     <div style={overlayStyle} onClick={onClose}>
-      <div style={modalStyle} onClick={e => e.stopPropagation()}>
+      <div style={{ ...modalStyle, minWidth: 560 }} onClick={e => e.stopPropagation()}>
         <h2 style={{ margin: '0 0 1.25rem', fontSize: 18 }}>Add Source</h2>
-        <form onSubmit={e => { e.preventDefault(); void form.handleSubmit() }}>
-          <form.Field name="topic">
-            {(f) => (
-              <div style={fieldWrap}>
-                <label style={labelStyle}>Topic *</label>
-                <input style={inputStyleFull} value={f.state.value} onChange={e => f.handleChange(e.target.value)} required />
-              </div>
-            )}
-          </form.Field>
-          <form.Field name="idSource">
-            {(f) => (
-              <div style={fieldWrap}>
-                <label style={labelStyle}>ID Source</label>
-                <select style={inputStyleFull} value={f.state.value} onChange={e => f.handleChange(e.target.value)}>
+        <form onSubmit={handleSubmit}>
+          <div style={fieldWrap}>
+            <label style={labelStyle}>Topic *</label>
+            <input style={inputStyleFull} value={topic} onChange={e => setTopic(e.target.value)} required />
+          </div>
+          <div style={fieldWrap}>
+            <label style={labelStyle}>Mode</label>
+            <select style={inputStyleFull} value={mode} onChange={e => setMode(e.target.value)}>
+              <option value="entity_only">entity_only</option>
+              <option value="both">both</option>
+            </select>
+          </div>
+          <div style={{ marginBottom: '0.75rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
+              <label style={labelStyle}>Matchers *</label>
+              <button
+                type="button"
+                onClick={() => setMatchers(prev => [...prev, { messageType: '', idSource: 'value', idExpression: '' }])}
+                style={{ ...secondaryBtnStyle, fontSize: 12, padding: '0.2rem 0.6rem' }}
+              >+ Add Matcher</button>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '140px 90px 1fr 28px', gap: '4px 6px', marginBottom: 4, paddingBottom: 4, borderBottom: '1px solid #e2e8f0' }}>
+              <span style={{ fontSize: 11, color: '#718096', fontWeight: 600 }}>Message type</span>
+              <span style={{ fontSize: 11, color: '#718096', fontWeight: 600 }}>Source</span>
+              <span style={{ fontSize: 11, color: '#718096', fontWeight: 600 }}>Expression *</span>
+              <span />
+            </div>
+            {matchers.map((m, i) => (
+              <div key={i} style={{ display: 'grid', gridTemplateColumns: '140px 90px 1fr 28px', gap: '4px 6px', marginBottom: 6, alignItems: 'center' }}>
+                <input
+                  style={{ ...inputStyleFull, fontSize: 13 }}
+                  placeholder="optional"
+                  value={m.messageType}
+                  onChange={e => updateMatcher(i, { messageType: e.target.value })}
+                />
+                <select style={{ ...inputStyleFull, fontSize: 13 }} value={m.idSource} onChange={e => updateMatcher(i, { idSource: e.target.value })}>
                   <option value="value">value</option>
                   <option value="key">key</option>
                   <option value="header">header</option>
                 </select>
+                <input
+                  style={{ ...inputStyleFull, fontSize: 13 }}
+                  placeholder="e.g. $.order_id"
+                  value={m.idExpression}
+                  onChange={e => updateMatcher(i, { idExpression: e.target.value })}
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={() => setMatchers(prev => prev.filter((_, idx) => idx !== i))}
+                  disabled={matchers.length === 1}
+                  style={{ ...dangerBtnSmall, opacity: matchers.length === 1 ? 0.4 : 1, width: 24, padding: 0, textAlign: 'center' }}
+                >✕</button>
               </div>
-            )}
-          </form.Field>
-          <form.Field name="idExpression">
-            {(f) => (
-              <div style={fieldWrap}>
-                <label style={labelStyle}>ID Expression *</label>
-                <input style={inputStyleFull} value={f.state.value} onChange={e => f.handleChange(e.target.value)} required />
-              </div>
-            )}
-          </form.Field>
+            ))}
+          </div>
           <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: '0.5rem' }}>
             <button type="button" onClick={onClose} style={cancelBtnStyle}>Cancel</button>
             <button type="submit" disabled={mutation.isPending} style={primaryBtnStyle}>{mutation.isPending ? 'Adding…' : 'Add'}</button>
@@ -145,8 +190,21 @@ function EntityTypeDetailPage() {
 
   const srcColumns = [
     srcColHelper.accessor('topic', { header: 'Topic' }),
-    srcColHelper.accessor('idSource', { header: 'ID Source' }),
-    srcColHelper.accessor('idExpression', { header: 'ID Expression' }),
+    srcColHelper.accessor('mode', { header: 'Mode' }),
+    srcColHelper.display({
+      id: 'matchers', header: 'Matchers',
+      cell: ({ row }) => (
+        <div style={{ lineHeight: 1.6 }}>
+          {row.original.matchers.map((m, i) => (
+            <div key={i} style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
+              {m.messageType && <strong style={{ marginRight: 4 }}>{m.messageType}:</strong>}
+              <span style={{ color: '#2d3748' }}>{m.idSource}</span>
+              <span style={{ color: '#718096', marginLeft: 4 }}>{m.idExpression}</span>
+            </div>
+          ))}
+        </div>
+      ),
+    }),
     srcColHelper.display({
       id: 'actions', header: 'Actions',
       cell: ({ row }) => (

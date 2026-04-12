@@ -32,11 +32,17 @@ export interface EntityTypeConfig {
   retentionDays?: number
 }
 
+export interface MatcherConfig {
+  messageType?: string | null
+  idSource: string
+  idExpression: string
+}
+
 export interface EntitySourceConfig {
   entityType: string
   topic: string
-  idSource: string
-  idExpression: string
+  mode: string
+  matchers: MatcherConfig[]
 }
 
 export interface CreateEntityRequest {
@@ -51,8 +57,8 @@ export interface UpdateEntityRequest {
 
 export interface AddSourceRequest {
   topic: string
-  idSource?: string
-  idExpression: string
+  mode?: string
+  matchers: MatcherConfig[]
 }
 
 export interface Header {
