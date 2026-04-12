@@ -98,7 +98,7 @@ public final class DuckDBTestSupport {
                     )""");
 
             st.execute("CREATE SEQUENCE IF NOT EXISTS seq_entity_source_mappings START 1");
-            st.execute("""
+                    st.execute("""
                     CREATE TABLE IF NOT EXISTS entity_source_mappings (
                         id          INTEGER PRIMARY KEY
                                       DEFAULT nextval('seq_entity_source_mappings'),
@@ -118,7 +118,7 @@ public final class DuckDBTestSupport {
                         topic        VARCHAR NOT NULL,
                         message_type VARCHAR NOT NULL,
                         id_source    VARCHAR NOT NULL DEFAULT 'value'
-                                       CHECK (id_source IN ('key', 'value', 'headers')),
+                                       CHECK (id_source IN ('key', 'value', 'header')),
                         id_expression VARCHAR,
                         created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
                         UNIQUE (entity_type, topic, message_type)

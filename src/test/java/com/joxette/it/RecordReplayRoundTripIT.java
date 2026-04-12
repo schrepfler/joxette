@@ -24,7 +24,7 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.web.client.RestTemplate;
-import org.testcontainers.containers.KafkaContainer;
+import org.testcontainers.kafka.KafkaContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
@@ -41,6 +41,7 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 /**
  * Full API integration test: record → replay round-trip.
@@ -69,7 +70,7 @@ class RecordReplayRoundTripIT {
 
     @Container
     static KafkaContainer kafka = new KafkaContainer(
-            DockerImageName.parse("confluentinc/cp-kafka:7.6.0"));
+            DockerImageName.parse("apache/kafka-native:4.0.2"));
 
     @DynamicPropertySource
     static void kafkaProperties(DynamicPropertyRegistry registry) {
@@ -224,7 +225,15 @@ class RecordReplayRoundTripIT {
         // The recorder writes to lake.main.general_<normalized_topic>. Wait for rows to appear.
         String normalized = recordingTopic.toLowerCase().replaceAll("[^a-z0-9_]", "_");
         String cassetteTable = "lake.main.general_" + normalized;
-        awaitRowCount(cassetteTable, msgCount, Duration.ofSeconds(20));
+        await().atMost(Duration.ofSeconds(20))
+                .pollInterval(Duration.ofMillis(100))
+                .until(() -> {
+                    try {
+                        return DuckDBTestSupport.countRows(duckDB, cassetteTable) >= msgCount;
+                    } catch (Exception ignored) {
+                        return false; // table not yet created by the recorder
+                    }
+                });
 
         long count = DuckDBTestSupport.countRows(duckDB, cassetteTable);
         assertThat(count).isGreaterThanOrEqualTo(msgCount);
@@ -270,29 +279,6 @@ class RecordReplayRoundTripIT {
         props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class);
         props.put(ProducerConfig.ACKS_CONFIG, "all");
         return new KafkaProducer<>(props);
-    }
-
-    private void awaitRowCount(String table, long expected, Duration timeout) throws Exception {
-        long deadline = System.currentTimeMillis() + timeout.toMillis();
-        while (System.currentTimeMillis() < deadline) {
-            try (Statement st = duckDB.createStatement()) {
-                try (var rs = st.executeQuery("SELECT COUNT(*) FROM " + table)) {
-                    if (rs.next() && rs.getLong(1) >= expected) return;
-                }
-            } catch (Exception ignored) {
-                // table not yet created by the recorder
-            }
-            Thread.sleep(100);
-        }
-        // Produce a meaningful assertion failure.
-        long actual = 0;
-        try (Statement st = duckDB.createStatement();
-             var rs = st.executeQuery("SELECT COUNT(*) FROM " + table)) {
-            if (rs.next()) actual = rs.getLong(1);
-        } catch (Exception ignored) {}
-        assertThat(actual)
-                .as("Expected ≥%d rows in %s within %s", expected, table, timeout)
-                .isGreaterThanOrEqualTo(expected);
     }
 
     private static byte[] b(String s) {

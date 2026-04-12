@@ -20,7 +20,7 @@
 | UI forms | TanStack Form | `@tanstack/react-form` |
 | UI JSON viewer | `@visual-json/react` | used in topic replay records |
 | UI package manager | pnpm | `pnpm-lock.yaml` |
-| Testing | JUnit 5, Testcontainers | Kafka + DuckDB integration tests |
+| Testing | JUnit 5, Testcontainers, Awaitility | Kafka + DuckDB integration tests |
 | API docs | SpringDoc / OpenAPI 3 | `/v3/api-docs`, `/swagger-ui.html` |
 
 ## Development Setup
@@ -80,6 +80,52 @@ joxette:
   compaction:
     schedule: "0 0 3 * * *"            # Spring 6-field cron
 ```
+
+## Integration Test Patterns
+
+### Async polling — Awaitility (standard)
+All integration tests that wait for asynchronous pipeline results (e.g. Kafka consumer →
+DuckDB write) use **Awaitility** — not manual `while`/`Thread.sleep` loops.
+
+Canonical form:
+```java
+await().atMost(Duration.ofSeconds(20))
+       .pollInterval(Duration.ofMillis(100))
+       .until(() -> {
+           try {
+               return DuckDBTestSupport.countRows(duckDB, table) >= expected;
+           } catch (Exception ignored) {
+               return false; // table not yet created by the recorder
+           }
+       });
+```
+
+Awaitility is a transitive dependency of `spring-boot-starter-test` — no extra `pom.xml` entry needed.
+
+The `it` profile sets `batch-timeout-ms: 100` so the recording pipeline flushes quickly
+enough that `atMost(20–30 s)` is comfortably safe.
+
+### Kafka container image — `apache/kafka-native`
+All integration tests and `TopicRecorderTest` use the official **Apache Kafka native image**
+instead of the Confluent CP image:
+
+```java
+DockerImageName.parse("apache/kafka-native:4.0.2")
+```
+
+- **Why**: GraalVM-compiled native binary; starts in ~1–2 s vs ~10–15 s for the JVM-based
+  Confluent image. Significantly reduces CI wall-clock time.
+- **Current pinned version**: `4.0.2` (latest as of April 2026).
+- **Testcontainers support**: use `org.testcontainers.kafka.KafkaContainer` (the newer module-aware
+  class), **not** `org.testcontainers.containers.KafkaContainer`. The new class natively supports
+  `apache/kafka-native` without any `.asCompatibleSubstituteFor(...)` shim:
+  ```java
+  import org.testcontainers.kafka.KafkaContainer;
+  // ...
+  static KafkaContainer kafka = new KafkaContainer(
+          DockerImageName.parse("apache/kafka-native:4.0.2"));
+  ```
+- **Update policy**: pin an explicit tag; do not use `latest`.
 
 ## Important Technical Constraints
 
