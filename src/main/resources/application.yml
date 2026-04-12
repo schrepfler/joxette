@@ -64,6 +64,9 @@ joxette:
     batch-size: 10000
     batch-timeout-ms: 1000
 
+  replay:
+    max-scheduled: 50
+
   cors:
     allowed-origins:
       - http://localhost:5173

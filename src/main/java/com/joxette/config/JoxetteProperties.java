@@ -14,6 +14,7 @@ public class JoxetteProperties {
     private Retention retention = new Retention();
     private Kafka kafka = new Kafka();
     private Recording recording = new Recording();
+    private Replay replay = new Replay();
     private Bootstrap bootstrap = new Bootstrap();
     private S3 s3 = new S3();
     private ObjectStore objectStore = new ObjectStore();
@@ -182,6 +183,21 @@ public class JoxetteProperties {
 
         public long getBatchTimeoutMs() { return batchTimeoutMs; }
         public void setBatchTimeoutMs(long batchTimeoutMs) { this.batchTimeoutMs = batchTimeoutMs; }
+    }
+
+    // -----------------------------------------------------------------------
+    // Replay
+    // -----------------------------------------------------------------------
+
+    public static class Replay {
+        /**
+         * Maximum number of scheduled replays that may be pending or actively streaming
+         * at any one time. Attempts to schedule beyond this limit return HTTP 429.
+         */
+        private int maxScheduled = 50;
+
+        public int getMaxScheduled() { return maxScheduled; }
+        public void setMaxScheduled(int maxScheduled) { this.maxScheduled = maxScheduled; }
     }
 
     // -----------------------------------------------------------------------
@@ -386,6 +402,9 @@ public class JoxetteProperties {
 
     public Recording getRecording() { return recording; }
     public void setRecording(Recording recording) { this.recording = recording; }
+
+    public Replay getReplay() { return replay; }
+    public void setReplay(Replay replay) { this.replay = replay; }
 
     public Bootstrap getBootstrap() { return bootstrap; }
     public void setBootstrap(Bootstrap bootstrap) { this.bootstrap = bootstrap; }

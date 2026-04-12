@@ -36,6 +36,21 @@ import java.util.NoSuchElementException;
  *   <dd>Newline-delimited JSON. One JSON object per line, flushed incrementally.</dd>
  * </dl>
  *
+ * <h2>Scheduled replay</h2>
+ * <p>All replay endpoints accept two optional scheduling parameters:
+ * <ul>
+ *   <li>{@code start_at} — ISO-8601 absolute timestamp at which streaming begins.</li>
+ *   <li>{@code start_delay_ms} — relative delay in milliseconds before streaming begins.</li>
+ * </ul>
+ * At most one of the two may be specified per request.
+ * <ul>
+ *   <li>For {@code text/event-stream} and {@code application/x-ndjson}: the server holds
+ *       the connection open and immediately sends a {@code scheduled} event/line, then waits
+ *       until the start time before streaming data.</li>
+ *   <li>For {@code application/json}: the server returns HTTP 202 Accepted with a
+ *       {@link ScheduledReplayResponse} body containing a scheduled replay ID.</li>
+ * </ul>
+ *
  * <h2>Error handling</h2>
  * <p>Invalid entity-type names (must match {@code [a-z][a-z0-9_]*}) and
  * malformed cursors return HTTP 400.
@@ -43,7 +58,8 @@ import java.util.NoSuchElementException;
 @Tag(name = "Cassette Replay",
      description = "Replay recorded Kafka messages stored in DuckLake. " +
                    "Replay endpoints support three response formats via the Accept header: " +
-                   "application/json (cursor-paginated), text/event-stream (SSE), and application/x-ndjson (streaming).")
+                   "application/json (cursor-paginated), text/event-stream (SSE), and application/x-ndjson (streaming). " +
+                   "All replay endpoints support optional start_at / start_delay_ms parameters for scheduled delivery.")
 @RestController
 @RequestMapping("/cassettes")
 public class CassetteController {
@@ -55,18 +71,21 @@ public class CassetteController {
     private final SseReplayHandler sseHandler;
     private final CassetteLifecycleService lifecycle;
     private final ReplayToTopicService replayToTopicService;
+    private final ScheduledReplayService scheduledReplayService;
 
     public CassetteController(
             TopicReplayService topicService,
             EntityReplayService entityService,
             SseReplayHandler sseHandler,
             CassetteLifecycleService lifecycle,
-            ReplayToTopicService replayToTopicService) {
-        this.topicService        = topicService;
-        this.entityService       = entityService;
-        this.sseHandler          = sseHandler;
-        this.lifecycle           = lifecycle;
-        this.replayToTopicService = replayToTopicService;
+            ReplayToTopicService replayToTopicService,
+            ScheduledReplayService scheduledReplayService) {
+        this.topicService             = topicService;
+        this.entityService            = entityService;
+        this.sseHandler               = sseHandler;
+        this.lifecycle                = lifecycle;
+        this.replayToTopicService     = replayToTopicService;
+        this.scheduledReplayService   = scheduledReplayService;
     }
 
     // =========================================================================
@@ -79,7 +98,9 @@ public class CassetteController {
         description = "Returns a cursor-paginated page of messages recorded from the given Kafka topic. " +
                       "Supports filtering by timestamp range, partition, and Kafka offset range. " +
                       "Pass `nextCursor` from the previous response to advance to the next page. " +
-                      "Use `Accept: text/event-stream` for SSE streaming or `Accept: application/x-ndjson` for NDJSON streaming."
+                      "Use `Accept: text/event-stream` for SSE streaming or `Accept: application/x-ndjson` for NDJSON streaming. " +
+                      "If `start_at` or `start_delay_ms` is provided, returns HTTP 202 with a scheduled replay ID " +
+                      "instead of data."
     )
     @ApiResponses({
         @ApiResponse(responseCode = "200", description = "Paginated list of cassette records",
@@ -104,13 +125,23 @@ public class CassetteController {
                       "nextCursor": "eyJ0cyI6IjIwMjQtMDYtMDFUMTI6MDA6MDAuMTIzWiIsIm8iOjEwMjR9",
                       "hasMore": true
                     }"""))),
+        @ApiResponse(responseCode = "202", description = "Replay scheduled. Data will stream at the given start time.",
+            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                schema = @Schema(implementation = ScheduledReplayResponse.class),
+                examples = @ExampleObject(name = "scheduled", value = """
+                    {
+                      "scheduledReplayId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                      "scheduledAt": "2026-04-12T10:00:00Z"
+                    }"""))),
         @ApiResponse(responseCode = "400", description = "Invalid topic, filter value, or malformed cursor",
+            content = @Content(schema = @Schema(type = "string"))),
+        @ApiResponse(responseCode = "429", description = "Max concurrent scheduled replays reached",
             content = @Content(schema = @Schema(type = "string"))),
         @ApiResponse(responseCode = "500", description = "Database error",
             content = @Content(schema = @Schema(type = "string")))
     })
     @GetMapping(value = "/topics/{topic}", produces = MediaType.APPLICATION_JSON_VALUE)
-    public PagedResponse<CassetteRecord> getTopicJson(
+    public ResponseEntity<?> getTopicJson(
             @Parameter(description = "Kafka topic name", required = true, example = "orders")
             @PathVariable String topic,
             @Parameter(description = "Include only records with timestamp >= this value (ISO-8601 instant)")
@@ -126,9 +157,19 @@ public class CassetteController {
             @Parameter(description = "Maximum number of records to return per page (default 100)", example = "100")
             @RequestParam(defaultValue = "" + DEFAULT_LIMIT) int limit,
             @Parameter(description = "Opaque cursor from a previous response's `nextCursor` field")
-            @RequestParam(required = false) String cursor
+            @RequestParam(required = false) String cursor,
+            @Parameter(description = "ISO-8601 absolute timestamp at which streaming begins (mutually exclusive with start_delay_ms)", name = "start_at")
+            @RequestParam(name = "start_at", required = false) Instant startAt,
+            @Parameter(description = "Relative delay in milliseconds before streaming begins (mutually exclusive with start_at)", name = "start_delay_ms")
+            @RequestParam(name = "start_delay_ms", required = false) Long startDelayMs
     ) throws SQLException {
-        return topicService.query(topic, from, to, partition, offsetFrom, offsetTo, limit, cursor);
+        Instant scheduledAt = resolveScheduledAt(startAt, startDelayMs);
+        if (scheduledAt != null) {
+            String id = scheduledReplayService.registerTopicReplay(
+                    topic, scheduledAt, from, to, partition, offsetFrom, offsetTo);
+            return ResponseEntity.accepted().body(new ScheduledReplayResponse(id, scheduledAt));
+        }
+        return ResponseEntity.ok(topicService.query(topic, from, to, partition, offsetFrom, offsetTo, limit, cursor));
     }
 
     @Operation(
@@ -137,19 +178,26 @@ public class CassetteController {
         description = "Streams all matching messages as Server-Sent Events (Accept: text/event-stream). " +
                       "Each `data:` field contains a single JSON-serialised `CassetteRecord`. " +
                       "The stream ends when all matching records have been sent. " +
-                      "Supports the same time, partition, and offset filters as the JSON variant."
+                      "Supports the same time, partition, and offset filters as the JSON variant. " +
+                      "If `start_at` or `start_delay_ms` is provided, the server first sends a " +
+                      "`scheduled` event with `{\"id\":\"…\",\"scheduledAt\":\"…\"}`, then waits " +
+                      "until the start time before streaming data. If cancelled before the start time, " +
+                      "a `cancelled` event is sent."
     )
     @ApiResponses({
         @ApiResponse(responseCode = "200", description = "Server-Sent Event stream of cassette records",
             content = @Content(mediaType = MediaType.TEXT_EVENT_STREAM_VALUE,
                 schema = @Schema(type = "string",
-                    description = "Each SSE event: `data: {CassetteRecord JSON}\\n\\n`"),
+                    description = "Each SSE event: `data: {CassetteRecord JSON}\\n\\n`. " +
+                                  "When scheduled: first event is `event: scheduled\\ndata: {\"id\":\"…\",\"scheduledAt\":\"…\"}\\n\\n`"),
                 examples = @ExampleObject(name = "event", value =
                     "data: {\"topic\":\"orders\",\"partition\":0,\"offset\":1024," +
                           "\"timestamp\":\"2024-06-01T12:00:00Z\"," +
                           "\"recordedAt\":\"2024-06-01T12:00:00.123Z\"," +
                           "\"key\":\"b3JkZXItNDI\",\"value\":\"eyJvcmRlcklkIjoiNDIifQ\"}\n\n"))),
         @ApiResponse(responseCode = "400", description = "Invalid topic or filter value",
+            content = @Content(schema = @Schema(type = "string"))),
+        @ApiResponse(responseCode = "429", description = "Max concurrent scheduled replays reached",
             content = @Content(schema = @Schema(type = "string")))
     })
     @GetMapping(value = "/topics/{topic}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -165,8 +213,19 @@ public class CassetteController {
             @Parameter(description = "Include only records with Kafka offset >= this value", name = "offset_from")
             @RequestParam(name = "offset_from", required = false) Long offsetFrom,
             @Parameter(description = "Include only records with Kafka offset <= this value", name = "offset_to")
-            @RequestParam(name = "offset_to",   required = false) Long offsetTo
+            @RequestParam(name = "offset_to",   required = false) Long offsetTo,
+            @Parameter(description = "ISO-8601 absolute timestamp at which streaming begins (mutually exclusive with start_delay_ms)", name = "start_at")
+            @RequestParam(name = "start_at", required = false) Instant startAt,
+            @Parameter(description = "Relative delay in milliseconds before streaming begins (mutually exclusive with start_at)", name = "start_delay_ms")
+            @RequestParam(name = "start_delay_ms", required = false) Long startDelayMs
     ) {
+        Instant scheduledAt = resolveScheduledAt(startAt, startDelayMs);
+        if (scheduledAt != null) {
+            String id = scheduledReplayService.registerTopicReplay(
+                    topic, scheduledAt, from, to, partition, offsetFrom, offsetTo);
+            return sseHandler.<CassetteRecord>streamSseScheduled(id, scheduledAt, scheduledReplayService,
+                    sink -> topicService.streamAll(topic, from, to, partition, offsetFrom, offsetTo, sink));
+        }
         return sseHandler.<CassetteRecord>streamSse(
                 sink -> topicService.streamAll(topic, from, to, partition, offsetFrom, offsetTo, sink));
     }
@@ -176,7 +235,10 @@ public class CassetteController {
         summary = "Replay topic records (NDJSON)",
         description = "Streams all matching messages as newline-delimited JSON (Accept: application/x-ndjson). " +
                       "Each line is a complete JSON-serialised `CassetteRecord`, flushed incrementally. " +
-                      "Supports the same time, partition, and offset filters as the JSON variant."
+                      "Supports the same time, partition, and offset filters as the JSON variant. " +
+                      "If `start_at` or `start_delay_ms` is provided, the first line written is " +
+                      "`{\"event\":\"scheduled\",\"id\":\"…\",\"scheduledAt\":\"…\"}` and the stream " +
+                      "waits until the start time before data lines begin."
     )
     @ApiResponses({
         @ApiResponse(responseCode = "200", description = "NDJSON stream of cassette records",
@@ -189,6 +251,8 @@ public class CassetteController {
                      "\"recordedAt\":\"2024-06-01T12:00:00.123Z\"," +
                      "\"key\":\"b3JkZXItNDI\",\"value\":\"eyJvcmRlcklkIjoiNDIifQ\"}"))),
         @ApiResponse(responseCode = "400", description = "Invalid topic or filter value",
+            content = @Content(schema = @Schema(type = "string"))),
+        @ApiResponse(responseCode = "429", description = "Max concurrent scheduled replays reached",
             content = @Content(schema = @Schema(type = "string")))
     })
     @GetMapping(value = "/topics/{topic}", produces = "application/x-ndjson")
@@ -204,10 +268,23 @@ public class CassetteController {
             @Parameter(description = "Include only records with Kafka offset >= this value", name = "offset_from")
             @RequestParam(name = "offset_from", required = false) Long offsetFrom,
             @Parameter(description = "Include only records with Kafka offset <= this value", name = "offset_to")
-            @RequestParam(name = "offset_to",   required = false) Long offsetTo
+            @RequestParam(name = "offset_to",   required = false) Long offsetTo,
+            @Parameter(description = "ISO-8601 absolute timestamp at which streaming begins (mutually exclusive with start_delay_ms)", name = "start_at")
+            @RequestParam(name = "start_at", required = false) Instant startAt,
+            @Parameter(description = "Relative delay in milliseconds before streaming begins (mutually exclusive with start_at)", name = "start_delay_ms")
+            @RequestParam(name = "start_delay_ms", required = false) Long startDelayMs
     ) {
-        StreamingResponseBody body = sseHandler.<CassetteRecord>streamNdjson(
-                sink -> topicService.streamAll(topic, from, to, partition, offsetFrom, offsetTo, sink));
+        Instant scheduledAt = resolveScheduledAt(startAt, startDelayMs);
+        StreamingResponseBody body;
+        if (scheduledAt != null) {
+            String id = scheduledReplayService.registerTopicReplay(
+                    topic, scheduledAt, from, to, partition, offsetFrom, offsetTo);
+            body = sseHandler.<CassetteRecord>streamNdjsonScheduled(id, scheduledAt, scheduledReplayService,
+                    sink -> topicService.streamAll(topic, from, to, partition, offsetFrom, offsetTo, sink));
+        } else {
+            body = sseHandler.<CassetteRecord>streamNdjson(
+                    sink -> topicService.streamAll(topic, from, to, partition, offsetFrom, offsetTo, sink));
+        }
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType("application/x-ndjson"))
                 .body(body);
@@ -305,7 +382,9 @@ public class CassetteController {
         summary = "Replay entity events (JSON)",
         description = "Returns a cursor-paginated page of deduplicated events for the given entity from its entity cassette. " +
                       "Supports filtering by timestamp range. " +
-                      "Use `Accept: text/event-stream` for SSE streaming or `Accept: application/x-ndjson` for NDJSON streaming."
+                      "Use `Accept: text/event-stream` for SSE streaming or `Accept: application/x-ndjson` for NDJSON streaming. " +
+                      "If `start_at` or `start_delay_ms` is provided, returns HTTP 202 with a scheduled replay ID " +
+                      "instead of data."
     )
     @ApiResponses({
         @ApiResponse(responseCode = "200", description = "Paginated list of entity event records",
@@ -330,13 +409,23 @@ public class CassetteController {
                       "nextCursor": "eyJ0cyI6IjIwMjQtMDYtMDFUMTA6MDA6MDAuNDU2WiIsIm8iOjg4MDB9",
                       "hasMore": false
                     }"""))),
+        @ApiResponse(responseCode = "202", description = "Replay scheduled. Data will stream at the given start time.",
+            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                schema = @Schema(implementation = ScheduledReplayResponse.class),
+                examples = @ExampleObject(name = "scheduled", value = """
+                    {
+                      "scheduledReplayId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                      "scheduledAt": "2026-04-12T10:00:00Z"
+                    }"""))),
         @ApiResponse(responseCode = "400", description = "Invalid entity type or malformed cursor",
+            content = @Content(schema = @Schema(type = "string"))),
+        @ApiResponse(responseCode = "429", description = "Max concurrent scheduled replays reached",
             content = @Content(schema = @Schema(type = "string"))),
         @ApiResponse(responseCode = "500", description = "Database error",
             content = @Content(schema = @Schema(type = "string")))
     })
     @GetMapping(value = "/entities/{entityType}/{entityId}", produces = MediaType.APPLICATION_JSON_VALUE)
-    public PagedResponse<EntityRecord> getEntityJson(
+    public ResponseEntity<?> getEntityJson(
             @Parameter(description = "Entity type name (must match `[a-z][a-z0-9_]*`)", required = true, example = "customer")
             @PathVariable String entityType,
             @Parameter(description = "Entity identifier", required = true, example = "cust-042")
@@ -348,9 +437,19 @@ public class CassetteController {
             @Parameter(description = "Maximum number of events to return per page (default 100)", example = "100")
             @RequestParam(defaultValue = "" + DEFAULT_LIMIT) int limit,
             @Parameter(description = "Opaque cursor from a previous response's `nextCursor` field")
-            @RequestParam(required = false) String cursor
+            @RequestParam(required = false) String cursor,
+            @Parameter(description = "ISO-8601 absolute timestamp at which streaming begins (mutually exclusive with start_delay_ms)", name = "start_at")
+            @RequestParam(name = "start_at", required = false) Instant startAt,
+            @Parameter(description = "Relative delay in milliseconds before streaming begins (mutually exclusive with start_at)", name = "start_delay_ms")
+            @RequestParam(name = "start_delay_ms", required = false) Long startDelayMs
     ) throws SQLException {
-        return entityService.queryEntityEvents(entityType, entityId, from, to, limit, cursor);
+        Instant scheduledAt = resolveScheduledAt(startAt, startDelayMs);
+        if (scheduledAt != null) {
+            String id = scheduledReplayService.registerEntityReplay(
+                    entityType, entityId, scheduledAt, from, to);
+            return ResponseEntity.accepted().body(new ScheduledReplayResponse(id, scheduledAt));
+        }
+        return ResponseEntity.ok(entityService.queryEntityEvents(entityType, entityId, from, to, limit, cursor));
     }
 
     @Operation(
@@ -358,13 +457,16 @@ public class CassetteController {
         summary = "Replay entity events (SSE)",
         description = "Streams all deduplicated events for the given entity as Server-Sent Events " +
                       "(Accept: text/event-stream). Each `data:` field contains a single JSON-serialised `EntityRecord`. " +
-                      "Supports the same timestamp filters as the JSON variant."
+                      "Supports the same timestamp filters as the JSON variant. " +
+                      "If `start_at` or `start_delay_ms` is provided, the server first sends a " +
+                      "`scheduled` event with `{\"id\":\"…\",\"scheduledAt\":\"…\"}` and waits before streaming."
     )
     @ApiResponses({
         @ApiResponse(responseCode = "200", description = "Server-Sent Event stream of entity records",
             content = @Content(mediaType = MediaType.TEXT_EVENT_STREAM_VALUE,
                 schema = @Schema(type = "string",
-                    description = "Each SSE event: `data: {EntityRecord JSON}\\n\\n`"),
+                    description = "Each SSE event: `data: {EntityRecord JSON}\\n\\n`. " +
+                                  "When scheduled: first event is `event: scheduled\\ndata: {\"id\":\"…\",\"scheduledAt\":\"…\"}\\n\\n`"),
                 examples = @ExampleObject(name = "event", value =
                     "data: {\"entityId\":\"cust-042\",\"entityBucket\":5,\"topic\":\"customer-events\"," +
                           "\"partition\":1,\"offset\":8800," +
@@ -372,6 +474,8 @@ public class CassetteController {
                           "\"recordedAt\":\"2024-06-01T10:00:00.456Z\"," +
                           "\"key\":\"Y3VzdC0wNDI\",\"value\":\"eyJldmVudCI6InVwZGF0ZWQifQ\"}\n\n"))),
         @ApiResponse(responseCode = "400", description = "Invalid entity type",
+            content = @Content(schema = @Schema(type = "string"))),
+        @ApiResponse(responseCode = "429", description = "Max concurrent scheduled replays reached",
             content = @Content(schema = @Schema(type = "string")))
     })
     @GetMapping(value = "/entities/{entityType}/{entityId}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -383,8 +487,19 @@ public class CassetteController {
             @Parameter(description = "Include only events with timestamp >= this value (ISO-8601 instant)")
             @RequestParam(required = false) Instant from,
             @Parameter(description = "Include only events with timestamp <= this value (ISO-8601 instant)")
-            @RequestParam(required = false) Instant to
+            @RequestParam(required = false) Instant to,
+            @Parameter(description = "ISO-8601 absolute timestamp at which streaming begins (mutually exclusive with start_delay_ms)", name = "start_at")
+            @RequestParam(name = "start_at", required = false) Instant startAt,
+            @Parameter(description = "Relative delay in milliseconds before streaming begins (mutually exclusive with start_at)", name = "start_delay_ms")
+            @RequestParam(name = "start_delay_ms", required = false) Long startDelayMs
     ) {
+        Instant scheduledAt = resolveScheduledAt(startAt, startDelayMs);
+        if (scheduledAt != null) {
+            String id = scheduledReplayService.registerEntityReplay(
+                    entityType, entityId, scheduledAt, from, to);
+            return sseHandler.<EntityRecord>streamSseScheduled(id, scheduledAt, scheduledReplayService,
+                    sink -> entityService.streamEntityEvents(entityType, entityId, from, to, sink));
+        }
         return sseHandler.<EntityRecord>streamSse(
                 sink -> entityService.streamEntityEvents(entityType, entityId, from, to, sink));
     }
@@ -394,7 +509,10 @@ public class CassetteController {
         summary = "Replay entity events (NDJSON)",
         description = "Streams all deduplicated events for the given entity as newline-delimited JSON " +
                       "(Accept: application/x-ndjson). Each line is a complete JSON-serialised `EntityRecord`, " +
-                      "flushed incrementally. Supports the same timestamp filters as the JSON variant."
+                      "flushed incrementally. Supports the same timestamp filters as the JSON variant. " +
+                      "If `start_at` or `start_delay_ms` is provided, the first line written is " +
+                      "`{\"event\":\"scheduled\",\"id\":\"…\",\"scheduledAt\":\"…\"}` and the stream " +
+                      "waits until the start time before data lines begin."
     )
     @ApiResponses({
         @ApiResponse(responseCode = "200", description = "NDJSON stream of entity records",
@@ -408,6 +526,8 @@ public class CassetteController {
                      "\"recordedAt\":\"2024-06-01T10:00:00.456Z\"," +
                      "\"key\":\"Y3VzdC0wNDI\",\"value\":\"eyJldmVudCI6InVwZGF0ZWQifQ\"}"))),
         @ApiResponse(responseCode = "400", description = "Invalid entity type",
+            content = @Content(schema = @Schema(type = "string"))),
+        @ApiResponse(responseCode = "429", description = "Max concurrent scheduled replays reached",
             content = @Content(schema = @Schema(type = "string")))
     })
     @GetMapping(value = "/entities/{entityType}/{entityId}", produces = "application/x-ndjson")
@@ -419,10 +539,23 @@ public class CassetteController {
             @Parameter(description = "Include only events with timestamp >= this value (ISO-8601 instant)")
             @RequestParam(required = false) Instant from,
             @Parameter(description = "Include only events with timestamp <= this value (ISO-8601 instant)")
-            @RequestParam(required = false) Instant to
+            @RequestParam(required = false) Instant to,
+            @Parameter(description = "ISO-8601 absolute timestamp at which streaming begins (mutually exclusive with start_delay_ms)", name = "start_at")
+            @RequestParam(name = "start_at", required = false) Instant startAt,
+            @Parameter(description = "Relative delay in milliseconds before streaming begins (mutually exclusive with start_at)", name = "start_delay_ms")
+            @RequestParam(name = "start_delay_ms", required = false) Long startDelayMs
     ) {
-        StreamingResponseBody body = sseHandler.<EntityRecord>streamNdjson(
-                sink -> entityService.streamEntityEvents(entityType, entityId, from, to, sink));
+        Instant scheduledAt = resolveScheduledAt(startAt, startDelayMs);
+        StreamingResponseBody body;
+        if (scheduledAt != null) {
+            String id = scheduledReplayService.registerEntityReplay(
+                    entityType, entityId, scheduledAt, from, to);
+            body = sseHandler.<EntityRecord>streamNdjsonScheduled(id, scheduledAt, scheduledReplayService,
+                    sink -> entityService.streamEntityEvents(entityType, entityId, from, to, sink));
+        } else {
+            body = sseHandler.<EntityRecord>streamNdjson(
+                    sink -> entityService.streamEntityEvents(entityType, entityId, from, to, sink));
+        }
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType("application/x-ndjson"))
                 .body(body);
@@ -471,6 +604,62 @@ public class CassetteController {
             @PathVariable String entityId
     ) throws SQLException {
         return entityService.getEntityStats(entityType, entityId);
+    }
+
+    // =========================================================================
+    // Scheduled replay management
+    // =========================================================================
+
+    @Operation(
+        operationId = "listScheduledReplays",
+        summary = "List pending scheduled replays",
+        description = "Returns all replay requests that are currently pending (waiting for their start time) " +
+                      "or actively streaming. Scheduled replays are held in memory only; they are lost on service restart. " +
+                      "Results are ordered by scheduled start time ascending."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "List of pending and streaming scheduled replays",
+            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                schema = @Schema(type = "array", implementation = ScheduledReplay.class),
+                examples = @ExampleObject(name = "list", value = """
+                    [
+                      {
+                        "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+                        "kind": "topic",
+                        "topic": "orders",
+                        "scheduledAt": "2026-04-12T10:00:00Z",
+                        "createdAt": "2026-04-12T09:55:00Z",
+                        "status": "pending"
+                      }
+                    ]""")))
+    })
+    @GetMapping(value = "/scheduled", produces = MediaType.APPLICATION_JSON_VALUE)
+    public List<ScheduledReplay> listScheduledReplays() {
+        return scheduledReplayService.list();
+    }
+
+    @Operation(
+        operationId = "cancelScheduledReplay",
+        summary = "Cancel a pending scheduled replay",
+        description = "Cancels a scheduled replay before its start time. " +
+                      "If the replay is in SSE or NDJSON mode the server sends a `cancelled` event/line " +
+                      "and closes the stream. Cannot cancel a replay that is already streaming."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "204", description = "Replay cancelled successfully"),
+        @ApiResponse(responseCode = "404", description = "Scheduled replay not found",
+            content = @Content(schema = @Schema(type = "string"))),
+        @ApiResponse(responseCode = "400", description = "Replay cannot be cancelled in its current state",
+            content = @Content(schema = @Schema(type = "string")))
+    })
+    @DeleteMapping("/scheduled/{id}")
+    public ResponseEntity<Void> cancelScheduledReplay(
+            @Parameter(description = "Scheduled replay ID returned when the replay was registered",
+                       required = true, example = "a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+            @PathVariable String id
+    ) {
+        scheduledReplayService.cancel(id);
+        return ResponseEntity.noContent().build();
     }
 
     // =========================================================================
@@ -996,12 +1185,42 @@ public class CassetteController {
     }
 
     // =========================================================================
+    // Helpers
+    // =========================================================================
+
+    /**
+     * Resolves {@code start_at} / {@code start_delay_ms} to an absolute {@link Instant}.
+     *
+     * @return the resolved start time, or {@code null} if neither parameter was supplied
+     * @throws IllegalArgumentException if both params are supplied, or {@code start_delay_ms < 0}
+     */
+    private Instant resolveScheduledAt(Instant startAt, Long startDelayMs) {
+        if (startAt != null && startDelayMs != null) {
+            throw new IllegalArgumentException(
+                    "Specify at most one of start_at and start_delay_ms");
+        }
+        if (startAt != null) return startAt;
+        if (startDelayMs != null) {
+            if (startDelayMs < 0) {
+                throw new IllegalArgumentException("start_delay_ms must be non-negative");
+            }
+            return Instant.now().plusMillis(startDelayMs);
+        }
+        return null;
+    }
+
+    // =========================================================================
     // Error handling
     // =========================================================================
 
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<String> handleBadRequest(IllegalArgumentException ex) {
         return ResponseEntity.badRequest().body(ex.getMessage());
+    }
+
+    @ExceptionHandler(IllegalStateException.class)
+    public ResponseEntity<String> handleConflict(IllegalStateException ex) {
+        return ResponseEntity.status(429).body(ex.getMessage());
     }
 
     @ExceptionHandler(NoSuchElementException.class)
