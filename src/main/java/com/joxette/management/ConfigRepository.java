@@ -475,6 +475,37 @@ public class ConfigRepository {
     }
 
     // -------------------------------------------------------------------------
+    // Counts (used by ConfigController for the domain summary)
+    // -------------------------------------------------------------------------
+
+    public int countTopics() throws SQLException {
+        synchronized (duckDB) {
+            try (Statement st = duckDB.createStatement();
+                 ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM topic_configs")) {
+                return rs.next() ? rs.getInt(1) : 0;
+            }
+        }
+    }
+
+    public int countEntityTypes() throws SQLException {
+        synchronized (duckDB) {
+            try (Statement st = duckDB.createStatement();
+                 ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM entity_type_configs")) {
+                return rs.next() ? rs.getInt(1) : 0;
+            }
+        }
+    }
+
+    public int countSourceMappings() throws SQLException {
+        synchronized (duckDB) {
+            try (Statement st = duckDB.createStatement();
+                 ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM entity_source_mappings")) {
+                return rs.next() ? rs.getInt(1) : 0;
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // Bootstrap seeding
     // -------------------------------------------------------------------------
 

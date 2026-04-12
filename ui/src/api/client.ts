@@ -499,3 +499,40 @@ export const compactionApi = {
 export const healthApi = {
   get: () => request<HealthStatus>('/health'),
 }
+
+// ---- Runtime config ----
+
+export interface DeploymentConfig {
+  kafkaBootstrapServers: string
+  catalogPath: string
+  objectStoragePath: string | null
+  s3Endpoint: string
+  s3Region: string
+  inlineThresholdMb: number
+  inlineThresholdRecords: number
+  compactionSchedule: string
+  retentionSchedule: string
+  recordingBatchSize: number
+  recordingBatchTimeoutMs: number
+  compactionEntityMinFilesPerBucket: number
+  compactionEntityTargetFileSizeMb: number
+  compactionEntityLookbackDays: number
+  compactionGeneralEnabled: boolean
+  compactionGeneralMinFilesPerPartition: number
+  compactionGeneralTargetFileSizeMb: number
+}
+
+export interface DomainSummary {
+  topicCount: number
+  entityTypeCount: number
+  sourceMappingCount: number
+}
+
+export interface RuntimeConfig {
+  deployment: DeploymentConfig
+  domain: DomainSummary
+}
+
+export const configApi = {
+  getRuntime: () => request<RuntimeConfig>('/config/runtime'),
+}

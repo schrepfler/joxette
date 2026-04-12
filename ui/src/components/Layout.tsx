@@ -7,6 +7,7 @@ const NAV_LINKS = [
   { to: '/compaction', label: 'Compaction', shortcut: 'g c' },
   { to: '/health', label: 'Health', shortcut: 'g h' },
   { to: '/snapshots', label: 'Snapshots', shortcut: 'g s' },
+  { to: '/settings', label: 'Settings', shortcut: 'g n' },
   { to: '/about', label: 'About', shortcut: 'g a' },
 ]
 
@@ -23,6 +24,7 @@ export function Layout({ children }: LayoutProps) {
     { sequence: ['G', 'C'], callback: () => { void navigate({ to: '/compaction' }) } },
     { sequence: ['G', 'H'], callback: () => { void navigate({ to: '/health' }) } },
     { sequence: ['G', 'S'], callback: () => { void navigate({ to: '/snapshots' }) } },
+    { sequence: ['G', 'N'], callback: () => { void navigate({ to: '/settings' }) } },
     { sequence: ['G', 'A'], callback: () => { void navigate({ to: '/about' }) } },
   ])
 

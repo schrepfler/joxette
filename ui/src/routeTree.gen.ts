@@ -16,6 +16,7 @@ import { Route as SnapshotsIndexRouteImport } from './routes/snapshots/index'
 import { Route as HealthIndexRouteImport } from './routes/health/index'
 import { Route as EntitiesIndexRouteImport } from './routes/entities/index'
 import { Route as CompactionIndexRouteImport } from './routes/compaction/index'
+import { Route as SettingsIndexRouteImport } from './routes/settings/index'
 import { Route as TopicsTopicRouteImport } from './routes/topics/$topic'
 import { Route as EntitiesEntityTypeIndexRouteImport } from './routes/entities/$entityType/index'
 import { Route as TopicsTopicTimelineRouteImport } from './routes/topics/$topic_.timeline'
@@ -57,6 +58,11 @@ const CompactionIndexRoute = CompactionIndexRouteImport.update({
   path: '/compaction/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const SettingsIndexRoute = SettingsIndexRouteImport.update({
+  id: '/settings/',
+  path: '/settings/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const TopicsTopicRoute = TopicsTopicRouteImport.update({
   id: '/topics/$topic',
   path: '/topics/$topic',
@@ -93,6 +99,7 @@ export interface FileRoutesByFullPath {
   '/entities/': typeof EntitiesIndexRoute
   '/health/': typeof HealthIndexRoute
   '/snapshots/': typeof SnapshotsIndexRoute
+  '/settings/': typeof SettingsIndexRoute
   '/topics/': typeof TopicsIndexRoute
   '/entities/$entityType/$entityId': typeof EntitiesEntityTypeEntityIdRoute
   '/topics/$topic/timeline': typeof TopicsTopicTimelineRoute
@@ -107,6 +114,7 @@ export interface FileRoutesByTo {
   '/entities': typeof EntitiesIndexRoute
   '/health': typeof HealthIndexRoute
   '/snapshots': typeof SnapshotsIndexRoute
+  '/settings': typeof SettingsIndexRoute
   '/topics': typeof TopicsIndexRoute
   '/entities/$entityType/$entityId': typeof EntitiesEntityTypeEntityIdRoute
   '/topics/$topic/timeline': typeof TopicsTopicTimelineRoute
@@ -122,6 +130,7 @@ export interface FileRoutesById {
   '/entities/': typeof EntitiesIndexRoute
   '/health/': typeof HealthIndexRoute
   '/snapshots/': typeof SnapshotsIndexRoute
+  '/settings/': typeof SettingsIndexRoute
   '/topics/': typeof TopicsIndexRoute
   '/entities/$entityType/$entityId': typeof EntitiesEntityTypeEntityIdRoute
   '/topics/$topic_/timeline': typeof TopicsTopicTimelineRoute
@@ -138,6 +147,7 @@ export interface FileRouteTypes {
     | '/entities/'
     | '/health/'
     | '/snapshots/'
+    | '/settings/'
     | '/topics/'
     | '/entities/$entityType/$entityId'
     | '/topics/$topic/timeline'
@@ -152,6 +162,7 @@ export interface FileRouteTypes {
     | '/entities'
     | '/health'
     | '/snapshots'
+    | '/settings'
     | '/topics'
     | '/entities/$entityType/$entityId'
     | '/topics/$topic/timeline'
@@ -166,6 +177,7 @@ export interface FileRouteTypes {
     | '/entities/'
     | '/health/'
     | '/snapshots/'
+    | '/settings/'
     | '/topics/'
     | '/entities/$entityType/$entityId'
     | '/topics/$topic_/timeline'
@@ -181,6 +193,7 @@ export interface RootRouteChildren {
   EntitiesIndexRoute: typeof EntitiesIndexRoute
   HealthIndexRoute: typeof HealthIndexRoute
   SnapshotsIndexRoute: typeof SnapshotsIndexRoute
+  SettingsIndexRoute: typeof SettingsIndexRoute
   TopicsIndexRoute: typeof TopicsIndexRoute
   EntitiesEntityTypeEntityIdRoute: typeof EntitiesEntityTypeEntityIdRoute
   TopicsTopicTimelineRoute: typeof TopicsTopicTimelineRoute
@@ -239,6 +252,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof CompactionIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/settings/': {
+      id: '/settings/'
+      path: '/settings'
+      fullPath: '/settings/'
+      preLoaderRoute: typeof SettingsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/topics/$topic': {
       id: '/topics/$topic'
       path: '/topics/$topic'
@@ -285,6 +305,7 @@ const rootRouteChildren: RootRouteChildren = {
   EntitiesIndexRoute: EntitiesIndexRoute,
   HealthIndexRoute: HealthIndexRoute,
   SnapshotsIndexRoute: SnapshotsIndexRoute,
+  SettingsIndexRoute: SettingsIndexRoute,
   TopicsIndexRoute: TopicsIndexRoute,
   EntitiesEntityTypeEntityIdRoute: EntitiesEntityTypeEntityIdRoute,
   TopicsTopicTimelineRoute: TopicsTopicTimelineRoute,
