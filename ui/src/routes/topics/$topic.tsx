@@ -9,11 +9,12 @@ import {
 import { useForm } from '@tanstack/react-form'
 import { useState, useRef, useEffect } from 'react'
 import { VisualJson, TreeView, type JsonValue } from '@visual-json/react'
-import { topicsApi, cassettesApi, streamTopicRecords, type CassetteRecord, type StreamMode, type TopicStreamParams } from '../../api/client'
+import { topicsApi, cassettesApi, streamTopicRecords, type CassetteRecord, type StreamMode, type TopicStreamParams, type TopicMatcherConfig, type AddMatcherRequest } from '../../api/client'
 import { Layout } from '../../components/Layout'
 import { LoadingSpinner } from '../../components/LoadingSpinner'
 import { ErrorMessage } from '../../components/ErrorMessage'
 import { TruncateDialog } from '../../components/TruncateDialog'
+import { ConfirmDialog } from '../../components/ConfirmDialog'
 import { ReplayToTopicPanel } from '../../components/ReplayToTopicPanel'
 import { useToast } from '../../components/Toast'
 import { useDebounce } from '../../hooks/useDebounce'
@@ -82,6 +83,68 @@ export const Route = createFileRoute('/topics/$topic')({
 })
 
 const colHelper = createColumnHelper<CassetteRecord>()
+const matcherColHelper = createColumnHelper<TopicMatcherConfig>()
+
+function AddMatcherModal({ topic, onClose }: { topic: string; onClose: () => void }) {
+  const qc = useQueryClient()
+  const { addToast } = useToast()
+  const mutation = useMutation({
+    mutationFn: (d: AddMatcherRequest) => topicsApi.addMatcher(topic, d),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['topics', topic, 'matchers'] })
+      addToast('Matcher added', 'success')
+      onClose()
+    },
+    onError: (e: Error) => addToast(e.message, 'error'),
+  })
+  const form = useForm({
+    defaultValues: { messageType: '', idSource: 'value', idExpression: '' },
+    onSubmit: async ({ value }) => mutation.mutate(value),
+  })
+  return (
+    <div style={overlayStyle} onClick={onClose}>
+      <div style={modalStyle} onClick={e => e.stopPropagation()}>
+        <h2 style={{ margin: '0 0 1.25rem', fontSize: 18 }}>Add Matcher</h2>
+        <form onSubmit={e => { e.preventDefault(); void form.handleSubmit() }}>
+          <form.Field name="messageType">
+            {(f) => (
+              <div style={fieldWrap}>
+                <label style={labelStyle}>Message Type *</label>
+                <input style={inputStyleFull} value={f.state.value} onChange={e => f.handleChange(e.target.value)} required />
+              </div>
+            )}
+          </form.Field>
+          <form.Field name="idSource">
+            {(f) => (
+              <div style={fieldWrap}>
+                <label style={labelStyle}>ID Source</label>
+                <select style={inputStyleFull} value={f.state.value} onChange={e => f.handleChange(e.target.value)}>
+                  <option value="value">value</option>
+                  <option value="key">key</option>
+                  <option value="header">header</option>
+                </select>
+              </div>
+            )}
+          </form.Field>
+          <form.Field name="idExpression">
+            {(f) => (
+              <div style={fieldWrap}>
+                <label style={labelStyle}>ID Expression *</label>
+                <input style={inputStyleFull} placeholder="e.g. $.order_id" value={f.state.value} onChange={e => f.handleChange(e.target.value)} required />
+              </div>
+            )}
+          </form.Field>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: '0.5rem' }}>
+            <button type="button" onClick={onClose} style={cancelBtnStyle}>Cancel</button>
+            <button type="submit" disabled={mutation.isPending} style={primaryBtnStyle}>
+              {mutation.isPending ? 'Adding…' : 'Add'}
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
 
 const trunc = (s: string | null, n: number) =>
   s == null ? '—' : s.length > n ? s.slice(0, n) + '…' : s
@@ -106,6 +169,8 @@ function TopicDetailPage() {
   const [cursor, setCursor] = useState<string | undefined>()
   const [cursors, setCursors] = useState<string[]>([])
   const [showTruncateDialog, setShowTruncateDialog] = useState(false)
+  const [showAddMatcher, setShowAddMatcher] = useState(false)
+  const [confirmDeleteMatcher, setConfirmDeleteMatcher] = useState<string | null>(null)
 
   // Streaming state
   const [streamMode, setStreamMode] = useState<StreamMode>('json')
@@ -126,6 +191,17 @@ function TopicDetailPage() {
   const topicQuery = useQuery({
     queryKey: ['topics', topic],
     queryFn: () => topicsApi.get(topic),
+  })
+
+  const matchersQuery = useQuery({
+    queryKey: ['topics', topic, 'matchers'],
+    queryFn: () => topicsApi.listMatchers(topic),
+  })
+
+  const deleteMatcherMutation = useMutation({
+    mutationFn: (messageType: string) => topicsApi.deleteMatcher(topic, messageType),
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['topics', topic, 'matchers'] }); addToast('Matcher deleted', 'success') },
+    onError: (e: Error) => addToast(e.message, 'error'),
   })
 
   const statsQuery = useQuery({
@@ -243,6 +319,24 @@ function TopicDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [from, to, partition, offsetFrom, offsetTo])
 
+  const matcherColumns = [
+    matcherColHelper.accessor('messageType', { header: 'Message Type' }),
+    matcherColHelper.accessor('idSource', { header: 'ID Source' }),
+    matcherColHelper.accessor('idExpression', { header: 'ID Expression' }),
+    matcherColHelper.display({
+      id: 'actions', header: 'Actions',
+      cell: ({ row }) => (
+        <button style={dangerBtnSmall} onClick={() => setConfirmDeleteMatcher(row.original.messageType)}>Delete</button>
+      ),
+    }),
+  ]
+
+  const matcherTable = useReactTable({
+    data: matchersQuery.data ?? [],
+    columns: matcherColumns,
+    getCoreRowModel: getCoreRowModel(),
+  })
+
   const columns = [
     colHelper.accessor('timestamp', { header: 'Timestamp', cell: i => i.getValue().slice(0, 19).replace('T', ' ') }),
     colHelper.accessor('partition', { header: 'Partition' }),
@@ -344,6 +438,38 @@ function TopicDetailPage() {
                 </button>
               </form>
             </div>
+          </div>
+
+          {/* Matchers */}
+          <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '1rem 1.25rem', marginBottom: '1.5rem' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
+              <h3 style={{ margin: 0, fontSize: 15 }}>Matchers</h3>
+              <button style={primaryBtnStyle} onClick={() => setShowAddMatcher(true)}>+ Add Matcher</button>
+            </div>
+            <p style={{ margin: '0 0 0.75rem', fontSize: 13, color: '#718096' }}>
+              Tag messages with a <code>messageType</code> by extracting an ID from the message header, key, or value. First matching rule wins.
+            </p>
+            {matchersQuery.isLoading && <LoadingSpinner />}
+            {matchersQuery.error && <ErrorMessage message={(matchersQuery.error as Error).message} />}
+            {!matchersQuery.isLoading && (
+              <table style={tableStyle}>
+                <thead>
+                  {matcherTable.getHeaderGroups().map(hg => (
+                    <tr key={hg.id}>{hg.headers.map(h => <th key={h.id} style={thStyle}>{flexRender(h.column.columnDef.header, h.getContext())}</th>)}</tr>
+                  ))}
+                </thead>
+                <tbody>
+                  {matcherTable.getRowModel().rows.length === 0 && (
+                    <tr><td colSpan={4} style={{ ...tdStyle, color: '#a0aec0', fontStyle: 'italic' }}>No matchers configured</td></tr>
+                  )}
+                  {matcherTable.getRowModel().rows.map(row => (
+                    <tr key={row.id}>
+                      {row.getVisibleCells().map(cell => <td key={cell.id} style={tdStyle}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </div>
 
           {/* Actions */}
@@ -481,17 +607,31 @@ function TopicDetailPage() {
           onCancel={() => setShowTruncateDialog(false)}
         />
       )}
+      {showAddMatcher && <AddMatcherModal topic={topic} onClose={() => setShowAddMatcher(false)} />}
+      {confirmDeleteMatcher && (
+        <ConfirmDialog
+          message={`Delete matcher "${confirmDeleteMatcher}"?`}
+          onConfirm={() => { deleteMatcherMutation.mutate(confirmDeleteMatcher); setConfirmDeleteMatcher(null) }}
+          onCancel={() => setConfirmDeleteMatcher(null)}
+        />
+      )}
     </Layout>
   )
 }
 
 const labelStyle: React.CSSProperties = { display: 'block', marginBottom: 4, fontSize: 13, fontWeight: 600, color: '#4a5568' }
 const inputStyle: React.CSSProperties = { padding: '0.4rem 0.6rem', border: '1px solid #cbd5e0', borderRadius: 4, fontSize: 14 }
+const inputStyleFull: React.CSSProperties = { width: '100%', padding: '0.4rem 0.6rem', border: '1px solid #cbd5e0', borderRadius: 4, fontSize: 14, boxSizing: 'border-box' }
 const primaryBtnStyle: React.CSSProperties = { padding: '0.45rem 1rem', background: '#3182ce', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 14 }
+const cancelBtnStyle: React.CSSProperties = { padding: '0.45rem 1rem', background: '#fff', color: '#4a5568', border: '1px solid #cbd5e0', borderRadius: 4, cursor: 'pointer', fontSize: 14 }
 const secondaryBtnStyle: React.CSSProperties = { padding: '0.35rem 0.8rem', background: '#fff', color: '#4a5568', border: '1px solid #cbd5e0', borderRadius: 4, cursor: 'pointer', fontSize: 13 }
+const dangerBtnSmall: React.CSSProperties = { padding: '0.2rem 0.6rem', background: '#e53e3e', color: '#fff', border: 'none', borderRadius: 3, cursor: 'pointer', fontSize: 12 }
 const tableStyle: React.CSSProperties = { width: '100%', borderCollapse: 'collapse', background: '#fff', fontSize: 13 }
 const thStyle: React.CSSProperties = { textAlign: 'left', padding: '0.5rem 0.6rem', background: '#edf2f7', fontWeight: 600, color: '#4a5568', borderBottom: '1px solid #e2e8f0' }
 const tdStyle: React.CSSProperties = { padding: '0.45rem 0.6rem', borderBottom: '1px solid #e2e8f0' }
+const overlayStyle: React.CSSProperties = { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }
+const modalStyle: React.CSSProperties = { background: '#fff', borderRadius: 8, padding: '1.5rem 2rem', minWidth: 380, boxShadow: '0 10px 30px rgba(0,0,0,0.2)' }
+const fieldWrap: React.CSSProperties = { marginBottom: '0.75rem' }
 
 // ── @visual-json/react theme — mapped to site design tokens ───────────────────
 // --vj-bg           : tree background   → foam (light) / foam (dark) via CSS var

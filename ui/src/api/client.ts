@@ -26,6 +26,19 @@ export interface UpdateTopicRequest {
   mode: string
 }
 
+export interface TopicMatcherConfig {
+  topic: string
+  messageType: string
+  idSource: string
+  idExpression: string
+}
+
+export interface AddMatcherRequest {
+  messageType: string
+  idSource: string
+  idExpression: string
+}
+
 export interface EntityTypeConfig {
   entityType: string
   buckets: number
@@ -235,6 +248,12 @@ export const topicsApi = {
   delete: (topic: string) => request<void>(`/topics/${encodeURIComponent(topic)}`, { method: 'DELETE' }),
   pause: (topic: string) => request<TopicConfig>(`/topics/${encodeURIComponent(topic)}/pause`, { method: 'POST' }),
   resume: (topic: string) => request<TopicConfig>(`/topics/${encodeURIComponent(topic)}/resume`, { method: 'POST' }),
+  listMatchers: (topic: string) =>
+    request<TopicMatcherConfig[]>(`/topics/${encodeURIComponent(topic)}/matchers`),
+  addMatcher: (topic: string, body: AddMatcherRequest) =>
+    request<TopicMatcherConfig>(`/topics/${encodeURIComponent(topic)}/matchers`, { method: 'POST', body: JSON.stringify(body) }),
+  deleteMatcher: (topic: string, messageType: string) =>
+    request<void>(`/topics/${encodeURIComponent(topic)}/matchers/${encodeURIComponent(messageType)}`, { method: 'DELETE' }),
 }
 
 // ---- Entities ----
