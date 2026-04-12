@@ -353,6 +353,49 @@ public class ConfigRepository {
         }
     }
 
+    /**
+     * Inserts or updates a single matcher for an existing source mapping.
+     * Does NOT touch other matchers for the same (entityType, topic) pair.
+     */
+    public EntitySourceConfig.MatcherConfig addEntityMatcher(
+            String entityType, String topic, EntitySourceConfig.MatcherConfig matcher)
+            throws SQLException {
+        validateMatcherSource(matcher.idSource());
+        synchronized (duckDB) {
+            try (PreparedStatement ps = duckDB.prepareStatement("""
+                    INSERT INTO entity_source_matchers
+                        (entity_type, topic, message_type, id_source, id_expression)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT (entity_type, topic, message_type) DO UPDATE SET
+                        id_source     = excluded.id_source,
+                        id_expression = excluded.id_expression
+                    """)) {
+                ps.setString(1, entityType);
+                ps.setString(2, topic);
+                ps.setString(3, matcher.messageType());
+                ps.setString(4, matcher.idSource());
+                ps.setString(5, matcher.idExpression());
+                ps.executeUpdate();
+            }
+        }
+        return matcher;
+    }
+
+    /** Deletes a single matcher by messageType. Returns {@code true} if a row was removed. */
+    public boolean deleteEntityMatcher(String entityType, String topic, String messageType)
+            throws SQLException {
+        synchronized (duckDB) {
+            try (PreparedStatement ps = duckDB.prepareStatement(
+                    "DELETE FROM entity_source_matchers" +
+                    " WHERE entity_type = ? AND topic = ? AND message_type = ?")) {
+                ps.setString(1, entityType);
+                ps.setString(2, topic);
+                ps.setString(3, messageType);
+                return ps.executeUpdate() > 0;
+            }
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Topic message-type matchers CRUD
     // -------------------------------------------------------------------------

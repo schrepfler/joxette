@@ -177,6 +177,44 @@ public class EntityController {
     }
 
     // -------------------------------------------------------------------------
+    // Per-matcher management  (POST/DELETE …/sources/{topic}/matchers)
+    // -------------------------------------------------------------------------
+
+    record AddMatcherRequest(String messageType, String idSource, String idExpression) {}
+
+    @PostMapping(value = "/{type}/sources/{topic}/matchers",
+                 consumes = MediaType.APPLICATION_JSON_VALUE,
+                 produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<EntitySourceConfig.MatcherConfig> addMatcher(
+            @PathVariable String type,
+            @PathVariable String topic,
+            @RequestBody AddMatcherRequest body) throws SQLException {
+        if (config.findEntityType(type).isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        if (body.messageType() == null || body.messageType().isBlank()) {
+            return ResponseEntity.badRequest().build();
+        }
+        EntitySourceConfig.MatcherConfig matcher = config.addEntityMatcher(
+                type, topic,
+                new EntitySourceConfig.MatcherConfig(body.messageType(), body.idSource(), body.idExpression()));
+        reloadRouter();
+        return ResponseEntity.status(201).body(matcher);
+    }
+
+    @DeleteMapping("/{type}/sources/{topic}/matchers/{messageType}")
+    public ResponseEntity<Void> deleteMatcher(
+            @PathVariable String type,
+            @PathVariable String topic,
+            @PathVariable String messageType) throws SQLException {
+        boolean deleted = config.deleteEntityMatcher(type, topic, messageType);
+        if (deleted) {
+            reloadRouter();
+        }
+        return deleted ? ResponseEntity.noContent().build() : ResponseEntity.notFound().build();
+    }
+
+    // -------------------------------------------------------------------------
     // Error handling
     // -------------------------------------------------------------------------
 

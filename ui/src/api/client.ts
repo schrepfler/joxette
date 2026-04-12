@@ -46,7 +46,7 @@ export interface EntityTypeConfig {
 }
 
 export interface MatcherConfig {
-  messageType?: string | null
+  messageType: string
   idSource: string
   idExpression: string
 }
@@ -71,7 +71,7 @@ export interface UpdateEntityRequest {
 export interface AddSourceRequest {
   topic: string
   mode?: string
-  matchers: MatcherConfig[]
+  matchers?: MatcherConfig[]
 }
 
 export interface Header {
@@ -272,6 +272,10 @@ export const entitiesApi = {
     request<EntitySourceConfig>(`/entities/${encodeURIComponent(type)}/sources`, { method: 'POST', body: JSON.stringify(body) }),
   deleteSource: (type: string, topic: string) =>
     request<void>(`/entities/${encodeURIComponent(type)}/sources/${encodeURIComponent(topic)}`, { method: 'DELETE' }),
+  addMatcher: (type: string, topic: string, body: AddMatcherRequest) =>
+    request<MatcherConfig>(`/entities/${encodeURIComponent(type)}/sources/${encodeURIComponent(topic)}/matchers`, { method: 'POST', body: JSON.stringify(body) }),
+  deleteMatcher: (type: string, topic: string, messageType: string) =>
+    request<void>(`/entities/${encodeURIComponent(type)}/sources/${encodeURIComponent(topic)}/matchers/${encodeURIComponent(messageType)}`, { method: 'DELETE' }),
 }
 
 // ---- Cassettes ----

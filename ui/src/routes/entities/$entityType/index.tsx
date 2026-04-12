@@ -12,9 +12,10 @@ import {
   entitiesApi,
   cassettesApi,
   type EntitySourceConfig,
+  type MatcherConfig,
   type EntityInfo,
   type AddSourceRequest,
-  type MatcherConfig,
+  type AddMatcherRequest,
 } from '../../../api/client'
 import { Layout } from '../../../components/Layout'
 import { LoadingSpinner } from '../../../components/LoadingSpinner'
@@ -28,35 +29,34 @@ export const Route = createFileRoute('/entities/$entityType/')({
   component: EntityTypeDetailPage,
 })
 
-const srcColHelper = createColumnHelper<EntitySourceConfig>()
 const entityColHelper = createColumnHelper<EntityInfo>()
 
-type MatcherRow = { messageType: string; idSource: string; idExpression: string }
+// ---- AddSourceModal ----
 
 function AddSourceModal({ entityType, onClose }: { entityType: string; onClose: () => void }) {
   const qc = useQueryClient()
   const { addToast } = useToast()
   const [topic, setTopic] = useState('')
   const [mode, setMode] = useState('entity_only')
-  const [matchers, setMatchers] = useState<MatcherRow[]>([{ messageType: '', idSource: 'value', idExpression: '' }])
+  const [matchers, setMatchers] = useState<MatcherConfig[]>([{ messageType: '', idSource: 'value', idExpression: '' }])
 
   const mutation = useMutation({
     mutationFn: (d: AddSourceRequest) => entitiesApi.addSource(entityType, d),
-    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['entities', entityType, 'sources'] }); addToast('Source added', 'success'); onClose() },
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['entities', entityType, 'sources'] })
+      addToast('Source added', 'success')
+      onClose()
+    },
     onError: (e: Error) => addToast(e.message, 'error'),
   })
 
-  function updateMatcher(i: number, patch: Partial<MatcherRow>) {
+  function updateMatcher(i: number, patch: Partial<MatcherConfig>) {
     setMatchers(prev => prev.map((m, idx) => idx === i ? { ...m, ...patch } : m))
   }
 
   function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    const payload: MatcherConfig[] = matchers.map(m => ({
-      messageType: m.messageType || null,
-      idSource: m.idSource,
-      idExpression: m.idExpression,
-    }))
+    const payload = matchers.filter(m => m.idExpression.trim())
     mutation.mutate({ topic, mode, matchers: payload })
   }
 
@@ -78,7 +78,7 @@ function AddSourceModal({ entityType, onClose }: { entityType: string; onClose: 
           </div>
           <div style={{ marginBottom: '0.75rem' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
-              <label style={labelStyle}>Matchers *</label>
+              <label style={labelStyle}>Matchers</label>
               <button
                 type="button"
                 onClick={() => setMatchers(prev => [...prev, { messageType: '', idSource: 'value', idExpression: '' }])}
@@ -95,7 +95,7 @@ function AddSourceModal({ entityType, onClose }: { entityType: string; onClose: 
               <div key={i} style={{ display: 'grid', gridTemplateColumns: '140px 90px 1fr 28px', gap: '4px 6px', marginBottom: 6, alignItems: 'center' }}>
                 <input
                   style={{ ...inputStyleFull, fontSize: 13 }}
-                  placeholder="optional"
+                  placeholder="e.g. orderCreated"
                   value={m.messageType}
                   onChange={e => updateMatcher(i, { messageType: e.target.value })}
                 />
@@ -129,6 +129,171 @@ function AddSourceModal({ entityType, onClose }: { entityType: string; onClose: 
     </div>
   )
 }
+
+// ---- SourceCard ----
+
+function SourceCard({
+  entityType,
+  source,
+  onDeleteSource,
+}: {
+  entityType: string
+  source: EntitySourceConfig
+  onDeleteSource: (topic: string) => void
+}) {
+  const qc = useQueryClient()
+  const { addToast } = useToast()
+  const [showAddMatcher, setShowAddMatcher] = useState(false)
+  const [confirmDeleteMatcher, setConfirmDeleteMatcher] = useState<string | null>(null)
+
+  const addMatcherMutation = useMutation({
+    mutationFn: (body: AddMatcherRequest) => entitiesApi.addMatcher(entityType, source.topic, body),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['entities', entityType, 'sources'] })
+      addToast('Matcher added', 'success')
+      setShowAddMatcher(false)
+    },
+    onError: (e: Error) => addToast(e.message, 'error'),
+  })
+
+  const deleteMatcherMutation = useMutation({
+    mutationFn: (messageType: string) => entitiesApi.deleteMatcher(entityType, source.topic, messageType),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['entities', entityType, 'sources'] })
+      addToast('Matcher deleted', 'success')
+    },
+    onError: (e: Error) => addToast(e.message, 'error'),
+  })
+
+  const matcherForm = useForm({
+    defaultValues: { messageType: '', idSource: 'value', idExpression: '' },
+    onSubmit: async ({ value }) => {
+      addMatcherMutation.mutate({
+        messageType: value.messageType.trim(),
+        idSource: value.idSource,
+        idExpression: value.idExpression.trim(),
+      })
+    },
+  })
+
+  return (
+    <div style={sourceCardStyle}>
+      {/* Source header */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.6rem' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontWeight: 600, fontSize: 14 }}>{source.topic}</span>
+          <span style={modeBadgeStyle(source.mode)}>{source.mode}</span>
+        </div>
+        <button style={dangerBtnSmall} onClick={() => onDeleteSource(source.topic)}>Delete Source</button>
+      </div>
+
+      {/* Matchers */}
+      <div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.35rem' }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color: '#718096', textTransform: 'uppercase', letterSpacing: 0.5 }}>Matchers</span>
+          {!showAddMatcher && (
+            <button style={secondaryBtnSmall} onClick={() => setShowAddMatcher(true)}>+ Add Matcher</button>
+          )}
+        </div>
+
+        {source.matchers.length === 0 && !showAddMatcher && (
+          <p style={{ fontSize: 12, color: '#a0aec0', margin: '0 0 0.4rem' }}>No matchers — entity IDs cannot be extracted from this source.</p>
+        )}
+
+        {source.matchers.length > 0 && (
+          <table style={{ ...tableStyle, marginBottom: '0.5rem' }}>
+            <thead>
+              <tr>
+                <th style={thStyle}>Message Type</th>
+                <th style={thStyle}>ID Source</th>
+                <th style={thStyle}>ID Expression</th>
+                <th style={{ ...thStyle, width: 72 }}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {source.matchers.map(m => (
+                <tr key={m.messageType}>
+                  <td style={tdStyle}><code style={monoStyle}>{m.messageType}</code></td>
+                  <td style={tdStyle}>{m.idSource}</td>
+                  <td style={tdStyle}><code style={monoStyle}>{m.idExpression}</code></td>
+                  <td style={tdStyle}>
+                    <button style={dangerBtnSmall} onClick={() => setConfirmDeleteMatcher(m.messageType)}>Delete</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+
+        {showAddMatcher && (
+          <form
+            onSubmit={e => { e.preventDefault(); void matcherForm.handleSubmit() }}
+            style={addMatcherFormStyle}
+          >
+            <matcherForm.Field name="messageType">
+              {(f) => (
+                <div>
+                  <label style={{ ...labelStyle, marginBottom: 3 }}>Message Type *</label>
+                  <input
+                    style={{ ...inputStyle, width: 150 }}
+                    placeholder="e.g. orderCreated"
+                    value={f.state.value}
+                    onChange={e => f.handleChange(e.target.value)}
+                    required
+                  />
+                </div>
+              )}
+            </matcherForm.Field>
+            <matcherForm.Field name="idSource">
+              {(f) => (
+                <div>
+                  <label style={{ ...labelStyle, marginBottom: 3 }}>ID Source</label>
+                  <select style={{ ...inputStyle, width: 100 }} value={f.state.value} onChange={e => f.handleChange(e.target.value)}>
+                    <option value="value">value</option>
+                    <option value="key">key</option>
+                    <option value="header">header</option>
+                  </select>
+                </div>
+              )}
+            </matcherForm.Field>
+            <matcherForm.Field name="idExpression">
+              {(f) => (
+                <div>
+                  <label style={{ ...labelStyle, marginBottom: 3 }}>ID Expression *</label>
+                  <input
+                    style={{ ...inputStyle, width: 180 }}
+                    placeholder="e.g. $.order_id"
+                    value={f.state.value}
+                    onChange={e => f.handleChange(e.target.value)}
+                    required
+                  />
+                </div>
+              )}
+            </matcherForm.Field>
+            <div style={{ display: 'flex', gap: 6, alignSelf: 'flex-end' }}>
+              <button type="submit" disabled={addMatcherMutation.isPending} style={{ ...primaryBtnStyle, padding: '0.4rem 0.8rem' }}>
+                {addMatcherMutation.isPending ? 'Adding…' : 'Add'}
+              </button>
+              <button type="button" style={{ ...cancelBtnStyle, padding: '0.4rem 0.8rem' }} onClick={() => { setShowAddMatcher(false); matcherForm.reset() }}>
+                Cancel
+              </button>
+            </div>
+          </form>
+        )}
+      </div>
+
+      {confirmDeleteMatcher && (
+        <ConfirmDialog
+          message={`Delete matcher "${confirmDeleteMatcher}" from ${source.topic}?`}
+          onConfirm={() => { deleteMatcherMutation.mutate(confirmDeleteMatcher); setConfirmDeleteMatcher(null) }}
+          onCancel={() => setConfirmDeleteMatcher(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+// ---- Main page ----
 
 function EntityTypeDetailPage() {
   const { entityType } = Route.useParams()
@@ -188,38 +353,12 @@ function EntityTypeDetailPage() {
     onSubmit: async ({ value }) => retentionMutation.mutate(value.retentionDays),
   })
 
-  const srcColumns = [
-    srcColHelper.accessor('topic', { header: 'Topic' }),
-    srcColHelper.accessor('mode', { header: 'Mode' }),
-    srcColHelper.display({
-      id: 'matchers', header: 'Matchers',
-      cell: ({ row }) => (
-        <div style={{ lineHeight: 1.6 }}>
-          {row.original.matchers.map((m, i) => (
-            <div key={i} style={{ fontSize: 12, whiteSpace: 'nowrap' }}>
-              {m.messageType && <strong style={{ marginRight: 4 }}>{m.messageType}:</strong>}
-              <span style={{ color: '#2d3748' }}>{m.idSource}</span>
-              <span style={{ color: '#718096', marginLeft: 4 }}>{m.idExpression}</span>
-            </div>
-          ))}
-        </div>
-      ),
-    }),
-    srcColHelper.display({
-      id: 'actions', header: 'Actions',
-      cell: ({ row }) => (
-        <button style={dangerBtnSmall} onClick={() => setConfirmDeleteSource(row.original.topic)}>Delete</button>
-      ),
-    }),
-  ]
-
   const entityColumns = [
     entityColHelper.accessor('entityId', { header: 'Entity ID' }),
     entityColHelper.accessor('firstSeen', { header: 'First Seen', cell: i => i.getValue().slice(0, 19).replace('T', ' ') }),
     entityColHelper.accessor('lastSeen', { header: 'Last Seen', cell: i => i.getValue().slice(0, 19).replace('T', ' ') }),
   ]
 
-  const srcTable = useReactTable({ data: sourcesQuery.data ?? [], columns: srcColumns, getCoreRowModel: getCoreRowModel() })
   const entityTable = useReactTable({ data: entitiesQuery.data?.data ?? [], columns: entityColumns, getCoreRowModel: getCoreRowModel() })
 
   function nextPage() {
@@ -296,20 +435,19 @@ function EntityTypeDetailPage() {
             </div>
             {sourcesQuery.isLoading && <LoadingSpinner />}
             {!sourcesQuery.isLoading && (
-              <table style={tableStyle}>
-                <thead>
-                  {srcTable.getHeaderGroups().map(hg => (
-                    <tr key={hg.id}>{hg.headers.map(h => <th key={h.id} style={thStyle}>{flexRender(h.column.columnDef.header, h.getContext())}</th>)}</tr>
-                  ))}
-                </thead>
-                <tbody>
-                  {srcTable.getRowModel().rows.map(row => (
-                    <tr key={row.id}>
-                      {row.getVisibleCells().map(cell => <td key={cell.id} style={tdStyle}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                {(sourcesQuery.data ?? []).map(src => (
+                  <SourceCard
+                    key={src.topic}
+                    entityType={entityType}
+                    source={src}
+                    onDeleteSource={setConfirmDeleteSource}
+                  />
+                ))}
+                {(sourcesQuery.data ?? []).length === 0 && (
+                  <p style={{ fontSize: 13, color: '#a0aec0', margin: 0 }}>No sources configured.</p>
+                )}
+              </div>
             )}
           </div>
 
@@ -375,10 +513,26 @@ function EntityTypeDetailPage() {
   )
 }
 
+// ---- Styles ----
+
+function modeBadgeStyle(mode: string): React.CSSProperties {
+  return {
+    fontSize: 11,
+    padding: '0.15rem 0.45rem',
+    borderRadius: 10,
+    fontWeight: 600,
+    background: mode === 'both' ? '#ebf8ff' : '#f0fff4',
+    color: mode === 'both' ? '#2b6cb0' : '#276749',
+    border: `1px solid ${mode === 'both' ? '#bee3f8' : '#c6f6d5'}`,
+  }
+}
+
 const overlayStyle: React.CSSProperties = { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }
-const modalStyle: React.CSSProperties = { background: '#fff', borderRadius: 8, padding: '1.5rem 2rem', minWidth: 380, boxShadow: '0 10px 30px rgba(0,0,0,0.2)' }
+const modalStyle: React.CSSProperties = { background: '#fff', borderRadius: 8, padding: '1.5rem 2rem', minWidth: 420, boxShadow: '0 10px 30px rgba(0,0,0,0.2)' }
 const cardStyle: React.CSSProperties = { background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '1rem 1.25rem' }
 const cardTitle: React.CSSProperties = { margin: '0 0 0.75rem', fontSize: 15 }
+const sourceCardStyle: React.CSSProperties = { border: '1px solid #e2e8f0', borderRadius: 6, padding: '0.75rem 1rem', background: '#fafafa' }
+const addMatcherFormStyle: React.CSSProperties = { display: 'flex', gap: 8, alignItems: 'flex-end', flexWrap: 'wrap', padding: '0.5rem 0.75rem', background: '#fff', borderRadius: 4, border: '1px solid #e2e8f0', marginTop: '0.35rem' }
 const fieldWrap: React.CSSProperties = { marginBottom: '0.75rem' }
 const labelStyle: React.CSSProperties = { display: 'block', marginBottom: 4, fontSize: 13, fontWeight: 600, color: '#4a5568' }
 const inputStyle: React.CSSProperties = { padding: '0.4rem 0.6rem', border: '1px solid #cbd5e0', borderRadius: 4, fontSize: 14 }
@@ -386,7 +540,9 @@ const inputStyleFull: React.CSSProperties = { width: '100%', padding: '0.4rem 0.
 const primaryBtnStyle: React.CSSProperties = { padding: '0.45rem 1rem', background: '#3182ce', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 14 }
 const cancelBtnStyle: React.CSSProperties = { padding: '0.45rem 1rem', background: '#fff', color: '#4a5568', border: '1px solid #cbd5e0', borderRadius: 4, cursor: 'pointer', fontSize: 14 }
 const secondaryBtnStyle: React.CSSProperties = { padding: '0.35rem 0.8rem', background: '#fff', color: '#4a5568', border: '1px solid #cbd5e0', borderRadius: 4, cursor: 'pointer', fontSize: 13 }
+const secondaryBtnSmall: React.CSSProperties = { padding: '0.2rem 0.55rem', background: '#fff', color: '#4a5568', border: '1px solid #cbd5e0', borderRadius: 3, cursor: 'pointer', fontSize: 12 }
 const dangerBtnSmall: React.CSSProperties = { padding: '0.2rem 0.6rem', background: '#e53e3e', color: '#fff', border: 'none', borderRadius: 3, cursor: 'pointer', fontSize: 12 }
 const tableStyle: React.CSSProperties = { width: '100%', borderCollapse: 'collapse', background: '#fff', fontSize: 13 }
 const thStyle: React.CSSProperties = { textAlign: 'left', padding: '0.5rem 0.6rem', background: '#edf2f7', fontWeight: 600, color: '#4a5568', borderBottom: '1px solid #e2e8f0' }
 const tdStyle: React.CSSProperties = { padding: '0.45rem 0.6rem', borderBottom: '1px solid #e2e8f0' }
+const monoStyle: React.CSSProperties = { fontFamily: 'monospace', fontSize: 12, background: '#edf2f7', padding: '0.1rem 0.3rem', borderRadius: 3 }
