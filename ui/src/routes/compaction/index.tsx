@@ -7,7 +7,7 @@ import {
   createColumnHelper,
 } from '@tanstack/react-table'
 import { useState, useEffect, useRef } from 'react'
-import { compactionApi, type CompactionRun } from '../../api/client'
+import { compactionApi, type CompactionRun, type CompactionConfig } from '../../api/client'
 import { Layout } from '../../components/Layout'
 import { LoadingSpinner } from '../../components/LoadingSpinner'
 import { ErrorMessage } from '../../components/ErrorMessage'
@@ -33,6 +33,12 @@ function CompactionPage() {
   const historyQuery = useQuery({
     queryKey: ['compaction', 'history'],
     queryFn: () => compactionApi.getHistory(20),
+  })
+
+  const configQuery = useQuery({
+    queryKey: ['compaction', 'config'],
+    queryFn: compactionApi.getConfig,
+    staleTime: Infinity,
   })
 
   const triggerMutation = useMutation({
@@ -152,6 +158,8 @@ function CompactionPage() {
         </div>
       )}
 
+      {configQuery.data && <CompactionConfigCard config={configQuery.data} />}
+
       <h2 style={{ margin: '0 0 0.75rem', fontSize: 16, fontWeight: 600 }}>History (last 20)</h2>
       {historyQuery.isLoading && <LoadingSpinner />}
       {historyQuery.error && <ErrorMessage message={(historyQuery.error as Error).message} />}
@@ -182,3 +190,30 @@ const labelStyle: React.CSSProperties = { display: 'block', marginBottom: 4, fon
 const tableStyle: React.CSSProperties = { width: '100%', borderCollapse: 'collapse', background: '#fff', borderRadius: 8, overflow: 'hidden', boxShadow: '0 1px 4px rgba(0,0,0,0.1)', fontSize: 13 }
 const thStyle: React.CSSProperties = { textAlign: 'left', padding: '0.55rem 0.75rem', background: '#edf2f7', fontWeight: 600, color: '#4a5568', borderBottom: '1px solid #e2e8f0' }
 const tdStyle: React.CSSProperties = { padding: '0.5rem 0.75rem', borderBottom: '1px solid #e2e8f0' }
+
+function CompactionConfigCard({ config }: { config: CompactionConfig }) {
+  return (
+    <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '1rem 1.25rem', marginBottom: '1.5rem' }}>
+      <h3 style={{ margin: '0 0 0.75rem', fontSize: 15 }}>Active Configuration</h3>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 10 }}>
+        <ConfigField label="Schedule (cron)" value={config.schedule} mono />
+        <ConfigField label="Entity · Lookback" value={`${config.entity.lookbackDays} days`} />
+        <ConfigField label="Entity · Min Files / Bucket" value={String(config.entity.minFilesPerBucket)} />
+        <ConfigField label="Entity · Target File Size" value={`${config.entity.targetFileSizeMb} MB`} />
+        <ConfigField label="General · Enabled" value={config.general.enabled ? 'Yes' : 'No'} />
+        <ConfigField label="General · Lookback" value={`${config.general.lookbackDays} days`} />
+        <ConfigField label="General · Min Files / Partition" value={String(config.general.minFilesPerPartition)} />
+        <ConfigField label="General · Target File Size" value={`${config.general.targetFileSizeMb} MB`} />
+      </div>
+    </div>
+  )
+}
+
+function ConfigField({ label, value, mono }: { label: string; value: string; mono?: boolean }) {
+  return (
+    <div style={{ background: '#f7fafc', border: '1px solid #e2e8f0', borderRadius: 6, padding: '0.5rem 0.75rem' }}>
+      <div style={{ fontSize: 11, color: '#718096', marginBottom: 3 }}>{label}</div>
+      <div style={{ fontSize: 13, fontWeight: 600, fontFamily: mono ? 'monospace' : undefined }}>{value}</div>
+    </div>
+  )
+}

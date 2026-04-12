@@ -137,6 +137,21 @@ export interface TriggerRequest {
   targets?: string[]
 }
 
+export interface CompactionConfig {
+  schedule: string
+  entity: {
+    lookbackDays: number
+    minFilesPerBucket: number
+    targetFileSizeMb: number
+  }
+  general: {
+    enabled: boolean
+    lookbackDays: number
+    minFilesPerPartition: number
+    targetFileSizeMb: number
+  }
+}
+
 export interface TopicLag {
   topic: string
   totalLag: number
@@ -443,6 +458,7 @@ export function streamEntityReplay(
 
 export const compactionApi = {
   getStatus: () => request<CompactionStatus>('/compaction/status'),
+  getConfig: () => request<CompactionConfig>('/compaction/config'),
   trigger: (body?: TriggerRequest) =>
     request<CompactionRun>('/compaction/trigger', { method: 'POST', body: JSON.stringify(body ?? {}) }),
   getHistory: (limit?: number) =>

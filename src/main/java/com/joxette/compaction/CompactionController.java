@@ -1,5 +1,6 @@
 package com.joxette.compaction;
 
+import com.joxette.config.JoxetteProperties;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Content;
@@ -57,14 +58,17 @@ public class CompactionController {
     private final CompactionService compactionService;
     private final RetentionService retentionService;
     private final TaskScheduler compactionTaskScheduler;
+    private final JoxetteProperties props;
 
     public CompactionController(
             CompactionService compactionService,
             RetentionService retentionService,
-            @Qualifier("compactionTaskScheduler") TaskScheduler compactionTaskScheduler) {
+            @Qualifier("compactionTaskScheduler") TaskScheduler compactionTaskScheduler,
+            JoxetteProperties props) {
         this.compactionService       = compactionService;
         this.retentionService        = retentionService;
         this.compactionTaskScheduler = compactionTaskScheduler;
+        this.props                   = props;
     }
 
     // =========================================================================
@@ -170,6 +174,33 @@ public class CompactionController {
     }
 
     @Operation(
+        operationId = "getCompactionConfig",
+        summary = "Get effective compaction configuration",
+        description = "Returns the runtime compaction settings derived from application properties: " +
+                      "cron schedule, entity and general compaction thresholds."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Effective compaction configuration",
+            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                schema = @Schema(implementation = CompactionConfig.class)))
+    })
+    @GetMapping(value = "/config", produces = MediaType.APPLICATION_JSON_VALUE)
+    public CompactionConfig getConfig() {
+        JoxetteProperties.Compaction c = props.getCompaction();
+        return new CompactionConfig(
+                c.getSchedule(),
+                new CompactionConfig.EntityConfig(
+                        c.getEntity().getLookbackDays(),
+                        c.getEntity().getMinFilesPerBucket(),
+                        c.getEntity().getTargetFileSizeMb()),
+                new CompactionConfig.GeneralConfig(
+                        c.getGeneral().isEnabled(),
+                        c.getGeneral().getLookbackDays(),
+                        c.getGeneral().getMinFilesPerPartition(),
+                        c.getGeneral().getTargetFileSizeMb()));
+    }
+
+    @Operation(
         operationId = "getRetentionStatus",
         summary = "Get retention enforcement status",
         description = "Returns the current retention status including the most-recent run summary " +
@@ -189,8 +220,39 @@ public class CompactionController {
     }
 
     // =========================================================================
-    // Request types
+    // Response / request types
     // =========================================================================
+
+    @Schema(description = "Effective runtime compaction configuration derived from application properties")
+    record CompactionConfig(
+            @Schema(description = "Spring 6-field cron expression for the scheduled compaction run",
+                    example = "0 0 3 * * *")
+            String schedule,
+            @Schema(description = "Entity cassette compaction settings")
+            EntityConfig entity,
+            @Schema(description = "General cassette compaction settings")
+            GeneralConfig general) {
+
+        @Schema(description = "Entity cassette compaction thresholds")
+        record EntityConfig(
+                @Schema(description = "Only compact rows older than this many days", example = "30")
+                int lookbackDays,
+                @Schema(description = "Compact a bucket when its estimated file count exceeds this threshold", example = "10")
+                int minFilesPerBucket,
+                @Schema(description = "Target output Parquet file size in MB", example = "256")
+                int targetFileSizeMb) {}
+
+        @Schema(description = "General cassette compaction thresholds")
+        record GeneralConfig(
+                @Schema(description = "Whether general cassette compaction is enabled", example = "false")
+                boolean enabled,
+                @Schema(description = "Only compact rows older than this many days", example = "30")
+                int lookbackDays,
+                @Schema(description = "Compact a partition when its estimated file count exceeds this threshold", example = "20")
+                int minFilesPerPartition,
+                @Schema(description = "Target output Parquet file size in MB", example = "256")
+                int targetFileSizeMb) {}
+    }
 
     @Schema(description = "Optional request body for POST /compaction/trigger",
             example = "{\"targets\": [\"order\", \"payment\"]}")
