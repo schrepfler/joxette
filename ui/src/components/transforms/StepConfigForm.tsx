@@ -1,5 +1,7 @@
 import { useState } from 'react'
-import type { PipelineStep, FilterOperator } from '#/transforms/types'
+import type { PipelineStep } from '#/transforms/types'
+import { PredicateBuilder } from './PredicateBuilder'
+import { NestedPipelineBuilder } from './NestedPipelineBuilder'
 
 interface Props {
   step: PipelineStep
@@ -11,6 +13,19 @@ export function StepConfigForm({ step, onChange }: Props) {
     onChange({ ...step, ...fields } as PipelineStep)
   }
 
+  return (
+    <>
+      {renderStepFields(step, patch)}
+      <WhenGuardSection step={step} onChange={onChange} />
+    </>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Step-specific field renderers
+// ---------------------------------------------------------------------------
+
+function renderStepFields(step: PipelineStep, patch: (fields: object) => void) {
   switch (step.type) {
     case 'wall_time':
       return (
@@ -121,10 +136,7 @@ export function StepConfigForm({ step, onChange }: Props) {
       return (
         <Grid>
           <Field label="Sources (one per line)" help="JSONPath list; first non-null wins">
-            <MultiLineInput
-              value={step.sources}
-              onChange={v => patch({ sources: v })}
-            />
+            <MultiLineInput value={step.sources} onChange={v => patch({ sources: v })} />
           </Field>
           <Field label="Target" help="JSONPath to write the result">
             <TextInput value={step.target} onChange={v => patch({ target: v })} />
@@ -274,35 +286,50 @@ export function StepConfigForm({ step, onChange }: Props) {
 
     case 'filter_drop':
       return (
-        <Grid>
-          <Field label="Field" help="JSONPath to evaluate">
-            <TextInput value={step.field} onChange={v => patch({ field: v })} />
-          </Field>
-          <Field label="Operator">
-            <SelectInput<FilterOperator>
-              value={step.operator}
-              onChange={v => patch({ operator: v })}
-              options={FILTER_OPERATORS}
+        <div style={{ padding: '0.75rem 0' }}>
+          <label style={labelStyle}>
+            Drop when
+            <span style={{ fontWeight: 400, color: '#718096', marginLeft: 4, fontSize: 11 }}>
+              (predicate evaluates to true → message is dropped)
+            </span>
+          </label>
+          <div style={{ marginTop: 6 }}>
+            <PredicateBuilder
+              value={step.predicate}
+              onChange={p => patch({ predicate: p ?? { field: '', operator: 'EQ' } })}
             />
-          </Field>
-          {step.operator !== 'IS_NULL' && step.operator !== 'IS_NOT_NULL' && (
-            <Field label="Value" help="Value to compare against">
-              <TextInput value={String(step.value ?? '')} onChange={v => patch({ value: v })} />
-            </Field>
-          )}
-        </Grid>
+          </div>
+        </div>
       )
 
     case 'conditional':
       return (
-        <Grid>
-          <Field label="Condition" help="Expression string e.g. $.amount > 1000">
-            <TextInput value={step.condition} onChange={v => patch({ condition: v })} />
-          </Field>
-          <p style={{ margin: '0.25rem 0', fontSize: 12, color: '#718096', gridColumn: '1/-1' }}>
-            Nested then/else step configuration is available in the expanded step view.
-          </p>
-        </Grid>
+        <div style={{ padding: '0.75rem 0', display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+          <div>
+            <label style={labelStyle}>
+              Condition
+              <span style={{ fontWeight: 400, color: '#718096', marginLeft: 4, fontSize: 11 }}>
+                (true → then steps; false → else steps)
+              </span>
+            </label>
+            <div style={{ marginTop: 6 }}>
+              <PredicateBuilder
+                value={step.condition}
+                onChange={p => patch({ condition: p ?? { field: '', operator: 'EQ' } })}
+              />
+            </div>
+          </div>
+          <NestedPipelineBuilder
+            steps={step.then_steps}
+            onChange={steps => patch({ then_steps: steps })}
+            label="Then steps (condition is true)"
+          />
+          <NestedPipelineBuilder
+            steps={step.else_steps}
+            onChange={steps => patch({ else_steps: steps })}
+            label="Else steps (condition is false)"
+          />
+        </div>
       )
 
     default:
@@ -311,29 +338,75 @@ export function StepConfigForm({ step, onChange }: Props) {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Per-step 'when' guard section
 // ---------------------------------------------------------------------------
 
-const FILTER_OPERATORS: { value: FilterOperator; label: string }[] = [
-  { value: 'EQ', label: 'Equals (EQ)' },
-  { value: 'NEQ', label: 'Not Equals (NEQ)' },
-  { value: 'GT', label: 'Greater Than (GT)' },
-  { value: 'GTE', label: 'Greater or Equal (GTE)' },
-  { value: 'LT', label: 'Less Than (LT)' },
-  { value: 'LTE', label: 'Less or Equal (LTE)' },
-  { value: 'CONTAINS', label: 'Contains' },
-  { value: 'MATCHES', label: 'Regex Matches' },
-  { value: 'IS_NULL', label: 'Is Null' },
-  { value: 'IS_NOT_NULL', label: 'Is Not Null' },
-]
+function WhenGuardSection({ step, onChange }: { step: PipelineStep; onChange: (updated: PipelineStep) => void }) {
+  const [open, setOpen] = useState(!!step.when)
+  const hasGuard = !!step.when
+
+  function toggle() {
+    if (open && hasGuard) {
+      // Remove the guard before closing
+      onChange({ ...step, when: undefined })
+    }
+    setOpen(o => !o)
+  }
+
+  function handleRemoveGuard() {
+    onChange({ ...step, when: undefined })
+    setOpen(false)
+  }
+
+  return (
+    <div style={guardContainerStyle}>
+      <div style={guardHeaderStyle}>
+        <button
+          style={guardToggleBtnStyle}
+          onClick={toggle}
+          aria-expanded={open}
+        >
+          <span style={{ fontSize: 10, marginRight: 4 }}>{open ? '▲' : '▼'}</span>
+          Only apply when…
+        </button>
+        {hasGuard && !open && (
+          <span style={guardBadgeStyle}>guard active</span>
+        )}
+        {hasGuard && open && (
+          <button style={removeGuardBtnStyle} onClick={handleRemoveGuard} title="Remove guard">
+            Remove guard
+          </button>
+        )}
+      </div>
+
+      {open && (
+        <div style={{ padding: '0.5rem 0.75rem 0.6rem' }}>
+          <p style={{ margin: '0 0 0.4rem', fontSize: 11, color: '#718096' }}>
+            Step only runs when this predicate matches the message. Leave empty to always run.
+          </p>
+          <PredicateBuilder
+            value={step.when ?? null}
+            onChange={p => onChange({ ...step, when: p ?? undefined })}
+            nullable
+          />
+        </div>
+      )}
+    </div>
+  )
+}
 
 // ---------------------------------------------------------------------------
-// Sub-components
+// Shared sub-components
 // ---------------------------------------------------------------------------
 
 function Grid({ children }: { children: React.ReactNode }) {
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: '0.6rem 1rem', padding: '0.75rem 0' }}>
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))',
+      gap: '0.6rem 1rem',
+      padding: '0.75rem 0',
+    }}>
       {children}
     </div>
   )
@@ -413,7 +486,9 @@ function JsonInput({ value, onChange, nullable }: { value: unknown; onChange: (v
         rows={3}
         style={{
           ...inputStyle,
-          resize: 'vertical', fontFamily: 'monospace', fontSize: 12,
+          resize: 'vertical',
+          fontFamily: 'monospace',
+          fontSize: 12,
           borderColor: err ? '#e53e3e' : '#cbd5e0',
         }}
       />
@@ -422,24 +497,27 @@ function JsonInput({ value, onChange, nullable }: { value: unknown; onChange: (v
   )
 }
 
-function CheckboxInput({ id, label, checked, onChange }: { id: string; label: string; checked: boolean; onChange: (v: boolean) => void }) {
+function CheckboxInput({
+  id,
+  label,
+  checked,
+  onChange,
+}: {
+  id: string
+  label: string
+  checked: boolean
+  onChange: (v: boolean) => void
+}) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingTop: 4 }}>
       <input id={id} type="checkbox" checked={checked} onChange={e => onChange(e.target.checked)} />
-      <label htmlFor={id} style={{ fontSize: 13, color: '#4a5568', userSelect: 'none', cursor: 'pointer' }}>{label}</label>
+      <label
+        htmlFor={id}
+        style={{ fontSize: 13, color: '#4a5568', userSelect: 'none', cursor: 'pointer' }}
+      >
+        {label}
+      </label>
     </div>
-  )
-}
-
-function SelectInput<T extends string>({ value, onChange, options }: {
-  value: T
-  onChange: (v: T) => void
-  options: { value: T; label: string }[]
-}) {
-  return (
-    <select value={value} onChange={e => onChange(e.target.value as T)} style={inputStyle}>
-      {options.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-    </select>
   )
 }
 
@@ -459,4 +537,44 @@ const inputStyle: React.CSSProperties = {
 }
 const noParamsStyle: React.CSSProperties = {
   margin: '0.5rem 0', fontSize: 13, color: '#718096',
+}
+const guardContainerStyle: React.CSSProperties = {
+  borderTop: '1px dashed #e2e8f0',
+  marginTop: '0.5rem',
+}
+const guardHeaderStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  padding: '0.3rem 0.75rem',
+  background: '#f7fafc',
+}
+const guardToggleBtnStyle: React.CSSProperties = {
+  background: 'none',
+  border: 'none',
+  cursor: 'pointer',
+  fontSize: 12,
+  color: '#4a5568',
+  padding: 0,
+  fontWeight: 600,
+}
+const guardBadgeStyle: React.CSSProperties = {
+  fontSize: 10,
+  fontWeight: 700,
+  padding: '1px 6px',
+  borderRadius: 8,
+  background: '#ebf8ff',
+  color: '#2b6cb0',
+  border: '1px solid #bee3f8',
+  textTransform: 'uppercase',
+  letterSpacing: '0.04em',
+}
+const removeGuardBtnStyle: React.CSSProperties = {
+  fontSize: 11,
+  color: '#e53e3e',
+  background: 'none',
+  border: '1px solid #fed7d7',
+  borderRadius: 3,
+  padding: '1px 6px',
+  cursor: 'pointer',
 }

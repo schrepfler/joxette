@@ -193,16 +193,16 @@ export const STEP_DEFINITIONS: StepDef[] = [
     type: 'filter_drop',
     label: 'Filter Drop',
     category: 'Routing',
-    description: 'Drop messages matching a field predicate',
-    defaults: () => ({ field: '$.value.status', operator: 'EQ' as const, value: 'cancelled' }),
+    description: 'Drop messages matching a predicate (leaf or compound and/or/not)',
+    defaults: () => ({ predicate: { field: '$.value.status', operator: 'EQ' as const, value: 'cancelled' } }),
   },
   // ---- Logic ----
   {
     type: 'conditional',
     label: 'Conditional',
     category: 'Logic',
-    description: 'Apply different steps based on a condition',
-    defaults: () => ({ condition: '$.amount > 1000', thenSteps: [], elseSteps: [] }),
+    description: 'Apply different steps based on a condition predicate',
+    defaults: () => ({ condition: { field: '$.value.amount', operator: 'GT' as const, value: 1000 }, then_steps: [], else_steps: [] }),
   },
 ]
 

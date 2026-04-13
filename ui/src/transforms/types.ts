@@ -10,8 +10,38 @@ export type FilterOperator =
   | 'EQ' | 'NEQ' | 'GT' | 'GTE' | 'LT' | 'LTE'
   | 'CONTAINS' | 'MATCHES' | 'IS_NULL' | 'IS_NOT_NULL'
 
-// A condition string for the conditional step (simple free-text expression)
-export type ConditionExpr = string
+// ---------------------------------------------------------------------------
+// Predicate hierarchy — mirrors Predicate.java sealed interface.
+// Jackson uses the "match" discriminator; when absent, Leaf is assumed.
+// ---------------------------------------------------------------------------
+
+/** Single-field check. No "match" field — backend defaults to Leaf when "match" is absent. */
+export interface PredicateLeaf {
+  field: string
+  operator: FilterOperator
+  value?: string | number | null
+}
+
+export interface PredicateAnd {
+  match: 'and'
+  predicates: Predicate[]
+}
+
+export interface PredicateOr {
+  match: 'or'
+  predicates: Predicate[]
+}
+
+export interface PredicateNot {
+  match: 'not'
+  predicate: Predicate
+}
+
+export type Predicate = PredicateLeaf | PredicateAnd | PredicateOr | PredicateNot
+
+export function isLeafPredicate(p: Predicate): p is PredicateLeaf {
+  return !('match' in p)
+}
 
 // ---- Time ----
 
@@ -158,18 +188,17 @@ export interface FanOutStep {
 
 export interface FilterDropStep {
   type: 'filter_drop'
-  field: string
-  operator: FilterOperator
-  value?: string | number
+  /** Full predicate — may be a simple Leaf or compound And/Or/Not. */
+  predicate: Predicate
 }
 
 // ---- Logic ----
 
 export interface ConditionalStep {
   type: 'conditional'
-  condition: ConditionExpr  // free-form expression string
-  thenSteps: TransformStep[]  // camelCase on the wire
-  elseSteps: TransformStep[]  // camelCase on the wire
+  condition: Predicate
+  then_steps: TransformStep[]  // @JsonProperty("then_steps")
+  else_steps: TransformStep[]  // @JsonProperty("else_steps")
 }
 
 // ---------------------------------------------------------------------------
@@ -213,12 +242,17 @@ export interface TransformPipeline {
   steps: PipelineStep[]
 }
 
-/** A TransformStep with a client-side stable identity key (not sent to server). */
-export type PipelineStep = TransformStep & { _id: string }
+/**
+ * A TransformStep with a client-side stable identity key and optional when guard.
+ * `_id` is stripped by `serializeSteps` before sending to the server.
+ * `when` is preserved — the backend wraps the step in a GuardedStep when present.
+ */
+export type PipelineStep = TransformStep & { _id: string; when?: Predicate }
 
 export const emptyPipeline = (): TransformPipeline => ({ steps: [] })
 
-/** Strip the `_id` field before sending to the server. */
+/** Strip the `_id` field before sending to the server. Preserves all other fields including `when`. */
 export function serializeSteps(steps: PipelineStep[]): TransformStep[] {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   return steps.map(({ _id: _, ...rest }) => rest as TransformStep)
 }

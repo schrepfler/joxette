@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { draggable, dropTargetForElements } from '@atlaskit/pragmatic-drag-and-drop/element/adapter'
 import { attachClosestEdge, extractClosestEdge, type Edge } from '@atlaskit/pragmatic-drag-and-drop-hitbox/closest-edge'
 import { STEP_DEF_MAP } from '#/transforms/definitions'
-import type { PipelineStep } from '#/transforms/types'
+import type { PipelineStep, Predicate } from '#/transforms/types'
+import { isLeafPredicate } from '#/transforms/types'
 import { StepConfigForm } from './StepConfigForm'
 
 interface Props {
@@ -170,10 +171,17 @@ function buildParamSummary(step: PipelineStep): string {
     case 'copy_to_header': return `${s.source} → ${s.headerKey}`
     case 'redirect_topic': return `→ ${s.topic}`
     case 'fan_out': return `→ ${(s.topics as string[]).join(', ')}`
-    case 'filter_drop': return `${s.field} ${s.operator} ${s.value ?? ''}`
-    case 'conditional': return `if: ${String(s.condition).slice(0, 30)}`
+    case 'filter_drop': return predicateSummary(s.predicate as Predicate)
+    case 'conditional': return `if: ${predicateSummary(s.condition as Predicate)}`
     default: return ''
   }
+}
+
+function predicateSummary(p: Predicate | undefined | null): string {
+  if (!p) return ''
+  if (isLeafPredicate(p)) return `${p.field} ${p.operator}${p.value != null ? ` ${p.value}` : ''}`
+  if (p.match === 'not') return `NOT (${predicateSummary(p.predicate)})`
+  return `[${p.match.toUpperCase()} × ${p.predicates.length}]`
 }
 
 const CATEGORY_COLORS: Record<string, string> = {
