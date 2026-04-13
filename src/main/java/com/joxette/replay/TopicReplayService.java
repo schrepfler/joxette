@@ -19,14 +19,16 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import com.joxette.replay.transform.ReplayMessage;
 import com.joxette.replay.transform.TransformPipeline;
+import com.joxette.replay.transform.steps.SqlPushdownAnalyzer;
 
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
+import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.Function;
+
 
 /**
  * Queries the general cassette table ({@code lake.main.general_{topic}}) for a
@@ -54,6 +56,13 @@ import java.util.function.Function;
 public class TopicReplayService {
 
     private static final int STREAM_PAGE_SIZE = 500;
+
+    /**
+     * JSONPath field names eligible for SQL pushdown in the general cassette table.
+     * {@code $.topic} is excluded — the topic is encoded in the table name, not a column.
+     */
+    private static final Set<String> PUSHDOWN_ELIGIBLE = Set.of(
+            "$.partition", "$.offset", "$.timestamp", "$.key", "$.recorded_at");
 
     // -------------------------------------------------------------------------
     // Field references for lake.main.general_{topic}
@@ -126,10 +135,15 @@ public class TopicReplayService {
             TransformPipeline pipeline,
             String replayId
     ) throws SQLException {
+        // Push eligible filter_drop steps down to SQL before materialising rows.
+        SqlPushdownAnalyzer.PushdownResult pushdown =
+                SqlPushdownAnalyzer.analyze(pipeline.steps(), PUSHDOWN_ELIGIBLE);
+        TransformPipeline prunedPipeline = pipeline.withSteps(pushdown.remainingSteps());
+
         Table<?> table = tableFor(topic);
         TopicCursor decoded = cursor != null ? TopicCursor.decode(cursor) : null;
 
-        Condition cond = DSL.noCondition();
+        Condition cond = pushdown.pushdownCondition();
         if (from != null)       cond = cond.and(F_TIMESTAMP.ge(from.atOffset(ZoneOffset.UTC)));
         if (to != null)         cond = cond.and(F_TIMESTAMP.le(to.atOffset(ZoneOffset.UTC)));
         if (partition != null)  cond = cond.and(F_PARTITION.eq(partition));
@@ -158,11 +172,11 @@ public class TopicReplayService {
                     .fetch(r -> mapRecord(topicFinal, r));
         }
 
-        if (!pipeline.isIdentity()) {
+        if (!prunedPipeline.isIdentity()) {
             List<CassetteRecord> transformed = new ArrayList<>();
             for (CassetteRecord r : records) {
-                Optional<ReplayMessage> result = pipeline.apply(new ReplayMessage(r), replayId);
-                result.map(ReplayMessage::toCassetteRecord).ifPresent(transformed::add);
+                List<ReplayMessage> results = prunedPipeline.apply(new ReplayMessage(r), replayId);
+                results.stream().map(ReplayMessage::toCassetteRecord).forEach(transformed::add);
             }
             records = transformed;
         }

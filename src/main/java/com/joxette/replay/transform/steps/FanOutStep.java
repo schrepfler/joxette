@@ -5,13 +5,14 @@ import com.joxette.replay.transform.TransformStep;
 import java.util.List;
 
 /**
- * Produces the message to each topic in {@code targetTopics}.
+ * Emits the message to each topic in {@code topics}, producing one
+ * {@link com.joxette.replay.transform.ReplayMessage} copy per target topic.
  *
- * <p><b>Stub note</b>: multi-output semantics ({@code Stream<ReplayMessage>})
- * are deferred. In this phase the step is a pass-through identity for the
- * browse/stream path.
+ * <p>{@link com.joxette.replay.transform.TransformPipeline#apply} expands a
+ * single message into {@code topics.size()} copies at this step. Any steps
+ * declared after {@code fan_out} in the pipeline apply independently to each copy.
  *
  * <p>Example:
- * <pre>{@code {"type": "fan_out", "targetTopics": ["orders-a", "orders-b"]}}</pre>
+ * <pre>{@code {"type": "fan_out", "topics": ["orders-a", "orders-b"]}}</pre>
  */
-public record FanOutStep(List<String> targetTopics) implements TransformStep {}
+public record FanOutStep(List<String> topics) implements TransformStep {}

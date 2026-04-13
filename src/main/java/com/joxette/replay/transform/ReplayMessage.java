@@ -59,6 +59,25 @@ public final class ReplayMessage {
     // Constructors
     // -------------------------------------------------------------------------
 
+    /** Copy constructor — produces a deep copy with an independent header list. */
+    public ReplayMessage(ReplayMessage source) {
+        this.topic       = source.topic;
+        this.partition   = source.partition;
+        this.offset      = source.offset;
+        this.timestamp   = source.timestamp;
+        this.recordedAt  = source.recordedAt;
+        this.key         = source.key;
+        this.value       = source.value;
+        this.headers     = new ArrayList<>(source.headers);
+        this.messageType = source.messageType;
+        this.entityId    = source.entityId;
+    }
+
+    /** Returns a deep copy of this message with an independent mutable header list. */
+    public ReplayMessage copy() {
+        return new ReplayMessage(this);
+    }
+
     /** Constructs from a {@link CassetteRecord}. {@code entityId} will be null. */
     public ReplayMessage(CassetteRecord r) {
         this.topic       = r.topic();

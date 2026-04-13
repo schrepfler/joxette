@@ -12,6 +12,7 @@ import org.springframework.stereotype.Service;
 
 import com.joxette.replay.transform.ReplayMessage;
 import com.joxette.replay.transform.TransformPipeline;
+import com.joxette.replay.transform.steps.SqlPushdownAnalyzer;
 
 import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
@@ -23,7 +24,7 @@ import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
+import java.util.Set;
 import java.util.function.Consumer;
 import java.util.regex.Pattern;
 
@@ -50,6 +51,13 @@ public class EntityReplayService {
 
     private static final Pattern SAFE_IDENTIFIER = Pattern.compile("[a-z][a-z0-9_]*");
     private static final int STREAM_PAGE_SIZE = 500;
+
+    /**
+     * JSONPath field names eligible for SQL pushdown in the entity cassette table.
+     * Includes {@code $.topic} because entity tables have a {@code topic} column.
+     */
+    private static final Set<String> PUSHDOWN_ELIGIBLE = Set.of(
+            "$.topic", "$.partition", "$.offset", "$.timestamp", "$.key", "$.recorded_at");
 
     // -------------------------------------------------------------------------
     // Field references for entity cassette tables
@@ -127,11 +135,17 @@ public class EntityReplayService {
             String replayId
     ) throws SQLException {
         validateEntityType(entityType);
+
+        // Push eligible filter_drop steps down to SQL before materialising rows.
+        SqlPushdownAnalyzer.PushdownResult pushdown =
+                SqlPushdownAnalyzer.analyze(pipeline.steps(), PUSHDOWN_ELIGIBLE);
+        TransformPipeline prunedPipeline = pipeline.withSteps(pushdown.remainingSteps());
+
         EntityCursor decoded = cursor != null ? EntityCursor.decode(cursor) : null;
 
         Table<?> entityTable = entityTable(entityType);
 
-        Condition cond = F_ENTITY_ID.eq(entityId);
+        Condition cond = pushdown.pushdownCondition().and(F_ENTITY_ID.eq(entityId));
         if (from != null) cond = cond.and(F_TIMESTAMP.ge(from.atOffset(ZoneOffset.UTC)));
         if (to != null)   cond = cond.and(F_TIMESTAMP.le(to.atOffset(ZoneOffset.UTC)));
 
@@ -160,11 +174,11 @@ public class EntityReplayService {
                     .fetch(EntityReplayService::mapEntityRecord);
         }
 
-        if (!pipeline.isIdentity()) {
+        if (!prunedPipeline.isIdentity()) {
             List<EntityRecord> transformed = new ArrayList<>();
             for (EntityRecord r : records) {
-                Optional<ReplayMessage> result = pipeline.apply(new ReplayMessage(r), replayId);
-                result.map(ReplayMessage::toEntityRecord).ifPresent(transformed::add);
+                List<ReplayMessage> results = prunedPipeline.apply(new ReplayMessage(r), replayId);
+                results.stream().map(ReplayMessage::toEntityRecord).forEach(transformed::add);
             }
             records = transformed;
         }

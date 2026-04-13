@@ -3,10 +3,14 @@ package com.joxette.replay.transform.steps;
 import com.joxette.replay.transform.TransformStep;
 
 /**
- * Changes the topic field of the replayed message to {@code targetTopic}.
- * This affects where the message is produced when replaying to Kafka.
+ * Overrides the topic that the message is emitted to.
+ *
+ * <p>{@code topic} may be a literal string or a {@code ${path}} template resolved
+ * against the message at apply time (e.g. {@code ${$.value.target_topic}}).
+ * This affects the {@code topic} field in the replay response and, when the
+ * replay-to-Kafka feature is present, the actual produce target.
  *
  * <p>Example:
- * <pre>{@code {"type": "redirect_topic", "targetTopic": "orders-staging"}}</pre>
+ * <pre>{@code {"type": "redirect_topic", "topic": "orders-staging"}}</pre>
  */
-public record RedirectTopicStep(String targetTopic) implements TransformStep {}
+public record RedirectTopicStep(String topic) implements TransformStep {}
