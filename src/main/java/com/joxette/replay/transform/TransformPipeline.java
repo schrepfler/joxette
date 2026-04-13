@@ -129,9 +129,7 @@ public final class TransformPipeline {
                 case RemoveHeaderStep rhs -> current.forEach(m -> applyRemoveHeader(rhs, m));
                 case CopyToHeaderStep cths -> current.forEach(m -> applyCopyToHeader(cths, m));
                 case RedirectTopicStep rts -> current.forEach(m -> applyRedirectTopic(rts, m));
-                default -> {
-                    // Other steps are identity stubs — message is unchanged.
-                }
+                default -> current.forEach(m -> step.apply(m));
             }
         }
 

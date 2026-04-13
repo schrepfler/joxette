@@ -73,4 +73,17 @@ import com.joxette.replay.transform.steps.WallTimeStep;
     @JsonSubTypes.Type(value = ConditionalStep.class,      name = "conditional")
 })
 public interface TransformStep {
+
+    /**
+     * Applies this step to {@code msg}, mutating it in place.
+     *
+     * <p>The default implementation is a no-op. Steps that are not yet
+     * implemented leave this override absent, so unimplemented steps pass
+     * through silently until their logic is added.
+     *
+     * @param msg the mutable message carrier to transform
+     */
+    default void apply(ReplayMessage msg) {
+        // no-op for unimplemented steps
+    }
 }
