@@ -24,15 +24,11 @@ import com.joxette.replay.transform.steps.TimeShiftStep;
 import com.joxette.replay.transform.steps.WallTimeStep;
 
 import java.nio.charset.StandardCharsets;
-import java.time.Duration;
-import java.time.Instant;
-import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
-import java.util.function.UnaryOperator;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -233,10 +229,10 @@ public final class TransformPipeline {
 
             switch (step) {
                 case FilterDropStep   fds -> { if (fds.test(msg)) return Optional.empty(); }
-                case WallTimeStep     s   -> applyWallTime(msg, s);
-                case TimeShiftStep    s   -> applyTimeShift(msg, s);
-                case TimeCompressStep s   -> applyTimeCompress(msg, s, ctx);
-                case TimeFreezeStep   s   -> applyTimeFreeze(msg, s, ctx);
+                case WallTimeStep     s   -> s.apply(msg);
+                case TimeShiftStep    s   -> s.apply(msg);
+                case TimeCompressStep s   -> s.apply(msg, ctx);
+                case TimeFreezeStep   s   -> s.apply(msg, ctx);
                 // FanOutStep not applicable in streaming context — pass through
                 case FanOutStep ignored   -> { }
                 case RenameFieldStep      s -> s.apply(msg, ctx);
@@ -323,10 +319,10 @@ public final class TransformPipeline {
             case RemoveHeaderStep rhs  -> { current.forEach(m -> applyRemoveHeader(rhs, m)); yield current; }
             case CopyToHeaderStep cths -> { current.forEach(m -> applyCopyToHeader(cths, m)); yield current; }
             case RedirectTopicStep rts -> { current.forEach(m -> applyRedirectTopic(rts, m)); yield current; }
-            case WallTimeStep      s   -> { current.forEach(m -> applyWallTime(m, s));        yield current; }
-            case TimeShiftStep     s   -> { current.forEach(m -> applyTimeShift(m, s));       yield current; }
-            case TimeCompressStep  s   -> { current.forEach(m -> applyTimeCompress(m, s, ctx)); yield current; }
-            case TimeFreezeStep    s   -> { current.forEach(m -> applyTimeFreeze(m, s, ctx));  yield current; }
+            case WallTimeStep      s   -> { current.forEach(s::apply);               yield current; }
+            case TimeShiftStep     s   -> { current.forEach(s::apply);               yield current; }
+            case TimeCompressStep  s   -> { current.forEach(m -> s.apply(m, ctx));   yield current; }
+            case TimeFreezeStep    s   -> { current.forEach(m -> s.apply(m, ctx));   yield current; }
             case RenameFieldStep      s -> { current.forEach(m -> s.apply(m, ctx)); yield current; }
             case DeleteFieldStep      s -> { current.forEach(m -> s.apply(m, ctx)); yield current; }
             case FlattenFieldStep     s -> { current.forEach(m -> s.apply(m, ctx)); yield current; }
@@ -354,138 +350,6 @@ public final class TransformPipeline {
                 yield next;
             }
             default -> { current.forEach(step::apply); yield current; }
-        };
-    }
-
-    // =========================================================================
-    // Time step implementations
-    // =========================================================================
-
-    /**
-     * Replaces the target timestamp field with the current wall-clock time.
-     * Does not modify the message value payload.
-     */
-    private static void applyWallTime(ReplayMessage msg, WallTimeStep step) {
-        Instant now = Instant.now();
-        applyToTimestampTarget(msg, step.target(), __ -> now);
-    }
-
-    /**
-     * Shifts the target timestamp field(s) by {@code step.shiftMs()} milliseconds.
-     * Positive values move timestamps forward; negative values move them backward.
-     */
-    private static void applyTimeShift(ReplayMessage msg, TimeShiftStep step) {
-        Duration delta = Duration.ofMillis(step.shiftMs());
-        applyToTimestampTarget(msg, step.target(), ts -> ts.plus(delta));
-    }
-
-    /**
-     * Computes the sleep duration the streaming layer should observe before emitting
-     * this message.  Does <em>not</em> modify the message timestamp.
-     *
-     * <h3>Algorithm</h3>
-     * <ol>
-     *   <li><b>First message</b> — records {@code (msgTs, Instant.now())} as the anchor;
-     *       sets {@link TransformContext#getPendingSleep()} to zero.</li>
-     *   <li><b>Subsequent messages</b> — computes a scaled gap from the anchor:
-     *       {@code scaledGap = rawGap / factor}, then sets {@code pendingSleep}
-     *       to {@code max(0, anchorWall + scaledGap − now)}.</li>
-     * </ol>
-     */
-    private static void applyTimeCompress(
-            ReplayMessage msg, TimeCompressStep step, TransformContext ctx) {
-        Instant msgTs = resolveTimestamp(msg, step.target());
-        if (msgTs == null) {
-            ctx.setPendingSleep(Duration.ZERO);
-            return;
-        }
-
-        if (ctx.getCompressAnchorMsgTs() == null) {
-            ctx.setCompressAnchor(msgTs, Instant.now());
-            ctx.setPendingSleep(Duration.ZERO);
-        } else {
-            long rawGapMs = Duration.between(ctx.getCompressAnchorMsgTs(), msgTs).toMillis();
-            if (rawGapMs <= 0) {
-                ctx.setPendingSleep(Duration.ZERO);
-            } else {
-                long scaledMs = Math.round(rawGapMs / step.factor());
-                Instant targetWall = ctx.getCompressAnchorWallTs().plusMillis(scaledMs);
-                ctx.setPendingSleep(Duration.between(Instant.now(), targetWall));
-            }
-        }
-    }
-
-    /**
-     * Freezes the target timestamp field(s) to a fixed instant for every message.
-     *
-     * <p>{@code "NOW"} (case-insensitive) freezes to {@link TransformContext#getReplayStartedAt()},
-     * i.e. the wall-clock time the replay stream began. Any other value must be a
-     * valid ISO-8601 instant string (e.g. {@code "2024-01-01T00:00:00Z"}).
-     */
-    private static void applyTimeFreeze(
-            ReplayMessage msg, TimeFreezeStep step, TransformContext ctx) {
-        Instant frozen = "NOW".equalsIgnoreCase(step.frozenAt())
-                ? ctx.getReplayStartedAt()
-                : Instant.parse(step.frozenAt());
-        applyToTimestampTarget(msg, step.target(), __ -> frozen);
-    }
-
-    /**
-     * Applies {@code fn} to the timestamp field(s) indicated by {@code target}.
-     *
-     * <p>Recognised targets:
-     * <ul>
-     *   <li>{@code "ALL_TIMESTAMPS"} — applies to {@link ReplayMessage#timestamp},
-     *       {@link ReplayMessage#recordedAt}, and any header value that parses as
-     *       an ISO-8601 instant.</li>
-     *   <li>{@code "$.timestamp"} — the Kafka producer timestamp only.</li>
-     *   <li>{@code "$.recorded_at"} — the cassette ingestion timestamp only.</li>
-     *   <li>Anything else — silently skipped.</li>
-     * </ul>
-     */
-    private static void applyToTimestampTarget(
-            ReplayMessage msg, String target, UnaryOperator<Instant> fn) {
-        switch (target) {
-            case "ALL_TIMESTAMPS" -> {
-                if (msg.timestamp  != null) msg.timestamp  = fn.apply(msg.timestamp);
-                if (msg.recordedAt != null) msg.recordedAt = fn.apply(msg.recordedAt);
-                shiftTimestampHeaders(msg, fn);
-            }
-            case "$.timestamp"   -> { if (msg.timestamp  != null) msg.timestamp  = fn.apply(msg.timestamp); }
-            case "$.recorded_at" -> { if (msg.recordedAt != null) msg.recordedAt = fn.apply(msg.recordedAt); }
-            default              -> { /* unsupported target — silently skip */ }
-        }
-    }
-
-    /**
-     * Scans all headers; for each header whose value parses as an ISO-8601 instant,
-     * applies {@code fn} and writes back the result as an ISO-8601 string.
-     * Non-timestamp headers are left untouched.
-     */
-    private static void shiftTimestampHeaders(
-            ReplayMessage msg, UnaryOperator<Instant> fn) {
-        for (int i = 0; i < msg.headers.size(); i++) {
-            CassetteRecord.Header h = msg.headers.get(i);
-            if (h.value() == null) continue;
-            try {
-                Instant ts      = Instant.parse(h.value());
-                Instant shifted = fn.apply(ts);
-                msg.headers.set(i, new CassetteRecord.Header(h.key(), shifted.toString()));
-            } catch (DateTimeParseException ignored) {
-                // Not an ISO-8601 timestamp header — leave untouched
-            }
-        }
-    }
-
-    /**
-     * Returns the {@link Instant} named by {@code target} from the message envelope,
-     * defaulting to {@link ReplayMessage#timestamp} for unrecognised targets.
-     * Used by {@code time_compress} to obtain the anchor field value.
-     */
-    private static Instant resolveTimestamp(ReplayMessage msg, String target) {
-        return switch (target) {
-            case "$.recorded_at" -> msg.recordedAt;
-            default              -> msg.timestamp;   // "$.timestamp", "ALL_TIMESTAMPS", others
         };
     }
 

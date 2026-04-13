@@ -126,15 +126,27 @@ public final class TransformContext {
     }
 
     // -------------------------------------------------------------------------
-    // Package-private mutators — only TransformPipeline should call these
+    // Mutators — called by TransformPipeline and time transform steps
     // -------------------------------------------------------------------------
 
-    void setCompressAnchor(Instant msgTs, Instant wallTs) {
+    /**
+     * Records the compression anchor: the first-message timestamp and the
+     * wall-clock time at which it was observed.  Called once by
+     * {@link com.joxette.replay.transform.steps.TimeCompressStep} on the first
+     * message in the stream.
+     */
+    public void setCompressAnchor(Instant msgTs, Instant wallTs) {
         this.compressAnchorMsgTs  = msgTs;
         this.compressAnchorWallTs = wallTs;
     }
 
-    void setPendingSleep(Duration d) {
+    /**
+     * Sets the sleep duration the streaming layer should observe before emitting
+     * the current message.  Negative or null values are clamped to
+     * {@link Duration#ZERO}.  Called by
+     * {@link com.joxette.replay.transform.steps.TimeCompressStep} once per message.
+     */
+    public void setPendingSleep(Duration d) {
         this.pendingSleep = (d == null || d.isNegative()) ? Duration.ZERO : d;
     }
 
