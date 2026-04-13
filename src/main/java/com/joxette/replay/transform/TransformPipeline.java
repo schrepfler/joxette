@@ -9,11 +9,20 @@ import com.joxette.replay.transform.steps.FanOutStep;
 import com.joxette.replay.transform.steps.FilterDropStep;
 import com.joxette.replay.transform.steps.RedirectTopicStep;
 import com.joxette.replay.transform.steps.RemoveHeaderStep;
+import com.joxette.replay.transform.steps.TimeCompressStep;
+import com.joxette.replay.transform.steps.TimeFreezeStep;
+import com.joxette.replay.transform.steps.TimeShiftStep;
+import com.joxette.replay.transform.steps.WallTimeStep;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.time.Instant;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.Optional;
+import java.util.function.UnaryOperator;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -36,11 +45,16 @@ import java.util.regex.Pattern;
  *   <li>{@link FanOutStep} — expands each live message into N copies (one per
  *       target topic); subsequent steps run independently on each copy.</li>
  *   <li>{@link AddHeaderStep}, {@link RemoveHeaderStep}, {@link CopyToHeaderStep},
- *       {@link RedirectTopicStep} — implemented; all other steps are identity stubs.</li>
+ *       {@link RedirectTopicStep} — implemented; all other steps are dispatched via
+ *       {@link TransformStep#apply(ReplayMessage)} (default no-op for unimplemented
+ *       steps).</li>
+ *   <li>The four time steps ({@code wall_time}, {@code time_shift},
+ *       {@code time_compress}, {@code time_freeze}) are fully implemented in both
+ *       the list and context-aware overloads.</li>
  * </ol>
  *
  * <h2>Return type</h2>
- * <p>{@link #apply} returns a {@code List<ReplayMessage>}:
+ * <p>{@link #apply(ReplayMessage, String)} returns a {@code List<ReplayMessage>}:
  * <ul>
  *   <li>One element — normal pass-through.</li>
  *   <li>Empty — message was dropped by a {@link FilterDropStep}.</li>
@@ -53,6 +67,19 @@ import java.util.regex.Pattern;
  *   <li>{@code new TransformPipeline(List.of(), injector)} — metadata-only pipeline
  *       (provenance headers injected, no user steps).</li>
  * </ul>
+ *
+ * <h2>Stateful steps and TransformContext</h2>
+ * <p>Steps that need cross-message state (e.g. {@code time_compress}) read and write
+ * a {@link TransformContext}.  Use {@link #apply(ReplayMessage, String, TransformContext)}
+ * for streaming paths, sharing one context across the entire stream.  After each call,
+ * check {@link TransformContext#getPendingSleep()} and sleep that duration before
+ * emitting the message.
+ *
+ * <p>The two-argument overload {@link #apply(ReplayMessage, String)} creates a fresh
+ * throwaway context per call — appropriate for paginated (non-streaming) paths where
+ * cross-message state is not required.  It returns a {@code List<ReplayMessage>} to
+ * support fan-out; the streaming overload returns {@code Optional<ReplayMessage>}
+ * (fan-out is not applicable in streaming context).
  */
 public final class TransformPipeline {
 
@@ -63,8 +90,8 @@ public final class TransformPipeline {
     public static final TransformPipeline IDENTITY =
             new TransformPipeline(List.of(), null);
 
-    private static final Base64.Decoder B64_DEC = Base64.getUrlDecoder();
-    private static final Pattern TEMPLATE_VAR   = Pattern.compile("\\$\\{([^}]+)\\}");
+    private static final Base64.Decoder B64_DEC    = Base64.getUrlDecoder();
+    private static final Pattern        TEMPLATE_VAR = Pattern.compile("\\$\\{([^}]+)\\}");
 
     private final List<TransformStep>    steps;
     private final ReplayMetadataInjector injector;  // null only for IDENTITY
@@ -88,6 +115,9 @@ public final class TransformPipeline {
     /**
      * Applies the pipeline to {@code msg}, returning the resulting messages.
      *
+     * <p>A fresh {@link TransformContext} is created for this call — suitable for
+     * paginated (non-streaming) paths where cross-message state is not needed.
+     *
      * @param msg      the mutable message to transform (will be mutated in place
      *                 unless {@link FanOutStep} forces copies)
      * @param replayId UUID of the replay session, forwarded to the injector
@@ -98,6 +128,8 @@ public final class TransformPipeline {
         if (injector != null) {
             injector.inject(msg, replayId);
         }
+
+        TransformContext ctx = new TransformContext();
 
         // Start with the single input message
         List<ReplayMessage> current = new ArrayList<>();
@@ -125,15 +157,60 @@ public final class TransformPipeline {
                     }
                     current = expanded;
                 }
-                case AddHeaderStep ahs -> current.forEach(m -> applyAddHeader(ahs, m));
-                case RemoveHeaderStep rhs -> current.forEach(m -> applyRemoveHeader(rhs, m));
+                case AddHeaderStep    ahs  -> current.forEach(m -> applyAddHeader(ahs, m));
+                case RemoveHeaderStep rhs  -> current.forEach(m -> applyRemoveHeader(rhs, m));
                 case CopyToHeaderStep cths -> current.forEach(m -> applyCopyToHeader(cths, m));
                 case RedirectTopicStep rts -> current.forEach(m -> applyRedirectTopic(rts, m));
-                default -> current.forEach(m -> step.apply(m));
+                case WallTimeStep     s    -> current.forEach(m -> applyWallTime(m, s));
+                case TimeShiftStep    s    -> current.forEach(m -> applyTimeShift(m, s));
+                case TimeCompressStep s    -> current.forEach(m -> applyTimeCompress(m, s, ctx));
+                case TimeFreezeStep   s    -> current.forEach(m -> applyTimeFreeze(m, s, ctx));
+                default -> current.forEach(step::apply);
             }
         }
 
         return current;
+    }
+
+    /**
+     * Applies the pipeline to {@code msg}, mutating it in place, using the supplied
+     * {@code ctx} for cross-message state.
+     *
+     * <p>Use this overload for streaming (SSE / NDJSON) paths: create one
+     * {@link TransformContext} before starting the stream and reuse it across all
+     * messages.  After each call, check {@link TransformContext#getPendingSleep()}
+     * and sleep that duration before emitting the message to the client.
+     *
+     * <p>Fan-out is not applicable in the streaming context; {@link FanOutStep} is
+     * treated as a pass-through in this overload.
+     *
+     * @param msg      the mutable message to transform
+     * @param replayId UUID of the replay session, forwarded to the injector
+     * @param ctx      per-stream mutable context; never null
+     * @return {@link Optional#of(Object) Optional.of(msg)} if the message survives
+     *         all steps, or {@link Optional#empty()} if dropped by a filter step
+     */
+    public Optional<ReplayMessage> apply(ReplayMessage msg, String replayId, TransformContext ctx) {
+        // Step 1: metadata injection
+        if (injector != null) {
+            injector.inject(msg, replayId);
+        }
+
+        // Step 2: user-defined steps in order
+        for (TransformStep step : steps) {
+            switch (step) {
+                case FilterDropStep   fds -> { if (fds.test(msg)) return Optional.empty(); }
+                case WallTimeStep     s   -> applyWallTime(msg, s);
+                case TimeShiftStep    s   -> applyTimeShift(msg, s);
+                case TimeCompressStep s   -> applyTimeCompress(msg, s, ctx);
+                case TimeFreezeStep   s   -> applyTimeFreeze(msg, s, ctx);
+                // FanOutStep not applicable in streaming context — pass through
+                case FanOutStep ignored   -> { }
+                default -> step.apply(msg);  // AddHeader, RemoveHeader, CopyToHeader, Redirect, etc.
+            }
+        }
+
+        return Optional.of(msg);
     }
 
     /** Returns {@code true} when this is the no-op {@link #IDENTITY} sentinel. */
@@ -157,9 +234,141 @@ public final class TransformPipeline {
         return new TransformPipeline(newSteps, this.injector);
     }
 
-    // -------------------------------------------------------------------------
-    // Step dispatch helpers
-    // -------------------------------------------------------------------------
+    // =========================================================================
+    // Time step implementations
+    // =========================================================================
+
+    /**
+     * Replaces the target timestamp field with the current wall-clock time.
+     * Does not modify the message value payload.
+     */
+    private static void applyWallTime(ReplayMessage msg, WallTimeStep step) {
+        Instant now = Instant.now();
+        applyToTimestampTarget(msg, step.target(), __ -> now);
+    }
+
+    /**
+     * Shifts the target timestamp field(s) by {@code step.shiftMs()} milliseconds.
+     * Positive values move timestamps forward; negative values move them backward.
+     */
+    private static void applyTimeShift(ReplayMessage msg, TimeShiftStep step) {
+        Duration delta = Duration.ofMillis(step.shiftMs());
+        applyToTimestampTarget(msg, step.target(), ts -> ts.plus(delta));
+    }
+
+    /**
+     * Computes the sleep duration the streaming layer should observe before emitting
+     * this message.  Does <em>not</em> modify the message timestamp.
+     *
+     * <h3>Algorithm</h3>
+     * <ol>
+     *   <li><b>First message</b> — records {@code (msgTs, Instant.now())} as the anchor;
+     *       sets {@link TransformContext#getPendingSleep()} to zero.</li>
+     *   <li><b>Subsequent messages</b> — computes a scaled gap from the anchor:
+     *       {@code scaledGap = rawGap / factor}, then sets {@code pendingSleep}
+     *       to {@code max(0, anchorWall + scaledGap − now)}.</li>
+     * </ol>
+     */
+    private static void applyTimeCompress(
+            ReplayMessage msg, TimeCompressStep step, TransformContext ctx) {
+        Instant msgTs = resolveTimestamp(msg, step.target());
+        if (msgTs == null) {
+            ctx.setPendingSleep(Duration.ZERO);
+            return;
+        }
+
+        if (ctx.getCompressAnchorMsgTs() == null) {
+            ctx.setCompressAnchor(msgTs, Instant.now());
+            ctx.setPendingSleep(Duration.ZERO);
+        } else {
+            long rawGapMs = Duration.between(ctx.getCompressAnchorMsgTs(), msgTs).toMillis();
+            if (rawGapMs <= 0) {
+                ctx.setPendingSleep(Duration.ZERO);
+            } else {
+                long scaledMs = Math.round(rawGapMs / step.factor());
+                Instant targetWall = ctx.getCompressAnchorWallTs().plusMillis(scaledMs);
+                ctx.setPendingSleep(Duration.between(Instant.now(), targetWall));
+            }
+        }
+    }
+
+    /**
+     * Freezes the target timestamp field(s) to a fixed instant for every message.
+     *
+     * <p>{@code "NOW"} (case-insensitive) freezes to {@link TransformContext#getReplayStartedAt()},
+     * i.e. the wall-clock time the replay stream began. Any other value must be a
+     * valid ISO-8601 instant string (e.g. {@code "2024-01-01T00:00:00Z"}).
+     */
+    private static void applyTimeFreeze(
+            ReplayMessage msg, TimeFreezeStep step, TransformContext ctx) {
+        Instant frozen = "NOW".equalsIgnoreCase(step.frozenAt())
+                ? ctx.getReplayStartedAt()
+                : Instant.parse(step.frozenAt());
+        applyToTimestampTarget(msg, step.target(), __ -> frozen);
+    }
+
+    /**
+     * Applies {@code fn} to the timestamp field(s) indicated by {@code target}.
+     *
+     * <p>Recognised targets:
+     * <ul>
+     *   <li>{@code "ALL_TIMESTAMPS"} — applies to {@link ReplayMessage#timestamp},
+     *       {@link ReplayMessage#recordedAt}, and any header value that parses as
+     *       an ISO-8601 instant.</li>
+     *   <li>{@code "$.timestamp"} — the Kafka producer timestamp only.</li>
+     *   <li>{@code "$.recorded_at"} — the cassette ingestion timestamp only.</li>
+     *   <li>Anything else — silently skipped.</li>
+     * </ul>
+     */
+    private static void applyToTimestampTarget(
+            ReplayMessage msg, String target, UnaryOperator<Instant> fn) {
+        switch (target) {
+            case "ALL_TIMESTAMPS" -> {
+                if (msg.timestamp  != null) msg.timestamp  = fn.apply(msg.timestamp);
+                if (msg.recordedAt != null) msg.recordedAt = fn.apply(msg.recordedAt);
+                shiftTimestampHeaders(msg, fn);
+            }
+            case "$.timestamp"   -> { if (msg.timestamp  != null) msg.timestamp  = fn.apply(msg.timestamp); }
+            case "$.recorded_at" -> { if (msg.recordedAt != null) msg.recordedAt = fn.apply(msg.recordedAt); }
+            default              -> { /* unsupported target — silently skip */ }
+        }
+    }
+
+    /**
+     * Scans all headers; for each header whose value parses as an ISO-8601 instant,
+     * applies {@code fn} and writes back the result as an ISO-8601 string.
+     * Non-timestamp headers are left untouched.
+     */
+    private static void shiftTimestampHeaders(
+            ReplayMessage msg, UnaryOperator<Instant> fn) {
+        for (int i = 0; i < msg.headers.size(); i++) {
+            CassetteRecord.Header h = msg.headers.get(i);
+            if (h.value() == null) continue;
+            try {
+                Instant ts      = Instant.parse(h.value());
+                Instant shifted = fn.apply(ts);
+                msg.headers.set(i, new CassetteRecord.Header(h.key(), shifted.toString()));
+            } catch (DateTimeParseException ignored) {
+                // Not an ISO-8601 timestamp header — leave untouched
+            }
+        }
+    }
+
+    /**
+     * Returns the {@link Instant} named by {@code target} from the message envelope,
+     * defaulting to {@link ReplayMessage#timestamp} for unrecognised targets.
+     * Used by {@code time_compress} to obtain the anchor field value.
+     */
+    private static Instant resolveTimestamp(ReplayMessage msg, String target) {
+        return switch (target) {
+            case "$.recorded_at" -> msg.recordedAt;
+            default              -> msg.timestamp;   // "$.timestamp", "ALL_TIMESTAMPS", others
+        };
+    }
+
+    // =========================================================================
+    // Header / redirect step dispatch helpers
+    // =========================================================================
 
     private static void applyAddHeader(AddHeaderStep step, ReplayMessage msg) {
         if (step.ifAbsent()
@@ -185,9 +394,9 @@ public final class TransformPipeline {
         msg.topic = resolveTemplate(step.topic(), msg);
     }
 
-    // -------------------------------------------------------------------------
+    // =========================================================================
     // Template resolution  (${path} → extracted value)
-    // -------------------------------------------------------------------------
+    // =========================================================================
 
     /**
      * Resolves {@code ${...}} placeholders in {@code template} against {@code msg}.
@@ -208,9 +417,9 @@ public final class TransformPipeline {
         return sb.toString();
     }
 
-    // -------------------------------------------------------------------------
+    // =========================================================================
     // Field extraction from ReplayMessage by JSONPath-like path
-    // -------------------------------------------------------------------------
+    // =========================================================================
 
     /**
      * Extracts a field value from {@code msg} by a JSONPath-like {@code path}.

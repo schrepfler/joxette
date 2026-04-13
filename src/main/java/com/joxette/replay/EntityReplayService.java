@@ -11,11 +11,13 @@ import org.jooq.impl.SQLDataType;
 import org.springframework.stereotype.Service;
 
 import com.joxette.replay.transform.ReplayMessage;
+import com.joxette.replay.transform.TransformContext;
 import com.joxette.replay.transform.TransformPipeline;
 import com.joxette.replay.transform.steps.SqlPushdownAnalyzer;
 
 import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -205,6 +207,13 @@ public class EntityReplayService {
      * Streams all matching entity events, applying {@code pipeline} to each record
      * before passing it to the sink. Records dropped by the pipeline are skipped.
      *
+     * <p>A single {@link TransformContext} is shared across all messages in the stream,
+     * enabling stateful steps such as {@code time_compress}.  After each
+     * {@link TransformPipeline#apply} call, this method sleeps
+     * {@link TransformContext#getPendingSleep()} before passing the record to
+     * {@code sink}.  Paginated paths ({@link #queryEntityEvents}) use a throwaway
+     * per-message context and never sleep.
+     *
      * @param pipeline  transform pipeline applied per-record
      * @param replayId  UUID string for this replay session
      */
@@ -215,15 +224,50 @@ public class EntityReplayService {
             TransformPipeline pipeline,
             String replayId
     ) throws SQLException {
+        if (pipeline.isIdentity()) {
+            // Fast path: no per-record overhead, no context needed
+            String pageCursor = null;
+            do {
+                PagedResponse<EntityRecord> page =
+                        queryEntityEvents(entityType, entityId, from, to,
+                                          STREAM_PAGE_SIZE, pageCursor);
+                page.data().forEach(sink);
+                pageCursor = page.nextCursor();
+                if (!page.hasMore()) break;
+            } while (true);
+            return;
+        }
+
+        // Per-record path: shared context for stateful steps (e.g. time_compress)
+        TransformContext ctx = new TransformContext();
         String pageCursor = null;
         do {
-            PagedResponse<EntityRecord> page =
+            PagedResponse<EntityRecord> rawPage =
                     queryEntityEvents(entityType, entityId, from, to,
-                                      STREAM_PAGE_SIZE, pageCursor, pipeline, replayId);
-            page.data().forEach(sink);
-            pageCursor = page.nextCursor();
-            if (!page.hasMore()) break;
+                                      STREAM_PAGE_SIZE, pageCursor);
+            for (EntityRecord r : rawPage.data()) {
+                Optional<ReplayMessage> result =
+                        pipeline.apply(new ReplayMessage(r), replayId, ctx);
+                sleepPending(ctx);
+                result.map(ReplayMessage::toEntityRecord).ifPresent(sink);
+            }
+            pageCursor = rawPage.nextCursor();
+            if (!rawPage.hasMore()) break;
         } while (true);
+    }
+
+    /**
+     * Sleeps for {@link TransformContext#getPendingSleep()} if non-zero.
+     * On interrupt, restores the interrupt flag and returns immediately.
+     */
+    private static void sleepPending(TransformContext ctx) {
+        Duration sleep = ctx.getPendingSleep();
+        if (sleep.isZero()) return;
+        try {
+            Thread.sleep(sleep);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
     }
 
     // -------------------------------------------------------------------------
