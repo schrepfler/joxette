@@ -10,15 +10,20 @@ import org.jooq.impl.DSL;
 import org.jooq.impl.SQLDataType;
 import org.springframework.stereotype.Service;
 
+import com.joxette.replay.transform.ReplayMessage;
+import com.joxette.replay.transform.TransformPipeline;
+
 import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.function.Consumer;
 import java.util.regex.Pattern;
 
@@ -89,6 +94,8 @@ public class EntityReplayService {
     /**
      * Returns one page of deduplicated events for {@code entityId} from
      * {@code lake.entity_{entityType}}.
+     * Convenience overload — equivalent to calling the pipeline-aware variant with
+     * {@link TransformPipeline#IDENTITY} (no transformation, no metadata injection).
      */
     public PagedResponse<EntityRecord> queryEntityEvents(
             String entityType,
@@ -96,6 +103,28 @@ public class EntityReplayService {
             Instant from, Instant to,
             int limit,
             String cursor
+    ) throws SQLException {
+        return queryEntityEvents(entityType, entityId, from, to, limit, cursor,
+                                 TransformPipeline.IDENTITY, "");
+    }
+
+    /**
+     * Returns one page of deduplicated events for {@code entityId}, with each
+     * record passed through {@code pipeline} before inclusion in the result.
+     * Records dropped by a pipeline step are excluded and do not count toward
+     * {@code limit}.
+     *
+     * @param pipeline  transform pipeline applied per-record
+     * @param replayId  UUID string for this replay session
+     */
+    public PagedResponse<EntityRecord> queryEntityEvents(
+            String entityType,
+            String entityId,
+            Instant from, Instant to,
+            int limit,
+            String cursor,
+            TransformPipeline pipeline,
+            String replayId
     ) throws SQLException {
         validateEntityType(entityType);
         EntityCursor decoded = cursor != null ? EntityCursor.decode(cursor) : null;
@@ -131,22 +160,52 @@ public class EntityReplayService {
                     .fetch(EntityReplayService::mapEntityRecord);
         }
 
+        if (!pipeline.isIdentity()) {
+            List<EntityRecord> transformed = new ArrayList<>();
+            for (EntityRecord r : records) {
+                Optional<ReplayMessage> result = pipeline.apply(new ReplayMessage(r), replayId);
+                result.map(ReplayMessage::toEntityRecord).ifPresent(transformed::add);
+            }
+            records = transformed;
+        }
+
         return TopicReplayService.buildPage(records, limit,
                 r -> new EntityCursor(r.timestamp(), r.recordedAt(), r.topic(), r.partition(), r.offset()).encode());
     }
 
     /**
      * Streams all matching entity events through internal cursor pagination.
+     * Convenience overload — equivalent to calling the pipeline-aware variant with
+     * {@link TransformPipeline#IDENTITY} (no transformation, no metadata injection).
      */
     public void streamEntityEvents(
             String entityType, String entityId,
             Instant from, Instant to,
             Consumer<EntityRecord> sink
     ) throws SQLException {
+        streamEntityEvents(entityType, entityId, from, to, sink,
+                           TransformPipeline.IDENTITY, "");
+    }
+
+    /**
+     * Streams all matching entity events, applying {@code pipeline} to each record
+     * before passing it to the sink. Records dropped by the pipeline are skipped.
+     *
+     * @param pipeline  transform pipeline applied per-record
+     * @param replayId  UUID string for this replay session
+     */
+    public void streamEntityEvents(
+            String entityType, String entityId,
+            Instant from, Instant to,
+            Consumer<EntityRecord> sink,
+            TransformPipeline pipeline,
+            String replayId
+    ) throws SQLException {
         String pageCursor = null;
         do {
             PagedResponse<EntityRecord> page =
-                    queryEntityEvents(entityType, entityId, from, to, STREAM_PAGE_SIZE, pageCursor);
+                    queryEntityEvents(entityType, entityId, from, to,
+                                      STREAM_PAGE_SIZE, pageCursor, pipeline, replayId);
             page.data().forEach(sink);
             pageCursor = page.nextCursor();
             if (!page.hasMore()) break;

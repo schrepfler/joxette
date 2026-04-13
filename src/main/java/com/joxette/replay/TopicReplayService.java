@@ -17,10 +17,14 @@ import java.sql.SQLException;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import com.joxette.replay.transform.ReplayMessage;
+import com.joxette.replay.transform.TransformPipeline;
+
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -79,6 +83,8 @@ public class TopicReplayService {
 
     /**
      * Returns one page of records from {@code lake.main.general_{topic}}.
+     * Convenience overload — equivalent to calling the pipeline-aware variant with
+     * {@link TransformPipeline#IDENTITY} (no transformation, no metadata injection).
      *
      * @param limit   max records to return; one extra is fetched internally to
      *                detect whether more pages exist
@@ -92,6 +98,33 @@ public class TopicReplayService {
             Long offsetFrom, Long offsetTo,
             int limit,
             String cursor
+    ) throws SQLException {
+        return query(topic, from, to, partition, offsetFrom, offsetTo, limit, cursor,
+                     TransformPipeline.IDENTITY, "");
+    }
+
+    /**
+     * Returns one page of records from {@code lake.main.general_{topic}}, with
+     * each record passed through {@code pipeline} before inclusion in the result.
+     * Records dropped by a pipeline step are excluded from the page and do not
+     * count toward {@code limit}.
+     *
+     * @param limit    max records to return; one extra is fetched to detect more pages
+     * @param cursor   opaque cursor from the previous page, or {@code null} for page 1
+     * @param pipeline transform pipeline applied per-record; use
+     *                 {@link TransformPipeline#IDENTITY} for no-op
+     * @param replayId UUID string for this replay session, forwarded to the pipeline
+     *                 for metadata header injection
+     */
+    public PagedResponse<CassetteRecord> query(
+            String topic,
+            Instant from, Instant to,
+            Integer partition,
+            Long offsetFrom, Long offsetTo,
+            int limit,
+            String cursor,
+            TransformPipeline pipeline,
+            String replayId
     ) throws SQLException {
         Table<?> table = tableFor(topic);
         TopicCursor decoded = cursor != null ? TopicCursor.decode(cursor) : null;
@@ -125,14 +158,23 @@ public class TopicReplayService {
                     .fetch(r -> mapRecord(topicFinal, r));
         }
 
+        if (!pipeline.isIdentity()) {
+            List<CassetteRecord> transformed = new ArrayList<>();
+            for (CassetteRecord r : records) {
+                Optional<ReplayMessage> result = pipeline.apply(new ReplayMessage(r), replayId);
+                result.map(ReplayMessage::toCassetteRecord).ifPresent(transformed::add);
+            }
+            records = transformed;
+        }
+
         return buildPage(records, limit,
                 r -> new TopicCursor(r.timestamp(), r.partition(), r.offset()).encode());
     }
 
     /**
-     * Streams all matching records from the topic's general cassette table by
-     * internally paginating with {@link #STREAM_PAGE_SIZE} and feeding each
-     * record to {@code sink}. Releases the DB lock between pages.
+     * Streams all matching records through {@code sink} by internally paginating.
+     * Convenience overload — equivalent to calling the pipeline-aware variant with
+     * {@link TransformPipeline#IDENTITY} (no transformation, no metadata injection).
      */
     public void streamAll(
             String topic,
@@ -141,10 +183,32 @@ public class TopicReplayService {
             Long offsetFrom, Long offsetTo,
             Consumer<CassetteRecord> sink
     ) throws SQLException {
+        streamAll(topic, from, to, partition, offsetFrom, offsetTo, sink,
+                  TransformPipeline.IDENTITY, "");
+    }
+
+    /**
+     * Streams all matching records through {@code sink}, applying {@code pipeline}
+     * to each record before passing it to the sink. Records dropped by the pipeline
+     * are silently skipped. Pages are released between iterations.
+     *
+     * @param pipeline  transform pipeline applied per-record
+     * @param replayId  UUID string for this replay session
+     */
+    public void streamAll(
+            String topic,
+            Instant from, Instant to,
+            Integer partition,
+            Long offsetFrom, Long offsetTo,
+            Consumer<CassetteRecord> sink,
+            TransformPipeline pipeline,
+            String replayId
+    ) throws SQLException {
         String pageCursor = null;
         do {
             PagedResponse<CassetteRecord> page =
-                    query(topic, from, to, partition, offsetFrom, offsetTo, STREAM_PAGE_SIZE, pageCursor);
+                    query(topic, from, to, partition, offsetFrom, offsetTo,
+                          STREAM_PAGE_SIZE, pageCursor, pipeline, replayId);
             page.data().forEach(sink);
             pageCursor = page.nextCursor();
             if (!page.hasMore()) break;

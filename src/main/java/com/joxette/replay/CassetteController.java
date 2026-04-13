@@ -14,11 +14,15 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
+import com.joxette.replay.transform.ReplayMetadataInjector;
+import com.joxette.replay.transform.TransformPipeline;
+
 import java.sql.SQLException;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.UUID;
 
 /**
  * REST endpoints for cassette replay.
@@ -72,6 +76,7 @@ public class CassetteController {
     private final CassetteLifecycleService lifecycle;
     private final ReplayToTopicService replayToTopicService;
     private final ScheduledReplayService scheduledReplayService;
+    private final ReplayMetadataInjector metadataInjector;
 
     public CassetteController(
             TopicReplayService topicService,
@@ -79,13 +84,15 @@ public class CassetteController {
             SseReplayHandler sseHandler,
             CassetteLifecycleService lifecycle,
             ReplayToTopicService replayToTopicService,
-            ScheduledReplayService scheduledReplayService) {
+            ScheduledReplayService scheduledReplayService,
+            ReplayMetadataInjector metadataInjector) {
         this.topicService             = topicService;
         this.entityService            = entityService;
         this.sseHandler               = sseHandler;
         this.lifecycle                = lifecycle;
         this.replayToTopicService     = replayToTopicService;
         this.scheduledReplayService   = scheduledReplayService;
+        this.metadataInjector         = metadataInjector;
     }
 
     // =========================================================================
@@ -169,7 +176,11 @@ public class CassetteController {
                     topic, scheduledAt, from, to, partition, offsetFrom, offsetTo);
             return ResponseEntity.accepted().body(new ScheduledReplayResponse(id, scheduledAt));
         }
-        return ResponseEntity.ok(topicService.query(topic, from, to, partition, offsetFrom, offsetTo, limit, cursor));
+        String replayId = newReplayId();
+        TransformPipeline pipeline = metadataPipeline();
+        return ResponseEntity.ok(
+                topicService.query(topic, from, to, partition, offsetFrom, offsetTo,
+                                   limit, cursor, pipeline, replayId));
     }
 
     @Operation(
@@ -226,8 +237,11 @@ public class CassetteController {
             return sseHandler.<CassetteRecord>streamSseScheduled(id, scheduledAt, scheduledReplayService,
                     sink -> topicService.streamAll(topic, from, to, partition, offsetFrom, offsetTo, sink));
         }
+        String replayId = newReplayId();
+        TransformPipeline pipeline = metadataPipeline();
         return sseHandler.<CassetteRecord>streamSse(
-                sink -> topicService.streamAll(topic, from, to, partition, offsetFrom, offsetTo, sink));
+                sink -> topicService.streamAll(topic, from, to, partition, offsetFrom, offsetTo,
+                                               sink, pipeline, replayId));
     }
 
     @Operation(
@@ -282,8 +296,11 @@ public class CassetteController {
             body = sseHandler.<CassetteRecord>streamNdjsonScheduled(id, scheduledAt, scheduledReplayService,
                     sink -> topicService.streamAll(topic, from, to, partition, offsetFrom, offsetTo, sink));
         } else {
+            String replayId = newReplayId();
+            TransformPipeline pipeline = metadataPipeline();
             body = sseHandler.<CassetteRecord>streamNdjson(
-                    sink -> topicService.streamAll(topic, from, to, partition, offsetFrom, offsetTo, sink));
+                    sink -> topicService.streamAll(topic, from, to, partition, offsetFrom, offsetTo,
+                                                   sink, pipeline, replayId));
         }
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType("application/x-ndjson"))
@@ -449,7 +466,11 @@ public class CassetteController {
                     entityType, entityId, scheduledAt, from, to);
             return ResponseEntity.accepted().body(new ScheduledReplayResponse(id, scheduledAt));
         }
-        return ResponseEntity.ok(entityService.queryEntityEvents(entityType, entityId, from, to, limit, cursor));
+        String replayId = newReplayId();
+        TransformPipeline pipeline = metadataPipeline();
+        return ResponseEntity.ok(
+                entityService.queryEntityEvents(entityType, entityId, from, to,
+                                                limit, cursor, pipeline, replayId));
     }
 
     @Operation(
@@ -500,8 +521,11 @@ public class CassetteController {
             return sseHandler.<EntityRecord>streamSseScheduled(id, scheduledAt, scheduledReplayService,
                     sink -> entityService.streamEntityEvents(entityType, entityId, from, to, sink));
         }
+        String replayId = newReplayId();
+        TransformPipeline pipeline = metadataPipeline();
         return sseHandler.<EntityRecord>streamSse(
-                sink -> entityService.streamEntityEvents(entityType, entityId, from, to, sink));
+                sink -> entityService.streamEntityEvents(entityType, entityId, from, to,
+                                                        sink, pipeline, replayId));
     }
 
     @Operation(
@@ -553,8 +577,11 @@ public class CassetteController {
             body = sseHandler.<EntityRecord>streamNdjsonScheduled(id, scheduledAt, scheduledReplayService,
                     sink -> entityService.streamEntityEvents(entityType, entityId, from, to, sink));
         } else {
+            String replayId = newReplayId();
+            TransformPipeline pipeline = metadataPipeline();
             body = sseHandler.<EntityRecord>streamNdjson(
-                    sink -> entityService.streamEntityEvents(entityType, entityId, from, to, sink));
+                    sink -> entityService.streamEntityEvents(entityType, entityId, from, to,
+                                                            sink, pipeline, replayId));
         }
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType("application/x-ndjson"))
@@ -1187,6 +1214,19 @@ public class CassetteController {
     // =========================================================================
     // Helpers
     // =========================================================================
+
+    /**
+     * Creates a metadata-only pipeline for a browse/stream request: no user steps,
+     * but the six replay-provenance headers are always injected.
+     */
+    private TransformPipeline metadataPipeline() {
+        return new TransformPipeline(List.of(), metadataInjector);
+    }
+
+    /** Mints a fresh UUID string to identify this replay session. */
+    private static String newReplayId() {
+        return UUID.randomUUID().toString();
+    }
 
     /**
      * Resolves {@code start_at} / {@code start_delay_ms} to an absolute {@link Instant}.
