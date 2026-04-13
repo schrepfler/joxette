@@ -186,8 +186,10 @@ public class EntityReplayService {
             records = transformed;
         }
 
+        Boolean transformApplied = !pipeline.steps().isEmpty() ? Boolean.TRUE : null;
         return TopicReplayService.buildPage(records, limit,
-                r -> new EntityCursor(r.timestamp(), r.recordedAt(), r.topic(), r.partition(), r.offset()).encode());
+                r -> new EntityCursor(r.timestamp(), r.recordedAt(), r.topic(), r.partition(), r.offset()).encode(),
+                transformApplied);
     }
 
     /**

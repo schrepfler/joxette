@@ -1,5 +1,9 @@
 package com.joxette.replay;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.jayway.jsonpath.InvalidPathException;
+import com.jayway.jsonpath.JsonPath;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Content;
@@ -14,11 +18,17 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
+import com.joxette.config.JoxetteProperties;
 import com.joxette.replay.transform.ReplayMetadataInjector;
 import com.joxette.replay.transform.TransformPipeline;
+import com.joxette.replay.transform.TransformPreset;
+import com.joxette.replay.transform.TransformPresetRepository;
+import com.joxette.replay.transform.TransformStep;
+import com.joxette.replay.transform.steps.FilterDropStep;
 
 import java.sql.SQLException;
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
@@ -70,13 +80,16 @@ public class CassetteController {
 
     private static final int DEFAULT_LIMIT = 100;
 
-    private final TopicReplayService topicService;
-    private final EntityReplayService entityService;
-    private final SseReplayHandler sseHandler;
+    private final TopicReplayService       topicService;
+    private final EntityReplayService      entityService;
+    private final SseReplayHandler         sseHandler;
     private final CassetteLifecycleService lifecycle;
-    private final ReplayToTopicService replayToTopicService;
-    private final ScheduledReplayService scheduledReplayService;
-    private final ReplayMetadataInjector metadataInjector;
+    private final ReplayToTopicService     replayToTopicService;
+    private final ScheduledReplayService   scheduledReplayService;
+    private final ReplayMetadataInjector   metadataInjector;
+    private final TransformPresetRepository presetRepository;
+    private final JoxetteProperties        properties;
+    private final ObjectMapper             objectMapper;
 
     public CassetteController(
             TopicReplayService topicService,
@@ -85,14 +98,20 @@ public class CassetteController {
             CassetteLifecycleService lifecycle,
             ReplayToTopicService replayToTopicService,
             ScheduledReplayService scheduledReplayService,
-            ReplayMetadataInjector metadataInjector) {
-        this.topicService             = topicService;
-        this.entityService            = entityService;
-        this.sseHandler               = sseHandler;
-        this.lifecycle                = lifecycle;
-        this.replayToTopicService     = replayToTopicService;
-        this.scheduledReplayService   = scheduledReplayService;
-        this.metadataInjector         = metadataInjector;
+            ReplayMetadataInjector metadataInjector,
+            TransformPresetRepository presetRepository,
+            JoxetteProperties properties,
+            ObjectMapper objectMapper) {
+        this.topicService           = topicService;
+        this.entityService          = entityService;
+        this.sseHandler             = sseHandler;
+        this.lifecycle              = lifecycle;
+        this.replayToTopicService   = replayToTopicService;
+        this.scheduledReplayService = scheduledReplayService;
+        this.metadataInjector       = metadataInjector;
+        this.presetRepository       = presetRepository;
+        this.properties             = properties;
+        this.objectMapper           = objectMapper;
     }
 
     // =========================================================================
@@ -165,6 +184,12 @@ public class CassetteController {
             @RequestParam(defaultValue = "" + DEFAULT_LIMIT) int limit,
             @Parameter(description = "Opaque cursor from a previous response's `nextCursor` field")
             @RequestParam(required = false) String cursor,
+            @Parameter(description = "URL-encoded JSON array of transform pipeline steps. " +
+                                     "Mutually exclusive with transform_preset.")
+            @RequestParam(required = false) String transform,
+            @Parameter(description = "Name of a saved transform preset. " +
+                                     "Mutually exclusive with transform.", name = "transform_preset")
+            @RequestParam(name = "transform_preset", required = false) String transformPreset,
             @Parameter(description = "ISO-8601 absolute timestamp at which streaming begins (mutually exclusive with start_delay_ms)", name = "start_at")
             @RequestParam(name = "start_at", required = false) Instant startAt,
             @Parameter(description = "Relative delay in milliseconds before streaming begins (mutually exclusive with start_at)", name = "start_delay_ms")
@@ -177,7 +202,8 @@ public class CassetteController {
             return ResponseEntity.accepted().body(new ScheduledReplayResponse(id, scheduledAt));
         }
         String replayId = newReplayId();
-        TransformPipeline pipeline = metadataPipeline();
+        List<TransformStep> userSteps = resolveTransformSteps(transform, transformPreset);
+        TransformPipeline pipeline = new TransformPipeline(userSteps, metadataInjector);
         return ResponseEntity.ok(
                 topicService.query(topic, from, to, partition, offsetFrom, offsetTo,
                                    limit, cursor, pipeline, replayId));
@@ -225,6 +251,12 @@ public class CassetteController {
             @RequestParam(name = "offset_from", required = false) Long offsetFrom,
             @Parameter(description = "Include only records with Kafka offset <= this value", name = "offset_to")
             @RequestParam(name = "offset_to",   required = false) Long offsetTo,
+            @Parameter(description = "URL-encoded JSON array of transform pipeline steps. " +
+                                     "Mutually exclusive with transform_preset.")
+            @RequestParam(required = false) String transform,
+            @Parameter(description = "Name of a saved transform preset. " +
+                                     "Mutually exclusive with transform.", name = "transform_preset")
+            @RequestParam(name = "transform_preset", required = false) String transformPreset,
             @Parameter(description = "ISO-8601 absolute timestamp at which streaming begins (mutually exclusive with start_delay_ms)", name = "start_at")
             @RequestParam(name = "start_at", required = false) Instant startAt,
             @Parameter(description = "Relative delay in milliseconds before streaming begins (mutually exclusive with start_at)", name = "start_delay_ms")
@@ -238,8 +270,11 @@ public class CassetteController {
                     sink -> topicService.streamAll(topic, from, to, partition, offsetFrom, offsetTo, sink));
         }
         String replayId = newReplayId();
-        TransformPipeline pipeline = metadataPipeline();
-        return sseHandler.<CassetteRecord>streamSse(
+        List<TransformStep> userSteps = resolveTransformSteps(transform, transformPreset);
+        TransformPipeline pipeline = new TransformPipeline(userSteps, metadataInjector);
+        String preambleName = userSteps.isEmpty() ? null : "transform";
+        String preambleData = userSteps.isEmpty() ? null : buildTransformEventJson(userSteps, transformPreset);
+        return sseHandler.<CassetteRecord>streamSse(preambleName, preambleData,
                 sink -> topicService.streamAll(topic, from, to, partition, offsetFrom, offsetTo,
                                                sink, pipeline, replayId));
     }
@@ -283,6 +318,12 @@ public class CassetteController {
             @RequestParam(name = "offset_from", required = false) Long offsetFrom,
             @Parameter(description = "Include only records with Kafka offset <= this value", name = "offset_to")
             @RequestParam(name = "offset_to",   required = false) Long offsetTo,
+            @Parameter(description = "URL-encoded JSON array of transform pipeline steps. " +
+                                     "Mutually exclusive with transform_preset.")
+            @RequestParam(required = false) String transform,
+            @Parameter(description = "Name of a saved transform preset. " +
+                                     "Mutually exclusive with transform.", name = "transform_preset")
+            @RequestParam(name = "transform_preset", required = false) String transformPreset,
             @Parameter(description = "ISO-8601 absolute timestamp at which streaming begins (mutually exclusive with start_delay_ms)", name = "start_at")
             @RequestParam(name = "start_at", required = false) Instant startAt,
             @Parameter(description = "Relative delay in milliseconds before streaming begins (mutually exclusive with start_at)", name = "start_delay_ms")
@@ -297,8 +338,10 @@ public class CassetteController {
                     sink -> topicService.streamAll(topic, from, to, partition, offsetFrom, offsetTo, sink));
         } else {
             String replayId = newReplayId();
-            TransformPipeline pipeline = metadataPipeline();
-            body = sseHandler.<CassetteRecord>streamNdjson(
+            List<TransformStep> userSteps = resolveTransformSteps(transform, transformPreset);
+            TransformPipeline pipeline = new TransformPipeline(userSteps, metadataInjector);
+            String preamble = userSteps.isEmpty() ? null : buildTransformNdjsonLine(userSteps, transformPreset);
+            body = sseHandler.<CassetteRecord>streamNdjson(preamble,
                     sink -> topicService.streamAll(topic, from, to, partition, offsetFrom, offsetTo,
                                                    sink, pipeline, replayId));
         }
@@ -455,6 +498,12 @@ public class CassetteController {
             @RequestParam(defaultValue = "" + DEFAULT_LIMIT) int limit,
             @Parameter(description = "Opaque cursor from a previous response's `nextCursor` field")
             @RequestParam(required = false) String cursor,
+            @Parameter(description = "URL-encoded JSON array of transform pipeline steps. " +
+                                     "Mutually exclusive with transform_preset.")
+            @RequestParam(required = false) String transform,
+            @Parameter(description = "Name of a saved transform preset. " +
+                                     "Mutually exclusive with transform.", name = "transform_preset")
+            @RequestParam(name = "transform_preset", required = false) String transformPreset,
             @Parameter(description = "ISO-8601 absolute timestamp at which streaming begins (mutually exclusive with start_delay_ms)", name = "start_at")
             @RequestParam(name = "start_at", required = false) Instant startAt,
             @Parameter(description = "Relative delay in milliseconds before streaming begins (mutually exclusive with start_at)", name = "start_delay_ms")
@@ -467,7 +516,8 @@ public class CassetteController {
             return ResponseEntity.accepted().body(new ScheduledReplayResponse(id, scheduledAt));
         }
         String replayId = newReplayId();
-        TransformPipeline pipeline = metadataPipeline();
+        List<TransformStep> userSteps = resolveTransformSteps(transform, transformPreset);
+        TransformPipeline pipeline = new TransformPipeline(userSteps, metadataInjector);
         return ResponseEntity.ok(
                 entityService.queryEntityEvents(entityType, entityId, from, to,
                                                 limit, cursor, pipeline, replayId));
@@ -509,6 +559,12 @@ public class CassetteController {
             @RequestParam(required = false) Instant from,
             @Parameter(description = "Include only events with timestamp <= this value (ISO-8601 instant)")
             @RequestParam(required = false) Instant to,
+            @Parameter(description = "URL-encoded JSON array of transform pipeline steps. " +
+                                     "Mutually exclusive with transform_preset.")
+            @RequestParam(required = false) String transform,
+            @Parameter(description = "Name of a saved transform preset. " +
+                                     "Mutually exclusive with transform.", name = "transform_preset")
+            @RequestParam(name = "transform_preset", required = false) String transformPreset,
             @Parameter(description = "ISO-8601 absolute timestamp at which streaming begins (mutually exclusive with start_delay_ms)", name = "start_at")
             @RequestParam(name = "start_at", required = false) Instant startAt,
             @Parameter(description = "Relative delay in milliseconds before streaming begins (mutually exclusive with start_at)", name = "start_delay_ms")
@@ -522,8 +578,11 @@ public class CassetteController {
                     sink -> entityService.streamEntityEvents(entityType, entityId, from, to, sink));
         }
         String replayId = newReplayId();
-        TransformPipeline pipeline = metadataPipeline();
-        return sseHandler.<EntityRecord>streamSse(
+        List<TransformStep> userSteps = resolveTransformSteps(transform, transformPreset);
+        TransformPipeline pipeline = new TransformPipeline(userSteps, metadataInjector);
+        String preambleName = userSteps.isEmpty() ? null : "transform";
+        String preambleData = userSteps.isEmpty() ? null : buildTransformEventJson(userSteps, transformPreset);
+        return sseHandler.<EntityRecord>streamSse(preambleName, preambleData,
                 sink -> entityService.streamEntityEvents(entityType, entityId, from, to,
                                                         sink, pipeline, replayId));
     }
@@ -564,6 +623,12 @@ public class CassetteController {
             @RequestParam(required = false) Instant from,
             @Parameter(description = "Include only events with timestamp <= this value (ISO-8601 instant)")
             @RequestParam(required = false) Instant to,
+            @Parameter(description = "URL-encoded JSON array of transform pipeline steps. " +
+                                     "Mutually exclusive with transform_preset.")
+            @RequestParam(required = false) String transform,
+            @Parameter(description = "Name of a saved transform preset. " +
+                                     "Mutually exclusive with transform.", name = "transform_preset")
+            @RequestParam(name = "transform_preset", required = false) String transformPreset,
             @Parameter(description = "ISO-8601 absolute timestamp at which streaming begins (mutually exclusive with start_delay_ms)", name = "start_at")
             @RequestParam(name = "start_at", required = false) Instant startAt,
             @Parameter(description = "Relative delay in milliseconds before streaming begins (mutually exclusive with start_at)", name = "start_delay_ms")
@@ -578,8 +643,10 @@ public class CassetteController {
                     sink -> entityService.streamEntityEvents(entityType, entityId, from, to, sink));
         } else {
             String replayId = newReplayId();
-            TransformPipeline pipeline = metadataPipeline();
-            body = sseHandler.<EntityRecord>streamNdjson(
+            List<TransformStep> userSteps = resolveTransformSteps(transform, transformPreset);
+            TransformPipeline pipeline = new TransformPipeline(userSteps, metadataInjector);
+            String preamble = userSteps.isEmpty() ? null : buildTransformNdjsonLine(userSteps, transformPreset);
+            body = sseHandler.<EntityRecord>streamNdjson(preamble,
                     sink -> entityService.streamEntityEvents(entityType, entityId, from, to,
                                                             sink, pipeline, replayId));
         }
@@ -1212,16 +1279,243 @@ public class CassetteController {
     }
 
     // =========================================================================
-    // Helpers
+    // POST replay endpoints (for large transform pipelines in request body)
     // =========================================================================
 
-    /**
-     * Creates a metadata-only pipeline for a browse/stream request: no user steps,
-     * but the six replay-provenance headers are always injected.
-     */
-    private TransformPipeline metadataPipeline() {
-        return new TransformPipeline(List.of(), metadataInjector);
+    @Operation(
+        operationId = "replayTopicPostJson",
+        summary     = "Replay topic records via POST (JSON)",
+        description = "POST variant of `GET /cassettes/topics/{topic}` that accepts an inline transform " +
+                      "pipeline or preset reference in the request body. " +
+                      "Useful when the pipeline JSON is too large to URL-encode.")
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Paginated list of cassette records",
+            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                schema = @Schema(implementation = PagedResponse.class))),
+        @ApiResponse(responseCode = "202", description = "Replay scheduled",
+            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                schema = @Schema(implementation = ScheduledReplayResponse.class))),
+        @ApiResponse(responseCode = "400", description = "Invalid transform steps or request body",
+            content = @Content(schema = @Schema(type = "string")))
+    })
+    @PostMapping(value = "/topics/{topic}/replay",
+                 consumes = MediaType.APPLICATION_JSON_VALUE,
+                 produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<?> replayTopicPostJson(
+            @Parameter(description = "Kafka topic name", required = true, example = "orders")
+            @PathVariable String topic,
+            @io.swagger.v3.oas.annotations.parameters.RequestBody(
+                description = "Filter params, optional transform pipeline, and optional scheduling",
+                content = @Content(schema = @Schema(implementation = TopicReplayBody.class)))
+            @RequestBody TopicReplayBody body
+    ) throws SQLException {
+        Instant scheduledAt = resolveScheduledAt(body.startAt(), body.startDelayMs());
+        if (scheduledAt != null) {
+            String id = scheduledReplayService.registerTopicReplay(
+                    topic, scheduledAt,
+                    body.from(), body.to(), body.partition(), body.offsetFrom(), body.offsetTo());
+            return ResponseEntity.accepted().body(new ScheduledReplayResponse(id, scheduledAt));
+        }
+        String replayId = newReplayId();
+        List<TransformStep> userSteps = resolveTransformStepsFromBody(body.transform(), body.transformPreset());
+        TransformPipeline pipeline = new TransformPipeline(userSteps, metadataInjector);
+        return ResponseEntity.ok(
+                topicService.query(topic,
+                        body.from(), body.to(), body.partition(), body.offsetFrom(), body.offsetTo(),
+                        body.limit(), body.cursor(), pipeline, replayId));
     }
+
+    @Operation(
+        operationId = "replayTopicPostSse",
+        summary     = "Replay topic records via POST (SSE)",
+        description = "POST variant of the SSE topic replay endpoint. " +
+                      "Accepts the transform pipeline in the request body instead of as a query param.")
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Server-Sent Event stream of cassette records",
+            content = @Content(mediaType = MediaType.TEXT_EVENT_STREAM_VALUE,
+                schema = @Schema(type = "string"))),
+        @ApiResponse(responseCode = "400", description = "Invalid transform steps",
+            content = @Content(schema = @Schema(type = "string")))
+    })
+    @PostMapping(value = "/topics/{topic}/replay",
+                 consumes = MediaType.APPLICATION_JSON_VALUE,
+                 produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter replayTopicPostSse(
+            @Parameter(description = "Kafka topic name", required = true, example = "orders")
+            @PathVariable String topic,
+            @io.swagger.v3.oas.annotations.parameters.RequestBody(
+                description = "Filter params and transform pipeline",
+                content = @Content(schema = @Schema(implementation = TopicReplayBody.class)))
+            @RequestBody TopicReplayBody body
+    ) {
+        String replayId = newReplayId();
+        List<TransformStep> userSteps = resolveTransformStepsFromBody(body.transform(), body.transformPreset());
+        TransformPipeline pipeline = new TransformPipeline(userSteps, metadataInjector);
+        String preambleName = userSteps.isEmpty() ? null : "transform";
+        String preambleData = userSteps.isEmpty() ? null
+                : buildTransformEventJson(userSteps, body.transformPreset());
+        return sseHandler.<CassetteRecord>streamSse(preambleName, preambleData,
+                sink -> topicService.streamAll(topic,
+                        body.from(), body.to(), body.partition(), body.offsetFrom(), body.offsetTo(),
+                        sink, pipeline, replayId));
+    }
+
+    @Operation(
+        operationId = "replayTopicPostNdjson",
+        summary     = "Replay topic records via POST (NDJSON)",
+        description = "POST variant of the NDJSON topic replay endpoint. " +
+                      "Accepts the transform pipeline in the request body instead of as a query param.")
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "NDJSON stream of cassette records",
+            content = @Content(mediaType = "application/x-ndjson",
+                schema = @Schema(type = "string"))),
+        @ApiResponse(responseCode = "400", description = "Invalid transform steps",
+            content = @Content(schema = @Schema(type = "string")))
+    })
+    @PostMapping(value = "/topics/{topic}/replay",
+                 consumes = MediaType.APPLICATION_JSON_VALUE,
+                 produces = "application/x-ndjson")
+    public ResponseEntity<StreamingResponseBody> replayTopicPostNdjson(
+            @Parameter(description = "Kafka topic name", required = true, example = "orders")
+            @PathVariable String topic,
+            @io.swagger.v3.oas.annotations.parameters.RequestBody(
+                description = "Filter params and transform pipeline",
+                content = @Content(schema = @Schema(implementation = TopicReplayBody.class)))
+            @RequestBody TopicReplayBody body
+    ) {
+        String replayId = newReplayId();
+        List<TransformStep> userSteps = resolveTransformStepsFromBody(body.transform(), body.transformPreset());
+        TransformPipeline pipeline = new TransformPipeline(userSteps, metadataInjector);
+        String preamble = userSteps.isEmpty() ? null
+                : buildTransformNdjsonLine(userSteps, body.transformPreset());
+        StreamingResponseBody stream = sseHandler.<CassetteRecord>streamNdjson(preamble,
+                sink -> topicService.streamAll(topic,
+                        body.from(), body.to(), body.partition(), body.offsetFrom(), body.offsetTo(),
+                        sink, pipeline, replayId));
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType("application/x-ndjson"))
+                .body(stream);
+    }
+
+    @Operation(
+        operationId = "replayEntityPostJson",
+        summary     = "Replay entity events via POST (JSON)",
+        description = "POST variant of `GET /cassettes/entities/{entityType}/{entityId}` that accepts an " +
+                      "inline transform pipeline or preset reference in the request body.")
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Paginated list of entity event records",
+            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                schema = @Schema(implementation = PagedResponse.class))),
+        @ApiResponse(responseCode = "202", description = "Replay scheduled",
+            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                schema = @Schema(implementation = ScheduledReplayResponse.class))),
+        @ApiResponse(responseCode = "400", description = "Invalid entity type, transform steps, or request body",
+            content = @Content(schema = @Schema(type = "string")))
+    })
+    @PostMapping(value = "/entities/{entityType}/{entityId}/replay",
+                 consumes = MediaType.APPLICATION_JSON_VALUE,
+                 produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<?> replayEntityPostJson(
+            @Parameter(description = "Entity type name (must match `[a-z][a-z0-9_]*`)", required = true, example = "customer")
+            @PathVariable String entityType,
+            @Parameter(description = "Entity identifier", required = true, example = "cust-042")
+            @PathVariable String entityId,
+            @io.swagger.v3.oas.annotations.parameters.RequestBody(
+                description = "Filter params, optional transform pipeline, and optional scheduling",
+                content = @Content(schema = @Schema(implementation = EntityReplayBody.class)))
+            @RequestBody EntityReplayBody body
+    ) throws SQLException {
+        Instant scheduledAt = resolveScheduledAt(body.startAt(), body.startDelayMs());
+        if (scheduledAt != null) {
+            String id = scheduledReplayService.registerEntityReplay(
+                    entityType, entityId, scheduledAt, body.from(), body.to());
+            return ResponseEntity.accepted().body(new ScheduledReplayResponse(id, scheduledAt));
+        }
+        String replayId = newReplayId();
+        List<TransformStep> userSteps = resolveTransformStepsFromBody(body.transform(), body.transformPreset());
+        TransformPipeline pipeline = new TransformPipeline(userSteps, metadataInjector);
+        return ResponseEntity.ok(
+                entityService.queryEntityEvents(entityType, entityId,
+                        body.from(), body.to(), body.limit(), body.cursor(), pipeline, replayId));
+    }
+
+    @Operation(
+        operationId = "replayEntityPostSse",
+        summary     = "Replay entity events via POST (SSE)",
+        description = "POST variant of the SSE entity replay endpoint. " +
+                      "Accepts the transform pipeline in the request body instead of as a query param.")
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Server-Sent Event stream of entity records",
+            content = @Content(mediaType = MediaType.TEXT_EVENT_STREAM_VALUE,
+                schema = @Schema(type = "string"))),
+        @ApiResponse(responseCode = "400", description = "Invalid entity type or transform steps",
+            content = @Content(schema = @Schema(type = "string")))
+    })
+    @PostMapping(value = "/entities/{entityType}/{entityId}/replay",
+                 consumes = MediaType.APPLICATION_JSON_VALUE,
+                 produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter replayEntityPostSse(
+            @Parameter(description = "Entity type name (must match `[a-z][a-z0-9_]*`)", required = true, example = "customer")
+            @PathVariable String entityType,
+            @Parameter(description = "Entity identifier", required = true, example = "cust-042")
+            @PathVariable String entityId,
+            @io.swagger.v3.oas.annotations.parameters.RequestBody(
+                description = "Filter params and transform pipeline",
+                content = @Content(schema = @Schema(implementation = EntityReplayBody.class)))
+            @RequestBody EntityReplayBody body
+    ) {
+        String replayId = newReplayId();
+        List<TransformStep> userSteps = resolveTransformStepsFromBody(body.transform(), body.transformPreset());
+        TransformPipeline pipeline = new TransformPipeline(userSteps, metadataInjector);
+        String preambleName = userSteps.isEmpty() ? null : "transform";
+        String preambleData = userSteps.isEmpty() ? null
+                : buildTransformEventJson(userSteps, body.transformPreset());
+        return sseHandler.<EntityRecord>streamSse(preambleName, preambleData,
+                sink -> entityService.streamEntityEvents(entityType, entityId,
+                        body.from(), body.to(), sink, pipeline, replayId));
+    }
+
+    @Operation(
+        operationId = "replayEntityPostNdjson",
+        summary     = "Replay entity events via POST (NDJSON)",
+        description = "POST variant of the NDJSON entity replay endpoint. " +
+                      "Accepts the transform pipeline in the request body instead of as a query param.")
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "NDJSON stream of entity records",
+            content = @Content(mediaType = "application/x-ndjson",
+                schema = @Schema(type = "string"))),
+        @ApiResponse(responseCode = "400", description = "Invalid entity type or transform steps",
+            content = @Content(schema = @Schema(type = "string")))
+    })
+    @PostMapping(value = "/entities/{entityType}/{entityId}/replay",
+                 consumes = MediaType.APPLICATION_JSON_VALUE,
+                 produces = "application/x-ndjson")
+    public ResponseEntity<StreamingResponseBody> replayEntityPostNdjson(
+            @Parameter(description = "Entity type name (must match `[a-z][a-z0-9_]*`)", required = true, example = "customer")
+            @PathVariable String entityType,
+            @Parameter(description = "Entity identifier", required = true, example = "cust-042")
+            @PathVariable String entityId,
+            @io.swagger.v3.oas.annotations.parameters.RequestBody(
+                description = "Filter params and transform pipeline",
+                content = @Content(schema = @Schema(implementation = EntityReplayBody.class)))
+            @RequestBody EntityReplayBody body
+    ) {
+        String replayId = newReplayId();
+        List<TransformStep> userSteps = resolveTransformStepsFromBody(body.transform(), body.transformPreset());
+        TransformPipeline pipeline = new TransformPipeline(userSteps, metadataInjector);
+        String preamble = userSteps.isEmpty() ? null
+                : buildTransformNdjsonLine(userSteps, body.transformPreset());
+        StreamingResponseBody stream = sseHandler.<EntityRecord>streamNdjson(preamble,
+                sink -> entityService.streamEntityEvents(entityType, entityId,
+                        body.from(), body.to(), sink, pipeline, replayId));
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType("application/x-ndjson"))
+                .body(stream);
+    }
+
+    // =========================================================================
+    // Helpers
+    // =========================================================================
 
     /** Mints a fresh UUID string to identify this replay session. */
     private static String newReplayId() {
@@ -1247,6 +1541,135 @@ public class CassetteController {
             return Instant.now().plusMillis(startDelayMs);
         }
         return null;
+    }
+
+    /**
+     * Parses the {@code transform} query parameter (URL-decoded JSON array) or resolves a
+     * {@code transform_preset} name, validates the step count cap and JSONPath expressions
+     * inside {@link FilterDropStep}s, and returns the resulting step list.
+     *
+     * <p>At most one of {@code transformJson} and {@code transformPreset} may be non-null.
+     * Both null means no user steps (metadata-only pipeline).
+     *
+     * @throws IllegalArgumentException if both params are set, the JSON is malformed, an
+     *                                  unknown step type is referenced, the cap is exceeded,
+     *                                  or a JSONPath expression is syntactically invalid
+     * @throws NoSuchElementException   if a preset name is given but not found
+     */
+    private List<TransformStep> resolveTransformSteps(String transformJson, String transformPreset) {
+        if (transformJson != null && transformPreset != null) {
+            throw new IllegalArgumentException(
+                    "Specify at most one of transform and transform_preset");
+        }
+        if (transformPreset != null) {
+            TransformPreset preset = presetRepository.findByName(transformPreset)
+                    .orElseThrow(() -> new NoSuchElementException(
+                            "Transform preset not found: " + transformPreset));
+            return validated(preset.steps());
+        }
+        if (transformJson != null && !transformJson.isBlank()) {
+            return validated(parseTransformJson(transformJson));
+        }
+        return List.of();
+    }
+
+    /**
+     * Same as {@link #resolveTransformSteps(String, String)} but accepts the inline step
+     * list directly (from a POST body) instead of a JSON string.
+     */
+    private List<TransformStep> resolveTransformStepsFromBody(
+            List<TransformStep> inlineSteps, String transformPreset) {
+        if (inlineSteps != null && !inlineSteps.isEmpty() && transformPreset != null) {
+            throw new IllegalArgumentException(
+                    "Specify at most one of transform and transform_preset");
+        }
+        if (transformPreset != null) {
+            TransformPreset preset = presetRepository.findByName(transformPreset)
+                    .orElseThrow(() -> new NoSuchElementException(
+                            "Transform preset not found: " + transformPreset));
+            return validated(preset.steps());
+        }
+        if (inlineSteps != null && !inlineSteps.isEmpty()) {
+            return validated(inlineSteps);
+        }
+        return List.of();
+    }
+
+    /**
+     * Deserialises a JSON array string into a {@code List<TransformStep>} using Jackson.
+     * Returns 400 on any parse error (unknown step type, malformed JSON, etc.).
+     */
+    private List<TransformStep> parseTransformJson(String json) {
+        try {
+            return objectMapper.readValue(json,
+                    objectMapper.getTypeFactory()
+                            .constructCollectionType(List.class, TransformStep.class));
+        } catch (JsonProcessingException e) {
+            throw new IllegalArgumentException(
+                    "Invalid transform steps: " + e.getOriginalMessage());
+        }
+    }
+
+    /**
+     * Validates a step list: enforces the max-step cap and pre-compiles any JSONPath
+     * expressions found in {@link FilterDropStep}s that reference {@code $.value.*} paths.
+     *
+     * @throws IllegalArgumentException if the list exceeds the cap or a JSONPath is invalid
+     */
+    private List<TransformStep> validated(List<TransformStep> steps) {
+        int max = properties.getReplay().getMaxTransformSteps();
+        if (steps.size() > max) {
+            throw new IllegalArgumentException(
+                    "Transform pipeline exceeds the maximum of " + max + " steps");
+        }
+        for (TransformStep step : steps) {
+            if (step instanceof FilterDropStep fds) {
+                String field = fds.field();
+                if (field != null && field.startsWith("$.value.")) {
+                    // Compile the extracted JSONPath portion to catch syntax errors early
+                    String jsonPath = "$" + field.substring("$.value".length());
+                    try {
+                        JsonPath.compile(jsonPath);
+                    } catch (InvalidPathException e) {
+                        throw new IllegalArgumentException(
+                                "Invalid JSONPath in filter_drop field '" + field + "': "
+                                        + e.getMessage());
+                    }
+                }
+            }
+        }
+        return steps;
+    }
+
+    /**
+     * Builds the JSON payload for an SSE {@code transform} preamble event.
+     * Format: {@code {"stepCount":N,"presetName":"name"}} (presetName omitted when null).
+     */
+    private String buildTransformEventJson(List<TransformStep> steps, String presetName) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("stepCount", steps.size());
+        if (presetName != null) payload.put("presetName", presetName);
+        try {
+            return objectMapper.writeValueAsString(payload);
+        } catch (JsonProcessingException e) {
+            return "{\"stepCount\":" + steps.size() + "}";
+        }
+    }
+
+    /**
+     * Builds the first NDJSON line emitted when a transform pipeline is active.
+     * Format: {@code {"event":"transform","stepCount":N,"presetName":"name"}}.
+     */
+    private String buildTransformNdjsonLine(List<TransformStep> steps, String presetName) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("event", "transform");
+        payload.put("stepCount", steps.size());
+        if (presetName != null) payload.put("presetName", presetName);
+        try {
+            return objectMapper.writeValueAsString(payload);
+        } catch (JsonProcessingException e) {
+            return "{\"event\":\"transform\",\"stepCount\":" + steps.size() + "}";
+        }
     }
 
     // =========================================================================

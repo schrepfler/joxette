@@ -184,8 +184,10 @@ public class TopicReplayService {
             records = transformed;
         }
 
+        Boolean transformApplied = !pipeline.steps().isEmpty() ? Boolean.TRUE : null;
         return buildPage(records, limit,
-                r -> new TopicCursor(r.timestamp(), r.partition(), r.offset()).encode());
+                r -> new TopicCursor(r.timestamp(), r.partition(), r.offset()).encode(),
+                transformApplied);
     }
 
     /**
@@ -367,9 +369,14 @@ public class TopicReplayService {
 
     static <T> PagedResponse<T> buildPage(
             List<T> fetched, int limit, Function<T, String> cursorOf) {
+        return buildPage(fetched, limit, cursorOf, null);
+    }
+
+    static <T> PagedResponse<T> buildPage(
+            List<T> fetched, int limit, Function<T, String> cursorOf, Boolean transformApplied) {
         boolean hasMore = fetched.size() > limit;
         List<T> data = hasMore ? new ArrayList<>(fetched.subList(0, limit)) : fetched;
         String nextCursor = hasMore ? cursorOf.apply(data.getLast()) : null;
-        return new PagedResponse<>(data, nextCursor, hasMore);
+        return new PagedResponse<>(data, nextCursor, hasMore, transformApplied);
     }
 }

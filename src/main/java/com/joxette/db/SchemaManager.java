@@ -278,6 +278,18 @@ public class SchemaManager {
                 )
                 """);
 
+            // Named transform pipeline presets (plain DuckDB, not DuckLake).
+            // Steps are stored as a JSON array that is deserialised at read time.
+            stmt.execute("""
+                CREATE TABLE IF NOT EXISTS transform_presets (
+                    name        VARCHAR     NOT NULL PRIMARY KEY,
+                    description VARCHAR,
+                    steps       JSON        NOT NULL,
+                    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+                )
+                """);
+
             // Migration: add columns introduced after the initial lake-schema version.
             // ALTER TABLE ADD COLUMN IF NOT EXISTS is idempotent.
             migrateCompactionHistory(conn);

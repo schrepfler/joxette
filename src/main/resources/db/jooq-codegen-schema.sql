@@ -18,6 +18,7 @@
 --   - compaction_history
 --   - retention_history
 --   - snapshots
+--   - transform_presets
 --
 -- Mirrors the production schema in SchemaManager.createConfigTables().
 -- =============================================================================
@@ -114,4 +115,14 @@ CREATE TABLE topic_message_type_matchers (
     id_source       VARCHAR NOT NULL,
     id_expression   VARCHAR NOT NULL,
     PRIMARY KEY (topic, message_type)
+);
+
+-- Named transform pipeline presets.
+-- Steps are stored as a JSON array and deserialised via Jackson at read time.
+CREATE TABLE transform_presets (
+    name        VARCHAR                  NOT NULL PRIMARY KEY,
+    description VARCHAR,
+    steps       VARCHAR                  NOT NULL,
+    created_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
 );

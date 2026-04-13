@@ -46,9 +46,33 @@ public class SseReplayHandler {
      * events on a virtual thread. Each record is serialised as a JSON data line.
      */
     public <T> SseEmitter streamSse(RecordStreamer<T> streamer) {
+        return streamSse(null, null, streamer);
+    }
+
+    /**
+     * Creates a {@link SseEmitter} that first emits a named preamble event (when
+     * {@code preambleEventName} is non-null), then streams all data records.
+     *
+     * <p>Used to emit a {@code transform} event at stream start when a user pipeline
+     * is active, so clients can detect that records have been processed.
+     *
+     * @param preambleEventName SSE event name for the preamble (e.g. {@code "transform"}),
+     *                          or {@code null} to skip the preamble
+     * @param preambleData      pre-serialised JSON string for the preamble data field;
+     *                          ignored when {@code preambleEventName} is null
+     * @param streamer          record source
+     */
+    public <T> SseEmitter streamSse(
+            String preambleEventName, String preambleData, RecordStreamer<T> streamer) {
         SseEmitter emitter = new SseEmitter(0L); // no timeout
         Thread.ofVirtual().start(() -> {
             try {
+                if (preambleEventName != null && preambleData != null) {
+                    emitter.send(SseEmitter.event()
+                            .name(preambleEventName)
+                            .data(preambleData)
+                            .build());
+                }
                 streamer.stream(record -> {
                     try {
                         emitter.send(SseEmitter.event()
@@ -74,10 +98,30 @@ public class SseReplayHandler {
      * incremental output.
      */
     public <T> StreamingResponseBody streamNdjson(RecordStreamer<T> streamer) {
+        return streamNdjson(null, streamer);
+    }
+
+    /**
+     * Returns a {@link StreamingResponseBody} that first writes a preamble line
+     * (when non-null), then streams all data records as newline-delimited JSON.
+     *
+     * <p>Used to emit a {@code {"event":"transform",...}} line at stream start when
+     * a user pipeline is active.
+     *
+     * @param preambleLine pre-serialised JSON string to write as the first line,
+     *                     or {@code null} to skip
+     * @param streamer     record source
+     */
+    public <T> StreamingResponseBody streamNdjson(String preambleLine, RecordStreamer<T> streamer) {
         return outputStream -> {
             var writer = new BufferedWriter(
                     new OutputStreamWriter(outputStream, StandardCharsets.UTF_8));
             try {
+                if (preambleLine != null) {
+                    writer.write(preambleLine);
+                    writer.newLine();
+                    writer.flush();
+                }
                 streamer.stream(record -> {
                     try {
                         writer.write(objectMapper.writeValueAsString(record));

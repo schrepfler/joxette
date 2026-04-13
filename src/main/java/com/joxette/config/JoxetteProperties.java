@@ -196,8 +196,17 @@ public class JoxetteProperties {
          */
         private int maxScheduled = 50;
 
+        /**
+         * Maximum number of steps allowed in a user-supplied transform pipeline.
+         * Requests with more steps return HTTP 400.
+         */
+        private int maxTransformSteps = 50;
+
         public int getMaxScheduled() { return maxScheduled; }
         public void setMaxScheduled(int maxScheduled) { this.maxScheduled = maxScheduled; }
+
+        public int getMaxTransformSteps() { return maxTransformSteps; }
+        public void setMaxTransformSteps(int maxTransformSteps) { this.maxTransformSteps = maxTransformSteps; }
     }
 
     // -----------------------------------------------------------------------
