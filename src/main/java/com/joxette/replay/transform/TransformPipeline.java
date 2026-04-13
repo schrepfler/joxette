@@ -5,6 +5,7 @@ import com.jayway.jsonpath.PathNotFoundException;
 import com.joxette.replay.CassetteRecord;
 import com.joxette.replay.transform.steps.AddComputedFieldStep;
 import com.joxette.replay.transform.steps.AddHeaderStep;
+import com.joxette.replay.transform.steps.ConditionalStep;
 import com.joxette.replay.transform.steps.CopyToHeaderStep;
 import com.joxette.replay.transform.steps.DeleteFieldStep;
 import com.joxette.replay.transform.steps.FanOutStep;
@@ -64,6 +65,10 @@ import java.util.regex.Pattern;
  *   <li>The four time steps ({@code wall_time}, {@code time_shift},
  *       {@code time_compress}, {@code time_freeze}) are fully implemented in both
  *       the list and context-aware overloads.</li>
+ *   <li>{@link ConditionalStep} — evaluates the condition predicate; applies
+ *       {@code thenSteps} or {@code elseSteps} as a nested pipeline (no second
+ *       metadata injection). A {@link FilterDropStep} or {@link FanOutStep} inside
+ *       a branch works normally.</li>
  * </ol>
  *
  * <h2>Return type</h2>
@@ -189,6 +194,24 @@ public final class TransformPipeline {
                 case RemapKeyStep         s -> current.forEach(m -> s.apply(m, ctx));
                 case NullKeyStep          s -> current.forEach(m -> s.apply(m, ctx));
                 case KeyFromValueStep     s -> current.forEach(m -> s.apply(m, ctx));
+                case ConditionalStep cs -> {
+                    List<ReplayMessage> next = new ArrayList<>(current.size());
+                    for (ReplayMessage m : current) {
+                        List<TransformStep> branch = cs.condition().test(m)
+                                ? cs.thenSteps()
+                                : cs.elseSteps();
+                        if (branch.isEmpty()) {
+                            next.add(m);
+                        } else {
+                            // Run the branch as a mini-pipeline; injector is null because
+                            // metadata injection already ran at the top of the outer pipeline.
+                            List<ReplayMessage> branchResult =
+                                    new TransformPipeline(branch, null).apply(m, replayId);
+                            next.addAll(branchResult);
+                        }
+                    }
+                    current = next;
+                }
                 default -> current.forEach(step::apply);
             }
         }
@@ -241,6 +264,18 @@ public final class TransformPipeline {
                 case RemapKeyStep         s -> s.apply(msg, ctx);
                 case NullKeyStep          s -> s.apply(msg, ctx);
                 case KeyFromValueStep     s -> s.apply(msg, ctx);
+                case ConditionalStep cs -> {
+                    List<TransformStep> branch = cs.condition().test(msg)
+                            ? cs.thenSteps()
+                            : cs.elseSteps();
+                    if (!branch.isEmpty()) {
+                        // Apply branch steps; fan-out is not applicable in the streaming context.
+                        List<ReplayMessage> result =
+                                new TransformPipeline(branch, null).apply(msg, replayId);
+                        if (result.isEmpty()) return Optional.empty();
+                        // result.get(0) is the same mutated msg object
+                    }
+                }
                 default -> step.apply(msg);  // AddHeader, RemoveHeader, CopyToHeader, Redirect, etc.
             }
         }
