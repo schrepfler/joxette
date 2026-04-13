@@ -3,12 +3,20 @@ package com.joxette.replay.transform;
 import com.jayway.jsonpath.JsonPath;
 import com.jayway.jsonpath.PathNotFoundException;
 import com.joxette.replay.CassetteRecord;
+import com.joxette.replay.transform.steps.AddComputedFieldStep;
 import com.joxette.replay.transform.steps.AddHeaderStep;
 import com.joxette.replay.transform.steps.CopyToHeaderStep;
+import com.joxette.replay.transform.steps.DeleteFieldStep;
 import com.joxette.replay.transform.steps.FanOutStep;
 import com.joxette.replay.transform.steps.FilterDropStep;
+import com.joxette.replay.transform.steps.FlattenFieldStep;
+import com.joxette.replay.transform.steps.KeyFromValueStep;
+import com.joxette.replay.transform.steps.MergePatchStep;
+import com.joxette.replay.transform.steps.NullKeyStep;
 import com.joxette.replay.transform.steps.RedirectTopicStep;
+import com.joxette.replay.transform.steps.RemapKeyStep;
 import com.joxette.replay.transform.steps.RemoveHeaderStep;
+import com.joxette.replay.transform.steps.RenameFieldStep;
 import com.joxette.replay.transform.steps.TimeCompressStep;
 import com.joxette.replay.transform.steps.TimeFreezeStep;
 import com.joxette.replay.transform.steps.TimeShiftStep;
@@ -22,6 +30,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.UnaryOperator;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -38,6 +47,9 @@ import java.util.regex.Pattern;
  * <ol>
  *   <li>{@link ReplayMetadataInjector} always runs first when present, injecting
  *       the six provenance headers.</li>
+ *   <li>A per-message sequence ordinal is read from the pipeline's internal counter
+ *       and written into the {@link TransformContext} via
+ *       {@link TransformContext#setCurrentSequence(long)} before steps execute.</li>
  *   <li>User-defined steps execute in declaration order on the current set of
  *       live messages.</li>
  *   <li>{@link FilterDropStep} — evaluates the predicate; drops matching messages
@@ -45,9 +57,10 @@ import java.util.regex.Pattern;
  *   <li>{@link FanOutStep} — expands each live message into N copies (one per
  *       target topic); subsequent steps run independently on each copy.</li>
  *   <li>{@link AddHeaderStep}, {@link RemoveHeaderStep}, {@link CopyToHeaderStep},
- *       {@link RedirectTopicStep} — implemented; all other steps are dispatched via
- *       {@link TransformStep#apply(ReplayMessage)} (default no-op for unimplemented
- *       steps).</li>
+ *       {@link RedirectTopicStep} — implemented; structural / JSON steps
+ *       ({@code rename_field}, {@code delete_field}, {@code flatten_field},
+ *       {@code add_computed_field}, {@code merge_patch}, {@code remap_key},
+ *       {@code null_key}, {@code key_from_value}) are fully implemented.</li>
  *   <li>The four time steps ({@code wall_time}, {@code time_shift},
  *       {@code time_compress}, {@code time_freeze}) are fully implemented in both
  *       the list and context-aware overloads.</li>
@@ -90,11 +103,12 @@ public final class TransformPipeline {
     public static final TransformPipeline IDENTITY =
             new TransformPipeline(List.of(), null);
 
-    private static final Base64.Decoder B64_DEC    = Base64.getUrlDecoder();
+    private static final Base64.Decoder B64_DEC      = Base64.getUrlDecoder();
     private static final Pattern        TEMPLATE_VAR = Pattern.compile("\\$\\{([^}]+)\\}");
 
     private final List<TransformStep>    steps;
-    private final ReplayMetadataInjector injector;  // null only for IDENTITY
+    private final ReplayMetadataInjector injector;        // null only for IDENTITY
+    private final AtomicLong             sequenceCounter; // REPLAY_SEQUENCE source
 
     /**
      * Creates a pipeline with the given steps and metadata injector.
@@ -104,8 +118,9 @@ public final class TransformPipeline {
      *                 {@code null} is only valid for the {@link #IDENTITY} sentinel
      */
     public TransformPipeline(List<TransformStep> steps, ReplayMetadataInjector injector) {
-        this.steps    = List.copyOf(steps);
-        this.injector = injector;
+        this.steps           = List.copyOf(steps);
+        this.injector        = injector;
+        this.sequenceCounter = new AtomicLong(0);
     }
 
     // -------------------------------------------------------------------------
@@ -130,6 +145,7 @@ public final class TransformPipeline {
         }
 
         TransformContext ctx = new TransformContext();
+        ctx.setCurrentSequence(sequenceCounter.getAndIncrement());
 
         // Start with the single input message
         List<ReplayMessage> current = new ArrayList<>();
@@ -161,10 +177,18 @@ public final class TransformPipeline {
                 case RemoveHeaderStep rhs  -> current.forEach(m -> applyRemoveHeader(rhs, m));
                 case CopyToHeaderStep cths -> current.forEach(m -> applyCopyToHeader(cths, m));
                 case RedirectTopicStep rts -> current.forEach(m -> applyRedirectTopic(rts, m));
-                case WallTimeStep     s    -> current.forEach(m -> applyWallTime(m, s));
-                case TimeShiftStep    s    -> current.forEach(m -> applyTimeShift(m, s));
-                case TimeCompressStep s    -> current.forEach(m -> applyTimeCompress(m, s, ctx));
-                case TimeFreezeStep   s    -> current.forEach(m -> applyTimeFreeze(m, s, ctx));
+                case WallTimeStep      s   -> current.forEach(m -> applyWallTime(m, s));
+                case TimeShiftStep     s   -> current.forEach(m -> applyTimeShift(m, s));
+                case TimeCompressStep  s   -> current.forEach(m -> applyTimeCompress(m, s, ctx));
+                case TimeFreezeStep    s   -> current.forEach(m -> applyTimeFreeze(m, s, ctx));
+                case RenameFieldStep      s -> current.forEach(m -> s.apply(m, ctx));
+                case DeleteFieldStep      s -> current.forEach(m -> s.apply(m, ctx));
+                case FlattenFieldStep     s -> current.forEach(m -> s.apply(m, ctx));
+                case AddComputedFieldStep s -> current.forEach(m -> s.apply(m, ctx));
+                case MergePatchStep       s -> current.forEach(m -> s.apply(m, ctx));
+                case RemapKeyStep         s -> current.forEach(m -> s.apply(m, ctx));
+                case NullKeyStep          s -> current.forEach(m -> s.apply(m, ctx));
+                case KeyFromValueStep     s -> current.forEach(m -> s.apply(m, ctx));
                 default -> current.forEach(step::apply);
             }
         }
@@ -196,7 +220,10 @@ public final class TransformPipeline {
             injector.inject(msg, replayId);
         }
 
-        // Step 2: user-defined steps in order
+        // Step 2: advance the per-message sequence counter
+        ctx.setCurrentSequence(sequenceCounter.getAndIncrement());
+
+        // Step 3: user-defined steps in order
         for (TransformStep step : steps) {
             switch (step) {
                 case FilterDropStep   fds -> { if (fds.test(msg)) return Optional.empty(); }
@@ -206,6 +233,14 @@ public final class TransformPipeline {
                 case TimeFreezeStep   s   -> applyTimeFreeze(msg, s, ctx);
                 // FanOutStep not applicable in streaming context — pass through
                 case FanOutStep ignored   -> { }
+                case RenameFieldStep      s -> s.apply(msg, ctx);
+                case DeleteFieldStep      s -> s.apply(msg, ctx);
+                case FlattenFieldStep     s -> s.apply(msg, ctx);
+                case AddComputedFieldStep s -> s.apply(msg, ctx);
+                case MergePatchStep       s -> s.apply(msg, ctx);
+                case RemapKeyStep         s -> s.apply(msg, ctx);
+                case NullKeyStep          s -> s.apply(msg, ctx);
+                case KeyFromValueStep     s -> s.apply(msg, ctx);
                 default -> step.apply(msg);  // AddHeader, RemoveHeader, CopyToHeader, Redirect, etc.
             }
         }

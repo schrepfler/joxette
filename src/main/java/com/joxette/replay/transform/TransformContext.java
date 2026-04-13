@@ -29,6 +29,13 @@ import java.time.Instant;
  * timestamp and the current wall-clock time.  On subsequent messages it computes
  * the scaled gap and stores the result in {@link #getPendingSleep()} for the
  * streaming layer to honour.
+ *
+ * <h2>REPLAY_SEQUENCE</h2>
+ * <p>{@link #sequence()} returns a monotonically increasing ordinal for the current
+ * message within the replay session.  {@link TransformPipeline} advances it once per
+ * message via {@link #setCurrentSequence(long)}, driven by the pipeline's own
+ * {@code AtomicLong} counter so the ordinal is consistent across both streaming and
+ * paginated paths.
  */
 public final class TransformContext {
 
@@ -48,9 +55,30 @@ public final class TransformContext {
      */
     private Duration pendingSleep = Duration.ZERO;
 
-    /** Creates a context anchored to {@code Instant.now()}. */
+    /**
+     * Monotonically increasing ordinal for the current message in the replay session.
+     * Set once per message by {@link TransformPipeline} before dispatching steps.
+     */
+    private long sequence = 0;
+
+    // -------------------------------------------------------------------------
+    // Constructors
+    // -------------------------------------------------------------------------
+
+    /** Creates a context anchored to {@code Instant.now()} with sequence starting at 0. */
     public TransformContext() {
         this.replayStartedAt = Instant.now();
+    }
+
+    /**
+     * Public constructor for tests in other packages that need a specific sequence
+     * value (e.g. to assert {@code REPLAY_SEQUENCE} output).  The {@code replayId}
+     * string is accepted for API compatibility but not stored — replay ID is
+     * injected via provenance headers, not via context.
+     */
+    public TransformContext(String replayId, long sequence) {
+        this.replayStartedAt = Instant.now();
+        this.sequence        = sequence;
     }
 
     /** Package-visible constructor for testing — injects a fixed replay-start instant. */
@@ -86,6 +114,17 @@ public final class TransformContext {
         return pendingSleep;
     }
 
+    /**
+     * Monotonically increasing message ordinal for this replay session, starting
+     * at {@code 0} for the first message processed by the pipeline.
+     *
+     * <p>Used by {@code AddComputedFieldStep} when the expression is
+     * {@code REPLAY_SEQUENCE}.
+     */
+    public long sequence() {
+        return sequence;
+    }
+
     // -------------------------------------------------------------------------
     // Package-private mutators — only TransformPipeline should call these
     // -------------------------------------------------------------------------
@@ -97,5 +136,10 @@ public final class TransformContext {
 
     void setPendingSleep(Duration d) {
         this.pendingSleep = (d == null || d.isNegative()) ? Duration.ZERO : d;
+    }
+
+    /** Sets the per-message sequence ordinal; called by the pipeline before dispatching steps. */
+    void setCurrentSequence(long seq) {
+        this.sequence = seq;
     }
 }
