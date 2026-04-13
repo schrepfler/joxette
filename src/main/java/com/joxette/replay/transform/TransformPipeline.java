@@ -157,62 +157,34 @@ public final class TransformPipeline {
         current.add(msg);
 
         // Step 2: user-defined steps in order
-        for (TransformStep step : steps) {
+        for (TransformStep stepOrGuard : steps) {
             if (current.isEmpty()) break;
 
-            switch (step) {
-                case FilterDropStep fds -> {
-                    current = current.stream()
-                            .filter(m -> !fds.test(m))
-                            .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
-                }
-                case FanOutStep fos -> {
-                    List<ReplayMessage> expanded = new ArrayList<>(
-                            current.size() * fos.topics().size());
-                    for (ReplayMessage m : current) {
-                        for (String targetTopic : fos.topics()) {
-                            ReplayMessage copy = m.copy();
-                            copy.topic = targetTopic;
-                            expanded.add(copy);
-                        }
+            // Unwrap GuardedStep — extract the guard predicate and the actual step
+            final Predicate    guard;
+            final TransformStep step;
+            if (stepOrGuard instanceof GuardedStep gs) {
+                guard = gs.when();
+                step  = gs.delegate();
+            } else {
+                guard = null;
+                step  = stepOrGuard;
+            }
+
+            if (guard != null) {
+                // Per-message guarded dispatch: apply the step only to messages where the
+                // guard passes; pass through messages that don't match the guard.
+                List<ReplayMessage> next = new ArrayList<>(current.size());
+                for (ReplayMessage m : current) {
+                    if (PredicateEvaluator.evaluate(guard, m)) {
+                        next.addAll(dispatchBatch(step, new ArrayList<>(List.of(m)), replayId, ctx));
+                    } else {
+                        next.add(m);
                     }
-                    current = expanded;
                 }
-                case AddHeaderStep    ahs  -> current.forEach(m -> applyAddHeader(ahs, m));
-                case RemoveHeaderStep rhs  -> current.forEach(m -> applyRemoveHeader(rhs, m));
-                case CopyToHeaderStep cths -> current.forEach(m -> applyCopyToHeader(cths, m));
-                case RedirectTopicStep rts -> current.forEach(m -> applyRedirectTopic(rts, m));
-                case WallTimeStep      s   -> current.forEach(m -> applyWallTime(m, s));
-                case TimeShiftStep     s   -> current.forEach(m -> applyTimeShift(m, s));
-                case TimeCompressStep  s   -> current.forEach(m -> applyTimeCompress(m, s, ctx));
-                case TimeFreezeStep    s   -> current.forEach(m -> applyTimeFreeze(m, s, ctx));
-                case RenameFieldStep      s -> current.forEach(m -> s.apply(m, ctx));
-                case DeleteFieldStep      s -> current.forEach(m -> s.apply(m, ctx));
-                case FlattenFieldStep     s -> current.forEach(m -> s.apply(m, ctx));
-                case AddComputedFieldStep s -> current.forEach(m -> s.apply(m, ctx));
-                case MergePatchStep       s -> current.forEach(m -> s.apply(m, ctx));
-                case RemapKeyStep         s -> current.forEach(m -> s.apply(m, ctx));
-                case NullKeyStep          s -> current.forEach(m -> s.apply(m, ctx));
-                case KeyFromValueStep     s -> current.forEach(m -> s.apply(m, ctx));
-                case ConditionalStep cs -> {
-                    List<ReplayMessage> next = new ArrayList<>(current.size());
-                    for (ReplayMessage m : current) {
-                        List<TransformStep> branch = cs.condition().test(m)
-                                ? cs.thenSteps()
-                                : cs.elseSteps();
-                        if (branch.isEmpty()) {
-                            next.add(m);
-                        } else {
-                            // Run the branch as a mini-pipeline; injector is null because
-                            // metadata injection already ran at the top of the outer pipeline.
-                            List<ReplayMessage> branchResult =
-                                    new TransformPipeline(branch, null).apply(m, replayId);
-                            next.addAll(branchResult);
-                        }
-                    }
-                    current = next;
-                }
-                default -> current.forEach(step::apply);
+                current = next;
+            } else {
+                current = dispatchBatch(step, current, replayId, ctx);
             }
         }
 
@@ -247,7 +219,18 @@ public final class TransformPipeline {
         ctx.setCurrentSequence(sequenceCounter.getAndIncrement());
 
         // Step 3: user-defined steps in order
-        for (TransformStep step : steps) {
+        for (TransformStep stepOrGuard : steps) {
+            // Unwrap GuardedStep — evaluate the guard; skip this step if it doesn't match
+            final TransformStep step;
+            if (stepOrGuard instanceof GuardedStep gs) {
+                if (!PredicateEvaluator.evaluate(gs.when(), msg)) {
+                    continue; // guard didn't match — pass through this step
+                }
+                step = gs.delegate();
+            } else {
+                step = stepOrGuard;
+            }
+
             switch (step) {
                 case FilterDropStep   fds -> { if (fds.test(msg)) return Optional.empty(); }
                 case WallTimeStep     s   -> applyWallTime(msg, s);
@@ -265,7 +248,7 @@ public final class TransformPipeline {
                 case NullKeyStep          s -> s.apply(msg, ctx);
                 case KeyFromValueStep     s -> s.apply(msg, ctx);
                 case ConditionalStep cs -> {
-                    List<TransformStep> branch = cs.condition().test(msg)
+                    List<TransformStep> branch = PredicateEvaluator.evaluate(cs.condition(), msg)
                             ? cs.thenSteps()
                             : cs.elseSteps();
                     if (!branch.isEmpty()) {
@@ -302,6 +285,76 @@ public final class TransformPipeline {
      */
     public TransformPipeline withSteps(List<TransformStep> newSteps) {
         return new TransformPipeline(newSteps, this.injector);
+    }
+
+    // =========================================================================
+    // Batch step dispatcher (used by both the main loop and guarded per-message paths)
+    // =========================================================================
+
+    /**
+     * Dispatches a single {@link TransformStep} against a list of live messages,
+     * returning the (potentially expanded or filtered) result list.
+     *
+     * <p>This helper is called both from the main pipeline loop (unguarded steps)
+     * and from the per-message guarded dispatch path. It must not be called with a
+     * {@link GuardedStep} — unwrapping is done in the main loop before calling here.
+     */
+    private List<ReplayMessage> dispatchBatch(TransformStep step,
+                                              List<ReplayMessage> current,
+                                              String replayId,
+                                              TransformContext ctx) {
+        return switch (step) {
+            case FilterDropStep fds -> current.stream()
+                    .filter(m -> !fds.test(m))
+                    .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+            case FanOutStep fos -> {
+                List<ReplayMessage> expanded = new ArrayList<>(
+                        current.size() * fos.topics().size());
+                for (ReplayMessage m : current) {
+                    for (String targetTopic : fos.topics()) {
+                        ReplayMessage copy = m.copy();
+                        copy.topic = targetTopic;
+                        expanded.add(copy);
+                    }
+                }
+                yield expanded;
+            }
+            case AddHeaderStep    ahs  -> { current.forEach(m -> applyAddHeader(ahs, m));   yield current; }
+            case RemoveHeaderStep rhs  -> { current.forEach(m -> applyRemoveHeader(rhs, m)); yield current; }
+            case CopyToHeaderStep cths -> { current.forEach(m -> applyCopyToHeader(cths, m)); yield current; }
+            case RedirectTopicStep rts -> { current.forEach(m -> applyRedirectTopic(rts, m)); yield current; }
+            case WallTimeStep      s   -> { current.forEach(m -> applyWallTime(m, s));        yield current; }
+            case TimeShiftStep     s   -> { current.forEach(m -> applyTimeShift(m, s));       yield current; }
+            case TimeCompressStep  s   -> { current.forEach(m -> applyTimeCompress(m, s, ctx)); yield current; }
+            case TimeFreezeStep    s   -> { current.forEach(m -> applyTimeFreeze(m, s, ctx));  yield current; }
+            case RenameFieldStep      s -> { current.forEach(m -> s.apply(m, ctx)); yield current; }
+            case DeleteFieldStep      s -> { current.forEach(m -> s.apply(m, ctx)); yield current; }
+            case FlattenFieldStep     s -> { current.forEach(m -> s.apply(m, ctx)); yield current; }
+            case AddComputedFieldStep s -> { current.forEach(m -> s.apply(m, ctx)); yield current; }
+            case MergePatchStep       s -> { current.forEach(m -> s.apply(m, ctx)); yield current; }
+            case RemapKeyStep         s -> { current.forEach(m -> s.apply(m, ctx)); yield current; }
+            case NullKeyStep          s -> { current.forEach(m -> s.apply(m, ctx)); yield current; }
+            case KeyFromValueStep     s -> { current.forEach(m -> s.apply(m, ctx)); yield current; }
+            case ConditionalStep cs -> {
+                List<ReplayMessage> next = new ArrayList<>(current.size());
+                for (ReplayMessage m : current) {
+                    List<TransformStep> branch = PredicateEvaluator.evaluate(cs.condition(), m)
+                            ? cs.thenSteps()
+                            : cs.elseSteps();
+                    if (branch.isEmpty()) {
+                        next.add(m);
+                    } else {
+                        // Run branch as a mini-pipeline; injector is null because
+                        // metadata injection already ran at the top of the outer pipeline.
+                        List<ReplayMessage> branchResult =
+                                new TransformPipeline(branch, null).apply(m, replayId);
+                        next.addAll(branchResult);
+                    }
+                }
+                yield next;
+            }
+            default -> { current.forEach(step::apply); yield current; }
+        };
     }
 
     // =========================================================================

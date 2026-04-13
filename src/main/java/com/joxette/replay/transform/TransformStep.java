@@ -41,8 +41,8 @@ import com.joxette.replay.transform.steps.WallTimeStep;
  * per-message — no cross-message aggregation at this stage.
  */
 @JsonTypeInfo(
-    use     = JsonTypeInfo.Id.NAME,
-    include = JsonTypeInfo.As.PROPERTY,
+    use      = JsonTypeInfo.Id.NAME,
+    include  = JsonTypeInfo.As.PROPERTY,
     property = "type"
 )
 @JsonSubTypes({
@@ -85,5 +85,29 @@ public interface TransformStep {
      */
     default void apply(ReplayMessage msg) {
         // no-op for unimplemented steps
+    }
+
+    /**
+     * Optional guard predicate. When non-{@code null}, this step executes only when the
+     * predicate evaluates to {@code true} for the current message. When {@code null}, the
+     * step always runs.
+     *
+     * <p>The guard is distinct from {@link com.joxette.replay.transform.steps.ConditionalStep}:
+     * it is a per-step shorthand for a single-branch conditional with no {@code else}.
+     *
+     * <p>Set transparently by {@link TransformStepDeserializer} when the step JSON contains
+     * a {@code "when"} field. Concrete step classes do not need to declare this field — the
+     * default here returns {@code null} (always-run) for all unguarded steps.
+     *
+     * <p>Example step JSON with a guard:
+     * <pre>{@code
+     * { "type": "redact", "target": "$.value.email",
+     *   "when": { "field": "$.headers[x-env]", "operator": "NEQ", "value": "prod" } }
+     * }</pre>
+     *
+     * @return the guard predicate, or {@code null} if this step always runs
+     */
+    default Predicate when() {
+        return null;
     }
 }

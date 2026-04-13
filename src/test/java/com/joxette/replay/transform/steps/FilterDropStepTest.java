@@ -1,6 +1,8 @@
 package com.joxette.replay.transform.steps;
 
 import com.joxette.replay.CassetteRecord;
+import com.joxette.replay.transform.Predicate;
+import com.joxette.replay.transform.Predicate.Operator;
 import com.joxette.replay.transform.ReplayMessage;
 import com.joxette.replay.transform.TransformPipeline;
 import org.junit.jupiter.api.Test;
@@ -10,7 +12,7 @@ import java.time.Instant;
 import java.util.Base64;
 import java.util.List;
 
-import static com.joxette.replay.transform.steps.FilterDropStep.Operator.*;
+import static com.joxette.replay.transform.Predicate.Operator.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -23,6 +25,11 @@ class FilterDropStepTest {
 
     private static String b64(String s) {
         return ENC.encodeToString(s.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** Convenience factory for simple leaf-predicate filter steps. */
+    private static FilterDropStep fds(String field, Operator op, Object value) {
+        return new FilterDropStep(new Predicate.Leaf(field, op, value));
     }
 
     private static CassetteRecord record(int partition, long offset,
@@ -46,26 +53,22 @@ class FilterDropStepTest {
 
     @Test
     void eq_dropsWhenPartitionMatches() {
-        var step   = new FilterDropStep("$.partition", EQ, 3);
-        assertThat(apply(step, msg(3, 0L, "t", null))).isEmpty();
+        assertThat(apply(fds("$.partition", EQ, 3), msg(3, 0L, "t", null))).isEmpty();
     }
 
     @Test
     void eq_passesWhenPartitionDiffers() {
-        var step   = new FilterDropStep("$.partition", EQ, 3);
-        assertThat(apply(step, msg(2, 0L, "t", null))).hasSize(1);
+        assertThat(apply(fds("$.partition", EQ, 3), msg(2, 0L, "t", null))).hasSize(1);
     }
 
     @Test
     void neq_dropsWhenPartitionDiffers() {
-        var step = new FilterDropStep("$.partition", NEQ, 3);
-        assertThat(apply(step, msg(5, 0L, "t", null))).isEmpty();
+        assertThat(apply(fds("$.partition", NEQ, 3), msg(5, 0L, "t", null))).isEmpty();
     }
 
     @Test
     void neq_passesWhenPartitionEquals() {
-        var step = new FilterDropStep("$.partition", NEQ, 3);
-        assertThat(apply(step, msg(3, 0L, "t", null))).hasSize(1);
+        assertThat(apply(fds("$.partition", NEQ, 3), msg(3, 0L, "t", null))).hasSize(1);
     }
 
     // =========================================================================
@@ -74,38 +77,32 @@ class FilterDropStepTest {
 
     @Test
     void gt_dropsWhenOffsetAboveThreshold() {
-        var step = new FilterDropStep("$.offset", GT, 100);
-        assertThat(apply(step, msg(0, 200L, "t", null))).isEmpty();
+        assertThat(apply(fds("$.offset", GT, 100), msg(0, 200L, "t", null))).isEmpty();
     }
 
     @Test
     void gt_passesWhenOffsetAtThreshold() {
-        var step = new FilterDropStep("$.offset", GT, 100);
-        assertThat(apply(step, msg(0, 100L, "t", null))).hasSize(1);
+        assertThat(apply(fds("$.offset", GT, 100), msg(0, 100L, "t", null))).hasSize(1);
     }
 
     @Test
     void gte_dropsWhenOffsetAtThreshold() {
-        var step = new FilterDropStep("$.offset", GTE, 100);
-        assertThat(apply(step, msg(0, 100L, "t", null))).isEmpty();
+        assertThat(apply(fds("$.offset", GTE, 100), msg(0, 100L, "t", null))).isEmpty();
     }
 
     @Test
     void lt_dropsWhenOffsetBelowThreshold() {
-        var step = new FilterDropStep("$.offset", LT, 50);
-        assertThat(apply(step, msg(0, 10L, "t", null))).isEmpty();
+        assertThat(apply(fds("$.offset", LT, 50), msg(0, 10L, "t", null))).isEmpty();
     }
 
     @Test
     void lte_dropsWhenOffsetAtThreshold() {
-        var step = new FilterDropStep("$.offset", LTE, 50);
-        assertThat(apply(step, msg(0, 50L, "t", null))).isEmpty();
+        assertThat(apply(fds("$.offset", LTE, 50), msg(0, 50L, "t", null))).isEmpty();
     }
 
     @Test
     void lte_passesWhenOffsetAboveThreshold() {
-        var step = new FilterDropStep("$.offset", LTE, 50);
-        assertThat(apply(step, msg(0, 51L, "t", null))).hasSize(1);
+        assertThat(apply(fds("$.offset", LTE, 50), msg(0, 51L, "t", null))).hasSize(1);
     }
 
     // =========================================================================
@@ -114,42 +111,26 @@ class FilterDropStepTest {
 
     @Test
     void contains_dropsWhenTopicContainsSubstring() {
-        var step = new FilterDropStep("$.topic", CONTAINS, "staging");
-        assertThat(apply(step, msg(0, 0L, "orders-staging", null))).isEmpty();
+        assertThat(apply(fds("$.topic", CONTAINS, "staging"), msg(0, 0L, "orders-staging", null))).isEmpty();
     }
 
     @Test
     void contains_passesWhenTopicDoesNotContainSubstring() {
-        var step = new FilterDropStep("$.topic", CONTAINS, "staging");
-        assertThat(apply(step, msg(0, 0L, "orders-prod", null))).hasSize(1);
+        assertThat(apply(fds("$.topic", CONTAINS, "staging"), msg(0, 0L, "orders-prod", null))).hasSize(1);
     }
 
     // =========================================================================
-    // MATCHES (regex, pre-compiled)
+    // MATCHES (regex)
     // =========================================================================
-
-    @Test
-    void matches_precompilesPattern() {
-        var step = new FilterDropStep("$.topic", MATCHES, "^orders-.*");
-        assertThat(step.compiledPattern()).isNotNull();
-    }
 
     @Test
     void matches_dropsWhenTopicMatchesRegex() {
-        var step = new FilterDropStep("$.topic", MATCHES, "^orders-.*");
-        assertThat(apply(step, msg(0, 0L, "orders-prod", null))).isEmpty();
+        assertThat(apply(fds("$.topic", MATCHES, "^orders-.*"), msg(0, 0L, "orders-prod", null))).isEmpty();
     }
 
     @Test
     void matches_passesWhenTopicDoesNotMatchRegex() {
-        var step = new FilterDropStep("$.topic", MATCHES, "^orders-.*");
-        assertThat(apply(step, msg(0, 0L, "payments-prod", null))).hasSize(1);
-    }
-
-    @Test
-    void matches_compiledPatternIsNullForNonMatchesOperator() {
-        var step = new FilterDropStep("$.topic", EQ, "orders");
-        assertThat(step.compiledPattern()).isNull();
+        assertThat(apply(fds("$.topic", MATCHES, "^orders-.*"), msg(0, 0L, "payments-prod", null))).hasSize(1);
     }
 
     // =========================================================================
@@ -160,20 +141,17 @@ class FilterDropStepTest {
     void isNull_dropsWhenKeyIsNull() {
         Instant ts  = Instant.parse("2024-01-01T00:00:00Z");
         var     rec = new CassetteRecord("t", 0, 0L, ts, ts, null, null, null, null);
-        var     step = new FilterDropStep("$.key", IS_NULL, null);
-        assertThat(apply(step, new ReplayMessage(rec))).isEmpty();
+        assertThat(apply(fds("$.key", IS_NULL, null), new ReplayMessage(rec))).isEmpty();
     }
 
     @Test
     void isNull_passesWhenKeyIsPresent() {
-        var step = new FilterDropStep("$.key", IS_NULL, null);
-        assertThat(apply(step, msg(0, 0L, "t", null))).hasSize(1);
+        assertThat(apply(fds("$.key", IS_NULL, null), msg(0, 0L, "t", null))).hasSize(1);
     }
 
     @Test
     void isNotNull_dropsWhenKeyPresent() {
-        var step = new FilterDropStep("$.key", IS_NOT_NULL, null);
-        assertThat(apply(step, msg(0, 0L, "t", null))).isEmpty();
+        assertThat(apply(fds("$.key", IS_NOT_NULL, null), msg(0, 0L, "t", null))).isEmpty();
     }
 
     // =========================================================================
@@ -183,30 +161,26 @@ class FilterDropStepTest {
     @Test
     void nestedValue_dropsWhenFieldMatches() {
         String json = "{\"status\":\"cancelled\"}";
-        var    step = new FilterDropStep("$.value.status", EQ, "cancelled");
-        assertThat(apply(step, msg(0, 0L, "t", b64(json)))).isEmpty();
+        assertThat(apply(fds("$.value.status", EQ, "cancelled"), msg(0, 0L, "t", b64(json)))).isEmpty();
     }
 
     @Test
     void nestedValue_passesWhenFieldDiffers() {
         String json = "{\"status\":\"completed\"}";
-        var    step = new FilterDropStep("$.value.status", EQ, "cancelled");
-        assertThat(apply(step, msg(0, 0L, "t", b64(json)))).hasSize(1);
+        assertThat(apply(fds("$.value.status", EQ, "cancelled"), msg(0, 0L, "t", b64(json)))).hasSize(1);
     }
 
     @Test
     void nestedValue_returnsNullForMissingPath() {
         String json = "{\"a\":1}";
-        var    step = new FilterDropStep("$.value.no_such", IS_NOT_NULL, null);
         // IS_NOT_NULL drops when field is non-null; missing path → null → does not drop
-        assertThat(apply(step, msg(0, 0L, "t", b64(json)))).hasSize(1);
+        assertThat(apply(fds("$.value.no_such", IS_NOT_NULL, null), msg(0, 0L, "t", b64(json)))).hasSize(1);
     }
 
     @Test
     void nestedValue_handlesNullMessageValue() {
-        var step = new FilterDropStep("$.value.status", EQ, "cancelled");
         // value is null → extracted is null → "cancelled" does not equal null
-        assertThat(apply(step, msg(0, 0L, "t", null))).hasSize(1);
+        assertThat(apply(fds("$.value.status", EQ, "cancelled"), msg(0, 0L, "t", null))).hasSize(1);
     }
 
     // =========================================================================
@@ -215,13 +189,75 @@ class FilterDropStepTest {
 
     @Test
     void topicField_dropsExactMatch() {
-        var step = new FilterDropStep("$.topic", EQ, "audit.log");
-        assertThat(apply(step, msg(0, 0L, "audit.log", null))).isEmpty();
+        assertThat(apply(fds("$.topic", EQ, "audit.log"), msg(0, 0L, "audit.log", null))).isEmpty();
     }
 
     @Test
     void topicField_passesNonMatch() {
-        var step = new FilterDropStep("$.topic", EQ, "audit.log");
-        assertThat(apply(step, msg(0, 0L, "orders.events", null))).hasSize(1);
+        assertThat(apply(fds("$.topic", EQ, "audit.log"), msg(0, 0L, "orders.events", null))).hasSize(1);
+    }
+
+    // =========================================================================
+    // Compound predicates (and/or/not)
+    // =========================================================================
+
+    @Test
+    void compoundAnd_dropsWhenBothMatch() {
+        var predicate = new Predicate.And(List.of(
+                new Predicate.Leaf("$.partition", EQ, 0),
+                new Predicate.Leaf("$.topic", EQ, "orders")));
+        var step = new FilterDropStep(predicate);
+        assertThat(apply(step, msg(0, 0L, "orders", null))).isEmpty();
+    }
+
+    @Test
+    void compoundAnd_passesWhenOnlyOneBranchMatches() {
+        var predicate = new Predicate.And(List.of(
+                new Predicate.Leaf("$.partition", EQ, 0),
+                new Predicate.Leaf("$.topic", EQ, "orders")));
+        var step = new FilterDropStep(predicate);
+        // partition=0 matches but topic=payments doesn't → AND is false → pass through
+        assertThat(apply(step, msg(0, 0L, "payments", null))).hasSize(1);
+    }
+
+    @Test
+    void compoundOr_dropsWhenEitherMatches() {
+        var predicate = new Predicate.Or(List.of(
+                new Predicate.Leaf("$.partition", EQ, 0),
+                new Predicate.Leaf("$.topic", EQ, "orders")));
+        var step = new FilterDropStep(predicate);
+        assertThat(apply(step, msg(5, 0L, "orders", null))).isEmpty();
+    }
+
+    @Test
+    void compoundNot_dropsWhenInnerDoesNotMatch() {
+        var predicate = new Predicate.Not(new Predicate.Leaf("$.topic", EQ, "orders"));
+        var step = new FilterDropStep(predicate);
+        // NOT(topic=orders) → drops topic=payments
+        assertThat(apply(step, msg(0, 0L, "payments", null))).isEmpty();
+        // NOT(topic=orders) → passes topic=orders
+        assertThat(apply(step, msg(0, 0L, "orders", null))).hasSize(1);
+    }
+
+    // =========================================================================
+    // Convenience accessors for SqlPushdownAnalyzer compatibility
+    // =========================================================================
+
+    @Test
+    void leafPredicateAccessors_returnFieldOperatorValue() {
+        var step = fds("$.partition", EQ, 3);
+        assertThat(step.field()).isEqualTo("$.partition");
+        assertThat(step.operator()).isEqualTo(EQ);
+        assertThat(step.value()).isEqualTo(3);
+    }
+
+    @Test
+    void compoundPredicateAccessors_returnNull() {
+        var step = new FilterDropStep(new Predicate.And(List.of(
+                new Predicate.Leaf("$.partition", EQ, 0),
+                new Predicate.Leaf("$.topic", EQ, "t"))));
+        assertThat(step.field()).isNull();
+        assertThat(step.operator()).isNull();
+        assertThat(step.value()).isNull();
     }
 }

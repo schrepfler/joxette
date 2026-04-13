@@ -1,5 +1,6 @@
 package com.joxette.replay.transform.steps;
 
+import com.joxette.replay.transform.Predicate;
 import com.joxette.replay.transform.TransformStep;
 import org.jooq.Condition;
 import org.jooq.Field;
@@ -25,9 +26,9 @@ import java.util.Set;
  *       correspond to actual columns in its DuckDB table.  The general-cassette
  *       service omits {@code "$.topic"} (no such column); the entity-cassette
  *       service includes it.</li>
- *   <li>{@link FilterDropStep.Operator#MATCHES} is pushed down only for string
+ *   <li>{@link Predicate.Operator#MATCHES} is pushed down only for string
  *       columns ({@code topic}, {@code kafka_key}).</li>
- *   <li>{@link FilterDropStep.Operator#CONTAINS} is pushed down only for string
+ *   <li>{@link Predicate.Operator#CONTAINS} is pushed down only for string
  *       columns.</li>
  *   <li>Steps inside {@link ConditionalStep} or after a {@link FanOutStep} are
  *       never inspected — they remain in Java.</li>
@@ -97,9 +98,11 @@ public final class SqlPushdownAnalyzer {
     // -------------------------------------------------------------------------
 
     private static boolean canPushDown(FilterDropStep fds) {
+        Predicate.Operator op = fds.operator();
+        if (op == null) return false; // compound (and/or/not) predicates are not pushable
         String col = COLUMN_MAP.get(fds.field());
         boolean isStringCol = STRING_COLUMNS.contains(col);
-        return switch (fds.operator()) {
+        return switch (op) {
             case MATCHES, CONTAINS -> isStringCol;
             default                -> true;
         };
@@ -111,12 +114,13 @@ public final class SqlPushdownAnalyzer {
 
     @SuppressWarnings({"rawtypes", "unchecked"})
     private static Condition toPushdownCondition(FilterDropStep fds) {
-        String col       = COLUMN_MAP.get(fds.field());
-        Field  rawField  = DSL.field(DSL.name(col));
-        Object coerced   = coerce(fds.field(), fds.value());
+        String             col      = COLUMN_MAP.get(fds.field());
+        Field              rawField = DSL.field(DSL.name(col));
+        Object             coerced  = coerce(fds.field(), fds.value());
+        Predicate.Operator op       = fds.operator(); // non-null: canPushDown guarantees this
 
         // filter_drop drops when predicate matches → SQL WHERE negates the predicate
-        return switch (fds.operator()) {
+        return switch (op) {
             case EQ  -> rawField.notEqual(DSL.inline(coerced));
             case NEQ -> rawField.equal(DSL.inline(coerced));
             case GT  -> rawField.lessOrEqual(DSL.inline(coerced));

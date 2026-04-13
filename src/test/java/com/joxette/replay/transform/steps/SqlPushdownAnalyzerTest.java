@@ -1,5 +1,6 @@
 package com.joxette.replay.transform.steps;
 
+import com.joxette.replay.transform.Predicate;
 import com.joxette.replay.transform.TransformPipeline;
 import com.joxette.replay.transform.TransformStep;
 import org.jooq.SQLDialect;
@@ -9,7 +10,7 @@ import org.junit.jupiter.api.Test;
 import java.util.List;
 import java.util.Set;
 
-import static com.joxette.replay.transform.steps.FilterDropStep.Operator.*;
+import static com.joxette.replay.transform.Predicate.Operator.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -36,6 +37,10 @@ class SqlPushdownAnalyzerTest {
     private static final Set<String> TOPIC_ELIGIBLE = Set.of(
             "$.partition", "$.offset", "$.timestamp", "$.key", "$.recorded_at");
 
+    private static FilterDropStep fds(String field, Predicate.Operator op, Object value) {
+        return new FilterDropStep(new Predicate.Leaf(field, op, value));
+    }
+
     private static String sql(org.jooq.Condition c) {
         return DSL.using(SQLDialect.DEFAULT).render(c);
     }
@@ -46,7 +51,7 @@ class SqlPushdownAnalyzerTest {
 
     @Test
     void eligible_partitionEqPushedDown() {
-        var fds = new FilterDropStep("$.partition", EQ, 3);
+        var fds = fds("$.partition", EQ, 3);
         var result = SqlPushdownAnalyzer.analyze(List.of(fds), TOPIC_ELIGIBLE);
 
         assertThat(result.remainingSteps()).isEmpty();
@@ -58,7 +63,7 @@ class SqlPushdownAnalyzerTest {
 
     @Test
     void eligible_offsetGtePushedDown() {
-        var fds = new FilterDropStep("$.offset", GTE, 100);
+        var fds = fds("$.offset", GTE, 100);
         var result = SqlPushdownAnalyzer.analyze(List.of(fds), TOPIC_ELIGIBLE);
 
         assertThat(result.remainingSteps()).isEmpty();
@@ -70,7 +75,7 @@ class SqlPushdownAnalyzerTest {
 
     @Test
     void eligible_topicEqPushedDownForEntityService() {
-        var fds = new FilterDropStep("$.topic", EQ, "audit.log");
+        var fds = fds("$.topic", EQ, "audit.log");
         var result = SqlPushdownAnalyzer.analyze(List.of(fds), ENTITY_ELIGIBLE);
 
         assertThat(result.remainingSteps()).isEmpty();
@@ -80,7 +85,7 @@ class SqlPushdownAnalyzerTest {
 
     @Test
     void eligible_isNullPushedDown() {
-        var fds = new FilterDropStep("$.key", IS_NULL, null);
+        var fds = fds("$.key", IS_NULL, null);
         var result = SqlPushdownAnalyzer.analyze(List.of(fds), TOPIC_ELIGIBLE);
 
         assertThat(result.remainingSteps()).isEmpty();
@@ -92,7 +97,7 @@ class SqlPushdownAnalyzerTest {
 
     @Test
     void eligible_isNotNullPushedDown() {
-        var fds = new FilterDropStep("$.key", IS_NOT_NULL, null);
+        var fds = fds("$.key", IS_NOT_NULL, null);
         var result = SqlPushdownAnalyzer.analyze(List.of(fds), TOPIC_ELIGIBLE);
 
         assertThat(result.remainingSteps()).isEmpty();
@@ -107,7 +112,7 @@ class SqlPushdownAnalyzerTest {
 
     @Test
     void ineligible_nestedValueFieldRemainsInJava() {
-        var fds = new FilterDropStep("$.value.status", EQ, "cancelled");
+        var fds = fds("$.value.status", EQ, "cancelled");
         var result = SqlPushdownAnalyzer.analyze(List.of(fds), ENTITY_ELIGIBLE);
 
         assertThat(result.remainingSteps()).containsExactly(fds);
@@ -118,7 +123,7 @@ class SqlPushdownAnalyzerTest {
     @Test
     void ineligible_topicFieldRemainsInJavaForGeneralCassetteService() {
         // $.topic is not in TOPIC_ELIGIBLE (no column in general cassette tables)
-        var fds = new FilterDropStep("$.topic", EQ, "orders");
+        var fds = fds("$.topic", EQ, "orders");
         var result = SqlPushdownAnalyzer.analyze(List.of(fds), TOPIC_ELIGIBLE);
 
         assertThat(result.remainingSteps()).containsExactly(fds);
@@ -127,7 +132,7 @@ class SqlPushdownAnalyzerTest {
     @Test
     void ineligible_matchesOnNumericColumnRemainsInJava() {
         // MATCHES only pushed down for string columns; partition is numeric
-        var fds = new FilterDropStep("$.partition", MATCHES, "^3$");
+        var fds = fds("$.partition", MATCHES, "^3$");
         var result = SqlPushdownAnalyzer.analyze(List.of(fds), TOPIC_ELIGIBLE);
 
         assertThat(result.remainingSteps()).containsExactly(fds);
@@ -135,7 +140,7 @@ class SqlPushdownAnalyzerTest {
 
     @Test
     void ineligible_containsOnNumericColumnRemainsInJava() {
-        var fds = new FilterDropStep("$.offset", CONTAINS, "5");
+        var fds = fds("$.offset", CONTAINS, "5");
         var result = SqlPushdownAnalyzer.analyze(List.of(fds), TOPIC_ELIGIBLE);
 
         assertThat(result.remainingSteps()).containsExactly(fds);
@@ -156,8 +161,8 @@ class SqlPushdownAnalyzerTest {
 
     @Test
     void mixed_eligiblePushedDownIneligibleRemains() {
-        var fdsPartition  = new FilterDropStep("$.partition", EQ, 3);           // eligible
-        var fdsValueField = new FilterDropStep("$.value.status", EQ, "done");   // ineligible (nested)
+        var fdsPartition  = fds("$.partition", EQ, 3);           // eligible
+        var fdsValueField = fds("$.value.status", EQ, "done");   // ineligible (nested)
         var redirect      = new RedirectTopicStep("orders-staging");             // ineligible (not FilterDrop)
 
         var result = SqlPushdownAnalyzer.analyze(
@@ -174,9 +179,9 @@ class SqlPushdownAnalyzerTest {
     @Test
     void mixed_orderOfRemainingStepsPreserved() {
         var a = new RedirectTopicStep("a");
-        var b = new FilterDropStep("$.value.x", EQ, "y");   // ineligible
+        var b = fds("$.value.x", EQ, "y");   // ineligible
         var c = new RemoveHeaderStep("x-trace");
-        var d = new FilterDropStep("$.partition", EQ, 5);   // eligible → pushed down
+        var d = fds("$.partition", EQ, 5);   // eligible → pushed down
         var e = new AddHeaderStep("x-env", "test", false);
 
         var result = SqlPushdownAnalyzer.analyze(
@@ -194,8 +199,8 @@ class SqlPushdownAnalyzerTest {
 
     @Test
     void multipleEligibleStepsCombinedAsAnd() {
-        var fds1 = new FilterDropStep("$.partition", EQ, 3);
-        var fds2 = new FilterDropStep("$.offset", LT, 10);
+        var fds1 = fds("$.partition", EQ, 3);
+        var fds2 = fds("$.offset", LT, 10);
 
         var result = SqlPushdownAnalyzer.analyze(List.of(fds1, fds2), TOPIC_ELIGIBLE);
 
@@ -212,7 +217,7 @@ class SqlPushdownAnalyzerTest {
 
     @Test
     void containsOnStringColumnPushedDown() {
-        var fds = new FilterDropStep("$.topic", CONTAINS, "staging");
+        var fds = fds("$.topic", CONTAINS, "staging");
         var result = SqlPushdownAnalyzer.analyze(List.of(fds), ENTITY_ELIGIBLE);
 
         assertThat(result.remainingSteps()).isEmpty();
@@ -223,7 +228,7 @@ class SqlPushdownAnalyzerTest {
 
     @Test
     void matchesOnStringColumnPushedDown() {
-        var fds = new FilterDropStep("$.key", MATCHES, "^order-.*");
+        var fds = fds("$.key", MATCHES, "^order-.*");
         var result = SqlPushdownAnalyzer.analyze(List.of(fds), TOPIC_ELIGIBLE);
 
         assertThat(result.remainingSteps()).isEmpty();

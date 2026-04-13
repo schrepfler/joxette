@@ -2,6 +2,7 @@ package com.joxette.replay.transform.steps;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.joxette.replay.transform.Predicate;
 import com.joxette.replay.transform.TransformStep;
 
 import java.util.List;
@@ -11,13 +12,13 @@ import java.util.List;
  * otherwise applies {@code elseSteps}. Either branch may be empty — an empty branch
  * is a no-op that passes the message through unchanged.
  *
- * <p>The {@code condition} uses the same predicate model as {@link FilterDropStep}
- * (field / operator / value), but the semantics are inverted: a {@code true} result
- * means the condition matched and the {@code thenSteps} branch executes. Predicate
- * evaluation is handled by the shared {@link PredicateEvaluator}.
+ * <p>The {@code condition} uses the full {@link Predicate} hierarchy — leaf, and, or, not.
+ * Evaluation is handled by
+ * {@link com.joxette.replay.transform.PredicateEvaluator#evaluate(Predicate, com.joxette.replay.transform.ReplayMessage)}.
  *
  * <p>{@code ConditionalStep} is itself a {@link TransformStep}, so {@code thenSteps}
- * and {@code elseSteps} may contain further {@code ConditionalStep}s. A
+ * and {@code elseSteps} may contain further {@code ConditionalStep}s, and any step in
+ * either branch may carry its own {@code when} guard. A
  * {@link FilterDropStep} inside either branch can still drop the message.
  *
  * <p>Example — redact email only when the {@code x-env} header is not {@code prod}:
@@ -28,16 +29,32 @@ import java.util.List;
  *   "then_steps": [{"type": "redact", "target": "$.value.email"}]
  * }
  * }</pre>
+ *
+ * <p>Example — compound condition:
+ * <pre>{@code
+ * {
+ *   "type": "conditional",
+ *   "condition": {
+ *     "match": "or",
+ *     "predicates": [
+ *       {"field": "$.value.amount", "operator": "GT", "value": 10000},
+ *       {"field": "$.headers[x-vip]", "operator": "IS_NOT_NULL"}
+ *     ]
+ *   },
+ *   "then_steps": [{"type": "add_header", "key": "x-tier", "value": "premium"}],
+ *   "else_steps": [{"type": "add_header", "key": "x-tier", "value": "standard"}]
+ * }
+ * }</pre>
  */
 public final class ConditionalStep implements TransformStep {
 
-    private final FilterDropStep      condition;
+    private final Predicate          condition;
     private final List<TransformStep> thenSteps;
     private final List<TransformStep> elseSteps;
 
     @JsonCreator
     public ConditionalStep(
-            @JsonProperty("condition")  FilterDropStep      condition,
+            @JsonProperty("condition")  Predicate          condition,
             @JsonProperty("then_steps") List<TransformStep> thenSteps,
             @JsonProperty("else_steps") List<TransformStep> elseSteps
     ) {
@@ -47,14 +64,20 @@ public final class ConditionalStep implements TransformStep {
     }
 
     /**
-     * The predicate to evaluate. Uses the same field/operator/value model as
-     * {@link FilterDropStep}; evaluates to {@code true} when the condition matches.
+     * The predicate to evaluate. Supports the full {@link Predicate} hierarchy
+     * (leaf, and, or, not); evaluates to {@code true} when the condition matches.
      */
-    public FilterDropStep condition() { return condition; }
+    public Predicate condition() {
+        return condition;
+    }
 
     /** Steps to apply when the condition evaluates to {@code true}. Never null. */
-    public List<TransformStep> thenSteps() { return thenSteps; }
+    public List<TransformStep> thenSteps() {
+        return thenSteps;
+    }
 
     /** Steps to apply when the condition evaluates to {@code false}. Never null. */
-    public List<TransformStep> elseSteps() { return elseSteps; }
+    public List<TransformStep> elseSteps() {
+        return elseSteps;
+    }
 }

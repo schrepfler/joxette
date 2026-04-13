@@ -11,6 +11,8 @@ import java.time.Instant;
 import java.util.Base64;
 import java.util.List;
 
+import com.joxette.replay.transform.Predicate;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -137,7 +139,7 @@ class TopicRoutingStepsTest {
     void fanOut_followedByFilterDropRemovesSomeCopies() {
         var fanOut     = new FanOutStep(List.of("keep-topic", "drop-topic"));
         // Drop messages whose topic equals "drop-topic"
-        var filterDrop = new FilterDropStep("$.topic", FilterDropStep.Operator.EQ, "drop-topic");
+        var filterDrop = new FilterDropStep(new Predicate.Leaf("$.topic", Predicate.Operator.EQ, "drop-topic"));
         var result     = pipeline(fanOut, filterDrop).apply(new ReplayMessage(record()), "r1");
 
         assertThat(result).hasSize(1);
