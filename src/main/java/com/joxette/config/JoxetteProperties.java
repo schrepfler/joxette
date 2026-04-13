@@ -28,6 +28,11 @@ public class JoxetteProperties {
         private String path = "./data/joxette.ducklake";
         /** Root path on object storage where Parquet files are written. */
         private String objectStoragePath;
+        /**
+         * Whether to automatically run {@code ducklake_migrate()} on startup (DuckLake 1.0+).
+         * Set to {@code false} in environments where catalog schema changes require prior approval.
+         */
+        private boolean autoMigrate = true;
         /** Optional S3-compatible storage credentials and endpoint. */
         private S3 s3 = new S3();
 
@@ -36,6 +41,9 @@ public class JoxetteProperties {
 
         public String getObjectStoragePath() { return objectStoragePath; }
         public void setObjectStoragePath(String objectStoragePath) { this.objectStoragePath = objectStoragePath; }
+
+        public boolean isAutoMigrate() { return autoMigrate; }
+        public void setAutoMigrate(boolean autoMigrate) { this.autoMigrate = autoMigrate; }
 
         public S3 getS3() { return s3; }
         public void setS3(S3 s3) { this.s3 = s3; }

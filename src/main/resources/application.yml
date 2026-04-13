@@ -37,6 +37,7 @@ joxette:
   catalog:
     path: "./data/joxette.ducklake"
     object-storage-path: "s3://joxette-data/"
+    # auto-migrate: true   # set false to skip automatic catalog migration on startup (DuckLake 1.0+)
 
   inline:
     threshold-mb: 4

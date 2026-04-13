@@ -99,6 +99,47 @@ public class DuckLakeManager {
                 throw e;
             }
         }
+
+        if (properties.getCatalog().isAutoMigrate()) {
+            runCatalogMigration();
+        } else {
+            log.info("DuckLake catalog auto-migration disabled (joxette.catalog.auto-migrate=false)");
+        }
+    }
+
+    /**
+     * Calls {@code ducklake_migrate()} to apply any pending catalog schema changes
+     * introduced by a DuckLake extension upgrade (DuckLake 1.0+).
+     *
+     * <p>Safe to call when the catalog is already current — it is a no-op in that case.
+     *
+     * @throws IllegalStateException if migration fails, to prevent startup with a
+     *     potentially incompatible catalog schema.
+     */
+    private void runCatalogMigration() {
+        log.info("Running DuckLake catalog migration check...");
+        try (Statement stmt = connection.createStatement()) {
+            boolean hasResultSet = stmt.execute("CALL ducklake_migrate('" + CATALOG_NAME + "')");
+            if (hasResultSet) {
+                try (var rs = stmt.getResultSet()) {
+                    int count = 0;
+                    while (rs.next()) {
+                        count++;
+                    }
+                    if (count == 0) {
+                        log.info("DuckLake catalog migration: no changes needed");
+                    } else {
+                        log.info("DuckLake catalog migration: applied {} change(s)", count);
+                    }
+                }
+            } else {
+                log.info("DuckLake catalog migration: completed");
+            }
+        } catch (SQLException e) {
+            throw new IllegalStateException(
+                "DuckLake catalog migration failed — check DuckLake version compatibility. " +
+                "Set joxette.catalog.auto-migrate=false to skip and investigate manually.", e);
+        }
     }
 
     /**
