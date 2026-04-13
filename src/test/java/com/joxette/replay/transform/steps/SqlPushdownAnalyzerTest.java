@@ -239,6 +239,127 @@ class SqlPushdownAnalyzerTest {
     }
 
     // =========================================================================
+    // Compound predicate pushdown (and / or / not)
+    // =========================================================================
+
+    @Test
+    void compoundAnd_allEligibleLeavesPushedDown() {
+        var predicate = new Predicate.And(List.of(
+                new Predicate.Leaf("$.partition", EQ, 3),
+                new Predicate.Leaf("$.offset", LT, 100)));
+        var fds    = new FilterDropStep(predicate);
+        var result = SqlPushdownAnalyzer.analyze(List.of(fds), TOPIC_ELIGIBLE);
+
+        assertThat(result.remainingSteps()).isEmpty();
+        String where = sql(result.pushdownCondition());
+        // Positive condition: (partition=3 AND offset<100), negated for the keep clause
+        assertThat(where).containsIgnoringCase("kafka_partition");
+        assertThat(where).containsIgnoringCase("kafka_offset");
+        assertThat(where).containsAnyOf("not", "NOT");
+    }
+
+    @Test
+    void compoundOr_allEligibleLeavesPushedDown() {
+        var predicate = new Predicate.Or(List.of(
+                new Predicate.Leaf("$.partition", EQ, 0),
+                new Predicate.Leaf("$.partition", EQ, 1)));
+        var fds    = new FilterDropStep(predicate);
+        var result = SqlPushdownAnalyzer.analyze(List.of(fds), TOPIC_ELIGIBLE);
+
+        assertThat(result.remainingSteps()).isEmpty();
+        String where = sql(result.pushdownCondition());
+        assertThat(where).containsIgnoringCase("kafka_partition");
+        assertThat(where).containsAnyOf("not", "NOT");
+    }
+
+    @Test
+    void compoundNot_eligibleInnerLeafPushedDown() {
+        // NOT(EQ(partition, 3)) → drop when partition != 3 → keep when partition = 3
+        var predicate = new Predicate.Not(new Predicate.Leaf("$.partition", EQ, 3));
+        var fds    = new FilterDropStep(predicate);
+        var result = SqlPushdownAnalyzer.analyze(List.of(fds), TOPIC_ELIGIBLE);
+
+        assertThat(result.remainingSteps()).isEmpty();
+        String where = sql(result.pushdownCondition());
+        assertThat(where).containsIgnoringCase("kafka_partition");
+    }
+
+    @Test
+    void compoundAnd_mixedEligibleIneligibleRemainsInJava() {
+        // One leaf references $.value.status which is not a top-level column → whole AND ineligible
+        var predicate = new Predicate.And(List.of(
+                new Predicate.Leaf("$.partition", EQ, 3),
+                new Predicate.Leaf("$.value.status", EQ, "done")));
+        var fds    = new FilterDropStep(predicate);
+        var result = SqlPushdownAnalyzer.analyze(List.of(fds), TOPIC_ELIGIBLE);
+
+        assertThat(result.remainingSteps()).containsExactly(fds);
+        assertThat(sql(result.pushdownCondition())).isEqualToIgnoringCase("true");
+    }
+
+    @Test
+    void compoundOr_withHeaderFieldRemainsInJava() {
+        // $.headers[x-env] is not a top-level column → ineligible
+        var predicate = new Predicate.Or(List.of(
+                new Predicate.Leaf("$.partition", EQ, 0),
+                new Predicate.Leaf("$.headers[x-env]", EQ, "staging")));
+        var fds    = new FilterDropStep(predicate);
+        var result = SqlPushdownAnalyzer.analyze(List.of(fds), TOPIC_ELIGIBLE);
+
+        assertThat(result.remainingSteps()).containsExactly(fds);
+    }
+
+    @Test
+    void compoundNested_allTopLevelLeavesPushedDown() {
+        // AND( EQ(partition,0), OR( EQ(topic,"a"), EQ(topic,"b") ) ) — all leaves eligible
+        var inner = new Predicate.Or(List.of(
+                new Predicate.Leaf("$.topic", EQ, "a"),
+                new Predicate.Leaf("$.topic", EQ, "b")));
+        var predicate = new Predicate.And(List.of(
+                new Predicate.Leaf("$.partition", EQ, 0),
+                inner));
+        var fds    = new FilterDropStep(predicate);
+        var result = SqlPushdownAnalyzer.analyze(List.of(fds), ENTITY_ELIGIBLE);
+
+        assertThat(result.remainingSteps()).isEmpty();
+        String where = sql(result.pushdownCondition());
+        assertThat(where).containsIgnoringCase("kafka_partition");
+        assertThat(where).containsIgnoringCase("topic");
+    }
+
+    @Test
+    void compoundNested_deeplyIneligibleLeafBubblesUp() {
+        // Deeply nested: AND( EQ(partition,0), NOT( OR( EQ($.value.x,"y"), EQ(topic,"t") ) ) )
+        // $.value.x is ineligible → whole compound stays in Java
+        var deepIneligible = new Predicate.Or(List.of(
+                new Predicate.Leaf("$.value.x", EQ, "y"),
+                new Predicate.Leaf("$.topic", EQ, "t")));
+        var predicate = new Predicate.And(List.of(
+                new Predicate.Leaf("$.partition", EQ, 0),
+                new Predicate.Not(deepIneligible)));
+        var fds    = new FilterDropStep(predicate);
+        var result = SqlPushdownAnalyzer.analyze(List.of(fds), ENTITY_ELIGIBLE);
+
+        assertThat(result.remainingSteps()).containsExactly(fds);
+    }
+
+    @Test
+    void compoundAndEligible_combinedWithOtherEligibleLeafStep() {
+        var compound = new FilterDropStep(new Predicate.And(List.of(
+                new Predicate.Leaf("$.partition", EQ, 2),
+                new Predicate.Leaf("$.offset", GTE, 50))));
+        var leafStep = fds("$.key", IS_NOT_NULL, null);
+
+        var result = SqlPushdownAnalyzer.analyze(List.of(compound, leafStep), TOPIC_ELIGIBLE);
+
+        // Both steps pushed down; remaining should be empty
+        assertThat(result.remainingSteps()).isEmpty();
+        String where = sql(result.pushdownCondition());
+        assertThat(where).containsIgnoringCase("kafka_partition");
+        assertThat(where).containsIgnoringCase("kafka_key");
+    }
+
+    // =========================================================================
     // Empty / IDENTITY cases
     // =========================================================================
 

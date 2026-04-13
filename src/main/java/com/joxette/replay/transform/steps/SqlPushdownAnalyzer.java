@@ -65,6 +65,12 @@ public final class SqlPushdownAnalyzer {
      * (converted to a jOOQ {@code Condition}) from the steps that must still
      * execute in Java.
      *
+     * <p>Both simple leaf predicates and compound {@code and}/{@code or}/{@code not}
+     * predicates are eligible provided that every leaf node references a top-level
+     * column present in {@code eligibleFields}. Predicates that reference
+     * {@code $.value.*} or {@code $.headers[*]} are never pushed down regardless of
+     * nesting depth.
+     *
      * @param steps         ordered step list from the pipeline
      * @param eligibleFields set of logical JSONPath field names that map to real
      *                       columns in the caller's DuckDB table
@@ -80,11 +86,22 @@ public final class SqlPushdownAnalyzer {
         List<TransformStep> remaining = new ArrayList<>();
 
         for (TransformStep step : steps) {
-            if (step instanceof FilterDropStep fds
-                    && eligibleFields.contains(fds.field())
-                    && COLUMN_MAP.containsKey(fds.field())
-                    && canPushDown(fds)) {
-                pushdown = pushdown.and(toPushdownCondition(fds));
+            if (step instanceof FilterDropStep fds) {
+                if (fds.predicate() instanceof Predicate.Leaf
+                        && eligibleFields.contains(fds.field())
+                        && COLUMN_MAP.containsKey(fds.field())
+                        && canPushDown(fds)) {
+                    // Simple leaf predicate on a top-level column — negate at operator level
+                    pushdown = pushdown.and(toPushdownCondition(fds));
+                } else if (!(fds.predicate() instanceof Predicate.Leaf)
+                        && isAllEligible(fds.predicate(), eligibleFields)) {
+                    // Compound predicate (and/or/not) where ALL leaf nodes are top-level columns
+                    // Build the positive condition (true when predicate matches) then negate
+                    // to produce the SQL WHERE clause that keeps surviving rows.
+                    pushdown = pushdown.and(buildPositiveCondition(fds.predicate()).not());
+                } else {
+                    remaining.add(step);
+                }
             } else {
                 remaining.add(step);
             }
@@ -94,13 +111,45 @@ public final class SqlPushdownAnalyzer {
     }
 
     // -------------------------------------------------------------------------
-    // Eligibility check
+    // Eligibility checks
     // -------------------------------------------------------------------------
+
+    /**
+     * Returns {@code true} when every leaf node in {@code predicate} references a
+     * field in {@code eligibleFields} with an operator that can be expressed in SQL.
+     *
+     * <p>Compound predicates ({@link Predicate.And}, {@link Predicate.Or},
+     * {@link Predicate.Not}) are eligible only when ALL of their nested leaves are
+     * eligible. A single ineligible leaf anywhere in the tree makes the whole
+     * predicate ineligible.
+     */
+    static boolean isAllEligible(Predicate predicate, Set<String> eligibleFields) {
+        return switch (predicate) {
+            case Predicate.Leaf leaf -> isLeafEligible(leaf, eligibleFields);
+            case Predicate.And and -> and.predicates().stream()
+                    .allMatch(p -> isAllEligible(p, eligibleFields));
+            case Predicate.Or or -> or.predicates().stream()
+                    .allMatch(p -> isAllEligible(p, eligibleFields));
+            case Predicate.Not not -> isAllEligible(not.predicate(), eligibleFields);
+        };
+    }
+
+    private static boolean isLeafEligible(Predicate.Leaf leaf, Set<String> eligibleFields) {
+        if (!eligibleFields.contains(leaf.field()) || !COLUMN_MAP.containsKey(leaf.field())) {
+            return false;
+        }
+        String col = COLUMN_MAP.get(leaf.field());
+        return isOperatorPushable(leaf.operator(), col);
+    }
 
     private static boolean canPushDown(FilterDropStep fds) {
         Predicate.Operator op = fds.operator();
-        if (op == null) return false; // compound (and/or/not) predicates are not pushable
+        if (op == null) return false; // compound (and/or/not) predicates handled separately
         String col = COLUMN_MAP.get(fds.field());
+        return isOperatorPushable(op, col);
+    }
+
+    private static boolean isOperatorPushable(Predicate.Operator op, String col) {
         boolean isStringCol = STRING_COLUMNS.contains(col);
         return switch (op) {
             case MATCHES, CONTAINS -> isStringCol;
@@ -109,7 +158,7 @@ public final class SqlPushdownAnalyzer {
     }
 
     // -------------------------------------------------------------------------
-    // Condition construction (SQL negates the drop predicate)
+    // Condition construction — simple leaf path (SQL negates the drop predicate)
     // -------------------------------------------------------------------------
 
     @SuppressWarnings({"rawtypes", "unchecked"})
@@ -140,6 +189,69 @@ public final class SqlPushdownAnalyzer {
             }
             case IS_NULL     -> rawField.isNotNull();
             case IS_NOT_NULL -> rawField.isNull();
+        };
+    }
+
+    // -------------------------------------------------------------------------
+    // Condition construction — compound predicate path (positive then negated)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Builds a SQL {@link Condition} that is {@code TRUE} when {@code predicate}
+     * would evaluate to {@code true} (the positive / "would-drop" direction).
+     *
+     * <p>The caller negates the result with {@code .not()} to obtain the SQL
+     * {@code WHERE} clause that keeps rows which survive the {@code filter_drop}.
+     * This two-step approach handles arbitrary nesting cleanly:
+     * <ul>
+     *   <li>{@link Predicate.And} → SQL {@code AND} of all sub-conditions</li>
+     *   <li>{@link Predicate.Or} → SQL {@code OR} of all sub-conditions</li>
+     *   <li>{@link Predicate.Not} → SQL {@code NOT} of the inner condition</li>
+     *   <li>{@link Predicate.Leaf} → direct SQL operator (non-negated)</li>
+     * </ul>
+     */
+    @SuppressWarnings({"rawtypes", "unchecked"})
+    static Condition buildPositiveCondition(Predicate predicate) {
+        return switch (predicate) {
+            case Predicate.Leaf leaf -> {
+                String col      = COLUMN_MAP.get(leaf.field());
+                Field  rawField = DSL.field(DSL.name(col));
+                Object coerced  = coerce(leaf.field(), leaf.value());
+                yield switch (leaf.operator()) {
+                    case EQ          -> rawField.equal(DSL.inline(coerced));
+                    case NEQ         -> rawField.notEqual(DSL.inline(coerced));
+                    case GT          -> rawField.greaterThan(DSL.inline(coerced));
+                    case GTE         -> rawField.greaterOrEqual(DSL.inline(coerced));
+                    case LT          -> rawField.lessThan(DSL.inline(coerced));
+                    case LTE         -> rawField.lessOrEqual(DSL.inline(coerced));
+                    case CONTAINS -> {
+                        Field<String> sf = DSL.field(DSL.name(col), String.class);
+                        yield sf.contains(DSL.inline(String.valueOf(leaf.value())));
+                    }
+                    case MATCHES -> {
+                        Field<String> sf = DSL.field(DSL.name(col), String.class);
+                        yield DSL.condition("regexp_matches({0}, {1})",
+                                sf, DSL.inline(String.valueOf(leaf.value())));
+                    }
+                    case IS_NULL     -> rawField.isNull();
+                    case IS_NOT_NULL -> rawField.isNotNull();
+                };
+            }
+            case Predicate.And and -> {
+                Condition result = DSL.trueCondition();
+                for (Predicate p : and.predicates()) {
+                    result = result.and(buildPositiveCondition(p));
+                }
+                yield result;
+            }
+            case Predicate.Or or -> {
+                Condition result = DSL.falseCondition();
+                for (Predicate p : or.predicates()) {
+                    result = result.or(buildPositiveCondition(p));
+                }
+                yield result;
+            }
+            case Predicate.Not not -> buildPositiveCondition(not.predicate()).not();
         };
     }
 
