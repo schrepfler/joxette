@@ -12,6 +12,8 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@atlaskit/pragmatic-drag-and-drop": "^1.7.10",
+    "@atlaskit/pragmatic-drag-and-drop-hitbox": "^1.1.0",
     "@tailwindcss/vite": "^4.1.18",
     "@tanstack/pacer": "^0.20.1",
     "@tanstack/react-devtools": "latest",

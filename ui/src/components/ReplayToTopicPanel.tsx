@@ -6,6 +6,8 @@ import {
   type ReplayToTopicRequest,
   type ReplayProgress,
 } from '../api/client'
+import { TransformPipelineBuilder, emptyPipeline, serializeSteps } from './transforms/TransformPipelineBuilder'
+import type { TransformPipeline } from '../transforms/types'
 
 interface ReplayToTopicPanelProps {
   mode: 'topic' | 'entity'
@@ -27,7 +29,7 @@ type ReplayState = 'idle' | 'running' | 'done' | 'failed'
 export function ReplayToTopicPanel({ mode, topic, entityType, entityId, from, to, totalCount }: ReplayToTopicPanelProps) {
   const [targetTopic, setTargetTopic] = useState('')
   const [speed, setSpeed] = useState<ReplaySpeed>(1)
-  const [restamp, setRestamp] = useState(false)
+  const [pipeline, setPipeline] = useState<TransformPipeline>(emptyPipeline)
   const [replayState, setReplayState] = useState<ReplayState>('idle')
   const [progress, setProgress] = useState<ReplayProgress | null>(null)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
@@ -42,7 +44,14 @@ export function ReplayToTopicPanel({ mode, topic, entityType, entityId, from, to
     setProgress(null)
     setErrorMsg(null)
 
-    const transforms = restamp ? { restamp: true } : undefined
+    // Merge pipeline into transforms field.
+    // wall_time step → restamp: true for backward compat with replay-to-topic endpoint.
+    const steps = serializeSteps(pipeline.steps)
+    const hasWallTime = steps.some(s => s.type === 'wall_time')
+    const transforms = steps.length > 0
+      ? { restamp: hasWallTime }
+      : undefined
+
     const body: ReplayToTopicRequest = {
       targetTopic: targetTopic.trim(),
       from: from || undefined,
@@ -90,10 +99,22 @@ export function ReplayToTopicPanel({ mode, topic, entityType, entityId, from, to
     '#718096'
 
   const isRunning = replayState === 'running'
+  const stepCount = pipeline.steps.length
 
   return (
     <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '1rem 1.25rem', marginBottom: '1.5rem' }}>
       <h3 style={{ margin: '0 0 0.75rem', fontSize: 15 }}>Replay to Topic</h3>
+
+      {/* Transform pipeline builder */}
+      <TransformPipelineBuilder
+        pipeline={pipeline}
+        onChange={setPipeline}
+        mode={mode}
+        topic={topic}
+        entityType={entityType}
+        entityId={entityId}
+        disabled={isRunning}
+      />
 
       {/* Controls row */}
       <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: replayState !== 'idle' || progress !== null ? '0.75rem' : 0 }}>
@@ -137,23 +158,17 @@ export function ReplayToTopicPanel({ mode, topic, entityType, entityId, from, to
           </div>
         </div>
 
-        {/* Restamp checkbox */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingBottom: 3 }}>
-          <input
-            id="rtt-restamp"
-            type="checkbox"
-            checked={restamp}
-            onChange={e => setRestamp(e.target.checked)}
-            disabled={isRunning}
-            style={{ width: 15, height: 15, cursor: isRunning ? 'not-allowed' : 'pointer' }}
-          />
-          <label
-            htmlFor="rtt-restamp"
-            style={{ fontSize: 13, color: '#4a5568', fontWeight: 600, cursor: isRunning ? 'not-allowed' : 'pointer', userSelect: 'none' }}
-          >
-            Restamp timestamps
-          </label>
-        </div>
+        {/* Pipeline indicator */}
+        {stepCount > 0 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingBottom: 3 }}>
+            <span style={{
+              padding: '2px 8px', borderRadius: 10, fontSize: 12,
+              background: '#ebf8ff', color: '#2b6cb0', fontWeight: 600, border: '1px solid #bee3f8',
+            }}>
+              {stepCount} transform{stepCount !== 1 ? 's' : ''} active
+            </span>
+          </div>
+        )}
 
         {/* Start / Stop button */}
         <div style={{ display: 'flex', gap: 8 }}>
@@ -203,7 +218,7 @@ export function ReplayToTopicPanel({ mode, topic, entityType, entityId, from, to
           )}
           <div style={{ fontSize: 13, color: statusColor }}>
             {replayState === 'running' && (
-              `\u25cf Replaying to \u201c${progress?.targetTopic ?? targetTopic.trim()}\u201d\u2026 ${sent.toLocaleString()} sent${pct === null ? '' : ''}`
+              `\u25cf Replaying to \u201c${progress?.targetTopic ?? targetTopic.trim()}\u201d\u2026 ${sent.toLocaleString()} sent`
             )}
             {replayState === 'done' && (
               `\u2713 Completed \u2014 ${sent.toLocaleString()} messages sent to \u201c${progress?.targetTopic ?? targetTopic.trim()}\u201d${(progress?.errorCount ?? 0) > 0 ? ` (${progress!.errorCount} errors)` : ''}`

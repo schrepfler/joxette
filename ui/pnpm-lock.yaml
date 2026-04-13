@@ -8,6 +8,12 @@ importers:
 
   .:
     dependencies:
+      '@atlaskit/pragmatic-drag-and-drop':
+        specifier: ^1.7.10
+        version: 1.7.10
+      '@atlaskit/pragmatic-drag-and-drop-hitbox':
+        specifier: ^1.1.0
+        version: 1.1.0
       '@tailwindcss/vite':
         specifier: ^4.1.18
         version: 4.2.2(vite@7.3.1(@types/node@22.19.15)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0))
@@ -117,6 +123,12 @@ packages:
 
   '@asamuzakjp/nwsapi@2.3.9':
     resolution: {integrity: sha512-n8GuYSrI9bF7FFZ/SjhwevlHc8xaVlb/7HmHelnc/PZXBD2ZR49NnN9sMMuDdEGPeeRQ5d0hqlSlEpgCX3Wl0Q==}
+
+  '@atlaskit/pragmatic-drag-and-drop-hitbox@1.1.0':
+    resolution: {integrity: sha512-JWt6eVp6Br2FPHRM8s0dUIHQk/jFInGP1f3ti5CdtM1Ji5/pt8Akm44wDC063Gv2i5RGseixtbW0z/t6RYtbdg==}
+
+  '@atlaskit/pragmatic-drag-and-drop@1.7.10':
+    resolution: {integrity: sha512-2oHJbThv26CVxM+N8w1X9iyvnts9f8n5+XdCHyG2DtLtqk97rsvbykUyRV2m2llpH06ZdBycycz/+H7eBgRN4A==}
 
   '@babel/code-frame@7.29.0':
     resolution: {integrity: sha512-9NhCeYjq9+3uxgdtp20LSiJXJvN0FeCtNGpJxuMFZ1Kv3cWUNb6DOhJwUvcVCzKGR66cw4njwM6hrJLqgOwbcw==}
@@ -1086,6 +1098,9 @@ packages:
     resolution: {integrity: sha512-Ceh+7ox5qe7LJuLHoY0feh3pHuUDHAcRUeyL2VYghZwfpkNIy/+8Ocg0a3UuSoYzavmylwuLWQOf3hl0jjMMIw==}
     engines: {node: '>=8'}
 
+  bind-event-listener@3.0.0:
+    resolution: {integrity: sha512-PJvH288AWQhKs2v9zyfYdPzlPqf5bXbGMmhmUIY9x4dAUGIWgomO771oBQNwJnMQSnUIXhKu6sgzpBRXTlvb8Q==}
+
   braces@3.0.3:
     resolution: {integrity: sha512-yQbXgO/OSZVD2IsiLlro+7Hf6Q18EJrKSEsdoMzKePKXct3gvD8oLcOQdIzGupr5Fj+EDe8gO/lxc1BzfMpxvA==}
     engines: {node: '>=8'}
@@ -1543,6 +1558,9 @@ packages:
     resolution: {integrity: sha512-vYt7UD1U9Wg6138shLtLOvdAu+8DsC/ilFtEVHcH+wydcSpNE20AfSOduf6MkRFahL5FY7X1oU7nKVZFtfq8Fg==}
     engines: {node: '>=6'}
 
+  raf-schd@4.0.3:
+    resolution: {integrity: sha512-tQkJl2GRWh83ui2DiPTJz9wEiMN20syf+5oKfB03yYP7ioZcJwsIK8FjrtLwH1m7C7e+Tt2yYBlrOpdT+dyeIQ==}
+
   react-dom@19.2.4:
     resolution: {integrity: sha512-AXJdLo8kgMbimY95O2aKQqsz2iWi9jMgKJhRBAxECE4IFxfcazB2LmzloIoibJI3C12IlY20+KFaLv+71bUJeQ==}
     peerDependencies:
@@ -1918,6 +1936,17 @@ snapshots:
       lru-cache: 11.2.7
 
   '@asamuzakjp/nwsapi@2.3.9': {}
+
+  '@atlaskit/pragmatic-drag-and-drop-hitbox@1.1.0':
+    dependencies:
+      '@atlaskit/pragmatic-drag-and-drop': 1.7.10
+      '@babel/runtime': 7.29.2
+
+  '@atlaskit/pragmatic-drag-and-drop@1.7.10':
+    dependencies:
+      '@babel/runtime': 7.29.2
+      bind-event-listener: 3.0.0
+      raf-schd: 4.0.3
 
   '@babel/code-frame@7.29.0':
     dependencies:
@@ -2784,6 +2813,8 @@ snapshots:
 
   binary-extensions@2.3.0: {}
 
+  bind-event-listener@3.0.0: {}
+
   braces@3.0.3:
     dependencies:
       fill-range: 7.1.1
@@ -3189,6 +3220,8 @@ snapshots:
       react-is: 17.0.2
 
   punycode@2.3.1: {}
+
+  raf-schd@4.0.3: {}
 
   react-dom@19.2.4(react@19.2.4):
     dependencies:

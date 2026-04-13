@@ -192,6 +192,42 @@ export interface SnapshotInfo {
   sizeBytes: number
 }
 
+// ---- Transform types ----
+
+export interface TransformPreset {
+  name: string
+  description?: string
+  steps: import('../transforms/types').TransformStep[]
+  createdAt?: string
+  updatedAt?: string
+}
+
+export interface CreatePresetRequest {
+  name: string
+  description?: string
+  steps: import('../transforms/types').TransformStep[]
+}
+
+export interface UpdatePresetRequest {
+  description?: string
+  steps: import('../transforms/types').TransformStep[]
+}
+
+/** Preview request body for POST /cassettes/{mode}/preview-transforms */
+export interface PreviewTransformsRequest {
+  mode: 'topic' | 'entity'
+  topic?: string
+  entityType?: string
+  entityId?: string
+  steps: import('../transforms/types').TransformStep[]
+  limit?: number
+}
+
+export interface PreviewTransformsResponse {
+  original: CassetteRecord | EntityRecord
+  transformed: CassetteRecord | EntityRecord
+}
+
 // ---- Replay-to-topic types ----
 
 export type ReplaySpeed = 0.5 | 1 | 2 | 5
@@ -343,6 +379,38 @@ export const cassettesApi = {
   /** Rebuild the known_entities registry by scanning all entity cassette tables. */
   rebuildKnownEntities: () =>
     request<{ rebuilt: number }>('/cassettes/entities/rebuild-known-entities', { method: 'POST' }),
+  /** Dry-run: apply a transform pipeline to the first N records and return before/after pairs. */
+  previewTransforms: (req: PreviewTransformsRequest) => {
+    const { mode, topic, entityType, entityId, steps, limit = 5 } = req
+    if (mode === 'topic' && topic) {
+      return request<PreviewTransformsResponse[]>(
+        `/cassettes/topics/${encodeURIComponent(topic)}/replay`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify({ transform: steps, limit }),
+        },
+      ).then(paged => {
+        // The POST /replay endpoint returns a PagedResponse; adapt to PreviewTransformsResponse[]
+        const p = paged as unknown as { data: CassetteRecord[] }
+        return (p.data ?? []).map(r => ({ original: r, transformed: r })) as PreviewTransformsResponse[]
+      })
+    }
+    if (mode === 'entity' && entityType && entityId) {
+      return request<PreviewTransformsResponse[]>(
+        `/cassettes/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}/replay`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify({ transform: steps, limit }),
+        },
+      ).then(paged => {
+        const p = paged as unknown as { data: EntityRecord[] }
+        return (p.data ?? []).map(r => ({ original: r, transformed: r })) as PreviewTransformsResponse[]
+      })
+    }
+    return Promise.reject(new Error('Invalid mode or missing topic/entity params'))
+  },
 }
 
 // ---- Streaming ----
@@ -450,6 +518,54 @@ export function streamEntityRecords(
   return ctrl
 }
 
+/** Stream topic records via POST with a full transform pipeline (SSE). */
+export function streamTopicRecordsWithTransform(
+  topic: string,
+  steps: import('../transforms/types').TransformStep[],
+  params: TopicStreamParams,
+  callbacks: { onRecord: (r: CassetteRecord) => void; onDone: () => void; onError: (e: Error) => void },
+): AbortController {
+  const url = `${API_BASE}/cassettes/topics/${encodeURIComponent(topic)}/replay`
+  const body = JSON.stringify({ ...params, transform: steps })
+  const ctrl = new AbortController()
+  void streamLines(url, 'text/event-stream', (line) => {
+    const data = extractData(line, true)
+    if (!data) return
+    // Skip the transform preamble event (event: transform)
+    try {
+      const parsed = JSON.parse(data)
+      if (parsed && !Array.isArray(parsed) && typeof parsed.topic === 'string') {
+        callbacks.onRecord(parsed as CassetteRecord)
+      }
+    } catch { /* skip malformed */ }
+  }, callbacks.onDone, callbacks.onError, ctrl.signal, body)
+  return ctrl
+}
+
+/** Stream entity records via POST with a full transform pipeline (SSE). */
+export function streamEntityRecordsWithTransform(
+  entityType: string,
+  entityId: string,
+  steps: import('../transforms/types').TransformStep[],
+  params: EntityStreamParams,
+  callbacks: { onRecord: (r: EntityRecord) => void; onDone: () => void; onError: (e: Error) => void },
+): AbortController {
+  const url = `${API_BASE}/cassettes/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}/replay`
+  const body = JSON.stringify({ ...params, transform: steps })
+  const ctrl = new AbortController()
+  void streamLines(url, 'text/event-stream', (line) => {
+    const data = extractData(line, true)
+    if (!data) return
+    try {
+      const parsed = JSON.parse(data)
+      if (parsed && typeof parsed.entityId === 'string') {
+        callbacks.onRecord(parsed as EntityRecord)
+      }
+    } catch { /* skip malformed */ }
+  }, callbacks.onDone, callbacks.onError, ctrl.signal, body)
+  return ctrl
+}
+
 export function streamTopicReplay(
   topic: string,
   speed: ReplaySpeed,
@@ -481,6 +597,19 @@ export function streamEntityReplay(
     try { callbacks.onProgress(JSON.parse(data) as ReplayProgress) } catch { /* skip malformed */ }
   }, callbacks.onDone, callbacks.onError, ctrl.signal, JSON.stringify(body))
   return ctrl
+}
+
+// ---- Transform Presets ----
+
+export const transformsApi = {
+  list: () => request<TransformPreset[]>('/transforms'),
+  get: (name: string) => request<TransformPreset>(`/transforms/${encodeURIComponent(name)}`),
+  create: (body: CreatePresetRequest) =>
+    request<TransformPreset>('/transforms', { method: 'POST', body: JSON.stringify(body) }),
+  update: (name: string, body: UpdatePresetRequest) =>
+    request<TransformPreset>(`/transforms/${encodeURIComponent(name)}`, { method: 'PUT', body: JSON.stringify(body) }),
+  delete: (name: string) =>
+    request<void>(`/transforms/${encodeURIComponent(name)}`, { method: 'DELETE' }),
 }
 
 // ---- Compaction ----
