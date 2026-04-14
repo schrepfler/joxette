@@ -709,6 +709,13 @@ export interface UpdateBrokerRequest {
   sslKeystorePassword?: string
 }
 
+export interface BrokerTopicInfo {
+  topicName: string
+  partitionCount: number
+  isRecorded: boolean
+  recordingMode: string | null
+}
+
 export const brokersApi = {
   list: () => request<BrokerConfig[]>('/brokers'),
   create: (body: CreateBrokerRequest) =>
@@ -722,4 +729,36 @@ export const brokersApi = {
     }),
   delete: (brokerId: string) =>
     request<void>(`/brokers/${encodeURIComponent(brokerId)}`, { method: 'DELETE' }),
+  peekMessages: (brokerId: string, topic: string, limit = 1) =>
+    request<CassetteRecord[]>(
+      `/brokers/${encodeURIComponent(brokerId)}/topics/${encodeURIComponent(topic)}/peek?limit=${limit}`,
+    ),
+  listTopics: (brokerId: string, params?: { includeInternal?: boolean; filter?: string }) =>
+    request<BrokerTopicInfo[]>(
+      `/brokers/${encodeURIComponent(brokerId)}/topics${buildQuery(params ?? {})}`,
+    ),
+}
+
+// ---- Matchers ----
+
+export interface MatcherPreviewRequest {
+  key: string | null
+  value: string | null
+  headers: Header[]
+  idSource: string
+  idExpression: string
+}
+
+export interface MatcherPreviewResponse {
+  matched: boolean
+  entityId: string | null
+  error: string | null
+}
+
+export const matchersApi = {
+  preview: (body: MatcherPreviewRequest) =>
+    request<MatcherPreviewResponse>('/matchers/preview', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
 }

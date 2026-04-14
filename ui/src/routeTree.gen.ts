@@ -24,6 +24,7 @@ import { Route as EntitiesEntityTypeIndexRouteImport } from './routes/entities/$
 import { Route as TopicsTopicTimelineRouteImport } from './routes/topics/$topic_.timeline'
 import { Route as EntitiesEntityTypeEntityIdRouteImport } from './routes/entities/$entityType/$entityId'
 import { Route as EntitiesEntityTypeEntityIdTimelineRouteImport } from './routes/entities/$entityType/$entityId_.timeline'
+import { Route as BrokersBrokerIdTopicsTopicPlaygroundRouteImport } from './routes/brokers/$brokerId_.topics.$topic_.playground'
 
 const AboutRoute = AboutRouteImport.update({
   id: '/about',
@@ -102,6 +103,12 @@ const EntitiesEntityTypeEntityIdTimelineRoute =
     path: '/entities/$entityType/$entityId/timeline',
     getParentRoute: () => rootRouteImport,
   } as any)
+const BrokersBrokerIdTopicsTopicPlaygroundRoute =
+  BrokersBrokerIdTopicsTopicPlaygroundRouteImport.update({
+    id: '/brokers/$brokerId_/topics/$topic_/playground',
+    path: '/brokers/$brokerId/topics/$topic/playground',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -119,6 +126,7 @@ export interface FileRoutesByFullPath {
   '/topics/$topic/timeline': typeof TopicsTopicTimelineRoute
   '/entities/$entityType/': typeof EntitiesEntityTypeIndexRoute
   '/entities/$entityType/$entityId/timeline': typeof EntitiesEntityTypeEntityIdTimelineRoute
+  '/brokers/$brokerId/topics/$topic/playground': typeof BrokersBrokerIdTopicsTopicPlaygroundRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -136,6 +144,7 @@ export interface FileRoutesByTo {
   '/topics/$topic/timeline': typeof TopicsTopicTimelineRoute
   '/entities/$entityType': typeof EntitiesEntityTypeIndexRoute
   '/entities/$entityType/$entityId/timeline': typeof EntitiesEntityTypeEntityIdTimelineRoute
+  '/brokers/$brokerId/topics/$topic/playground': typeof BrokersBrokerIdTopicsTopicPlaygroundRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -154,6 +163,7 @@ export interface FileRoutesById {
   '/topics/$topic_/timeline': typeof TopicsTopicTimelineRoute
   '/entities/$entityType/': typeof EntitiesEntityTypeIndexRoute
   '/entities/$entityType/$entityId_/timeline': typeof EntitiesEntityTypeEntityIdTimelineRoute
+  '/brokers/$brokerId_/topics/$topic_/playground': typeof BrokersBrokerIdTopicsTopicPlaygroundRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -173,6 +183,7 @@ export interface FileRouteTypes {
     | '/topics/$topic/timeline'
     | '/entities/$entityType/'
     | '/entities/$entityType/$entityId/timeline'
+    | '/brokers/$brokerId/topics/$topic/playground'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -190,6 +201,7 @@ export interface FileRouteTypes {
     | '/topics/$topic/timeline'
     | '/entities/$entityType'
     | '/entities/$entityType/$entityId/timeline'
+    | '/brokers/$brokerId/topics/$topic/playground'
   id:
     | '__root__'
     | '/'
@@ -207,6 +219,7 @@ export interface FileRouteTypes {
     | '/topics/$topic_/timeline'
     | '/entities/$entityType/'
     | '/entities/$entityType/$entityId_/timeline'
+    | '/brokers/$brokerId_/topics/$topic_/playground'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -225,6 +238,7 @@ export interface RootRouteChildren {
   TopicsTopicTimelineRoute: typeof TopicsTopicTimelineRoute
   EntitiesEntityTypeIndexRoute: typeof EntitiesEntityTypeIndexRoute
   EntitiesEntityTypeEntityIdTimelineRoute: typeof EntitiesEntityTypeEntityIdTimelineRoute
+  BrokersBrokerIdTopicsTopicPlaygroundRoute: typeof BrokersBrokerIdTopicsTopicPlaygroundRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -334,6 +348,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof EntitiesEntityTypeEntityIdTimelineRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/brokers/$brokerId_/topics/$topic_/playground': {
+      id: '/brokers/$brokerId_/topics/$topic_/playground'
+      path: '/brokers/$brokerId/topics/$topic/playground'
+      fullPath: '/brokers/$brokerId/topics/$topic/playground'
+      preLoaderRoute: typeof BrokersBrokerIdTopicsTopicPlaygroundRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -354,6 +375,8 @@ const rootRouteChildren: RootRouteChildren = {
   EntitiesEntityTypeIndexRoute: EntitiesEntityTypeIndexRoute,
   EntitiesEntityTypeEntityIdTimelineRoute:
     EntitiesEntityTypeEntityIdTimelineRoute,
+  BrokersBrokerIdTopicsTopicPlaygroundRoute:
+    BrokersBrokerIdTopicsTopicPlaygroundRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
