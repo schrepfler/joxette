@@ -199,9 +199,56 @@ public class JoxetteProperties {
 
     public static class Kafka {
         private String bootstrapServers = "localhost:9092";
+        private List<BrokerEntry> brokers = new ArrayList<>();
 
         public String getBootstrapServers() { return bootstrapServers; }
         public void setBootstrapServers(String bootstrapServers) { this.bootstrapServers = bootstrapServers; }
+
+        public List<BrokerEntry> getBrokers() { return brokers; }
+        public void setBrokers(List<BrokerEntry> brokers) { this.brokers = brokers; }
+
+        public static class BrokerEntry {
+            private String id = "default";
+            private String bootstrapServers;
+            private String securityProtocol = "PLAINTEXT";
+            private String saslMechanism;
+            private String saslUsername;
+            private String saslPassword;
+            private String sslTruststorePath;
+            private String sslTruststorePassword;
+            private String sslKeystorePath;
+            private String sslKeystorePassword;
+
+            public String getId() { return id; }
+            public void setId(String id) { this.id = id; }
+
+            public String getBootstrapServers() { return bootstrapServers; }
+            public void setBootstrapServers(String bootstrapServers) { this.bootstrapServers = bootstrapServers; }
+
+            public String getSecurityProtocol() { return securityProtocol; }
+            public void setSecurityProtocol(String securityProtocol) { this.securityProtocol = securityProtocol; }
+
+            public String getSaslMechanism() { return saslMechanism; }
+            public void setSaslMechanism(String saslMechanism) { this.saslMechanism = saslMechanism; }
+
+            public String getSaslUsername() { return saslUsername; }
+            public void setSaslUsername(String saslUsername) { this.saslUsername = saslUsername; }
+
+            public String getSaslPassword() { return saslPassword; }
+            public void setSaslPassword(String saslPassword) { this.saslPassword = saslPassword; }
+
+            public String getSslTruststorePath() { return sslTruststorePath; }
+            public void setSslTruststorePath(String sslTruststorePath) { this.sslTruststorePath = sslTruststorePath; }
+
+            public String getSslTruststorePassword() { return sslTruststorePassword; }
+            public void setSslTruststorePassword(String sslTruststorePassword) { this.sslTruststorePassword = sslTruststorePassword; }
+
+            public String getSslKeystorePath() { return sslKeystorePath; }
+            public void setSslKeystorePath(String sslKeystorePath) { this.sslKeystorePath = sslKeystorePath; }
+
+            public String getSslKeystorePassword() { return sslKeystorePassword; }
+            public void setSslKeystorePassword(String sslKeystorePassword) { this.sslKeystorePassword = sslKeystorePassword; }
+        }
     }
 
     // -----------------------------------------------------------------------
