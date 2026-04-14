@@ -42,6 +42,7 @@ public class EntityCassetteBatchWriter implements AutoCloseable {
     public EntityCassetteBatchWriter(Connection sharedDuckDbConnection) throws SQLException {
         DuckDBConnection duckConn = sharedDuckDbConnection.unwrap(DuckDBConnection.class);
         this.conn = duckConn.duplicate();
+        log.info("EntityCassetteBatchWriter ready");
     }
 
     /**

@@ -7,6 +7,8 @@ import jakarta.annotation.PreDestroy;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.header.internals.RecordHeaders;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.nio.charset.StandardCharsets;
@@ -33,6 +35,7 @@ import java.util.concurrent.Future;
 @Service
 public class KafkaProducerService {
 
+    private static final Logger log = LoggerFactory.getLogger(KafkaProducerService.class);
     private static final Base64.Decoder BASE64 = Base64.getUrlDecoder();
 
     private final BrokerConnectionFactory factory;
@@ -97,6 +100,8 @@ public class KafkaProducerService {
 
     @PreDestroy
     public void close() {
+        log.info("KafkaProducerService closing {} producer(s)", sinks.size());
         sinks.values().forEach(KafkaSink::close);
+        log.info("KafkaProducerService closed");
     }
 }

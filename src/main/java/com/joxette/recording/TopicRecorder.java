@@ -119,6 +119,8 @@ public class TopicRecorder {
                                         partitions.size(), topic);
                             } else if (seekToTimestamp != null) {
                                 source.seekToTimestamp(partitions, seekToTimestamp);
+                                log.info("Seeked to timestamp {} on {} partition(s) for topic '{}'",
+                                        seekToTimestamp, partitions.size(), topic);
                             }
                         }
                     })
@@ -156,6 +158,7 @@ public class TopicRecorder {
             CassetteBatchWriter generalWriter,
             EntityCassetteBatchWriter entityWriter) throws SQLException {
 
+        log.trace("Processing batch of {} records for topic '{}'", batch.size(), topic);
         List<ConsumerRecord<String, byte[]>> generalBatch = new ArrayList<>();
         List<String> generalMessageTypes = new ArrayList<>();
         List<EntityRoute> allRoutes = new ArrayList<>();

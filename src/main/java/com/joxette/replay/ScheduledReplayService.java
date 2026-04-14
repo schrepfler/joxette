@@ -114,6 +114,7 @@ public class ScheduledReplayService {
                 .filter(e -> "pending".equals(e.status) || "streaming".equals(e.status))
                 .count();
         if (active >= maxScheduled) {
+            log.warn("Scheduled replay capacity reached: {} active out of max {}", active, maxScheduled);
             throw new IllegalStateException(
                     "Maximum number of concurrent scheduled replays (" + maxScheduled + ") reached");
         }
@@ -175,15 +176,20 @@ public class ScheduledReplayService {
 
     public void markStreaming(String id) {
         ReplayEntry entry = entries.get(id);
-        if (entry != null) entry.status = "streaming";
+        if (entry != null) {
+            entry.status = "streaming";
+            log.debug("Scheduled replay [{}] transitioned to streaming", id);
+        }
     }
 
     public void markCompleted(String id) {
         entries.remove(id);
+        log.debug("Scheduled replay [{}] completed", id);
     }
 
     public void markFailed(String id) {
         entries.remove(id);
+        log.debug("Scheduled replay [{}] failed", id);
     }
 
     // -----------------------------------------------------------------------

@@ -189,10 +189,13 @@ public class CassetteLifecycleService {
      */
     public long truncateTopicCassette(String topic) throws SQLException {
         String qualifiedTable = "lake.main.general_" + normalizeTopicName(topic);
+        log.info("Truncating general cassette for topic '{}'", topic);
         synchronized (duckDB) {
             try (Statement st = duckDB.createStatement()) {
                 // DELETE FROM with no WHERE clause truncates the entire table.
-                return st.executeUpdate("DELETE FROM " + qualifiedTable);
+                long deleted = st.executeUpdate("DELETE FROM " + qualifiedTable);
+                log.info("Truncated general cassette for topic '{}': {} rows deleted", topic, deleted);
+                return deleted;
             }
         }
     }
@@ -206,9 +209,12 @@ public class CassetteLifecycleService {
     public long truncateEntityCassette(String entityType) throws SQLException {
         com.joxette.db.SchemaManager.validateEntityType(entityType);
         String qualifiedTable = "lake.main.entity_" + entityType;
+        log.info("Truncating entity cassette for type '{}'", entityType);
         synchronized (duckDB) {
             try (Statement st = duckDB.createStatement()) {
-                return st.executeUpdate("DELETE FROM " + qualifiedTable);
+                long deleted = st.executeUpdate("DELETE FROM " + qualifiedTable);
+                log.info("Truncated entity cassette for type '{}': {} rows deleted", entityType, deleted);
+                return deleted;
             }
         }
     }
@@ -225,6 +231,8 @@ public class CassetteLifecycleService {
      */
     public long deleteEntityFromCassette(String entityType, String entityId) throws SQLException {
         com.joxette.db.SchemaManager.validateEntityType(entityType);
+        log.info("GDPR delete: removing entity type='{}' id='{}' from cassette and known_entities",
+                entityType, entityId);
         long deleted = 0;
         synchronized (duckDB) {
             try (PreparedStatement ps = duckDB.prepareStatement(
@@ -240,6 +248,7 @@ public class CassetteLifecycleService {
                 deleted += ps.executeUpdate();
             }
         }
+        log.info("GDPR delete complete: type='{}' id='{}' — {} total rows removed", entityType, entityId, deleted);
         return deleted;
     }
 
@@ -264,6 +273,7 @@ public class CassetteLifecycleService {
         } catch (IOException e) {
             throw new RuntimeException("Cannot create snapshots directory: " + snapshotsBase, e);
         }
+        log.info("Creating snapshot '{}' at {}", name, snapshotDir);
         synchronized (duckDB) {
             try (Statement st = duckDB.createStatement()) {
                 // Path is validated to contain only [a-zA-Z0-9_/-] — no SQL injection risk.
@@ -279,6 +289,7 @@ public class CassetteLifecycleService {
                 ps.setLong(2, sizeBytes);
                 ps.executeUpdate();
             }
+            log.info("Snapshot '{}' created: {} bytes", name, sizeBytes);
             return new SnapshotInfo(name, Instant.now(), sizeBytes);
         }
     }
@@ -312,11 +323,13 @@ public class CassetteLifecycleService {
         if (!Files.exists(snapshotDir)) {
             throw new NoSuchElementException("Snapshot not found: " + name);
         }
+        log.warn("Restoring snapshot '{}' from {} — all existing tables will be replaced", name, snapshotDir);
         synchronized (duckDB) {
             try (Statement st = duckDB.createStatement()) {
                 st.execute("IMPORT DATABASE '" + snapshotDir + "'");
             }
         }
+        log.info("Snapshot '{}' restored", name);
     }
 
     /**
@@ -351,18 +364,22 @@ public class CassetteLifecycleService {
             throw new RuntimeException("Cannot read snapshot directory: " + snapshotDir, e);
         }
 
+        log.info("Uploading snapshot '{}' to s3://{}/{} ({} files)", name, os.getBucket(), keyPrefix, files.size());
         for (Path file : files) {
             String relPath = snapshotDir.relativize(file).toString().replace('\\', '/');
             String key = keyPrefix + relPath;
+            log.debug("Uploading snapshot file: {}", relPath);
             s3Client.putObject(req -> req.bucket(os.getBucket()).key(key),
                     RequestBody.fromFile(file));
         }
+        log.info("Snapshot '{}' uploaded: {} files to s3://{}/{}", name, files.size(), os.getBucket(), keyPrefix);
 
         // Local directory is no longer needed — the object store is the source of truth.
         try {
             deleteDirectory(snapshotDir);
         } catch (IOException e) {
             // Non-fatal: stale local directory, but the upload succeeded.
+            log.warn("Failed to delete local snapshot directory '{}' after upload: {}", snapshotDir, e.getMessage());
         }
 
         String uri = "s3://" + os.getBucket() + "/" + keyPrefix;

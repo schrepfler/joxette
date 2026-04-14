@@ -1,24 +1,33 @@
 # Active Context
 
 ## Current Work Focus
-Stabilisation and data-durability features. The recording pipeline, replay API, compaction, and UI were all in place but had several bugs that prevented data from actually appearing in the UI. All three root-cause bugs were fixed in this session, plus disaster-recovery features were added.
+Memory-bank sync. All previously-listed "not yet started" features (retention, replay-to-topic, speed multiplier, message transformation pipeline, scheduled replay, timeline UI) are confirmed implemented in source. `progress.md` has been updated to reflect actual state.
 
-## Recent Changes (this session)
+## What Was Already Done (previously undocumented)
 
-### Bug Fixes
-1. **`CassetteBatchWriter` headers type mismatch** — headers column is `STRUCT(key VARCHAR, value BLOB)[]` but the old code called `ps.setString()` with a JSON string. This caused every general-cassette batch INSERT to fail, so the topics page showed 0 replay records. Fixed by building DuckDB struct-array literals (`[{'key': '...', 'value': '\xNN'::BLOB}]`) inlined in the SQL.
+### Retention enforcement
+`RetentionService` + `RetentionScheduler` + `RetentionRun` / `RetentionStatus` — fully implemented. Deletes rows older than `retention_days` from general cassettes, entity cassettes, and `known_entities`. Cron-driven, guarded by `AtomicBoolean`, logged to `retention_history`.
 
-2. **`MessageRouter` only read YAML bootstrap** — entity types registered via the REST API were never loaded into the router, so no entity routing happened and `known_entities` stayed empty. Fixed by refactoring `MessageRouter` to load from `ConfigRepository` (DuckDB) at startup and on every `reload()` call. `EntityController` now calls `reload()` after every mutating operation.
+### Replay-to-Topic
+`ReplayToTopicService` orchestrates reading from DuckLake and producing to Kafka via `KafkaProducerService` / `KafkaSink`. Both general cassette and entity cassette paths are implemented. Speed multiplier (inter-message delay scaling) and `ReplayProgress` progress events are included.
 
-3. **`CompactionService` wrong column name** — `compactEntityBucket()` sorted by `timestamp` but the actual column is `kafka_timestamp`. This would cause every entity compaction run to fail. Fixed to use `kafka_timestamp`.
+### Scheduled Replay
+`ScheduledReplayService` — in-memory registry for pending/streaming scheduled replays. Supports register, await-start (cancellable latch), cancel, and status queries. Not persisted across restarts.
 
-### New Features
-4. **Export catalog to object storage** — `POST /cassettes/snapshots/export-to-object-store` runs `EXPORT DATABASE 's3://...'` directly via DuckDB httpfs. No local disk used. Snapshot registered in local `snapshots` table. UI button added to Snapshots page.
+### Message Transformation Pipeline
+`MessageTransformer` — per-replay-invocation stateful transformer. Supports restamp (shift all `kafka_timestamp` values so first message = now) and field substitution (JSONPath-based replacement with literal or UUID4). `ReplayTransformConfig` + `FieldSubstitution` records. `TransformPresetsController` for saved presets. Full UI pipeline builder.
 
-5. **Rebuild known_entities from cassette data** — `POST /cassettes/entities/rebuild-known-entities` wipes `known_entities` and re-scans all `lake.main.entity_*` tables for `(entity_id, MIN(recorded_at), MAX(recorded_at))`. Used for disaster recovery after catalog file loss. UI button added to Entities index page.
+### TopicController reload
+`TopicController` already calls `reloadRouter()` (via `MessageRouter.reload()`) on every mutating operation: create, update, delete topic, add/delete matcher.
 
-### Test Update
-6. **`MessageRouterTest`** — rewrote to use `StubConfigRepository` (inner class, no DuckDB needed). Added `reload_picksUpNewEntitySource` test to verify live-reload works.
+### startFrom wiring
+`RecordingStartupRunner` passes `tc.startFrom()` through to `coordinator.startTopic()`. `TopicRecorder` has `seekToEarliest` and `seekToTimestamp` fields. `TopicController.createTopic()` defaults to `"latest"` but accepts `"earliest"` or an ISO timestamp.
+
+### Timeline UI
+`CassetteTimeline.tsx` — canvas-based two-panel viewer (JSON inspector + horizontal timeline). Features: proportional timestamp spacing, click-to-select, keyboard nav (←/→), pan (drag), zoom (scroll/pinch), fit-to-window, colour coding by partition/topic, progressive page loading. Exposed at `topics/$topic_.timeline.tsx` and `entities/$entityType/$entityId_.timeline.tsx`.
+
+### Settings page
+`ui/src/routes/settings/index.tsx` + `appStore.ts` (Zustand store for UI settings).
 
 ## Active Decisions & Considerations
 
@@ -26,22 +35,24 @@ Stabilisation and data-durability features. The recording pipeline, replay API, 
 Intentional: `ON CONFLICT ... DO UPDATE` works correctly in plain DuckDB but not in DuckLake (no PK enforcement). Moving it to DuckLake would require deduplication-on-read which adds complexity. The rebuild operation compensates for the durability gap.
 
 ### MessageRouter reload is synchronous
-`reload()` is called synchronously in `EntityController` before returning the HTTP response. This is fine because reload is fast (simple DB queries). If routing tables grow very large, this could be made async.
+`reload()` is called synchronously in `EntityController` and `TopicController` before returning the HTTP response. This is fine because reload is fast (simple DB queries). If routing tables grow very large, this could be made async.
 
-### Headers not stored for entity cassettes
-`EntityCassetteBatchWriter` inserts `[]` for headers. This is intentional for now — entity cassettes store the full message value which is the primary concern. Headers can be added later if needed.
+### Headers stored as VARCHAR (not BLOB)
+Both key and value in the `STRUCT(key VARCHAR, value VARCHAR)[]` are plain strings. Non-UTF-8 binary header values are base64-encoded on write so no data is lost. This makes headers fully queryable via the `headers_get` DuckDB macro and readable in the UI without any cast.
+
+### ScheduledReplayService is in-memory only
+Scheduled replays are not persisted to DuckDB. A service restart silently drops all pending/streaming replays. Acceptable for the current use-case (test fixtures); could be persisted if needed.
 
 ### Bootstrap YAML still needed for table creation
-`SchemaManager.createLakeTables()` reads from `JoxetteProperties.getBootstrap()` to create the initial DuckLake tables at startup. If an entity type is added via REST API, `EntityController.createEntityType()` calls `SchemaManager.createEntityTable()` dynamically. The bootstrap config seeds DuckDB config tables; the `MessageRouter` now reads those tables rather than the YAML directly.
+`SchemaManager.createLakeTables()` reads from `JoxetteProperties.getBootstrap()` to create the initial DuckLake tables at startup. Entity types added via REST API are created dynamically by `EntityController.createEntityType()`. The bootstrap config seeds DuckDB config tables; `MessageRouter` reads those tables rather than the YAML directly.
 
 ## Next Steps (suggested)
+- [ ] **Verify `entity_source_matchers.id_source` constraint** — check constraint uses `'headers'` (plural) but `EntityIdExtractor` uses `'header'` (singular). Fix the constraint or the extractor to align.
 - [ ] **Integration test: `rebuildKnownEntities` from object storage** — write entity events to DuckLake (Testcontainers MinIO), wipe `known_entities`, call `CassetteLifecycleService.rebuildKnownEntities()`, assert all `(entity_type, entity_id)` rows are restored with correct `first_seen`/`last_seen` timestamps
-- [ ] Verify headers write works end-to-end with real Kafka data (the struct literal approach needs integration testing)
-- [ ] Add `startFrom: earliest` support so newly registered topics can backfill
-- [ ] Consider periodic background `MessageRouter.reload()` for topics added via REST API (currently only entity config triggers reload, not topic config changes)
-- [ ] Add `TopicController` reload hook to `MessageRouter` when topic modes change
-- [ ] Add SSE/NDJSON streaming to entity replay in the UI (currently only paginated JSON is used)
-- [ ] Retention policy enforcement (delete records older than `retention_days`)
-- [ ] **Replay-to-topic** — produce cassette records back to Kafka, respecting partition key logic and `kafka_timestamp` ordering. Entity cassette replay should merge-sort across source topics by timestamp. Needs a new `KafkaProducerService` + `ReplayToTopicService`. Consider SSE progress stream.
-- [ ] **Speed multiplier for replay-to-topic** — scale inter-message delays: `delay = (next_timestamp - prev_timestamp) / speedMultiplier`. Support x0.5 (slow down), x1 (real-time), x2, x5 etc. API param: `?speed=2.0`
-- [ ] **Message transformation pipeline for replay-to-topic** — pluggable transforms applied before producing: (a) **restamp** — shift all timestamps so the first message = now (preserves relative timing); (b) **field substitution** — replace values at JSONPath locations with new values or auto-generated IDs (useful for replaying against a fresh environment without ID collisions)
+- [ ] **Integration test: `exportSnapshotToObjectStore`** — verify EXPORT DATABASE to S3 registers snapshot in local `snapshots` table
+- [ ] **`TopicRecorderTest` full batch→DuckDB path** — current test does not exercise the write path end-to-end
+- [ ] **UI: SSE/NDJSON streaming** — expose streaming replay in the UI (currently only paginated JSON is used)
+- [ ] **UI: progress indicators** — add progress feedback for long-running operations (compaction, rebuild)
+- [ ] **UI: verify entity source mapping** — confirm `idSource`/`idExpression` field names match between frontend `AddSourceRequest` and backend `EntitySourceConfig.MatcherConfig`
+- [ ] **Replay-to-topic UI integration** — wire `ReplayToTopicPanel` to scheduled replay endpoints; add cancel button
+- [ ] **Retention UI** — add retention configuration and history pages (backend API exists, UI not yet built)

@@ -12,6 +12,7 @@
 - [x] Kafka offset commit after successful DuckDB write
 - [x] Headers stored as `STRUCT(key VARCHAR, value VARCHAR)[]` in general cassettes — UTF-8 decoded on write, base64 fallback for binary values
 - [x] Headers stored as `STRUCT(key VARCHAR, value VARCHAR)[]` in entity cassettes — was hardcoded `[]`, now stores real headers
+- [x] `startFrom: earliest` / `startFrom: <ISO timestamp>` — `TopicRecorder` has `seekToEarliest` + `seekToTimestamp` fields; `RecordingStartupRunner` passes `tc.startFrom()` through; `TopicController.createTopic()` defaults to `"latest"` when unset
 
 ### Replay API
 - [x] `GET /cassettes/topics/{topic}` — paginated, SSE, NDJSON
@@ -27,6 +28,8 @@
 - [x] `POST /topics/{topic}/pause` + `/resume`
 - [x] `GET/POST/PUT/DELETE /entities/**` — entity type + source CRUD
 - [x] `EntityController` calls `MessageRouter.reload()` after every mutation
+- [x] `TopicController` calls `MessageRouter.reload()` after every mutating operation (create, update, delete, add/delete matcher) via `reloadRouter()`
+- [x] `GET/POST/DELETE /topics/{topic}/matchers` — message-type matcher CRUD for general cassettes
 
 ### Lifecycle / Operations
 - [x] `GET /cassettes/topics/{topic}/stats` — row count + estimated size
@@ -45,15 +48,49 @@
 - [x] `GET /compaction/status` + `GET /compaction/history`
 - [x] `compaction_history` table tracks all runs with status, counts, error messages
 
+### Retention
+- [x] `RetentionService` — deletes rows older than `retention_days` from `lake.main.general_{topic}`, `lake.main.entity_{type}`, and `known_entities`
+- [x] `RetentionScheduler` — cron-driven scheduler (configurable via `joxette.retention.schedule`)
+- [x] `retention_history` table tracks all retention runs with status, row counts, error messages
+- [x] `RetentionRun` / `RetentionStatus` records for API responses
+- [x] Topics or entity types with `retention_days IS NULL` are silently skipped
+- [x] `PUT /topics/{topic}/retention` — set or clear retention days
+
+### Replay-to-Topic
+- [x] `KafkaProducerService` — wraps `KafkaSink`/`KafkaProducer` for sending records back to Kafka
+- [x] `ReplayToTopicService` — general cassette replay + entity cassette replay (merge-sorted by `kafka_timestamp`)
+- [x] Speed multiplier — inter-message delays scaled by `speedMultiplier` (x0.5 slow-down, x1 real-time, x2+ fast-forward)
+- [x] Progress reporting — `ReplayProgress` events emitted every 100 records, plus final `completed`/`failed`
+- [x] `ReplayToTopicRequest` — request DTO with `targetTopic`, time/offset filters, speed, transforms
+- [x] `ScheduledReplayService` — in-memory registry for pending/streaming scheduled replays (SSE-driven, cancel support)
+- [x] `ScheduledReplay` / `ScheduledReplayResponse` records
+
+### Message Transformation Pipeline
+- [x] `MessageTransformer` — stateful per-replay transformer (restamp + field substitutions via JSONPath)
+- [x] Restamp — shifts all `kafka_timestamp` values so first message = now, preserving relative gaps
+- [x] Field substitution — replaces JSON field values at JSONPath locations with literal strings or new UUID4s
+- [x] `FieldSubstitution` record (path + optional literal value)
+- [x] `ReplayTransformConfig` record (`restamp` flag + `fieldSubstitutions` list); `isIdentity()` short-circuits no-op
+- [x] `TransformPresetsController` — CRUD for saved transform pipeline presets
+- [x] `ConfigController` / `RuntimeConfigResponse` — runtime config introspection endpoint
+- [x] `replay/transform/` package — transform step definitions
+- [x] UI: `TransformPipelineBuilder`, `NestedPipelineBuilder`, `StepCard`, `StepConfigForm`, `StepPicker`, `PredicateBuilder`, `PresetManager`, `PipelineDryRun` components
+
 ### UI
 - [x] Topics list → topic detail with replay records, stats, filter, pagination
 - [x] Entities list (with Rebuild Known Entities button) → entity type detail (sources, known entities) → entity replay
 - [x] Compaction page (status, trigger, history)
 - [x] Snapshots page (list, create local, export to object store, restore)
 - [x] Health page
+- [x] Settings page (`ui/src/routes/settings/index.tsx`, `appStore.ts`)
+- [x] About page
 - [x] Dark/light theme toggle
 - [x] Toast notifications for all mutations
 - [x] Confirm dialogs for destructive actions
+- [x] `ReplayToTopicPanel` — UI panel for configuring and triggering replay-to-topic
+- [x] Timeline views — `CassetteTimeline.tsx` (canvas-based, pan/zoom/keyboard nav, proportional timestamp spacing, progressive page loading); exposed at `$topic_.timeline.tsx` and `$entityType/$entityId_.timeline.tsx`
+- [x] `TruncateDialog` component
+- [x] `useDebounce` hook
 
 ### Schema
 - [x] `SchemaManager` creates all tables at startup (idempotent)
@@ -61,6 +98,7 @@
 - [x] Config tables in plain DuckDB `main` schema
 - [x] DuckLake tables in `lake.main` schema
 - [x] `compaction_history` migration path for columns added after initial schema
+- [x] `retention_history` table
 
 ### Tests
 - [x] `MessageRouterTest` — full routing logic, DB-backed stub, reload test
@@ -76,21 +114,13 @@
 ## What's Left / Known Gaps
 
 ### Functional gaps
-- [ ] `startFrom: earliest` not fully implemented — `RecordingStartupRunner` hardcodes `latest`
-- [ ] Retention policy enforcement — `retention_days` stored in config but no cron job to delete old data
-- [ ] `TopicController` does not trigger `MessageRouter.reload()` when topic modes change
-- [ ] `entity_source_matchers.id_source` check constraint uses `'key', 'value', 'headers'` but `MessageRouter` / `EntityIdExtractor` use `'key', 'value', 'header'` (singular) — potential mismatch to verify
+- [ ] `entity_source_matchers.id_source` check constraint uses `'key', 'value', 'headers'` (plural) but `MessageRouter` / `EntityIdExtractor` use `'key', 'value', 'header'` (singular) — potential mismatch to verify and fix
 
 ### Testing gaps
 - [x] Integration test for `CassetteBatchWriter` headers struct-array write — covered by `TopicRecorderTest.recorder_handlesHeadersAndNullKey`
 - [ ] Integration test for `exportSnapshotToObjectStore`
 - [ ] Integration test for `rebuildKnownEntities` — scenario: write entity events to object store, wipe `known_entities`, call rebuild, verify all entities are restored with correct `first_seen`/`last_seen`
 - [ ] `TopicRecorderTest` does not test the full batch → DuckDB write path
-
-### Replay-to-Kafka features (not yet started)
-- [ ] **Replay-to-topic** — produce recorded messages back onto a Kafka topic, preserving partitioning key logic and maintaining linearization order (`kafka_timestamp` ordering, cross-topic merge for entity cassettes)
-- [ ] **Speed multiplier** — replay at x1.5, x2, etc. by proportionally compressing inter-message delays (wall-clock time between messages scaled by the multiplier)
-- [ ] **Message transformation** — before producing, allow optional transforms: (a) restamp timestamps to wall clock time (shift all `kafka_timestamp` values so the first message = now), (b) replace field values via JSONPath expressions (e.g. replace IDs in message bodies with new generated IDs, useful for re-running scenarios against a fresh environment)
 
 ### UI gaps
 - [ ] SSE/NDJSON streaming not exposed in UI (only paginated JSON used)
@@ -102,7 +132,11 @@
 | Decision | Original | Current | Reason |
 |---|---|---|---|
 | MessageRouter config source | YAML bootstrap only | ConfigRepository (DuckDB) | REST-registered entities were invisible to the router |
-| Headers storage | VARCHAR JSON string | `STRUCT(key VARCHAR, value BLOB)[]` literal | Type mismatch caused all batch INSERTs to fail |
+| Headers storage | VARCHAR JSON string | `STRUCT(key VARCHAR, value VARCHAR)[]` literal | Type mismatch caused all batch INSERTs to fail; later simplified from BLOB to VARCHAR |
 | known_entities location | DuckLake | Plain DuckDB | `ON CONFLICT DO UPDATE` requires PK enforcement |
 | Compaction sort column | `timestamp` | `kafka_timestamp` | Wrong column name caused compaction SQL errors |
 | Snapshot storage | Local disk only | Local disk + S3 export | Disaster recovery — local catalog file is a SPOF |
+| TopicController router reload | Not implemented | `reloadRouter()` called on all mutations | Topic mode/matcher changes were not picked up by router |
+| startFrom: earliest | Hardcoded `latest` | Fully wired: DB → `TopicRecorder.seekToEarliest` / `seekToTimestamp` | RecordingStartupRunner passes `tc.startFrom()` through |
+| Retention enforcement | Config stored, no cron | `RetentionService` + `RetentionScheduler` + `retention_history` | Retention days are now enforced automatically |
+| Replay-to-Kafka | Not started | `ReplayToTopicService` + `KafkaProducerService` + speed multiplier + transforms | Core replay use-case for integration testing |

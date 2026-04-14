@@ -258,6 +258,11 @@ public class RetentionService {
         synchronized (duckDB) {
             try (Statement st = duckDB.createStatement()) {
                 st.execute("CHECKPOINT");
+                log.debug("Retention checkpoint complete");
+            } catch (SQLException e) {
+                // In-memory DuckDB (e.g. in tests) does not support CHECKPOINT — safe to ignore.
+                log.warn("Retention CHECKPOINT failed ({}); catalog metadata may not be persisted", e.getMessage());
+                throw e;
             }
         }
     }

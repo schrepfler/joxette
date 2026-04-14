@@ -181,6 +181,10 @@ public class MessageRouter {
             generalRoute = new GeneralRoute(messageType);
         }
 
+        if (generalRoute == null && entityRoutes.isEmpty()) {
+            log.trace("No route for message topic='{}' partition={} offset={}",
+                    message.topic(), message.partition(), message.offset());
+        }
         return new RouteDecision(message, generalRoute, List.copyOf(entityRoutes));
     }
 

@@ -375,23 +375,29 @@ public class SchemaManager {
         String flexType = variantSupported ? "VARIANT" : "JSON";
 
         List<TopicEntry> topics = properties.getBootstrap().getTopics();
+        int topicTableCount = 0;
         if (topics != null) {
             for (TopicEntry t : topics) {
                 String mode = t.getMode();
                 if ("general".equals(mode) || "both".equals(mode)) {
                     String tbl = "general_" + normalize(t.getTopic());
                     createGeneralCassetteTable(conn, catalog, tbl, flexType);
+                    topicTableCount++;
                 }
             }
         }
 
         List<EntityEntry> entities = properties.getBootstrap().getEntities();
+        int entityTableCount = 0;
         if (entities != null) {
             for (EntityEntry e : entities) {
                 String tbl = "entity_" + normalize(e.getType());
                 createEntityCassetteTable(conn, catalog, tbl, flexType);
+                entityTableCount++;
             }
         }
+        log.info("Bootstrap DuckLake tables: {} general cassette table(s), {} entity cassette table(s)",
+                topicTableCount, entityTableCount);
     }
 
     /**

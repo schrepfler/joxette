@@ -37,12 +37,17 @@ public class RecordingStartupRunner implements ApplicationRunner {
     @Override
     public void run(ApplicationArguments args) throws SQLException {
         int started = 0;
+        int skipped = 0;
         for (TopicConfig tc : configRepository.listTopics()) {
             if (!tc.paused()) {
                 coordinator.startTopic(tc.topic(), tc.startFrom());
                 started++;
+            } else {
+                log.info("RecordingStartupRunner: skipping paused topic '{}'", tc.topic());
+                skipped++;
             }
         }
-        log.info("RecordingStartupRunner: started {} topic recorder(s)", started);
+        log.info("RecordingStartupRunner: started {} topic recorder(s), skipped {} paused topic(s)",
+                started, skipped);
     }
 }

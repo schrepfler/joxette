@@ -1,5 +1,7 @@
 package com.joxette.replay;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.sql.SQLException;
@@ -43,6 +45,8 @@ import java.util.function.Consumer;
  */
 @Service
 public class ReplayToTopicService {
+
+    private static final Logger log = LoggerFactory.getLogger(ReplayToTopicService.class);
 
     /** Emit a progress event after every N successfully sent records. */
     private static final int PROGRESS_INTERVAL = 100;
@@ -99,6 +103,9 @@ public class ReplayToTopicService {
         Instant[] prevTs  = {null};
 
         MessageTransformer transformer = transformerFor(req);
+        log.info("Starting topic replay: source='{}' target='{}' from={} to={} partition={} speed={}x transforms={}",
+                sourceTopic, req.targetTopic(), req.from(), req.to(), req.partition(),
+                speedMultiplier, transformer != null);
 
         try {
             topicReplayService.streamAll(
@@ -116,10 +123,14 @@ public class ReplayToTopicService {
                     }
             );
         } catch (RuntimeException ex) {
+            log.warn("Topic replay failed: source='{}' target='{}' sent={} errors={} reason={}",
+                    sourceTopic, req.targetTopic(), counts[0], counts[1], ex.getMessage());
             progressSink.accept(failed(req.targetTopic(), counts, lastTs[0], ex.getMessage()));
             return;
         }
 
+        log.info("Topic replay completed: source='{}' target='{}' sent={} errors={}",
+                sourceTopic, req.targetTopic(), counts[0], counts[1]);
         progressSink.accept(completed(req.targetTopic(), counts, lastTs[0]));
     }
 
@@ -164,6 +175,9 @@ public class ReplayToTopicService {
         Instant[] prevTs = {null};
 
         MessageTransformer transformer = transformerFor(req);
+        log.info("Starting entity replay: type='{}' id='{}' target='{}' from={} to={} speed={}x transforms={}",
+                entityType, entityId, req.targetTopic(), req.from(), req.to(),
+                speedMultiplier, transformer != null);
 
         try {
             entityReplayService.streamEntityEvents(
@@ -180,10 +194,14 @@ public class ReplayToTopicService {
                     }
             );
         } catch (RuntimeException ex) {
+            log.warn("Entity replay failed: type='{}' id='{}' target='{}' sent={} errors={} reason={}",
+                    entityType, entityId, req.targetTopic(), counts[0], counts[1], ex.getMessage());
             progressSink.accept(failed(req.targetTopic(), counts, lastTs[0], ex.getMessage()));
             return;
         }
 
+        log.info("Entity replay completed: type='{}' id='{}' target='{}' sent={} errors={}",
+                entityType, entityId, req.targetTopic(), counts[0], counts[1]);
         progressSink.accept(completed(req.targetTopic(), counts, lastTs[0]));
     }
 
