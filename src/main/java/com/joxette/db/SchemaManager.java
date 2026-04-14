@@ -553,8 +553,8 @@ public class SchemaManager {
      * <p>Failures are logged as warnings and swallowed so that an older DuckLake
      * version that does not yet support the statement cannot prevent startup.
      */
-    private void ensureTableSorted(Connection conn, String catalog,
-                                    String tableName, String sortedBy) {
+    static void ensureTableSorted(Connection conn, String catalog,
+                                   String tableName, String sortedBy) {
         String sql = "ALTER TABLE " + catalog + ".main." + tableName
                      + " SET SORTED BY " + sortedBy;
         try (Statement stmt = conn.createStatement()) {
