@@ -1,11 +1,21 @@
 package com.joxette.management;
 
+import com.joxette.config.BrokerConnectionFactory;
+import org.apache.kafka.clients.admin.AdminClient;
+import org.apache.kafka.clients.admin.ListTopicsOptions;
+import org.apache.kafka.clients.admin.TopicDescription;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.sql.SQLException;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.stream.Collectors;
 
 /**
  * Management API for Kafka broker connection configurations.
@@ -23,6 +33,8 @@ import java.util.List;
 public class BrokerController {
 
     private final BrokerRepository brokerRepository;
+    private final BrokerConnectionFactory connectionFactory;
+    private final ConfigRepository configRepository;
 
     record CreateBrokerRequest(
             String brokerId, String bootstrapServers, String securityProtocol,
@@ -60,8 +72,12 @@ public class BrokerController {
         }
     }
 
-    public BrokerController(BrokerRepository brokerRepository) {
+    public BrokerController(BrokerRepository brokerRepository,
+                            BrokerConnectionFactory connectionFactory,
+                            ConfigRepository configRepository) {
         this.brokerRepository = brokerRepository;
+        this.connectionFactory = connectionFactory;
+        this.configRepository = configRepository;
     }
 
     @GetMapping(produces = MediaType.APPLICATION_JSON_VALUE)
@@ -115,6 +131,58 @@ public class BrokerController {
     public ResponseEntity<Void> deleteBroker(@PathVariable String brokerId) throws SQLException {
         boolean deleted = brokerRepository.deleteBroker(brokerId);
         return deleted ? ResponseEntity.noContent().build() : ResponseEntity.notFound().build();
+    }
+
+    @GetMapping(value = "/{brokerId}/topics", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<?> listBrokerTopics(
+            @PathVariable String brokerId,
+            @RequestParam(defaultValue = "false") boolean includeInternal,
+            @RequestParam(required = false) String filter) {
+
+        Map<String, TopicConfig> recordedTopics;
+        try {
+            recordedTopics = configRepository.listTopics().stream()
+                    .collect(Collectors.toMap(TopicConfig::topic, t -> t));
+        } catch (SQLException e) {
+            return ResponseEntity.internalServerError().body("Database error: " + e.getMessage());
+        }
+
+        try (AdminClient adminClient = connectionFactory.adminClient(brokerId)) {
+            Map<String, ?> listings = adminClient
+                    .listTopics(new ListTopicsOptions().listInternal(includeInternal))
+                    .namesToListings()
+                    .get(5, TimeUnit.SECONDS);
+
+            List<String> names = listings.keySet().stream()
+                    .filter(n -> filter == null || filter.isBlank() || n.startsWith(filter))
+                    .sorted()
+                    .toList();
+
+            Map<String, TopicDescription> descriptions = adminClient
+                    .describeTopics(names)
+                    .allTopicNames()
+                    .get(5, TimeUnit.SECONDS);
+
+            List<BrokerTopicInfo> result = new ArrayList<>(names.size());
+            for (String name : names) {
+                TopicDescription desc = descriptions.get(name);
+                int partitionCount = desc != null ? desc.partitions().size() : 0;
+                TopicConfig cfg = recordedTopics.get(name);
+                result.add(new BrokerTopicInfo(
+                        name,
+                        partitionCount,
+                        cfg != null,
+                        cfg != null ? cfg.mode() : null));
+            }
+            return ResponseEntity.ok(result);
+        } catch (ExecutionException e) {
+            return ResponseEntity.status(503).body("Broker error: " + e.getCause().getMessage());
+        } catch (TimeoutException e) {
+            return ResponseEntity.status(503).body("Broker did not respond within 5s");
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return ResponseEntity.status(503).body("Request interrupted");
+        }
     }
 
     @ExceptionHandler(IllegalArgumentException.class)
