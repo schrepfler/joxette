@@ -85,6 +85,7 @@ public final class DuckDBTestSupport {
                         paused          BOOLEAN NOT NULL DEFAULT false,
                         start_from      VARCHAR NOT NULL DEFAULT 'latest',
                         retention_days  INTEGER,
+                        broker_id       VARCHAR,
                         created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
                         updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
                     )""");
@@ -165,6 +166,22 @@ public final class DuckDBTestSupport {
                         id_source       VARCHAR NOT NULL,
                         id_expression   VARCHAR NOT NULL,
                         PRIMARY KEY (topic, message_type)
+                    )""");
+
+            st.execute("""
+                    CREATE TABLE IF NOT EXISTS broker_configs (
+                        broker_id               VARCHAR PRIMARY KEY,
+                        bootstrap_servers       VARCHAR NOT NULL,
+                        security_protocol       VARCHAR NOT NULL DEFAULT 'PLAINTEXT',
+                        sasl_mechanism          VARCHAR,
+                        sasl_username           VARCHAR,
+                        sasl_password           VARCHAR,
+                        ssl_truststore_path     VARCHAR,
+                        ssl_truststore_password VARCHAR,
+                        ssl_keystore_path       VARCHAR,
+                        ssl_keystore_password   VARCHAR,
+                        created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        updated_at              TIMESTAMPTZ NOT NULL DEFAULT now()
                     )""");
 
             st.execute("CREATE SEQUENCE IF NOT EXISTS seq_retention_history START 1");

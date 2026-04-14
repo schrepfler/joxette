@@ -292,9 +292,29 @@ public class SchemaManager {
                 )
                 """);
 
+            stmt.execute("""
+                CREATE TABLE IF NOT EXISTS broker_configs (
+                    broker_id               VARCHAR PRIMARY KEY
+                        CHECK (broker_id ~ '^[a-z][a-z0-9_-]*$'),
+                    bootstrap_servers       VARCHAR NOT NULL,
+                    security_protocol       VARCHAR NOT NULL DEFAULT 'PLAINTEXT'
+                        CHECK (security_protocol IN ('PLAINTEXT','SASL_PLAINTEXT','SASL_SSL','SSL')),
+                    sasl_mechanism          VARCHAR,
+                    sasl_username           VARCHAR,
+                    sasl_password           VARCHAR,
+                    ssl_truststore_path     VARCHAR,
+                    ssl_truststore_password VARCHAR,
+                    ssl_keystore_path       VARCHAR,
+                    ssl_keystore_password   VARCHAR,
+                    created_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at              TIMESTAMPTZ NOT NULL DEFAULT now()
+                )
+                """);
+
             // Migration: add columns introduced after the initial lake-schema version.
             // ALTER TABLE ADD COLUMN IF NOT EXISTS is idempotent.
             migrateCompactionHistory(conn);
+            stmt.execute("ALTER TABLE topic_configs ADD COLUMN IF NOT EXISTS broker_id VARCHAR");
 
             log.debug("Config tables ready");
         }

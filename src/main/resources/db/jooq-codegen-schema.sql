@@ -34,6 +34,7 @@ CREATE TABLE topic_configs (
     paused         BOOLEAN NOT NULL DEFAULT false,
     start_from     VARCHAR NOT NULL DEFAULT 'latest',
     retention_days INTEGER,
+    broker_id      VARCHAR,
     created_at     TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
     updated_at     TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
 );
@@ -127,4 +128,19 @@ CREATE TABLE transform_presets (
     steps       VARCHAR                  NOT NULL,
     created_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
     updated_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+);
+
+CREATE TABLE broker_configs (
+    broker_id               VARCHAR PRIMARY KEY,
+    bootstrap_servers       VARCHAR NOT NULL,
+    security_protocol       VARCHAR NOT NULL DEFAULT 'PLAINTEXT',
+    sasl_mechanism          VARCHAR,
+    sasl_username           VARCHAR,
+    sasl_password           VARCHAR,
+    ssl_truststore_path     VARCHAR,
+    ssl_truststore_password VARCHAR,
+    ssl_keystore_path       VARCHAR,
+    ssl_keystore_password   VARCHAR,
+    created_at              TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+    updated_at              TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
 );
