@@ -234,6 +234,8 @@ public class SchemaManager {
                     targets         VARCHAR[],
                     entity_buckets_compacted     INTEGER NOT NULL DEFAULT 0,
                     general_partitions_compacted INTEGER NOT NULL DEFAULT 0,
+                    files_processed BIGINT  NOT NULL DEFAULT 0,
+                    files_created   BIGINT  NOT NULL DEFAULT 0,
                     error_message   VARCHAR
                 )
                 """);
@@ -483,6 +485,8 @@ public class SchemaManager {
             { "targets",         "ALTER TABLE compaction_history ADD COLUMN targets VARCHAR[]" },
             { "entity_buckets_compacted",     "ALTER TABLE compaction_history ADD COLUMN entity_buckets_compacted INTEGER DEFAULT 0" },
             { "general_partitions_compacted", "ALTER TABLE compaction_history ADD COLUMN general_partitions_compacted INTEGER DEFAULT 0" },
+            { "files_processed",  "ALTER TABLE compaction_history ADD COLUMN files_processed BIGINT NOT NULL DEFAULT 0" },
+            { "files_created",    "ALTER TABLE compaction_history ADD COLUMN files_created BIGINT NOT NULL DEFAULT 0" },
             { "error_message",   "ALTER TABLE compaction_history ADD COLUMN error_message VARCHAR" },
         };
         for (String[] m : migrations) {

@@ -15,34 +15,42 @@ import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Compacts entity and general cassette tables in DuckLake by re-writing small
- * row groups per bucket/partition into fewer, larger, sort-ordered files.
+ * Compacts entity and general cassette tables in DuckLake using
+ * {@code ducklake_merge_adjacent_files} — an idempotent maintenance function
+ * introduced in DuckLake 1.0.
  *
- * <h2>Entity compaction strategy</h2>
- * <ol>
- *   <li>For each configured entity type (or the requested subset), count cold
- *       rows (older than {@code lookback-days}) per bucket.</li>
- *   <li>Estimate the number of row groups for each bucket by distributing the
- *       table-wide row-group count proportionally.  Buckets whose estimate
- *       exceeds {@code min-files-per-bucket} are selected for compaction.</li>
- *   <li>For each selected bucket: copy cold rows into a temp table, delete the
- *       originals, and re-insert from the temp table.  DuckLake writes the
- *       re-inserted rows as new, larger, sort-ordered data files (sort order is
- *       enforced automatically via the {@code SORTED BY} declaration on the table,
- *       applied by {@code SchemaManager.ensureTableSorted()}).</li>
- * </ol>
+ * <h2>Function signature</h2>
+ * Source: <a href="https://ducklake.select/docs/stable/duckdb/maintenance/merge_adjacent_files">
+ * DuckLake docs — Merge Files</a>
+ * <pre>
+ *   CALL ducklake_merge_adjacent_files(
+ *       ducklake_name VARCHAR,
+ *       [table_name    VARCHAR],
+ *       [schema        =&gt; VARCHAR],
+ *       [max_compacted_files =&gt; BIGINT],
+ *       [min_file_size =&gt; BIGINT],
+ *       [max_file_size =&gt; BIGINT]
+ *   )
+ *   → TABLE(schema_name VARCHAR, table_name VARCHAR,
+ *            files_processed BIGINT, files_created BIGINT)
+ * </pre>
+ * One result row is returned per output file created ({@code files_created} is always 1
+ * per row; {@code files_processed} shows how many input files were merged into it).
  *
- * <h2>General cassette compaction</h2>
- * <p>Disabled by default ({@code joxette.compaction.general.enabled=false}).
- * When enabled, applies the same strategy per {@code (topic, partition)} pair,
- * with rows sorted by {@code (timestamp, partition, offset)}.
+ * <h2>Note on ducklake_rewrite_data_files</h2>
+ * <p>{@code ducklake_rewrite_data_files} is a separate function that rewrites files
+ * containing a high ratio of delete markers (controlled by {@code delete_threshold}).
+ * It is <em>not</em> used here for general file merging; it would be appropriate to
+ * call from {@link RetentionService} after bulk-deleting entity rows (e.g. GDPR wipes).
  *
- * <h2>Hot-data protection</h2>
- * <p>Only rows with {@code recorded_at < now() - lookback_days} are touched;
- * recently-written ("hot") data is left in place.
+ * <h2>Compaction strategy</h2>
+ * <p>One {@code CALL ducklake_merge_adjacent_files} is issued per entity type and per
+ * general-cassette topic.  DuckLake internally determines which files need merging based
+ * on file-size thresholds ({@code max_file_size} from {@code target-file-size-mb} config).
+ * Files already at or above the target size are left untouched.
  *
  * <h2>Run tracking</h2>
- * <p>Every run is recorded in {@code lake.compaction_history}.  An
+ * <p>Every run is recorded in {@code compaction_history}.  An
  * {@link AtomicBoolean} guard prevents overlapping runs.
  */
 @Service
@@ -72,7 +80,7 @@ public class CompactionService {
 
     /**
      * Atomically marks a new run as started and inserts a {@code "running"} row
-     * in {@code lake.compaction_history}.
+     * in {@code compaction_history}.
      *
      * <p>The caller is responsible for submitting {@link #executeRun} to a
      * background thread after this method returns.
@@ -95,19 +103,28 @@ public class CompactionService {
      * serialised via {@code synchronized(duckDB)}.
      */
     public void executeRun(long runId, List<String> targets) {
-        int entityBuckets = 0;
-        int generalPartitions = 0;
+        int entityTypes = 0;
+        int generalTopics = 0;
+        FileStats totalFileStats = FileStats.EMPTY;
         try {
-            entityBuckets    = compactEntityTypes(targets);
-            generalPartitions = compactGeneralIfEnabled(targets);
+            CompactionResult entityResult = compactEntityTypes(targets);
+            entityTypes    = entityResult.unitsProcessed();
+            totalFileStats = totalFileStats.add(entityResult.fileStats());
+
+            CompactionResult generalResult = compactGeneralIfEnabled(targets);
+            generalTopics  = generalResult.unitsProcessed();
+            totalFileStats = totalFileStats.add(generalResult.fileStats());
+
             checkpoint();
-            updateRunRecord(runId, "completed", entityBuckets, generalPartitions, null);
-            log.info("Compaction run {} completed: {} entity buckets, {} general partitions",
-                    runId, entityBuckets, generalPartitions);
+            updateRunRecord(runId, "completed", entityTypes, generalTopics, totalFileStats, null);
+            log.info("Compaction run {} completed: {} entity types, {} general topics, "
+                            + "files_processed={} files_created={}",
+                    runId, entityTypes, generalTopics,
+                    totalFileStats.filesProcessed(), totalFileStats.filesCreated());
         } catch (Exception e) {
             log.error("Compaction run {} failed", runId, e);
             try {
-                updateRunRecord(runId, "failed", entityBuckets, generalPartitions, e.getMessage());
+                updateRunRecord(runId, "failed", entityTypes, generalTopics, totalFileStats, e.getMessage());
             } catch (SQLException se) {
                 log.error("Failed to update compaction_history for run {}", runId, se);
             }
@@ -147,7 +164,8 @@ public class CompactionService {
         synchronized (duckDB) {
             try (PreparedStatement ps = duckDB.prepareStatement("""
                     SELECT id, started_at, completed_at, status, triggered_by, targets,
-                           entity_buckets_compacted, general_partitions_compacted, error_message
+                           entity_buckets_compacted, general_partitions_compacted,
+                           files_processed, files_created, error_message
                     FROM compaction_history
                     ORDER BY started_at DESC
                     LIMIT ?
@@ -167,7 +185,8 @@ public class CompactionService {
         synchronized (duckDB) {
             try (PreparedStatement ps = duckDB.prepareStatement("""
                     SELECT id, started_at, completed_at, status, triggered_by, targets,
-                           entity_buckets_compacted, general_partitions_compacted, error_message
+                           entity_buckets_compacted, general_partitions_compacted,
+                           files_processed, files_created, error_message
                     FROM compaction_history WHERE id = ?
                     """)) {
                 ps.setLong(1, id);
@@ -183,11 +202,11 @@ public class CompactionService {
     // Entity compaction
     // =========================================================================
 
-    private int compactEntityTypes(List<String> targets) throws SQLException {
+    private CompactionResult compactEntityTypes(List<String> targets) throws SQLException {
         List<String> types = resolveEntityTargets(targets);
-        int total = 0;
+        CompactionResult total = CompactionResult.NONE;
         for (String type : types) {
-            total += compactEntityType(type);
+            total = total.add(compactEntityType(type));
         }
         return total;
     }
@@ -201,123 +220,41 @@ public class CompactionService {
         return targets.stream().filter(t -> !t.equals("general")).toList();
     }
 
-    private int compactEntityType(String entityType) throws SQLException {
+    /**
+     * Merges adjacent small files for one entity type using
+     * {@code ducklake_merge_adjacent_files} — DuckLake 1.0.
+     *
+     * <p>Called once per entity type; DuckLake internally determines which files
+     * need merging based on the {@code max_file_size} threshold.  Files already at or
+     * above the target size are left untouched.
+     *
+     * <p>Idempotent — errors are logged at WARN and the caller receives
+     * {@link CompactionResult#NONE}, consistent with the non-fatal compaction error policy.
+     */
+    private CompactionResult compactEntityType(String entityType) {
         SchemaManager.validateEntityType(entityType);
-        var opt = configRepo.findEntityType(entityType);
-        if (opt.isEmpty()) {
-            log.warn("Entity type '{}' not found in config, skipping", entityType);
-            return 0;
-        }
-        int lookbackDays = props.getCompaction().getEntity().getLookbackDays();
-        int minFiles     = props.getCompaction().getEntity().getMinFilesPerBucket();
-
-        List<Integer> qualifying = findEntityBucketsNeedingCompaction(entityType, minFiles, lookbackDays);
-        log.debug("Entity type '{}': {}/{} buckets qualify for compaction",
-                entityType, qualifying.size(), opt.get().buckets());
-
-        for (int bucket : qualifying) {
-            compactEntityBucket(entityType, bucket, lookbackDays);
-        }
-        return qualifying.size();
-    }
-
-    /**
-     * Identifies entity buckets with enough cold row groups to warrant compaction.
-     *
-     * <p>Row groups in DuckDB are the closest proxy for Parquet data files.  The
-     * table-wide row-group count (from {@code duckdb_storage_info()}) is
-     * distributed proportionally to each bucket using its share of cold rows.
-     * Buckets whose estimated group count meets the {@code minFiles} threshold
-     * are returned.
-     */
-    private List<Integer> findEntityBucketsNeedingCompaction(
-            String entityType, int minFiles, int lookbackDays) throws SQLException {
-
-        long totalRowGroups = countTableRowGroups("entity_" + entityType);
-        if (totalRowGroups == 0) return List.of();
-
-        String coldSql = "SELECT bucket, COUNT(*) AS cnt"
-                + " FROM lake.main.entity_" + entityType
-                + " WHERE recorded_at < CURRENT_TIMESTAMP - INTERVAL '" + lookbackDays + " days'"
-                + " GROUP BY bucket ORDER BY bucket";
-
-        Map<Integer, Long> bucketCounts = new LinkedHashMap<>();
-        long totalColdRows = 0;
-        synchronized (duckDB) {
-            try (Statement st = duckDB.createStatement();
-                 ResultSet rs = st.executeQuery(coldSql)) {
-                while (rs.next()) {
-                    long cnt = rs.getLong("cnt");
-                    bucketCounts.put(rs.getInt("bucket"), cnt);
-                    totalColdRows += cnt;
+        long maxFileSizeBytes = (long) props.getCompaction().getEntity().getTargetFileSizeMb() * 1024L * 1024L;
+        String sql = "CALL ducklake_merge_adjacent_files('lake', 'entity_" + entityType + "',"
+                   + " max_file_size => " + maxFileSizeBytes + ")";
+        log.debug("Merging adjacent files for entity_type='{}'", entityType);
+        try {
+            synchronized (duckDB) {
+                try (Statement st = duckDB.createStatement();
+                     ResultSet rs = st.executeQuery(sql)) {
+                    FileStats stats = FileStats.EMPTY;
+                    while (rs.next()) {
+                        stats = stats.add(new FileStats(
+                                rs.getLong("files_processed"),
+                                rs.getLong("files_created")));
+                    }
+                    log.debug("Merged adjacent files for entity_{}: files_processed={} files_created={}",
+                            entityType, stats.filesProcessed(), stats.filesCreated());
+                    return new CompactionResult(stats.filesProcessed() > 0 ? 1 : 0, stats);
                 }
             }
-        }
-        if (totalColdRows == 0) return List.of();
-
-        List<Integer> result = new ArrayList<>();
-        for (Map.Entry<Integer, Long> entry : bucketCounts.entrySet()) {
-            long estimated = Math.round((double) entry.getValue() / totalColdRows * totalRowGroups);
-            if (estimated >= minFiles) {
-                result.add(entry.getKey());
-            }
-        }
-        return result;
-    }
-
-    /**
-     * Re-writes cold data for a single entity bucket.
-     *
-     * <p>Sort order is enforced automatically by DuckLake because
-     * {@code entity_<type>} tables are declared with
-     * {@code SORTED BY (entity_id ASC, kafka_timestamp ASC, recorded_at ASC)}
-     * via {@code SchemaManager.ensureTableSorted()}.  There is no need to
-     * supply an explicit {@code ORDER BY} here — DuckLake applies the declared
-     * order when it writes the consolidated Parquet files.
-     *
-     * <p>Algorithm:
-     * <ol>
-     *   <li>Copy cold rows for this bucket into a temp table.</li>
-     *   <li>Delete the cold rows from the live table.</li>
-     *   <li>Re-insert from the temp table — DuckLake writes new, sorted, merged files.</li>
-     *   <li>Drop the temp table.</li>
-     * </ol>
-     */
-    private void compactEntityBucket(String entityType, int bucket, int lookbackDays) throws SQLException {
-        String src     = "lake.main.entity_" + entityType;
-        String tmp     = "lake.main._cmp_" + entityType + "_b" + bucket;
-        String cutoff  = "CURRENT_TIMESTAMP - INTERVAL '" + lookbackDays + " days'";
-        log.debug("Compacting entity_type='{}' bucket={}", entityType, bucket);
-
-        synchronized (duckDB) {
-            try (Statement st = duckDB.createStatement()) {
-                // 1. Empty temp table matching the source schema
-                st.execute("CREATE OR REPLACE TABLE " + tmp + " AS SELECT * FROM " + src + " LIMIT 0");
-
-                // 2. Copy cold rows into temp (no ORDER BY — SORTED BY on the target table
-                //    lets DuckLake enforce sort order when writing consolidated Parquet files)
-                try (PreparedStatement ps = duckDB.prepareStatement(
-                        "INSERT INTO " + tmp
-                        + " SELECT * FROM " + src
-                        + " WHERE bucket = ? AND recorded_at < " + cutoff)) {
-                    ps.setInt(1, bucket);
-                    ps.executeUpdate();
-                }
-
-                // 3. Delete cold rows from source
-                try (PreparedStatement ps = duckDB.prepareStatement(
-                        "DELETE FROM " + src
-                        + " WHERE bucket = ? AND recorded_at < " + cutoff)) {
-                    ps.setInt(1, bucket);
-                    ps.executeUpdate();
-                }
-
-                // 4. Re-insert; DuckLake writes consolidated, sort-ordered files
-                st.execute("INSERT INTO " + src + " SELECT * FROM " + tmp);
-
-                // 5. Drop temp
-                st.execute("DROP TABLE IF EXISTS " + tmp);
-            }
+        } catch (SQLException e) {
+            log.warn("ducklake_merge_adjacent_files failed for entity_type='{}': {}", entityType, e.getMessage());
+            return CompactionResult.NONE;
         }
     }
 
@@ -325,100 +262,58 @@ public class CompactionService {
     // General cassette compaction
     // =========================================================================
 
-    private int compactGeneralIfEnabled(List<String> targets) throws SQLException {
+    private CompactionResult compactGeneralIfEnabled(List<String> targets) throws SQLException {
         boolean doGeneral = props.getCompaction().getGeneral().isEnabled()
                 && (targets == null || targets.contains("general"));
-        return doGeneral ? compactGeneralCassette() : 0;
+        return doGeneral ? compactGeneralCassette() : CompactionResult.NONE;
     }
 
-    private int compactGeneralCassette() throws SQLException {
-        int lookbackDays = props.getCompaction().getGeneral().getLookbackDays();
-        int minFiles     = props.getCompaction().getGeneral().getMinFilesPerPartition();
-
-        // Collect all configured topics that have general cassette tables
+    private CompactionResult compactGeneralCassette() throws SQLException {
         List<String> topics = configRepo.listTopics().stream()
                 .filter(tc -> "general".equals(tc.mode()) || "both".equals(tc.mode()))
                 .map(tc -> tc.topic())
                 .toList();
 
-        int compacted = 0;
+        CompactionResult total = CompactionResult.NONE;
         for (String topic : topics) {
-            String tableName = "general_" + normalizeTopicName(topic);
-            long totalRowGroups = countTableRowGroups(tableName);
-            if (totalRowGroups == 0) continue;
-
-            String coldSql = "SELECT kafka_partition AS partition, COUNT(*) AS cnt"
-                    + " FROM lake.main." + tableName
-                    + " WHERE recorded_at < CURRENT_TIMESTAMP - INTERVAL '" + lookbackDays + " days'"
-                    + " GROUP BY kafka_partition"
-                    + " ORDER BY kafka_partition";
-
-            Map<Integer, Long> partitionCounts = new LinkedHashMap<>();
-            long totalColdRows = 0;
-            synchronized (duckDB) {
-                try (Statement st = duckDB.createStatement();
-                     ResultSet rs = st.executeQuery(coldSql)) {
-                    while (rs.next()) {
-                        long cnt = rs.getLong("cnt");
-                        partitionCounts.put(rs.getInt("partition"), cnt);
-                        totalColdRows += cnt;
-                    }
-                }
-            }
-            if (totalColdRows == 0) continue;
-
-            for (Map.Entry<Integer, Long> entry : partitionCounts.entrySet()) {
-                long estimated = Math.round((double) entry.getValue() / totalColdRows * totalRowGroups);
-                if (estimated >= minFiles) {
-                    compactGeneralPartition(topic, tableName, entry.getKey(), lookbackDays);
-                    compacted++;
-                }
-            }
+            total = total.add(compactGeneralTopic(topic));
         }
-        return compacted;
+        return total;
     }
 
     /**
-     * Re-writes cold data for one {@code (kafka_partition)} slice of a general cassette table.
+     * Merges adjacent small files for one general cassette topic using
+     * {@code ducklake_merge_adjacent_files} — DuckLake 1.0.
      *
-     * <p>Sort order is enforced automatically by DuckLake because {@code general_<topic>}
-     * tables are declared with
-     * {@code SORTED BY (kafka_timestamp ASC, kafka_partition ASC, kafka_offset ASC)}
-     * via {@code SchemaManager.ensureTableSorted()}.  There is no need to supply an
-     * explicit {@code ORDER BY} here.
+     * <p>See {@link #compactEntityType} for the function signature reference.
+     * Idempotent — errors are logged at WARN and do not rethrow.
      */
-    private void compactGeneralPartition(String topic, String tableName, int partition, int lookbackDays)
-            throws SQLException {
-        String src    = "lake.main." + tableName;
-        String hex    = Integer.toHexString(Math.abs((topic + partition).hashCode()));
-        String tmp    = "lake.main._cmp_general_" + hex;
-        String cutoff = "CURRENT_TIMESTAMP - INTERVAL '" + lookbackDays + " days'";
-        log.debug("Compacting general cassette topic='{}' partition={}", topic, partition);
-
-        synchronized (duckDB) {
-            try (Statement st = duckDB.createStatement()) {
-                st.execute("CREATE OR REPLACE TABLE " + tmp + " AS SELECT * FROM " + src + " LIMIT 0");
-
-                // No ORDER BY — SORTED BY on the target table lets DuckLake enforce
-                // sort order when writing consolidated Parquet files
-                try (PreparedStatement ps = duckDB.prepareStatement(
-                        "INSERT INTO " + tmp
-                        + " SELECT * FROM " + src
-                        + " WHERE kafka_partition = ? AND recorded_at < " + cutoff)) {
-                    ps.setInt(1, partition);
-                    ps.executeUpdate();
+    private CompactionResult compactGeneralTopic(String topic) {
+        String tableName = "general_" + normalizeTopicName(topic);
+        long maxFileSizeBytes = (long) props.getCompaction().getGeneral().getTargetFileSizeMb() * 1024L * 1024L;
+        String sql = "CALL ducklake_merge_adjacent_files('lake', '" + tableName + "',"
+                   + " max_file_size => " + maxFileSizeBytes + ")";
+        log.debug("Merging adjacent files for general cassette topic='{}'", topic);
+        try {
+            synchronized (duckDB) {
+                try (Statement st = duckDB.createStatement();
+                     ResultSet rs = st.executeQuery(sql)) {
+                    FileStats stats = FileStats.EMPTY;
+                    while (rs.next()) {
+                        stats = stats.add(new FileStats(
+                                rs.getLong("files_processed"),
+                                rs.getLong("files_created")));
+                    }
+                    log.debug("Merged adjacent files for general cassette topic='{}': "
+                                    + "files_processed={} files_created={}",
+                            topic, stats.filesProcessed(), stats.filesCreated());
+                    return new CompactionResult(stats.filesProcessed() > 0 ? 1 : 0, stats);
                 }
-
-                try (PreparedStatement ps = duckDB.prepareStatement(
-                        "DELETE FROM " + src
-                        + " WHERE kafka_partition = ? AND recorded_at < " + cutoff)) {
-                    ps.setInt(1, partition);
-                    ps.executeUpdate();
-                }
-
-                st.execute("INSERT INTO " + src + " SELECT * FROM " + tmp);
-                st.execute("DROP TABLE IF EXISTS " + tmp);
             }
+        } catch (SQLException e) {
+            log.warn("ducklake_merge_adjacent_files failed for general cassette topic='{}': {}",
+                    topic, e.getMessage());
+            return CompactionResult.NONE;
         }
     }
 
@@ -428,29 +323,8 @@ public class CompactionService {
     }
 
     // =========================================================================
-    // DuckDB storage helpers
+    // DuckDB / DuckLake helpers
     // =========================================================================
-
-    /**
-     * Returns the number of distinct row groups for a table in the {@code lake}
-     * schema using {@code pragma_storage_info()}.
-     *
-     * <p>Row groups are the closest DuckDB proxy for DuckLake Parquet data files.
-     * The count is used to estimate per-bucket / per-partition file density.
-     */
-    private long countTableRowGroups(String tableName) throws SQLException {
-        synchronized (duckDB) {
-            try (PreparedStatement ps = duckDB.prepareStatement("""
-                    SELECT COUNT(DISTINCT row_group_id) AS rg_count
-                    FROM pragma_storage_info('lake.main.' || ?)
-                    """)) {
-                ps.setString(1, tableName);
-                try (ResultSet rs = ps.executeQuery()) {
-                    return rs.next() ? rs.getLong("rg_count") : 0;
-                }
-            }
-        }
-    }
 
     /**
      * Flushes inlined DuckLake data to Parquet on object storage, then
@@ -514,8 +388,9 @@ public class CompactionService {
             try (PreparedStatement ps = duckDB.prepareStatement("""
                     INSERT INTO compaction_history
                         (started_at, status, triggered_by, targets,
-                         entity_buckets_compacted, general_partitions_compacted)
-                    VALUES (?, 'running', ?, ?, 0, 0)
+                         entity_buckets_compacted, general_partitions_compacted,
+                         files_processed, files_created)
+                    VALUES (?, 'running', ?, ?, 0, 0, 0, 0)
                     RETURNING id
                     """)) {
                 ps.setTimestamp(1, Timestamp.from(Instant.now()));
@@ -534,8 +409,8 @@ public class CompactionService {
     }
 
     private void updateRunRecord(long runId, String status,
-                                  int entityBuckets, int generalPartitions,
-                                  String errorMessage) throws SQLException {
+                                  int entityTypes, int generalTopics,
+                                  FileStats fileStats, String errorMessage) throws SQLException {
         synchronized (duckDB) {
             try (PreparedStatement ps = duckDB.prepareStatement("""
                     UPDATE compaction_history
@@ -543,15 +418,19 @@ public class CompactionService {
                         status = ?,
                         entity_buckets_compacted = ?,
                         general_partitions_compacted = ?,
+                        files_processed = ?,
+                        files_created = ?,
                         error_message = ?
                     WHERE id = ?
                     """)) {
                 ps.setTimestamp(1, Timestamp.from(Instant.now()));
                 ps.setString(2, status);
-                ps.setInt(3, entityBuckets);
-                ps.setInt(4, generalPartitions);
-                ps.setString(5, errorMessage);
-                ps.setLong(6, runId);
+                ps.setInt(3, entityTypes);
+                ps.setInt(4, generalTopics);
+                ps.setLong(5, fileStats.filesProcessed());
+                ps.setLong(6, fileStats.filesCreated());
+                ps.setString(7, errorMessage);
+                ps.setLong(8, runId);
                 ps.executeUpdate();
             }
         }
@@ -562,7 +441,8 @@ public class CompactionService {
             try (Statement st = duckDB.createStatement();
                  ResultSet rs = st.executeQuery("""
                     SELECT id, started_at, completed_at, status, triggered_by, targets,
-                           entity_buckets_compacted, general_partitions_compacted, error_message
+                           entity_buckets_compacted, general_partitions_compacted,
+                           files_processed, files_created, error_message
                     FROM compaction_history
                     ORDER BY started_at DESC LIMIT 1
                     """)) {
@@ -590,6 +470,8 @@ public class CompactionService {
                 targets,
                 rs.getInt("entity_buckets_compacted"),
                 rs.getInt("general_partitions_compacted"),
+                rs.getLong("files_processed"),
+                rs.getLong("files_created"),
                 rs.getString("error_message")
         );
     }
@@ -615,5 +497,30 @@ public class CompactionService {
     // Internal types
     // =========================================================================
 
-    private record TopicPartitionKey(String topic, int partition) {}
+    /**
+     * Aggregated stats from one or more {@code ducklake_merge_adjacent_files} calls.
+     * Column names match the function's result table:
+     * {@code files_processed BIGINT} (input files merged), {@code files_created BIGINT}
+     * (output files written).
+     */
+    private record FileStats(long filesProcessed, long filesCreated) {
+        static final FileStats EMPTY = new FileStats(0, 0);
+
+        FileStats add(FileStats other) {
+            return new FileStats(
+                    filesProcessed + other.filesProcessed,
+                    filesCreated + other.filesCreated);
+        }
+    }
+
+    /** Aggregated result of compacting a set of entity types or cassette topics. */
+    private record CompactionResult(int unitsProcessed, FileStats fileStats) {
+        static final CompactionResult NONE = new CompactionResult(0, FileStats.EMPTY);
+
+        CompactionResult add(CompactionResult other) {
+            return new CompactionResult(
+                    unitsProcessed + other.unitsProcessed,
+                    fileStats.add(other.fileStats));
+        }
+    }
 }

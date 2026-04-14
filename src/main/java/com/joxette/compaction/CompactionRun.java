@@ -20,6 +20,8 @@ import java.util.List;
           "targets": null,
           "entityBucketsCompacted": 42,
           "generalPartitionsCompacted": 0,
+          "filesProcessed": 120,
+          "filesCreated": 15,
           "errorMessage": null
         }""")
 public record CompactionRun(
@@ -39,8 +41,14 @@ public record CompactionRun(
         List<String> targets,
         @Schema(description = "Number of entity partition buckets compacted", example = "42")
         int entityBucketsCompacted,
-        @Schema(description = "Number of general-cassette partitions compacted", example = "0")
+        @Schema(description = "Number of general-cassette topics compacted", example = "0")
         int generalPartitionsCompacted,
+        @Schema(description = "Total input files merged across all compacted tables "
+                + "(sum of files_processed from ducklake_merge_adjacent_files)", example = "120")
+        long filesProcessed,
+        @Schema(description = "Total output files written across all compacted tables "
+                + "(sum of files_created from ducklake_merge_adjacent_files)", example = "15")
+        long filesCreated,
         @Schema(description = "Error message if the run failed; null on success")
         String errorMessage
 ) {}

@@ -146,6 +146,8 @@ public final class DuckDBTestSupport {
                         targets         VARCHAR[],
                         entity_buckets_compacted     INTEGER NOT NULL DEFAULT 0,
                         general_partitions_compacted INTEGER NOT NULL DEFAULT 0,
+                        files_processed BIGINT  NOT NULL DEFAULT 0,
+                        files_created   BIGINT  NOT NULL DEFAULT 0,
                         error_message   VARCHAR
                     )""");
 
