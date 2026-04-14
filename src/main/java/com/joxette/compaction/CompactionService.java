@@ -25,10 +25,11 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *   <li>Estimate the number of row groups for each bucket by distributing the
  *       table-wide row-group count proportionally.  Buckets whose estimate
  *       exceeds {@code min-files-per-bucket} are selected for compaction.</li>
- *   <li>For each selected bucket: copy cold rows into a temp table sorted by
- *       {@code (entity_id, timestamp, recorded_at)}, delete the originals, and
- *       re-insert from the temp table.  DuckLake writes the re-inserted rows as
- *       new, larger data files.</li>
+ *   <li>For each selected bucket: copy cold rows into a temp table, delete the
+ *       originals, and re-insert from the temp table.  DuckLake writes the
+ *       re-inserted rows as new, larger, sort-ordered data files (sort order is
+ *       enforced automatically via the {@code SORTED BY} declaration on the table,
+ *       applied by {@code SchemaManager.ensureTableSorted()}).</li>
  * </ol>
  *
  * <h2>General cassette compaction</h2>
@@ -265,14 +266,20 @@ public class CompactionService {
     }
 
     /**
-     * Re-writes cold data for a single entity bucket, sorted by
-     * {@code (entity_id, timestamp, recorded_at)}.
+     * Re-writes cold data for a single entity bucket.
+     *
+     * <p>Sort order is enforced automatically by DuckLake because
+     * {@code entity_<type>} tables are declared with
+     * {@code SORTED BY (entity_id ASC, kafka_timestamp ASC, recorded_at ASC)}
+     * via {@code SchemaManager.ensureTableSorted()}.  There is no need to
+     * supply an explicit {@code ORDER BY} here — DuckLake applies the declared
+     * order when it writes the consolidated Parquet files.
      *
      * <p>Algorithm:
      * <ol>
-     *   <li>Create a temp table with the sorted cold rows for this bucket.</li>
+     *   <li>Copy cold rows for this bucket into a temp table.</li>
      *   <li>Delete the cold rows from the live table.</li>
-     *   <li>Re-insert from the temp table — DuckLake writes new, merged files.</li>
+     *   <li>Re-insert from the temp table — DuckLake writes new, sorted, merged files.</li>
      *   <li>Drop the temp table.</li>
      * </ol>
      */
@@ -287,12 +294,12 @@ public class CompactionService {
                 // 1. Empty temp table matching the source schema
                 st.execute("CREATE OR REPLACE TABLE " + tmp + " AS SELECT * FROM " + src + " LIMIT 0");
 
-                // 2. Insert cold, sorted rows into temp
+                // 2. Copy cold rows into temp (no ORDER BY — SORTED BY on the target table
+                //    lets DuckLake enforce sort order when writing consolidated Parquet files)
                 try (PreparedStatement ps = duckDB.prepareStatement(
                         "INSERT INTO " + tmp
                         + " SELECT * FROM " + src
-                        + " WHERE bucket = ? AND recorded_at < " + cutoff
-                        + " ORDER BY entity_id, kafka_timestamp, recorded_at")) {
+                        + " WHERE bucket = ? AND recorded_at < " + cutoff)) {
                     ps.setInt(1, bucket);
                     ps.executeUpdate();
                 }
@@ -305,7 +312,7 @@ public class CompactionService {
                     ps.executeUpdate();
                 }
 
-                // 4. Re-insert sorted data; DuckLake writes consolidated files
+                // 4. Re-insert; DuckLake writes consolidated, sort-ordered files
                 st.execute("INSERT INTO " + src + " SELECT * FROM " + tmp);
 
                 // 5. Drop temp
@@ -372,8 +379,13 @@ public class CompactionService {
     }
 
     /**
-     * Re-writes cold data for one {@code (kafka_partition)} slice of a
-     * general cassette table, sorted by {@code (kafka_timestamp, kafka_partition, kafka_offset)}.
+     * Re-writes cold data for one {@code (kafka_partition)} slice of a general cassette table.
+     *
+     * <p>Sort order is enforced automatically by DuckLake because {@code general_<topic>}
+     * tables are declared with
+     * {@code SORTED BY (kafka_timestamp ASC, kafka_partition ASC, kafka_offset ASC)}
+     * via {@code SchemaManager.ensureTableSorted()}.  There is no need to supply an
+     * explicit {@code ORDER BY} here.
      */
     private void compactGeneralPartition(String topic, String tableName, int partition, int lookbackDays)
             throws SQLException {
@@ -387,11 +399,12 @@ public class CompactionService {
             try (Statement st = duckDB.createStatement()) {
                 st.execute("CREATE OR REPLACE TABLE " + tmp + " AS SELECT * FROM " + src + " LIMIT 0");
 
+                // No ORDER BY — SORTED BY on the target table lets DuckLake enforce
+                // sort order when writing consolidated Parquet files
                 try (PreparedStatement ps = duckDB.prepareStatement(
                         "INSERT INTO " + tmp
                         + " SELECT * FROM " + src
-                        + " WHERE kafka_partition = ? AND recorded_at < " + cutoff
-                        + " ORDER BY kafka_timestamp, kafka_partition, kafka_offset")) {
+                        + " WHERE kafka_partition = ? AND recorded_at < " + cutoff)) {
                     ps.setInt(1, partition);
                     ps.executeUpdate();
                 }

@@ -393,6 +393,8 @@ public class SchemaManager {
                 message_type    VARCHAR
             )
             """, catalog, tableName, flexType));
+        ensureTableSorted(conn, catalog, tableName,
+                "(kafka_timestamp ASC, kafka_partition ASC, kafka_offset ASC)");
         log.debug("DuckLake table ready: {}.main.{}", catalog, tableName);
     }
 
@@ -420,6 +422,8 @@ public class SchemaManager {
                 headers         STRUCT(key VARCHAR, value VARCHAR)[]
             )
             """, catalog, tableName, flexType));
+        ensureTableSorted(conn, catalog, tableName,
+                "(entity_id ASC, kafka_timestamp ASC, recorded_at ASC)");
         log.debug("DuckLake table ready: {}.main.{}", catalog, tableName);
     }
 
@@ -433,8 +437,8 @@ public class SchemaManager {
      */
     public void createEntityTable(String type) throws SQLException {
         validateEntityType(type);
-        Connection conn   = duckLakeManager.getConnection();
-        String    catalog = duckLakeManager.getCatalogName();
+        Connection conn    = duckLakeManager.getConnection();
+        String    catalog  = duckLakeManager.getCatalogName();
         String    flexType = variantSupported ? "VARIANT" : "JSON";
         createEntityCassetteTable(conn, catalog, "entity_" + type, flexType);
         log.info("Entity cassette table created/verified: {}.main.entity_{}", catalog, type);
@@ -525,6 +529,37 @@ public class SchemaManager {
             } catch (SQLException e) {
                 log.debug("Migration skipped for {}.main.{} ({})", catalog, tableName, e.getMessage());
             }
+        }
+    }
+
+    /**
+     * Applies {@code ALTER TABLE … SET SORTED BY} so DuckLake 1.0+ automatically
+     * enforces the declared sort order during compaction and inline-data flush.
+     *
+     * <p>This is issued as a separate statement after {@code CREATE TABLE IF NOT EXISTS}
+     * because DuckLake does not support {@code SORTED BY} inline in the CREATE DDL.
+     * It is safe to run on every startup against already-sorted tables — DuckLake
+     * treats a repeated {@code SET SORTED BY} with the same columns as a no-op.
+     *
+     * <p><b>Important:</b> {@code SET SORTED BY} does <em>not</em> retroactively
+     * reorder existing rows.  Pre-existing data will be sorted by DuckLake on the
+     * next compaction or flush pass.  This is the expected behaviour; no special
+     * handling is needed in the application.
+     *
+     * <p>Failures are logged as warnings and swallowed so that an older DuckLake
+     * version that does not yet support the statement cannot prevent startup.
+     */
+    private void ensureTableSorted(Connection conn, String catalog,
+                                    String tableName, String sortedBy) {
+        String sql = "ALTER TABLE " + catalog + ".main." + tableName
+                     + " SET SORTED BY " + sortedBy;
+        try (Statement stmt = conn.createStatement()) {
+            stmt.execute(sql);
+            log.debug("SORTED BY applied to {}.main.{}: {}", catalog, tableName, sortedBy);
+        } catch (SQLException e) {
+            log.warn("Could not apply SORTED BY to {}.main.{} ({}); " +
+                     "DuckLake will not enforce sort order automatically for this table",
+                     catalog, tableName, e.getMessage());
         }
     }
 
