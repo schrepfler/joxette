@@ -8,7 +8,7 @@ import {
 } from '@tanstack/react-table'
 import { useForm } from '@tanstack/react-form'
 import { useState } from 'react'
-import { topicsApi, type TopicConfig, type CreateTopicRequest } from '../../api/client'
+import { topicsApi, brokersApi, type TopicConfig, type CreateTopicRequest } from '../../api/client'
 import { Layout } from '../../components/Layout'
 import { LoadingSpinner } from '../../components/LoadingSpinner'
 import { ErrorMessage } from '../../components/ErrorMessage'
@@ -24,6 +24,7 @@ const colHelper = createColumnHelper<TopicConfig>()
 function AddTopicModal({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient()
   const { addToast } = useToast()
+  const { data: brokers = [] } = useQuery({ queryKey: ['brokers'], queryFn: brokersApi.list })
   const mutation = useMutation({
     mutationFn: (data: CreateTopicRequest) => topicsApi.create(data),
     onSuccess: () => {
@@ -38,6 +39,7 @@ function AddTopicModal({ onClose }: { onClose: () => void }) {
     defaultValues: {
       topic: '',
       mode: 'general',
+      brokerId: '',
       consumerGroup: '',
       retentionDays: '',
       startFrom: '',
@@ -46,6 +48,7 @@ function AddTopicModal({ onClose }: { onClose: () => void }) {
       const req: CreateTopicRequest = {
         topic: value.topic,
         mode: value.mode || undefined,
+        brokerId: value.brokerId || undefined,
         consumerGroup: value.consumerGroup || undefined,
         retentionDays: value.retentionDays ? Number(value.retentionDays) : undefined,
         startFrom: value.startFrom || undefined,
@@ -80,6 +83,19 @@ function AddTopicModal({ onClose }: { onClose: () => void }) {
                   <option value="general">general</option>
                   <option value="entity_only">entity_only</option>
                   <option value="both">both</option>
+                </select>
+              </div>
+            )}
+          </form.Field>
+          <form.Field name="brokerId">
+            {(field) => (
+              <div style={{ marginBottom: '0.75rem' }}>
+                <label style={labelStyle}>Broker</label>
+                <select style={inputStyle} value={field.state.value} onChange={e => field.handleChange(e.target.value)}>
+                  <option value="">(default)</option>
+                  {brokers.map(b => (
+                    <option key={b.brokerId} value={b.brokerId}>{b.brokerId} — {b.bootstrapServers}</option>
+                  ))}
                 </select>
               </div>
             )}
@@ -164,6 +180,10 @@ function TopicsPage() {
     colHelper.accessor('consumerGroup', {
       header: 'Consumer Group',
       cell: info => info.getValue() ?? '—',
+    }),
+    colHelper.accessor('brokerId', {
+      header: 'Broker',
+      cell: info => info.getValue() ?? 'default',
     }),
     colHelper.display({
       id: 'actions',

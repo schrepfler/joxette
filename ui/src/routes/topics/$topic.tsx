@@ -9,7 +9,7 @@ import {
 import { useForm } from '@tanstack/react-form'
 import { useState, useRef, useEffect } from 'react'
 import { VisualJson, TreeView, type JsonValue } from '@visual-json/react'
-import { topicsApi, cassettesApi, streamTopicRecords, type CassetteRecord, type StreamMode, type TopicStreamParams, type TopicMatcherConfig, type AddMatcherRequest } from '../../api/client'
+import { topicsApi, brokersApi, cassettesApi, streamTopicRecords, type CassetteRecord, type StreamMode, type TopicStreamParams, type TopicMatcherConfig, type AddMatcherRequest } from '../../api/client'
 import { Layout } from '../../components/Layout'
 import { LoadingSpinner } from '../../components/LoadingSpinner'
 import { ErrorMessage } from '../../components/ErrorMessage'
@@ -223,8 +223,10 @@ function TopicDetailPage() {
       }),
   })
 
+  const { data: brokers = [] } = useQuery({ queryKey: ['brokers'], queryFn: brokersApi.list })
+
   const updateMutation = useMutation({
-    mutationFn: (mode: string) => topicsApi.update(topic, { mode }),
+    mutationFn: (req: { mode: string; brokerId?: string | null }) => topicsApi.update(topic, req),
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ['topics', topic] }); addToast('Topic updated', 'success') },
     onError: (e: Error) => addToast(e.message, 'error'),
   })
@@ -248,8 +250,8 @@ function TopicDetailPage() {
   })
 
   const form = useForm({
-    defaultValues: { mode: topicQuery.data?.mode ?? '' },
-    onSubmit: async ({ value }) => updateMutation.mutate(value.mode),
+    defaultValues: { mode: topicQuery.data?.mode ?? '', brokerId: topicQuery.data?.brokerId ?? '' },
+    onSubmit: async ({ value }) => updateMutation.mutate({ mode: value.mode, brokerId: value.brokerId || null }),
   })
 
   const retentionForm = useForm({
@@ -398,7 +400,7 @@ function TopicDetailPage() {
           {/* Edit form */}
           <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '1rem 1.25rem', marginBottom: '1.5rem' }}>
             <h3 style={{ margin: '0 0 0.75rem', fontSize: 15 }}>Edit Topic</h3>
-            <form onSubmit={(e) => { e.preventDefault(); void form.handleSubmit() }} style={{ display: 'flex', gap: 12, alignItems: 'flex-end' }}>
+            <form onSubmit={(e) => { e.preventDefault(); void form.handleSubmit() }} style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
               <form.Field name="mode">
                 {(field) => (
                   <div>
@@ -407,6 +409,19 @@ function TopicDetailPage() {
                       <option value="general">general</option>
                       <option value="entity_only">entity_only</option>
                       <option value="both">both</option>
+                    </select>
+                  </div>
+                )}
+              </form.Field>
+              <form.Field name="brokerId">
+                {(field) => (
+                  <div>
+                    <label style={labelStyle}>Broker</label>
+                    <select style={{ ...inputStyle, width: 220 }} value={field.state.value ?? ''} onChange={e => field.handleChange(e.target.value)}>
+                      <option value="">(default)</option>
+                      {brokers.map(b => (
+                        <option key={b.brokerId} value={b.brokerId}>{b.brokerId} — {b.bootstrapServers}</option>
+                      ))}
                     </select>
                   </div>
                 )}

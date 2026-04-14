@@ -26,6 +26,7 @@ export interface CreateTopicRequest {
 
 export interface UpdateTopicRequest {
   mode: string
+  brokerId?: string | null
 }
 
 export interface TopicMatcherConfig {
