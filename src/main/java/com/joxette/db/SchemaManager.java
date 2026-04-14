@@ -311,13 +311,17 @@ public class SchemaManager {
                 )
                 """);
 
-            // Migration: add columns introduced after the initial lake-schema version.
-            // ALTER TABLE ADD COLUMN IF NOT EXISTS is idempotent.
-            migrateCompactionHistory(conn);
             stmt.execute("ALTER TABLE topic_configs ADD COLUMN IF NOT EXISTS broker_id VARCHAR");
 
             log.debug("Config tables ready");
         }
+
+        // Migration: add columns introduced after the initial schema version.
+        // Must run AFTER the outer Statement is closed — DuckDB does not allow two
+        // active statements on the same connection simultaneously; opening a second
+        // Statement while the outer try-with-resources Statement is still open leaves
+        // the connection in a "pending query" state and silently drops the ALTER TABLE.
+        migrateCompactionHistory(conn);
     }
 
     // -------------------------------------------------------------------------
@@ -507,21 +511,25 @@ public class SchemaManager {
      */
     private void migrateCompactionHistory(Connection conn) {
         String[][] migrations = {
-            { "triggered_by",    "ALTER TABLE compaction_history ADD COLUMN triggered_by VARCHAR DEFAULT 'unknown'" },
-            { "targets",         "ALTER TABLE compaction_history ADD COLUMN targets VARCHAR[]" },
-            { "entity_buckets_compacted",     "ALTER TABLE compaction_history ADD COLUMN entity_buckets_compacted INTEGER DEFAULT 0" },
-            { "general_partitions_compacted", "ALTER TABLE compaction_history ADD COLUMN general_partitions_compacted INTEGER DEFAULT 0" },
-            { "files_processed",  "ALTER TABLE compaction_history ADD COLUMN files_processed BIGINT NOT NULL DEFAULT 0" },
-            { "files_created",    "ALTER TABLE compaction_history ADD COLUMN files_created BIGINT NOT NULL DEFAULT 0" },
-            { "error_message",   "ALTER TABLE compaction_history ADD COLUMN error_message VARCHAR" },
+            { "triggered_by",    "ALTER TABLE compaction_history ADD COLUMN IF NOT EXISTS triggered_by VARCHAR DEFAULT 'unknown'" },
+            { "targets",         "ALTER TABLE compaction_history ADD COLUMN IF NOT EXISTS targets VARCHAR[]" },
+            { "entity_buckets_compacted",     "ALTER TABLE compaction_history ADD COLUMN IF NOT EXISTS entity_buckets_compacted INTEGER DEFAULT 0" },
+            { "general_partitions_compacted", "ALTER TABLE compaction_history ADD COLUMN IF NOT EXISTS general_partitions_compacted INTEGER DEFAULT 0" },
+            { "files_processed",  "ALTER TABLE compaction_history ADD COLUMN IF NOT EXISTS files_processed BIGINT DEFAULT 0" },
+            { "files_created",    "ALTER TABLE compaction_history ADD COLUMN IF NOT EXISTS files_created BIGINT DEFAULT 0" },
+            { "error_message",   "ALTER TABLE compaction_history ADD COLUMN IF NOT EXISTS error_message VARCHAR" },
         };
         for (String[] m : migrations) {
             try (Statement st = conn.createStatement()) {
                 st.execute(m[1]);
                 log.debug("compaction_history migration applied: {}", m[0]);
             } catch (SQLException e) {
-                // Column already exists or DDL not supported — safe to skip
-                log.debug("compaction_history migration skipped ({}): {}", m[0], e.getMessage());
+                // DDL failed for an unexpected reason — reset connection state so subsequent
+                // migrations are not poisoned by DuckDB's "pending query" error.
+                log.warn("compaction_history migration failed ({}): {}", m[0], e.getMessage());
+                try { conn.rollback(); } catch (SQLException re) {
+                    log.debug("rollback after failed migration: {}", re.getMessage());
+                }
             }
         }
     }
