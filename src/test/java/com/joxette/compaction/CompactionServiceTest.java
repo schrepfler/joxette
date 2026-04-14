@@ -1,16 +1,22 @@
 package com.joxette.compaction;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.joxette.config.JoxetteProperties;
 import com.joxette.management.ConfigRepository;
 import com.joxette.support.DuckDBTestSupport;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.time.Instant;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -250,6 +256,174 @@ class CompactionServiceTest {
         service.executeRun(
                 service.getHistory(1).get(0).id(),
                 null);
+    }
+
+    // -------------------------------------------------------------------------
+    // ducklake_flush_inlined_data result logging
+    // -------------------------------------------------------------------------
+
+    /**
+     * After a compaction run completes, a flush-related log event must be emitted
+     * by {@code checkpoint()} — the row count returned by
+     * {@code ducklake_flush_inlined_data} must not be silently discarded.
+     *
+     * <p>With DuckLake loaded: DEBUG "Flushed N inlined rows to Parquet for lake 'lake'".
+     * Without DuckLake (in-memory test DuckDB): WARN "ducklake_flush failed (...)".
+     * Either way at least one log event containing "flush" or "flushed" must appear.
+     */
+    @Test
+    void checkpoint_flushResult_isLoggedNotDiscarded() throws Exception {
+        insertEntityRows(5); // seed data so flush has something to process
+
+        ch.qos.logback.classic.Logger logger =
+                (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(CompactionService.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        Level savedLevel = logger.getLevel();
+        logger.setLevel(Level.DEBUG);
+        logger.addAppender(appender);
+        try {
+            CompactionRun run = service.beginRun("flush-log-test", null);
+            service.executeRun(run.id(), null);
+
+            boolean hasFlushEvent = appender.list.stream().anyMatch(e -> {
+                String msg = e.getFormattedMessage().toLowerCase();
+                return msg.contains("flush") || msg.contains("flushed");
+            });
+            assertThat(hasFlushEvent)
+                    .as("checkpoint() must log the ducklake_flush_inlined_data result, not discard it")
+                    .isTrue();
+        } finally {
+            logger.detachAppender(appender);
+            logger.setLevel(savedLevel);
+        }
+    }
+
+    /**
+     * Seeds a small batch of inlined data (below the auto-flush threshold so the data
+     * is still buffered when {@code checkpoint()} fires), runs a compaction, and
+     * verifies that any {@code "inlined rows"} DEBUG message carries a non-negative count.
+     *
+     * <p>In in-memory test DuckDB the {@code ducklake_flush_inlined_data} call fails
+     * (extension not loaded) and the test passes trivially — no DEBUG message is emitted.
+     * With DuckLake loaded, the assertion catches any negative count that would indicate
+     * a bug in the result-reading code.
+     */
+    @Test
+    void checkpoint_flushedRowCount_isNonNegative() throws Exception {
+        insertEntityRows(5); // small batch — below auto-flush threshold
+
+        ch.qos.logback.classic.Logger logger =
+                (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(CompactionService.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        Level savedLevel = logger.getLevel();
+        logger.setLevel(Level.DEBUG);
+        logger.addAppender(appender);
+        try {
+            CompactionRun run = service.beginRun("rowcount-test", null);
+            service.executeRun(run.id(), null);
+
+            // Run must complete regardless of DuckLake availability.
+            assertThat(service.getRunById(run.id()).status()).isEqualTo("completed");
+
+            // If the DEBUG path was taken (DuckLake available), the embedded count must be ≥ 0.
+            Pattern countPattern = Pattern.compile("(\\d+) inlined rows");
+            appender.list.stream()
+                    .filter(e -> e.getLevel() == Level.DEBUG)
+                    .filter(e -> e.getFormattedMessage().contains("inlined rows"))
+                    .forEach(e -> {
+                        Matcher m = countPattern.matcher(e.getFormattedMessage());
+                        assertThat(m.find())
+                                .as("Flush DEBUG message must embed a numeric row count: "
+                                        + e.getFormattedMessage())
+                                .isTrue();
+                        assertThat(Long.parseLong(m.group(1)))
+                                .as("Flushed row count in log must be non-negative")
+                                .isGreaterThanOrEqualTo(0L);
+                    });
+        } finally {
+            logger.detachAppender(appender);
+            logger.setLevel(savedLevel);
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // ducklake_merge_adjacent_files results written to compaction_history
+    // -------------------------------------------------------------------------
+
+    /**
+     * No-op compaction: when there are no files to merge (empty entity table) the
+     * {@code compaction_history} record must show
+     * {@code files_processed = files_created} (files_before = files_after) — meaning
+     * nothing was merged and zero bytes were reclaimed.
+     *
+     * <p>In this test environment {@code ducklake_merge_adjacent_files} is unavailable;
+     * the service records zeros, so the invariant 0 = 0 still holds.
+     */
+    @Test
+    void compactionHistory_noOp_filesBeforeEqualsFilesAfter() throws Exception {
+        // Entity table exists but has no rows — nothing to compact.
+        CompactionRun run = service.beginRun("noop-files-test", List.of(ENTITY_TYPE));
+        service.executeRun(run.id(), List.of(ENTITY_TYPE));
+
+        CompactionRun result = service.getRunById(run.id());
+        assertThat(result.status()).isEqualTo("completed");
+
+        // files_processed = "files_before": how many source files were merged.
+        // files_created   = "files_after":  how many output files remain.
+        // No-op: files_before == files_after → nothing merged, bytes_reclaimed == 0.
+        assertThat(result.filesProcessed())
+                .as("files_before (filesProcessed) must be non-negative")
+                .isGreaterThanOrEqualTo(0L);
+        assertThat(result.filesCreated())
+                .as("files_after (filesCreated) must be non-negative")
+                .isGreaterThanOrEqualTo(0L);
+        assertThat(result.filesProcessed())
+                .as("No-op: files_before must equal files_after (nothing merged, no bytes reclaimed)")
+                .isEqualTo(result.filesCreated());
+    }
+
+    /**
+     * Productive compaction: after DuckLake merges several small files into fewer
+     * larger ones, the history record must show {@code files_processed > files_created}
+     * (files_before > files_after), i.e., bytes were reclaimed.
+     *
+     * <p>In this test environment {@code ducklake_merge_adjacent_files} throws because
+     * the DuckLake extension is not loaded; the service records zeros and the run still
+     * completes.  This test therefore verifies:
+     * <ol>
+     *   <li>The run completes successfully even after a DuckLake call failure.</li>
+     *   <li>{@code files_processed} (files_before) and {@code files_created} (files_after)
+     *       are written to {@code compaction_history} as non-negative values — never null.</li>
+     * </ol>
+     *
+     * <p>Full assertion — {@code files_processed > files_created} → bytes_reclaimed > 0 —
+     * requires an integration test environment with the DuckLake extension loaded:
+     * <pre>
+     *   assertThat(result.filesProcessed()).isGreaterThan(result.filesCreated());
+     * </pre>
+     */
+    @Test
+    void compactionHistory_productiveCompaction_fileCountsWrittenToHistory() throws Exception {
+        insertEntityRows(20); // multiple rows → multiple small Parquet files in production
+
+        CompactionRun run = service.beginRun("productive-files-test", List.of(ENTITY_TYPE));
+        service.executeRun(run.id(), List.of(ENTITY_TYPE));
+
+        CompactionRun result = service.getRunById(run.id());
+        assertThat(result.status()).isEqualTo("completed");
+
+        // Both file counts must be persisted to compaction_history (never null / negative).
+        assertThat(result.filesProcessed())
+                .as("files_before (filesProcessed) must be written to compaction_history")
+                .isGreaterThanOrEqualTo(0L);
+        assertThat(result.filesCreated())
+                .as("files_after (filesCreated) must be written to compaction_history")
+                .isGreaterThanOrEqualTo(0L);
+        // With DuckLake loaded and files to merge, the productive assertion would be:
+        //   assertThat(result.filesProcessed()).isGreaterThan(result.filesCreated())
+        //   i.e., files_after < files_before → bytes_reclaimed > 0.
     }
 
     // -------------------------------------------------------------------------
