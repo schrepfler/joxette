@@ -18,9 +18,9 @@
         <compiler.release>25</compiler.release>
         <jox.channels.version>1.1.2</jox.channels.version>
         <jox.flows.version>0.5.3</jox.flows.version>
-        <duckdb.version>1.5.1.0</duckdb.version>
+        <duckdb.version>1.5.2.0</duckdb.version>
         <jooq.version>3.21.1</jooq.version>
-        <springdoc-openapi-starter-webmvc-ui.version>3.0.2</springdoc-openapi-starter-webmvc-ui.version>
+        <springdoc-openapi-starter-webmvc-ui.version>3.0.3</springdoc-openapi-starter-webmvc-ui.version>
         <aws.sdk.version>2.42.32</aws.sdk.version>
         <maven-enforcer-plugin.version>3.6.2</maven-enforcer-plugin.version>
         <maven-compiler-plugin.version>3.15.0</maven-compiler-plugin.version>

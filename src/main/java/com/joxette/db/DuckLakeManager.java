@@ -59,6 +59,8 @@ public class DuckLakeManager {
             stmt.execute("LOAD ducklake");
         }
 
+        logDuckLakeVersion();
+
         configureS3Secret();
 
         String catalogPath = properties.getCatalog().getPath();
@@ -94,11 +96,15 @@ public class DuckLakeManager {
 
         String dataPath = resolveDataPath(catalogPath);
 
-        log.info("Attaching DuckLake catalog at '{}' with DATA_PATH '{}'", catalogPath, dataPath);
+        // AUTOMATIC_MIGRATION (DuckLake 1.0+): when TRUE the extension will apply any
+        // pending catalog schema upgrades on attach. Controlled by joxette.catalog.auto-migrate.
+        String autoMigrate = properties.getCatalog().isAutoMigrate() ? "TRUE" : "FALSE";
+        log.info("Attaching DuckLake catalog at '{}' with DATA_PATH '{}' (AUTOMATIC_MIGRATION {})",
+            catalogPath, dataPath, autoMigrate);
         try (Statement stmt = connection.createStatement()) {
             stmt.execute(String.format(
-                "ATTACH 'ducklake:%s' AS %s (DATA_PATH '%s', OVERRIDE_DATA_PATH TRUE)",
-                catalogPath, CATALOG_NAME, dataPath));
+                "ATTACH 'ducklake:%s' AS %s (DATA_PATH '%s', OVERRIDE_DATA_PATH TRUE, AUTOMATIC_MIGRATION %s)",
+                catalogPath, CATALOG_NAME, dataPath, autoMigrate));
             log.info("DuckLake catalog '{}' ready (data path: {})", CATALOG_NAME, dataPath);
         } catch (SQLException e) {
             if (isAlreadyAttached(e)) {
@@ -114,12 +120,6 @@ public class DuckLakeManager {
 
         if (properties.getCatalog().isMetadataQueryLogging()) {
             enableMetadataLogging();
-        }
-
-        if (properties.getCatalog().isAutoMigrate()) {
-            runCatalogMigration();
-        } else {
-            log.info("DuckLake catalog auto-migration disabled (joxette.catalog.auto-migrate=false)");
         }
 
         if (properties.getCatalog().isMetadataQueryLogging()) {
