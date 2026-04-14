@@ -136,11 +136,11 @@ public class DuckLakeManager {
      */
     private void logDuckLakeVersion() {
         try (Statement stmt = connection.createStatement();
-             ResultSet rs = stmt.executeQuery("SELECT * FROM ducklake_settings()")) {
+             ResultSet rs = stmt.executeQuery("SELECT * FROM ducklake_settings('" + CATALOG_NAME + "')")) {
             if (rs.next()) {
-                String version    = rs.getString("extension_version");
-                String catalogType = rs.getString("catalog_dbms_type");
-                String dataPath   = rs.getString("data_path");
+                String version     = rs.getString("extension_version");
+                String catalogType = rs.getString("catalog_type");
+                String dataPath    = rs.getString("data_path");
                 log.info("DuckLake version={} catalog={} data_path={}", version, catalogType, dataPath);
             }
         } catch (SQLException e) {
@@ -249,6 +249,13 @@ public class DuckLakeManager {
                 log.info("DuckLake catalog migration: completed");
             }
         } catch (SQLException e) {
+            String msg = e.getMessage();
+            if (msg != null && msg.contains("ducklake_migrate") && msg.contains("does not exist")) {
+                // ducklake_migrate() was introduced in DuckLake 1.0 — older builds skip gracefully.
+                log.warn("ducklake_migrate() not available in this DuckLake build — " +
+                    "catalog schema migration skipped. Upgrade ducklake extension if needed.");
+                return;
+            }
             throw new IllegalStateException(
                 "DuckLake catalog migration failed — check DuckLake version compatibility. " +
                 "Set joxette.catalog.auto-migrate=false to skip and investigate manually.", e);
