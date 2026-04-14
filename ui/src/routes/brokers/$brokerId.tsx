@@ -8,18 +8,20 @@ import {
 } from '@tanstack/react-table'
 import { useForm } from '@tanstack/react-form'
 import { useState } from 'react'
-import { brokersApi, topicsApi, type BrokerConfig, type UpdateBrokerRequest, type TopicConfig } from '../../api/client'
+import { brokersApi, topicsApi, type BrokerConfig, type UpdateBrokerRequest, type TopicConfig, type BrokerTopicInfo } from '../../api/client'
 import { Layout } from '../../components/Layout'
 import { LoadingSpinner } from '../../components/LoadingSpinner'
 import { ErrorMessage } from '../../components/ErrorMessage'
 import { ConfirmDialog } from '../../components/ConfirmDialog'
 import { useToast } from '../../components/Toast'
+import { AddTopicModal } from '../../components/AddTopicModal'
 
 export const Route = createFileRoute('/brokers/$brokerId')({
   component: BrokerDetailPage,
 })
 
 const topicColHelper = createColumnHelper<TopicConfig>()
+const brokerTopicColHelper = createColumnHelper<BrokerTopicInfo>()
 
 const SASL_PROTOCOLS = new Set(['SASL_PLAINTEXT', 'SASL_SSL'])
 const SSL_PROTOCOLS = new Set(['SASL_SSL', 'SSL'])
@@ -211,6 +213,9 @@ function BrokerDetailPage() {
 
   const [showEdit, setShowEdit] = useState(false)
   const [showConfirmDelete, setShowConfirmDelete] = useState(false)
+  const [topicFilter, setTopicFilter] = useState("")
+  const [showAddTopic, setShowAddTopic] = useState(false)
+  const [prefilledTopic, setPrefilledTopic] = useState("")
 
   const { data: broker, isLoading, error } = useQuery({
     queryKey: ['brokers', brokerId],
@@ -223,6 +228,15 @@ function BrokerDetailPage() {
   })
 
   const topicsForBroker = (allTopics ?? []).filter(t => t.brokerId === brokerId)
+
+  const { data: brokerTopics, isLoading: topicsLoading, error: topicsError } = useQuery({
+    queryKey: ['brokers', brokerId, 'topics'],
+    queryFn: () => brokersApi.listTopics(brokerId),
+  })
+
+  const filteredTopics = (brokerTopics ?? []).filter(t =>
+    t.topicName.toLowerCase().includes(topicFilter.toLowerCase())
+  )
 
   const deleteMutation = useMutation({
     mutationFn: () => brokersApi.delete(brokerId),
@@ -280,6 +294,71 @@ function BrokerDetailPage() {
     getCoreRowModel: getCoreRowModel(),
   })
 
+  const brokerTopicColumns = [
+    brokerTopicColHelper.accessor('topicName', {
+      header: 'Topic Name',
+      cell: info => <strong style={{ fontFamily: 'monospace' }}>{info.getValue()}</strong>,
+    }),
+    brokerTopicColHelper.accessor('partitionCount', {
+      header: 'Partitions',
+      cell: info => <span style={{ textAlign: 'right', display: 'block' }}>{info.getValue()}</span>,
+    }),
+    brokerTopicColHelper.accessor('isRecorded', {
+      header: 'Status',
+      cell: info => (
+        <span style={{
+          background: info.getValue() ? '#c6f6d5' : '#edf2f7',
+          color: info.getValue() ? '#276749' : '#4a5568',
+          padding: '2px 8px', borderRadius: 10, fontSize: 12, fontWeight: 600,
+        }}>
+          {info.getValue() ? 'Recorded' : 'Available'}
+        </span>
+      ),
+    }),
+    brokerTopicColHelper.accessor('recordingMode', {
+      header: 'Mode',
+      cell: info => info.getValue() ?? '—',
+    }),
+    brokerTopicColHelper.display({
+      id: 'actions',
+      header: 'Actions',
+      cell: ({ row }) => {
+        const t = row.original
+        return (
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button
+              style={primaryBtnSmall}
+              onClick={e => {
+                e.stopPropagation()
+                void navigate({ to: '/brokers/$brokerId/topics/$topic', params: { brokerId, topic: t.topicName } })
+              }}
+            >
+              Peek
+            </button>
+            {!t.isRecorded && (
+              <button
+                style={warnBtnSmall}
+                onClick={e => {
+                  e.stopPropagation()
+                  setPrefilledTopic(t.topicName)
+                  setShowAddTopic(true)
+                }}
+              >
+                Record
+              </button>
+            )}
+          </div>
+        )
+      },
+    }),
+  ]
+
+  const brokerTopicTable = useReactTable({
+    data: filteredTopics,
+    columns: brokerTopicColumns,
+    getCoreRowModel: getCoreRowModel(),
+  })
+
   return (
     <Layout>
       {isLoading && <LoadingSpinner />}
@@ -323,7 +402,7 @@ function BrokerDetailPage() {
           </div>
 
           {/* Topics using this broker */}
-          <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '1rem 1.25rem' }}>
+          <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '1rem 1.25rem', marginBottom: '1.5rem' }}>
             <h3 style={{ margin: '0 0 0.75rem', fontSize: 15 }}>Topics Using This Broker</h3>
             {topicsForBroker.length === 0 ? (
               <p style={{ margin: 0, fontSize: 14, color: '#a0aec0', fontStyle: 'italic' }}>No topics are using this broker yet.</p>
@@ -359,10 +438,57 @@ function BrokerDetailPage() {
               </table>
             )}
           </div>
+
+          {/* All topics on this broker */}
+          <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '1rem 1.25rem' }}>
+            <h3 style={{ margin: '0 0 0.75rem', fontSize: 15 }}>Topics on this Broker</h3>
+            <input
+              style={{ ...inputStyle, width: 280, marginBottom: '0.75rem' }}
+              placeholder="Filter topics…"
+              value={topicFilter}
+              onChange={e => setTopicFilter(e.target.value)}
+            />
+            {topicsLoading && <LoadingSpinner />}
+            {topicsError && <ErrorMessage message={(topicsError as Error).message} />}
+            {!topicsLoading && !topicsError && filteredTopics.length === 0 && (
+              <p style={{ margin: 0, fontSize: 14, color: '#a0aec0', fontStyle: 'italic' }}>No topics found.</p>
+            )}
+            {!topicsLoading && !topicsError && filteredTopics.length > 0 && (
+              <table style={tableStyle}>
+                <thead>
+                  {brokerTopicTable.getHeaderGroups().map(hg => (
+                    <tr key={hg.id}>
+                      {hg.headers.map(h => <th key={h.id} style={thStyle}>{flexRender(h.column.columnDef.header, h.getContext())}</th>)}
+                    </tr>
+                  ))}
+                </thead>
+                <tbody>
+                  {brokerTopicTable.getRowModel().rows.map(row => (
+                    <tr
+                      key={row.id}
+                      onMouseEnter={e => (e.currentTarget.style.background = '#ebf8ff')}
+                      onMouseLeave={e => (e.currentTarget.style.background = '')}
+                    >
+                      {row.getVisibleCells().map(cell => (
+                        <td key={cell.id} style={tdStyle}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
         </>
       )}
 
       {showEdit && broker && <EditBrokerModal broker={broker} onClose={() => setShowEdit(false)} />}
+      {showAddTopic && (
+        <AddTopicModal
+          defaultTopic={prefilledTopic}
+          defaultBrokerId={brokerId}
+          onClose={() => { setShowAddTopic(false); setPrefilledTopic("") }}
+        />
+      )}
       {showConfirmDelete && (
         <ConfirmDialog
           message={`Delete broker "${brokerId}"? Topics using this broker will need to be reassigned.`}
@@ -380,6 +506,8 @@ const inputStyle: React.CSSProperties = { width: '100%', padding: '0.4rem 0.6rem
 const primaryBtnStyle: React.CSSProperties = { padding: '0.45rem 1rem', background: '#3182ce', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 14 }
 const cancelBtnStyle: React.CSSProperties = { padding: '0.45rem 1rem', background: '#fff', color: '#4a5568', border: '1px solid #cbd5e0', borderRadius: 4, cursor: 'pointer', fontSize: 14 }
 const dangerBtnStyle: React.CSSProperties = { padding: '0.45rem 1rem', background: '#e53e3e', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 14 }
+const primaryBtnSmall: React.CSSProperties = { padding: '0.2rem 0.6rem', background: '#3182ce', color: '#fff', border: 'none', borderRadius: 3, cursor: 'pointer', fontSize: 12 }
+const warnBtnSmall: React.CSSProperties = { padding: '0.2rem 0.6rem', background: '#dd6b20', color: '#fff', border: 'none', borderRadius: 3, cursor: 'pointer', fontSize: 12 }
 const tableStyle: React.CSSProperties = { width: '100%', borderCollapse: 'collapse', background: '#fff', fontSize: 13 }
 const thStyle: React.CSSProperties = { textAlign: 'left', padding: '0.5rem 0.6rem', background: '#edf2f7', fontWeight: 600, color: '#4a5568', borderBottom: '1px solid #e2e8f0' }
 const tdStyle: React.CSSProperties = { padding: '0.45rem 0.6rem', borderBottom: '1px solid #e2e8f0' }

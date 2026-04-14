@@ -82,6 +82,16 @@ export interface Header {
   value: string
 }
 
+export interface PeekMessage {
+  partition: number
+  offset: number
+  timestamp: string
+  key: string | null
+  value: string
+  valueEncoding: 'utf8' | 'base64'
+  headers: Header[]
+}
+
 export interface CassetteRecord {
   topic: string
   partition: number
@@ -729,9 +739,9 @@ export const brokersApi = {
     }),
   delete: (brokerId: string) =>
     request<void>(`/brokers/${encodeURIComponent(brokerId)}`, { method: 'DELETE' }),
-  peekMessages: (brokerId: string, topic: string, limit = 1) =>
-    request<CassetteRecord[]>(
-      `/brokers/${encodeURIComponent(brokerId)}/topics/${encodeURIComponent(topic)}/peek?limit=${limit}`,
+  peekMessages: (brokerId: string, topic: string, limit?: number) =>
+    request<PeekMessage[]>(
+      `/brokers/${encodeURIComponent(brokerId)}/topics/${encodeURIComponent(topic)}/peek${buildQuery({ limit })}`,
     ),
   listTopics: (brokerId: string, params?: { includeInternal?: boolean; filter?: string }) =>
     request<BrokerTopicInfo[]>(
