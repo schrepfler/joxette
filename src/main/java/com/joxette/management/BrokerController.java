@@ -1,17 +1,32 @@
 package com.joxette.management;
 
 import com.joxette.config.BrokerConnectionFactory;
+import com.joxette.kafka.ConsumerSettings;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.ListTopicsOptions;
 import org.apache.kafka.clients.admin.TopicDescription;
+import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.consumer.ConsumerRecords;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.common.PartitionInfo;
+import org.apache.kafka.common.TopicPartition;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
+import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Base64;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -183,6 +198,80 @@ public class BrokerController {
             Thread.currentThread().interrupt();
             return ResponseEntity.status(503).body("Request interrupted");
         }
+    }
+
+    @GetMapping(value = "/{brokerId}/topics/{topic}/peek",
+                produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<List<PeekMessage>> peekTopic(
+            @PathVariable String brokerId,
+            @PathVariable String topic,
+            @RequestParam(defaultValue = "20") int limit) {
+        if (limit < 1 || limit > 100) {
+            return ResponseEntity.badRequest().build();
+        }
+        ConsumerSettings<String, byte[]> base = connectionFactory.consumerSettings(brokerId);
+        Map<String, Object> props = new HashMap<>(base.toProperties());
+        props.put(ConsumerConfig.GROUP_ID_CONFIG, "joxette-peek-" + UUID.randomUUID());
+        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest");
+        props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
+        try (KafkaConsumer<String, byte[]> consumer = new KafkaConsumer<>(
+                props, base.keyDeserializer(), base.valueDeserializer())) {
+            List<PartitionInfo> parts = consumer.partitionsFor(topic);
+            if (parts == null || parts.isEmpty()) {
+                return ResponseEntity.ok(List.of());
+            }
+            List<TopicPartition> tps = parts.stream()
+                    .map(p -> new TopicPartition(topic, p.partition()))
+                    .toList();
+            consumer.assign(tps);
+            consumer.seekToEnd(tps);
+            Map<TopicPartition, Long> ends = consumer.endOffsets(tps);
+            for (TopicPartition tp : tps) {
+                long end = ends.get(tp);
+                long start = Math.max(0, end - (long) Math.ceil((double) limit / tps.size()));
+                consumer.seek(tp, start);
+            }
+            ConsumerRecords<String, byte[]> records = consumer.poll(Duration.ofSeconds(3));
+            List<PeekMessage> messages = new ArrayList<>();
+            records.forEach(r -> {
+                if (messages.size() >= limit) return;
+                byte[] rawValue = r.value();
+                String encoding = rawValue != null ? detectEncoding(rawValue) : "utf8";
+                String value = rawValue != null ? encodeValue(rawValue, encoding) : null;
+                List<PeekMessage.HeaderEntry> headers = new ArrayList<>();
+                r.headers().forEach(h -> headers.add(
+                        new PeekMessage.HeaderEntry(h.key(),
+                                h.value() != null ? new String(h.value(), StandardCharsets.UTF_8) : null)));
+                messages.add(new PeekMessage(
+                        r.partition(),
+                        r.offset(),
+                        Instant.ofEpochMilli(r.timestamp()).toString(),
+                        r.key(),
+                        value,
+                        encoding,
+                        headers));
+            });
+            messages.sort((a, b) -> a.timestamp().compareTo(b.timestamp()));
+            return ResponseEntity.ok(messages);
+        }
+    }
+
+    private static String detectEncoding(byte[] bytes) {
+        try {
+            StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(bytes));
+            return "utf8";
+        } catch (CharacterCodingException e) {
+            return "base64";
+        }
+    }
+
+    private static String encodeValue(byte[] bytes, String encoding) {
+        if ("base64".equals(encoding)) {
+            return Base64.getEncoder().encodeToString(bytes);
+        }
+        return new String(bytes, StandardCharsets.UTF_8);
     }
 
     @ExceptionHandler(IllegalArgumentException.class)
