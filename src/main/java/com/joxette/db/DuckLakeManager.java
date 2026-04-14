@@ -7,6 +7,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.sql.Connection;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 
@@ -33,6 +34,8 @@ import java.sql.Statement;
 public class DuckLakeManager {
 
     private static final Logger log = LoggerFactory.getLogger(DuckLakeManager.class);
+    /** Receives DuckLakeMetadata log entries when metadata-query-logging is enabled. */
+    private static final Logger duckLakeLog = LoggerFactory.getLogger("com.joxette.catalog.ducklake");
 
     /** Named catalog used in all DuckLake table references: {@code lake.main.<table>}. */
     public static final String CATALOG_NAME = "lake";
@@ -80,6 +83,10 @@ public class DuckLakeManager {
                     throw e;
                 }
             }
+            if (properties.getCatalog().isMetadataQueryLogging()) {
+                enableMetadataLogging();
+                drainMetadataLogs("startup");
+            }
             return;
         }
 
@@ -100,10 +107,65 @@ public class DuckLakeManager {
             }
         }
 
+        if (properties.getCatalog().isMetadataQueryLogging()) {
+            enableMetadataLogging();
+        }
+
         if (properties.getCatalog().isAutoMigrate()) {
             runCatalogMigration();
         } else {
             log.info("DuckLake catalog auto-migration disabled (joxette.catalog.auto-migrate=false)");
+        }
+
+        if (properties.getCatalog().isMetadataQueryLogging()) {
+            drainMetadataLogs("startup");
+        }
+    }
+
+    /**
+     * Activates DuckLakeMetadata catalog query tracing via DuckDB's built-in logging.
+     *
+     * <p>Must be called after the {@code ducklake} extension has been ATTACHed so that the
+     * {@code DuckLakeMetadata} log type is registered.  Setting {@code logging_type} before
+     * ATTACH would result in an "unknown logging type" error from DuckDB.
+     */
+    private void enableMetadataLogging() {
+        log.info("Enabling DuckLakeMetadata query logging (com.joxette.catalog.ducklake)");
+        try (Statement stmt = connection.createStatement()) {
+            stmt.execute("SET logging_type = 'DuckLakeMetadata'");
+            stmt.execute("SET logging_level = 'DEBUG'");
+        } catch (SQLException e) {
+            log.warn("Could not enable DuckLakeMetadata logging — " +
+                "requires DuckLake 1.0+ and ducklake extension already loaded: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Drains all entries currently in DuckDB's in-memory log buffer and emits them
+     * through the {@code com.joxette.catalog.ducklake} SLF4J logger at DEBUG level.
+     *
+     * <p>Call this after a block of catalog operations (startup, compaction) to surface
+     * per-query elapsed times recorded by the DuckLakeMetadata log type.  Requires
+     * {@code logging.level.com.joxette.catalog.ducklake: DEBUG} in application.yml or
+     * equivalent runtime logging config to see the output.
+     *
+     * @param phase label prepended to each log line to identify the calling context
+     *              (e.g. {@code "startup"}, {@code "compaction"})
+     */
+    public void drainMetadataLogs(String phase) {
+        try (Statement stmt = connection.createStatement();
+             ResultSet rs = stmt.executeQuery(
+                 "SELECT level, message FROM duckdb_logs() ORDER BY timestamp")) {
+            int count = 0;
+            while (rs.next()) {
+                duckLakeLog.debug("[{}] [{}] {}", phase, rs.getString("level"), rs.getString("message"));
+                count++;
+            }
+            if (count > 0) {
+                log.debug("Drained {} DuckLakeMetadata log entries for phase '{}'", count, phase);
+            }
+        } catch (SQLException e) {
+            log.warn("Failed to drain DuckLakeMetadata logs for phase '{}': {}", phase, e.getMessage());
         }
     }
 

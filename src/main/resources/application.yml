@@ -38,6 +38,12 @@ joxette:
     path: "./data/joxette.ducklake"
     object-storage-path: "s3://joxette-data/"
     # auto-migrate: true   # set false to skip automatic catalog migration on startup (DuckLake 1.0+)
+    # metadata-query-logging: true   # enables DuckLakeMetadata catalog query tracing (DuckLake 1.0+)
+    #   Records per-query elapsed times for ATTACH, ducklake_migrate(), and schema setup.
+    #   Entries are drained to SLF4J after startup (and after compaction runs) via:
+    #     logging:
+    #       level:
+    #         com.joxette.catalog.ducklake: DEBUG
 
   inline:
     threshold-mb: 4

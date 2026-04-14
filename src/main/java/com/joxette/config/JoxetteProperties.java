@@ -33,6 +33,20 @@ public class JoxetteProperties {
          * Set to {@code false} in environments where catalog schema changes require prior approval.
          */
         private boolean autoMigrate = true;
+        /**
+         * When {@code true}, enables DuckLakeMetadata catalog query tracing (DuckLake 1.0+).
+         * Activates {@code SET logging_type = 'DuckLakeMetadata'} and
+         * {@code SET logging_level = 'DEBUG'} immediately after the DuckLake extension is
+         * attached, so that per-query elapsed times are recorded for all subsequent catalog
+         * operations (ATTACH, {@code ducklake_migrate()}, schema setup).  Accumulated log
+         * entries are drained to SLF4J under the {@code com.joxette.catalog.ducklake} logger
+         * at DEBUG level after startup completes.
+         *
+         * <p>Defaults to {@code false} — zero overhead in production unless explicitly enabled.
+         * To see the output, also set:
+         * <pre>logging.level.com.joxette.catalog.ducklake: DEBUG</pre>
+         */
+        private boolean metadataQueryLogging = false;
         /** Optional S3-compatible storage credentials and endpoint. */
         private S3 s3 = new S3();
 
@@ -44,6 +58,9 @@ public class JoxetteProperties {
 
         public boolean isAutoMigrate() { return autoMigrate; }
         public void setAutoMigrate(boolean autoMigrate) { this.autoMigrate = autoMigrate; }
+
+        public boolean isMetadataQueryLogging() { return metadataQueryLogging; }
+        public void setMetadataQueryLogging(boolean metadataQueryLogging) { this.metadataQueryLogging = metadataQueryLogging; }
 
         public S3 getS3() { return s3; }
         public void setS3(S3 s3) { this.s3 = s3; }
