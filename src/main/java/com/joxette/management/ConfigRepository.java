@@ -80,19 +80,25 @@ public class ConfigRepository {
         return Optional.empty();
     }
 
-    public TopicConfig upsertTopic(String topic, String mode, boolean paused, String startFrom) throws SQLException {
+    public TopicConfig upsertTopic(String topic, String mode, boolean paused, String startFrom,
+                                   String brokerId) throws SQLException {
         validateMode(mode);
         String resolvedStartFrom = "earliest".equals(startFrom) ? "earliest" : "latest";
         synchronized (duckDB) {
             try (PreparedStatement ps = duckDB.prepareStatement("""
-                    INSERT INTO topic_configs (topic, mode, paused, start_from) VALUES (?, ?, ?, ?)
-                    ON CONFLICT (topic) DO UPDATE SET mode = excluded.mode, paused = excluded.paused
+                    INSERT INTO topic_configs (topic, mode, paused, start_from, broker_id) VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT (topic) DO UPDATE SET
+                        mode = excluded.mode,
+                        paused = excluded.paused,
+                        broker_id = excluded.broker_id,
+                        updated_at = now()
                     RETURNING topic, mode, paused, retention_days, start_from, broker_id
                     """)) {
                 ps.setString(1, topic);
                 ps.setString(2, mode);
                 ps.setBoolean(3, paused);
                 ps.setString(4, resolvedStartFrom);
+                ps.setString(5, brokerId);
                 try (ResultSet rs = ps.executeQuery()) {
                     if (rs.next()) {
                         return new TopicConfig(rs.getString("topic"), rs.getString("mode"),
@@ -104,12 +110,17 @@ public class ConfigRepository {
                 }
             }
         }
-        return new TopicConfig(topic, mode, paused, false, null, resolvedStartFrom, null);
+        return new TopicConfig(topic, mode, paused, false, null, resolvedStartFrom, brokerId);
+    }
+
+    /** Convenience overload for callers that don't supply brokerId. */
+    public TopicConfig upsertTopic(String topic, String mode, boolean paused, String startFrom) throws SQLException {
+        return upsertTopic(topic, mode, paused, startFrom, null);
     }
 
     /** Convenience overload for callers that don't specify startFrom (defaults to "latest"). */
     public TopicConfig upsertTopic(String topic, String mode, boolean paused) throws SQLException {
-        return upsertTopic(topic, mode, paused, "latest");
+        return upsertTopic(topic, mode, paused, "latest", null);
     }
 
     public TopicConfig setTopicRetentionDays(String topic, Integer days) throws SQLException {

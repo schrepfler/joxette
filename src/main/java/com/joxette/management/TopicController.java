@@ -37,8 +37,8 @@ public class TopicController {
     private final RecordingCoordinator coordinator;
     private final MessageRouter router;
 
-    record CreateTopicRequest(String topic, String mode, String startFrom) {}
-    record UpdateTopicRequest(String mode) {}
+    record CreateTopicRequest(String topic, String mode, String startFrom, String brokerId) {}
+    record UpdateTopicRequest(String mode, String brokerId) {}
     record SetRetentionRequest(Integer days) {}
     record AddMatcherRequest(String messageType, String idSource, String idExpression) {}
 
@@ -78,7 +78,7 @@ public class TopicController {
         }
         String mode = body.mode() != null ? body.mode() : "general";
         String startFrom = body.startFrom() != null ? body.startFrom() : "latest";
-        TopicConfig tc = config.upsertTopic(body.topic(), mode, false, startFrom);
+        TopicConfig tc = config.upsertTopic(body.topic(), mode, false, startFrom, body.brokerId());
         coordinator.startTopic(tc.topic(), tc.startFrom());
         reloadRouter();
         boolean active = coordinator.activeTopics().contains(tc.topic());
@@ -104,7 +104,7 @@ public class TopicController {
         }
         // Preserve current paused state
         boolean paused = config.findTopic(topic).map(TopicConfig::paused).orElse(false);
-        TopicConfig tc = config.upsertTopic(topic, body.mode(), paused);
+        TopicConfig tc = config.upsertTopic(topic, body.mode(), paused, "latest", body.brokerId());
         reloadRouter();
         return ResponseEntity.ok(tc);
     }
