@@ -445,14 +445,40 @@ public class CompactionService {
      *
      * <p>{@code CALL ducklake_flush_inlined_data('lake')} triggers DuckLake to write all
      * buffered inline rows as Parquet files to the configured DATA_PATH (S3).
+     * Since DuckLake 1.0 / PR #734 the call returns result rows indicating how many
+     * rows were flushed; the count is captured and logged at DEBUG level.
      * The subsequent CHECKPOINT ensures the catalog SQLite/DuckDB file is
      * durable on local disk as well.
      */
     private void checkpoint() throws SQLException {
         synchronized (duckDB) {
-            try (Statement st = duckDB.createStatement()) {
-                // Flush inlined rows → Parquet on S3 (the key step for DuckLake)
-                st.execute("CALL ducklake_flush_inlined_data('lake')");
+            try (Statement st = duckDB.createStatement();
+                 ResultSet rs = st.executeQuery("CALL ducklake_flush_inlined_data('lake')")) {
+                // Log column names once at DEBUG so the schema can be confirmed from logs.
+                ResultSetMetaData meta = rs.getMetaData();
+                if (log.isDebugEnabled()) {
+                    StringBuilder cols = new StringBuilder("ducklake_flush_inlined_data result columns:");
+                    for (int i = 1; i <= meta.getColumnCount(); i++) {
+                        cols.append(' ').append(meta.getColumnName(i))
+                            .append('(').append(meta.getColumnTypeName(i)).append(')');
+                    }
+                    log.debug("{}", cols);
+                }
+                // Pick the first column whose name contains "row", "count", or "flush";
+                // fall back to column 1 if none match (schema may evolve).
+                int countCol = 1;
+                for (int i = 1; i <= meta.getColumnCount(); i++) {
+                    String name = meta.getColumnName(i).toLowerCase();
+                    if (name.contains("row") || name.contains("count") || name.contains("flush")) {
+                        countCol = i;
+                        break;
+                    }
+                }
+                long totalFlushed = 0;
+                while (rs.next()) {
+                    totalFlushed += rs.getLong(countCol);
+                }
+                log.debug("Flushed {} inlined rows to Parquet for lake 'lake'", totalFlushed);
             } catch (SQLException e) {
                 log.warn("ducklake_flush failed ({}); data may remain inlined", e.getMessage());
             }
