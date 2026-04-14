@@ -84,6 +84,7 @@ public class DuckLakeManager {
                 }
             }
             applyInliningRowLimit();
+            logDuckLakeVersion();
             if (properties.getCatalog().isMetadataQueryLogging()) {
                 enableMetadataLogging();
                 drainMetadataLogs("startup");
@@ -109,6 +110,7 @@ public class DuckLakeManager {
         }
 
         applyInliningRowLimit();
+        logDuckLakeVersion();
 
         if (properties.getCatalog().isMetadataQueryLogging()) {
             enableMetadataLogging();
@@ -122,6 +124,27 @@ public class DuckLakeManager {
 
         if (properties.getCatalog().isMetadataQueryLogging()) {
             drainMetadataLogs("startup");
+        }
+    }
+
+    /**
+     * Queries {@code ducklake_settings()} (DuckLake 1.0+) and logs the extension
+     * version, catalog back-end type, and object-storage data path at INFO level.
+     *
+     * <p>Must be called after the {@code lake} catalog is ATTACHed.  Falls back to
+     * a WARN if the function is unavailable (older DuckLake build).
+     */
+    private void logDuckLakeVersion() {
+        try (Statement stmt = connection.createStatement();
+             ResultSet rs = stmt.executeQuery("SELECT * FROM ducklake_settings()")) {
+            if (rs.next()) {
+                String version    = rs.getString("extension_version");
+                String catalogType = rs.getString("catalog_dbms_type");
+                String dataPath   = rs.getString("data_path");
+                log.info("DuckLake version={} catalog={} data_path={}", version, catalogType, dataPath);
+            }
+        } catch (SQLException e) {
+            log.warn("Could not query ducklake_settings() — requires DuckLake 1.0+: {}", e.getMessage());
         }
     }
 
