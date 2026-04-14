@@ -39,10 +39,10 @@ class TopicControllerTest {
         TopicConfig updated  = new TopicConfig("orders", "both",    false, false, null, "latest", null);
 
         when(config.findTopic("orders")).thenReturn(Optional.of(existing));
-        when(config.upsertTopic("orders", "both", false)).thenReturn(updated);
+        when(config.upsertTopic("orders", "both", false, "latest", null)).thenReturn(updated);
 
         ResponseEntity<TopicConfig> response =
-                controller.updateTopic("orders", new TopicController.UpdateTopicRequest("both"));
+                controller.updateTopic("orders", new TopicController.UpdateTopicRequest("both", null));
 
         assertThat(response.getStatusCode().value()).isEqualTo(200);
         assertThat(response.getBody()).isNotNull();
@@ -55,7 +55,7 @@ class TopicControllerTest {
         when(config.findTopic("missing")).thenReturn(Optional.empty());
 
         ResponseEntity<TopicConfig> response =
-                controller.updateTopic("missing", new TopicController.UpdateTopicRequest("both"));
+                controller.updateTopic("missing", new TopicController.UpdateTopicRequest("both", null));
 
         assertThat(response.getStatusCode().value()).isEqualTo(404);
         verify(router, never()).reload();
@@ -67,11 +67,11 @@ class TopicControllerTest {
         TopicConfig updated  = new TopicConfig("orders", "entity_only", false, false, null, "latest", null);
 
         when(config.findTopic("orders")).thenReturn(Optional.of(existing));
-        when(config.upsertTopic("orders", "entity_only", false)).thenReturn(updated);
+        when(config.upsertTopic("orders", "entity_only", false, "latest", null)).thenReturn(updated);
         doThrow(new SQLException("db error")).when(router).reload();
 
         ResponseEntity<TopicConfig> response =
-                controller.updateTopic("orders", new TopicController.UpdateTopicRequest("entity_only"));
+                controller.updateTopic("orders", new TopicController.UpdateTopicRequest("entity_only", null));
 
         // reload failure is logged but not propagated
         assertThat(response.getStatusCode().value()).isEqualTo(200);
@@ -110,11 +110,11 @@ class TopicControllerTest {
         TopicConfig saved = new TopicConfig("payments", "both", false, false, null, "latest", null);
 
         when(config.findTopic("payments")).thenReturn(Optional.empty());
-        when(config.upsertTopic("payments", "both", false, "latest")).thenReturn(saved);
+        when(config.upsertTopic("payments", "both", false, "latest", null)).thenReturn(saved);
         when(coordinator.activeTopics()).thenReturn(Set.of("payments"));
 
         ResponseEntity<TopicConfig> response =
-                controller.createTopic(new TopicController.CreateTopicRequest("payments", "both", "latest"));
+                controller.createTopic(new TopicController.CreateTopicRequest("payments", "both", "latest", null));
 
         assertThat(response.getStatusCode().value()).isEqualTo(201);
         verify(router).reload();
