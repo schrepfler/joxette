@@ -59,8 +59,6 @@ public class DuckLakeManager {
             stmt.execute("LOAD ducklake");
         }
 
-        logDuckLakeVersion();
-
         configureS3Secret();
 
         String catalogPath = properties.getCatalog().getPath();

@@ -1,7 +1,11 @@
 # Active Context
 
 ## Current Work Focus
-Memory-bank sync. All previously-listed "not yet started" features (retention, replay-to-topic, speed multiplier, message transformation pipeline, scheduled replay, timeline UI) are confirmed implemented in source. `progress.md` has been updated to reflect actual state.
+Fixed `rebuildKnownEntities` — four bugs resolved after DuckLake catalog loss:
+1. `executeUpdate()` returns 0 for `INSERT…SELECT…ON CONFLICT` with bound `?` in SELECT; replaced with `execute()` + `SELECT COUNT`.
+2. DuckLake catalog reset left `lake.main.entity_*` empty; `resolveEntityDataSource()` falls back to `read_parquet(glob, union_by_name=true)` when catalog table COUNT = 0.
+3. Bound `?` in `SELECT` list of `INSERT…SELECT…GROUP BY` collapses all rows to one group (DuckDB planner bug with table functions); entity_type inlined as string literal.
+4. After catalog-loss recovery, `resolveEntityDataSource()` also re-inserts the orphaned Parquet data back into the DuckLake catalog table so that all downstream replay/stats queries work normally without any code changes.
 
 ## What Was Already Done (previously undocumented)
 
@@ -48,7 +52,7 @@ Scheduled replays are not persisted to DuckDB. A service restart silently drops 
 
 ## Next Steps (suggested)
 - [ ] **Verify `entity_source_matchers.id_source` constraint** — check constraint uses `'headers'` (plural) but `EntityIdExtractor` uses `'header'` (singular). Fix the constraint or the extractor to align.
-- [ ] **Integration test: `rebuildKnownEntities` from object storage** — write entity events to DuckLake (Testcontainers MinIO), wipe `known_entities`, call `CassetteLifecycleService.rebuildKnownEntities()`, assert all `(entity_type, entity_id)` rows are restored with correct `first_seen`/`last_seen` timestamps
+- [x] **Integration test: `rebuildKnownEntities` from object storage** — `RebuildKnownEntitiesIT` exists with full MinIO Testcontainers coverage.
 - [ ] **Integration test: `exportSnapshotToObjectStore`** — verify EXPORT DATABASE to S3 registers snapshot in local `snapshots` table
 - [ ] **`TopicRecorderTest` full batch→DuckDB path** — current test does not exercise the write path end-to-end
 - [ ] **UI: SSE/NDJSON streaming** — expose streaming replay in the UI (currently only paginated JSON is used)
