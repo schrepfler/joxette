@@ -19,6 +19,7 @@ import { Route as EntitiesIndexRouteImport } from './routes/entities/index'
 import { Route as CompactionIndexRouteImport } from './routes/compaction/index'
 import { Route as BrokersIndexRouteImport } from './routes/brokers/index'
 import { Route as TopicsTopicRouteImport } from './routes/topics/$topic'
+import { Route as BrokersBrokerIdRouteImport } from './routes/brokers/$brokerId'
 import { Route as EntitiesEntityTypeIndexRouteImport } from './routes/entities/$entityType/index'
 import { Route as TopicsTopicTimelineRouteImport } from './routes/topics/$topic_.timeline'
 import { Route as EntitiesEntityTypeEntityIdRouteImport } from './routes/entities/$entityType/$entityId'
@@ -74,6 +75,11 @@ const TopicsTopicRoute = TopicsTopicRouteImport.update({
   path: '/topics/$topic',
   getParentRoute: () => rootRouteImport,
 } as any)
+const BrokersBrokerIdRoute = BrokersBrokerIdRouteImport.update({
+  id: '/brokers/$brokerId',
+  path: '/brokers/$brokerId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const EntitiesEntityTypeIndexRoute = EntitiesEntityTypeIndexRouteImport.update({
   id: '/entities/$entityType/',
   path: '/entities/$entityType/',
@@ -100,6 +106,7 @@ const EntitiesEntityTypeEntityIdTimelineRoute =
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/about': typeof AboutRoute
+  '/brokers/$brokerId': typeof BrokersBrokerIdRoute
   '/topics/$topic': typeof TopicsTopicRoute
   '/brokers/': typeof BrokersIndexRoute
   '/compaction/': typeof CompactionIndexRoute
@@ -116,6 +123,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/about': typeof AboutRoute
+  '/brokers/$brokerId': typeof BrokersBrokerIdRoute
   '/topics/$topic': typeof TopicsTopicRoute
   '/brokers': typeof BrokersIndexRoute
   '/compaction': typeof CompactionIndexRoute
@@ -133,6 +141,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/about': typeof AboutRoute
+  '/brokers/$brokerId': typeof BrokersBrokerIdRoute
   '/topics/$topic': typeof TopicsTopicRoute
   '/brokers/': typeof BrokersIndexRoute
   '/compaction/': typeof CompactionIndexRoute
@@ -151,6 +160,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/about'
+    | '/brokers/$brokerId'
     | '/topics/$topic'
     | '/brokers/'
     | '/compaction/'
@@ -167,6 +177,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/about'
+    | '/brokers/$brokerId'
     | '/topics/$topic'
     | '/brokers'
     | '/compaction'
@@ -183,6 +194,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/about'
+    | '/brokers/$brokerId'
     | '/topics/$topic'
     | '/brokers/'
     | '/compaction/'
@@ -200,6 +212,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AboutRoute: typeof AboutRoute
+  BrokersBrokerIdRoute: typeof BrokersBrokerIdRoute
   TopicsTopicRoute: typeof TopicsTopicRoute
   BrokersIndexRoute: typeof BrokersIndexRoute
   CompactionIndexRoute: typeof CompactionIndexRoute
@@ -286,6 +299,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TopicsTopicRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/brokers/$brokerId': {
+      id: '/brokers/$brokerId'
+      path: '/brokers/$brokerId'
+      fullPath: '/brokers/$brokerId'
+      preLoaderRoute: typeof BrokersBrokerIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/entities/$entityType/': {
       id: '/entities/$entityType/'
       path: '/entities/$entityType'
@@ -320,6 +340,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AboutRoute: AboutRoute,
+  BrokersBrokerIdRoute: BrokersBrokerIdRoute,
   TopicsTopicRoute: TopicsTopicRoute,
   BrokersIndexRoute: BrokersIndexRoute,
   CompactionIndexRoute: CompactionIndexRoute,

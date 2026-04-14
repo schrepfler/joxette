@@ -1,4 +1,4 @@
-import { createFileRoute } from '@tanstack/react-router'
+import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   useReactTable,
@@ -362,6 +362,7 @@ function EditBrokerModal({ broker, onClose }: { broker: BrokerConfig; onClose: (
 
 function BrokersPage() {
   const qc = useQueryClient()
+  const navigate = useNavigate()
   const { addToast } = useToast()
   const [showAdd, setShowAdd] = useState(false)
   const [editBroker, setEditBroker] = useState<BrokerConfig | null>(null)
@@ -457,7 +458,8 @@ function BrokersPage() {
             {table.getRowModel().rows.map(row => (
               <tr
                 key={row.id}
-                style={{ cursor: 'default' }}
+                style={{ cursor: 'pointer' }}
+                onClick={() => void navigate({ to: '/brokers/$brokerId', params: { brokerId: row.original.brokerId } })}
                 onMouseEnter={e => (e.currentTarget.style.background = '#ebf8ff')}
                 onMouseLeave={e => (e.currentTarget.style.background = '')}
               >
