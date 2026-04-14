@@ -9,6 +9,7 @@ export interface TopicConfig {
   active: boolean
   consumerGroup?: string
   retentionDays?: number
+  brokerId?: string | null
 }
 
 export interface CreateTopicRequest {
@@ -20,6 +21,7 @@ export interface CreateTopicRequest {
   retentionDays?: number
   consumerGroup?: string
   startFrom?: string
+  brokerId?: string
 }
 
 export interface UpdateTopicRequest {
@@ -664,4 +666,59 @@ export interface RuntimeConfig {
 
 export const configApi = {
   getRuntime: () => request<RuntimeConfig>('/config/runtime'),
+}
+
+// ---- Brokers ----
+
+export interface BrokerConfig {
+  brokerId: string
+  bootstrapServers: string
+  securityProtocol: string
+  saslMechanism: string | null
+  saslUsername: string | null
+  saslPassword: string | null
+  sslTruststorePath: string | null
+  sslTruststorePassword: string | null
+  sslKeystorePath: string | null
+  sslKeystorePassword: string | null
+}
+
+export interface CreateBrokerRequest {
+  brokerId: string
+  bootstrapServers: string
+  securityProtocol?: string
+  saslMechanism?: string
+  saslUsername?: string
+  saslPassword?: string
+  sslTruststorePath?: string
+  sslTruststorePassword?: string
+  sslKeystorePath?: string
+  sslKeystorePassword?: string
+}
+
+export interface UpdateBrokerRequest {
+  bootstrapServers: string
+  securityProtocol?: string
+  saslMechanism?: string
+  saslUsername?: string
+  saslPassword?: string
+  sslTruststorePath?: string
+  sslTruststorePassword?: string
+  sslKeystorePath?: string
+  sslKeystorePassword?: string
+}
+
+export const brokersApi = {
+  list: () => request<BrokerConfig[]>('/brokers'),
+  create: (body: CreateBrokerRequest) =>
+    request<BrokerConfig>('/brokers', { method: 'POST', body: JSON.stringify(body) }),
+  get: (brokerId: string) =>
+    request<BrokerConfig>(`/brokers/${encodeURIComponent(brokerId)}`),
+  update: (brokerId: string, body: UpdateBrokerRequest) =>
+    request<BrokerConfig>(`/brokers/${encodeURIComponent(brokerId)}`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+  delete: (brokerId: string) =>
+    request<void>(`/brokers/${encodeURIComponent(brokerId)}`, { method: 'DELETE' }),
 }

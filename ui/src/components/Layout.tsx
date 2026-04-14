@@ -4,6 +4,7 @@ import { useHotkeySequences } from '@tanstack/react-hotkeys'
 const NAV_LINKS = [
   { to: '/topics', label: 'Topics', shortcut: 'g t' },
   { to: '/entities', label: 'Entities', shortcut: 'g e' },
+  { to: '/brokers', label: 'Brokers', shortcut: 'g b' },
   { to: '/compaction', label: 'Compaction', shortcut: 'g c' },
   { to: '/health', label: 'Health', shortcut: 'g h' },
   { to: '/snapshots', label: 'Snapshots', shortcut: 'g s' },
@@ -21,6 +22,7 @@ export function Layout({ children }: LayoutProps) {
   useHotkeySequences([
     { sequence: ['G', 'T'], callback: () => { void navigate({ to: '/topics' }) } },
     { sequence: ['G', 'E'], callback: () => { void navigate({ to: '/entities' }) } },
+    { sequence: ['G', 'B'], callback: () => { void navigate({ to: '/brokers' }) } },
     { sequence: ['G', 'C'], callback: () => { void navigate({ to: '/compaction' }) } },
     { sequence: ['G', 'H'], callback: () => { void navigate({ to: '/health' }) } },
     { sequence: ['G', 'S'], callback: () => { void navigate({ to: '/snapshots' }) } },
