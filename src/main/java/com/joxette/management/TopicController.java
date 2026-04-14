@@ -62,7 +62,7 @@ public class TopicController {
         Set<String> active = coordinator.activeTopics();
         return config.listTopics().stream()
                 .map(tc -> new TopicConfig(tc.topic(), tc.mode(), tc.paused(),
-                        active.contains(tc.topic()), tc.retentionDays(), tc.startFrom()))
+                        active.contains(tc.topic()), tc.retentionDays(), tc.startFrom(), tc.brokerId()))
                 .toList();
     }
 
@@ -83,7 +83,7 @@ public class TopicController {
         reloadRouter();
         boolean active = coordinator.activeTopics().contains(tc.topic());
         return ResponseEntity.status(201).body(
-                new TopicConfig(tc.topic(), tc.mode(), tc.paused(), active, tc.retentionDays(), tc.startFrom()));
+                new TopicConfig(tc.topic(), tc.mode(), tc.paused(), active, tc.retentionDays(), tc.startFrom(), tc.brokerId()));
     }
 
     @GetMapping(value = "/{topic}", produces = MediaType.APPLICATION_JSON_VALUE)

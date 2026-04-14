@@ -35,8 +35,8 @@ class TopicControllerTest {
 
     @Test
     void updateTopic_modeChange_callsRouterReload() throws Exception {
-        TopicConfig existing = new TopicConfig("orders", "general", false, false, null, "latest");
-        TopicConfig updated  = new TopicConfig("orders", "both",    false, false, null, "latest");
+        TopicConfig existing = new TopicConfig("orders", "general", false, false, null, "latest", null);
+        TopicConfig updated  = new TopicConfig("orders", "both",    false, false, null, "latest", null);
 
         when(config.findTopic("orders")).thenReturn(Optional.of(existing));
         when(config.upsertTopic("orders", "both", false)).thenReturn(updated);
@@ -63,8 +63,8 @@ class TopicControllerTest {
 
     @Test
     void updateTopic_routerReloadFailure_stillReturnsOk() throws Exception {
-        TopicConfig existing = new TopicConfig("orders", "general", false, false, null, "latest");
-        TopicConfig updated  = new TopicConfig("orders", "entity_only", false, false, null, "latest");
+        TopicConfig existing = new TopicConfig("orders", "general", false, false, null, "latest", null);
+        TopicConfig updated  = new TopicConfig("orders", "entity_only", false, false, null, "latest", null);
 
         when(config.findTopic("orders")).thenReturn(Optional.of(existing));
         when(config.upsertTopic("orders", "entity_only", false)).thenReturn(updated);
@@ -107,7 +107,7 @@ class TopicControllerTest {
 
     @Test
     void createTopic_callsRouterReload() throws Exception {
-        TopicConfig saved = new TopicConfig("payments", "both", false, false, null, "latest");
+        TopicConfig saved = new TopicConfig("payments", "both", false, false, null, "latest", null);
 
         when(config.findTopic("payments")).thenReturn(Optional.empty());
         when(config.upsertTopic("payments", "both", false, "latest")).thenReturn(saved);

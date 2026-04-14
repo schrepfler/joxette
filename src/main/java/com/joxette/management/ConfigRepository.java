@@ -48,12 +48,13 @@ public class ConfigRepository {
         synchronized (duckDB) {
             try (Statement st = duckDB.createStatement();
                  ResultSet rs = st.executeQuery(
-                         "SELECT topic, mode, paused, retention_days, start_from FROM topic_configs ORDER BY topic")) {
+                         "SELECT topic, mode, paused, retention_days, start_from, broker_id FROM topic_configs ORDER BY topic")) {
                 while (rs.next()) {
                     result.add(new TopicConfig(rs.getString("topic"), rs.getString("mode"),
                             rs.getBoolean("paused"), false,
                             (Integer) rs.getObject("retention_days"),
-                            rs.getString("start_from")));
+                            rs.getString("start_from"),
+                            rs.getString("broker_id")));
                 }
             }
         }
@@ -63,14 +64,15 @@ public class ConfigRepository {
     public Optional<TopicConfig> findTopic(String topic) throws SQLException {
         synchronized (duckDB) {
             try (PreparedStatement ps = duckDB.prepareStatement(
-                    "SELECT topic, mode, paused, retention_days, start_from FROM topic_configs WHERE topic = ?")) {
+                    "SELECT topic, mode, paused, retention_days, start_from, broker_id FROM topic_configs WHERE topic = ?")) {
                 ps.setString(1, topic);
                 try (ResultSet rs = ps.executeQuery()) {
                     if (rs.next()) {
                         return Optional.of(new TopicConfig(rs.getString("topic"),
                                 rs.getString("mode"), rs.getBoolean("paused"), false,
                                 (Integer) rs.getObject("retention_days"),
-                                rs.getString("start_from")));
+                                rs.getString("start_from"),
+                                rs.getString("broker_id")));
                     }
                 }
             }
@@ -85,7 +87,7 @@ public class ConfigRepository {
             try (PreparedStatement ps = duckDB.prepareStatement("""
                     INSERT INTO topic_configs (topic, mode, paused, start_from) VALUES (?, ?, ?, ?)
                     ON CONFLICT (topic) DO UPDATE SET mode = excluded.mode, paused = excluded.paused
-                    RETURNING topic, mode, paused, retention_days, start_from
+                    RETURNING topic, mode, paused, retention_days, start_from, broker_id
                     """)) {
                 ps.setString(1, topic);
                 ps.setString(2, mode);
@@ -96,12 +98,13 @@ public class ConfigRepository {
                         return new TopicConfig(rs.getString("topic"), rs.getString("mode"),
                                 rs.getBoolean("paused"), false,
                                 (Integer) rs.getObject("retention_days"),
-                                rs.getString("start_from"));
+                                rs.getString("start_from"),
+                                rs.getString("broker_id"));
                     }
                 }
             }
         }
-        return new TopicConfig(topic, mode, paused, false, null, resolvedStartFrom);
+        return new TopicConfig(topic, mode, paused, false, null, resolvedStartFrom, null);
     }
 
     /** Convenience overload for callers that don't specify startFrom (defaults to "latest"). */

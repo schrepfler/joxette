@@ -1,18 +1,20 @@
 package com.joxette.recording;
 
+import com.joxette.config.BrokerConnectionFactory;
 import com.joxette.config.JoxetteProperties;
 import com.joxette.kafka.ConsumerSettings;
+import com.joxette.management.ConfigRepository;
 import com.joxette.replay.KnownEntitiesRepository;
 import com.joxette.replay.MessageRouter;
 import com.softwaremill.jox.structured.Scopes;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 
 import java.sql.Connection;
+import java.sql.SQLException;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -31,7 +33,8 @@ public class RecordingCoordinator {
     private static final Logger log = LoggerFactory.getLogger(RecordingCoordinator.class);
 
     private final JoxetteProperties properties;
-    private final ConsumerSettings<String, byte[]> baseKafkaConsumerSettings;
+    private final BrokerConnectionFactory brokerConnectionFactory;
+    private final ConfigRepository configRepository;
     private final Connection duckDbConnection;
     private final MessageRouter messageRouter;
     private final KnownEntitiesRepository knownEntities;
@@ -42,12 +45,14 @@ public class RecordingCoordinator {
 
     public RecordingCoordinator(
             JoxetteProperties properties,
-            @Qualifier("baseKafkaConsumerSettings") ConsumerSettings<String, byte[]> baseKafkaConsumerSettings,
+            BrokerConnectionFactory brokerConnectionFactory,
+            @Lazy ConfigRepository configRepository,
             Connection duckDbConnection,
             MessageRouter messageRouter,
             KnownEntitiesRepository knownEntities) {
         this.properties = properties;
-        this.baseKafkaConsumerSettings = baseKafkaConsumerSettings;
+        this.brokerConnectionFactory = brokerConnectionFactory;
+        this.configRepository = configRepository;
         this.duckDbConnection = duckDbConnection;
         this.messageRouter = messageRouter;
         this.knownEntities = knownEntities;
@@ -123,9 +128,19 @@ public class RecordingCoordinator {
 
     private RecorderHandle launchRecorder(String topic, String startFrom) {
         JoxetteProperties.Recording cfg = properties.getRecording();
+        String brokerId;
+        try {
+            brokerId = configRepository.findTopic(topic)
+                    .map(com.joxette.management.TopicConfig::brokerId)
+                    .orElse(null);
+        } catch (SQLException e) {
+            log.warn("Could not look up brokerId for topic '{}'; using default broker: {}", topic, e.getMessage());
+            brokerId = null;
+        }
+        ConsumerSettings<String, byte[]> settings = brokerConnectionFactory.consumerSettings(brokerId);
         TopicRecorder recorder = new TopicRecorder(
                 topic,
-                baseKafkaConsumerSettings,
+                settings,
                 duckDbConnection,
                 cfg.getBatchSize(),
                 cfg.getBatchTimeoutMs(),

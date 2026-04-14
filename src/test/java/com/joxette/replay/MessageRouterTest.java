@@ -49,7 +49,7 @@ class MessageRouterTest {
         }
 
         void addTopic(String topic, String mode) {
-            topics.add(new TopicConfig(topic, mode, false, false, null, "latest"));
+            topics.add(new TopicConfig(topic, mode, false, false, null, "latest", null));
         }
 
         void addEntityType(String type, int buckets) {

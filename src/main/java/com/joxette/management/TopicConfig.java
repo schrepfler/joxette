@@ -13,5 +13,7 @@ public record TopicConfig(
         /** Maximum age of records in days; {@code null} means no retention limit. */
         Integer retentionDays,
         /** "latest" | "earliest" — consumer offset reset strategy for initial start. */
-        String startFrom
+        String startFrom,
+        /** Broker ID to use for this topic; {@code null} means use the default broker. */
+        String brokerId
 ) {}
