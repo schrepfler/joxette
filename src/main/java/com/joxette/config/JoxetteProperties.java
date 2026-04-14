@@ -47,6 +47,14 @@ public class JoxetteProperties {
          * <pre>logging.level.com.joxette.catalog.ducklake: DEBUG</pre>
          */
         private boolean metadataQueryLogging = false;
+        /**
+         * Override DuckLake's {@code data_inlining_row_limit} option after ATTACH
+         * (DuckLake 1.0+, PR #923).  {@code null} leaves the DuckLake default in place
+         * (currently 10 rows).  Set to {@code 0} to disable inlining entirely and always
+         * write Parquet directly — useful for high-throughput topics where inlining adds
+         * overhead rather than saving PUT requests.
+         */
+        private Integer inliningRowLimit = null;
         /** Optional S3-compatible storage credentials and endpoint. */
         private S3 s3 = new S3();
 
@@ -61,6 +69,9 @@ public class JoxetteProperties {
 
         public boolean isMetadataQueryLogging() { return metadataQueryLogging; }
         public void setMetadataQueryLogging(boolean metadataQueryLogging) { this.metadataQueryLogging = metadataQueryLogging; }
+
+        public Integer getInliningRowLimit() { return inliningRowLimit; }
+        public void setInliningRowLimit(Integer inliningRowLimit) { this.inliningRowLimit = inliningRowLimit; }
 
         public S3 getS3() { return s3; }
         public void setS3(S3 s3) { this.s3 = s3; }

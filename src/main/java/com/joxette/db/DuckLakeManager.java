@@ -83,6 +83,7 @@ public class DuckLakeManager {
                     throw e;
                 }
             }
+            applyInliningRowLimit();
             if (properties.getCatalog().isMetadataQueryLogging()) {
                 enableMetadataLogging();
                 drainMetadataLogs("startup");
@@ -107,6 +108,8 @@ public class DuckLakeManager {
             }
         }
 
+        applyInliningRowLimit();
+
         if (properties.getCatalog().isMetadataQueryLogging()) {
             enableMetadataLogging();
         }
@@ -119,6 +122,31 @@ public class DuckLakeManager {
 
         if (properties.getCatalog().isMetadataQueryLogging()) {
             drainMetadataLogs("startup");
+        }
+    }
+
+    /**
+     * Applies the {@code data_inlining_row_limit} DuckLake option when
+     * {@code joxette.catalog.inlining-row-limit} is explicitly configured.
+     *
+     * <p>Must be called after ATTACH so that the {@code lake} catalog alias is
+     * already registered.  A value of {@code 0} disables inlining entirely;
+     * any positive integer overrides DuckLake's built-in default of 10 rows.
+     */
+    private void applyInliningRowLimit() {
+        Integer limit = properties.getCatalog().getInliningRowLimit();
+        if (limit == null) {
+            log.info("DuckLake inlining row limit: default (10)");
+            return;
+        }
+        log.info("DuckLake inlining row limit: {} ({})",
+            limit, limit == 0 ? "inlining disabled, always write Parquet" : "overrides default of 10");
+        try (Statement stmt = connection.createStatement()) {
+            stmt.execute(String.format(
+                "CALL %s.set_option('data_inlining_row_limit', %d)", CATALOG_NAME, limit));
+        } catch (SQLException e) {
+            log.warn("Could not set DuckLake data_inlining_row_limit={} — " +
+                "requires DuckLake 1.0+ (PR #923). Option ignored: {}", limit, e.getMessage());
         }
     }
 
