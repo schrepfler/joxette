@@ -17,6 +17,7 @@ import { Route as SettingsIndexRouteImport } from './routes/settings/index'
 import { Route as HealthIndexRouteImport } from './routes/health/index'
 import { Route as EntitiesIndexRouteImport } from './routes/entities/index'
 import { Route as CompactionIndexRouteImport } from './routes/compaction/index'
+import { Route as BrokersIndexRouteImport } from './routes/brokers/index'
 import { Route as TopicsTopicRouteImport } from './routes/topics/$topic'
 import { Route as EntitiesEntityTypeIndexRouteImport } from './routes/entities/$entityType/index'
 import { Route as TopicsTopicTimelineRouteImport } from './routes/topics/$topic_.timeline'
@@ -63,6 +64,11 @@ const CompactionIndexRoute = CompactionIndexRouteImport.update({
   path: '/compaction/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const BrokersIndexRoute = BrokersIndexRouteImport.update({
+  id: '/brokers/',
+  path: '/brokers/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const TopicsTopicRoute = TopicsTopicRouteImport.update({
   id: '/topics/$topic',
   path: '/topics/$topic',
@@ -95,6 +101,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/about': typeof AboutRoute
   '/topics/$topic': typeof TopicsTopicRoute
+  '/brokers/': typeof BrokersIndexRoute
   '/compaction/': typeof CompactionIndexRoute
   '/entities/': typeof EntitiesIndexRoute
   '/health/': typeof HealthIndexRoute
@@ -110,6 +117,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/about': typeof AboutRoute
   '/topics/$topic': typeof TopicsTopicRoute
+  '/brokers': typeof BrokersIndexRoute
   '/compaction': typeof CompactionIndexRoute
   '/entities': typeof EntitiesIndexRoute
   '/health': typeof HealthIndexRoute
@@ -126,6 +134,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/about': typeof AboutRoute
   '/topics/$topic': typeof TopicsTopicRoute
+  '/brokers/': typeof BrokersIndexRoute
   '/compaction/': typeof CompactionIndexRoute
   '/entities/': typeof EntitiesIndexRoute
   '/health/': typeof HealthIndexRoute
@@ -143,6 +152,7 @@ export interface FileRouteTypes {
     | '/'
     | '/about'
     | '/topics/$topic'
+    | '/brokers/'
     | '/compaction/'
     | '/entities/'
     | '/health/'
@@ -158,6 +168,7 @@ export interface FileRouteTypes {
     | '/'
     | '/about'
     | '/topics/$topic'
+    | '/brokers'
     | '/compaction'
     | '/entities'
     | '/health'
@@ -173,6 +184,7 @@ export interface FileRouteTypes {
     | '/'
     | '/about'
     | '/topics/$topic'
+    | '/brokers/'
     | '/compaction/'
     | '/entities/'
     | '/health/'
@@ -189,6 +201,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AboutRoute: typeof AboutRoute
   TopicsTopicRoute: typeof TopicsTopicRoute
+  BrokersIndexRoute: typeof BrokersIndexRoute
   CompactionIndexRoute: typeof CompactionIndexRoute
   EntitiesIndexRoute: typeof EntitiesIndexRoute
   HealthIndexRoute: typeof HealthIndexRoute
@@ -259,6 +272,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof CompactionIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/brokers/': {
+      id: '/brokers/'
+      path: '/brokers'
+      fullPath: '/brokers/'
+      preLoaderRoute: typeof BrokersIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/topics/$topic': {
       id: '/topics/$topic'
       path: '/topics/$topic'
@@ -301,6 +321,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AboutRoute: AboutRoute,
   TopicsTopicRoute: TopicsTopicRoute,
+  BrokersIndexRoute: BrokersIndexRoute,
   CompactionIndexRoute: CompactionIndexRoute,
   EntitiesIndexRoute: EntitiesIndexRoute,
   HealthIndexRoute: HealthIndexRoute,
