@@ -1,17 +1,18 @@
 package com.joxette.recording;
 
-import com.joxette.kafka.ConsumerSettings;
-import com.joxette.kafka.KafkaSource;
+import com.softwaremill.jox.kafka.ConsumerSettings;
 import com.joxette.replay.EntityRoute;
 import com.joxette.replay.GeneralRoute;
 import com.joxette.replay.KafkaMessage;
 import com.joxette.replay.KnownEntitiesRepository;
 import com.joxette.replay.MessageRouter;
 import com.joxette.replay.RouteDecision;
-import org.apache.kafka.clients.consumer.ConsumerConfig;
+import com.softwaremill.jox.flows.Flows;
 import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
+import org.apache.kafka.common.errors.WakeupException;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.header.Header;
 import org.slf4j.Logger;
@@ -27,14 +28,16 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Records a single Kafka topic to the DuckLake cassette tables.
  *
  * <h2>Pipeline design</h2>
  * <ol>
- *   <li>A {@link KafkaSource} drives the Kafka consumer, emitting one
- *       {@link ConsumerRecord} at a time via a Jox {@code Flow}.</li>
+ *   <li>A {@link KafkaConsumer} (obtained from {@link ConsumerSettings#toConsumer()}) drives
+ *       the Kafka consumer, emitting one {@link ConsumerRecord} at a time via a Jox
+ *       {@code Flow} built with {@code Flows.usingEmit}.</li>
  *   <li>{@code groupedWithin} accumulates records into bounded batches.</li>
  *   <li>For each batch, each record is routed via {@link MessageRouter}:
  *     <ul>
@@ -45,15 +48,16 @@ import java.util.Map;
  *     </ul>
  *   </li>
  *   <li>After a successful batch write, the distinct entity routes are upserted
- *       into {@code known_entities} and Kafka offsets are scheduled for commit.</li>
+ *       into {@code known_entities} and Kafka offsets are committed synchronously.</li>
  * </ol>
  */
 public class TopicRecorder {
 
     private static final Logger log = LoggerFactory.getLogger(TopicRecorder.class);
+    private static final Duration POLL_TIMEOUT = Duration.ofMillis(100);
 
     private final String topic;
-    private final KafkaSource<String, byte[]> source;
+    private final ConsumerSettings<String, byte[]> settings;
     private final Connection duckDbConnection;
     private final int batchSize;
     private final Duration batchTimeout;
@@ -61,6 +65,15 @@ public class TopicRecorder {
     private final KnownEntitiesRepository knownEntities;
     private final boolean seekToEarliest;
     private final Instant seekToTimestamp;
+
+    /** The live consumer — set during {@link #run()}, cleared on exit. */
+    private volatile KafkaConsumer<String, byte[]> consumer;
+
+    /** Pending offsets to commit on the next poll iteration (thread-safe). */
+    private final AtomicReference<Map<TopicPartition, OffsetAndMetadata>> pendingCommit =
+            new AtomicReference<>();
+
+    private volatile boolean stopped = false;
 
     public TopicRecorder(
             String topic,
@@ -89,12 +102,13 @@ public class TopicRecorder {
         }
         this.seekToTimestamp = ts;
 
-        ConsumerSettings<String, byte[]> settings = baseSettings
-                .withProperty(ConsumerConfig.GROUP_ID_CONFIG, "joxette-recorder-" + topic);
+        // Override group.id per topic; optionally override auto.offset.reset
+        ConsumerSettings<String, byte[]> s = baseSettings
+                .groupId("joxette-recorder-" + topic);
         if (seekToEarliest) {
-            settings = settings.withProperty(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+            s = s.autoOffsetReset(ConsumerSettings.AutoOffsetReset.EARLIEST);
         }
-        this.source = new KafkaSource<>(settings);
+        this.settings = s;
     }
 
     // -----------------------------------------------------------------------
@@ -107,28 +121,50 @@ public class TopicRecorder {
         try (CassetteBatchWriter generalWriter = new CassetteBatchWriter(topic, duckDbConnection);
              EntityCassetteBatchWriter entityWriter = new EntityCassetteBatchWriter(duckDbConnection)) {
 
-            source.subscribe(topic, new ConsumerRebalanceListener() {
+            Flows.<ConsumerRecord<String, byte[]>>usingEmit(emit -> {
+                try (KafkaConsumer<String, byte[]> kc = settings.toConsumer()) {
+                    this.consumer = kc;
+                    kc.subscribe(List.of(topic), new ConsumerRebalanceListener() {
                         @Override
                         public void onPartitionsRevoked(Collection<TopicPartition> partitions) {}
 
                         @Override
                         public void onPartitionsAssigned(Collection<TopicPartition> partitions) {
                             if (seekToEarliest) {
-                                source.seekToBeginning(partitions);
+                                kc.seekToBeginning(partitions);
                                 log.info("Seeked to beginning of {} partition(s) for topic '{}' (startFrom=earliest)",
                                         partitions.size(), topic);
                             } else if (seekToTimestamp != null) {
-                                source.seekToTimestamp(partitions, seekToTimestamp);
+                                seekToTimestamp(kc, partitions, seekToTimestamp);
                                 log.info("Seeked to timestamp {} on {} partition(s) for topic '{}'",
                                         seekToTimestamp, partitions.size(), topic);
                             }
                         }
-                    })
-                    .groupedWithin(batchSize, batchTimeout)
-                    .runForeach(batch -> {
-                        writeBatch(batch, generalWriter, entityWriter);
-                        source.scheduleCommit(buildOffsets(batch));
                     });
+
+                    while (!stopped && !Thread.currentThread().isInterrupted()) {
+                        Map<TopicPartition, OffsetAndMetadata> toCommit = pendingCommit.getAndSet(null);
+                        if (toCommit != null) {
+                            kc.commitSync(toCommit);
+                        }
+                        try {
+                            for (ConsumerRecord<String, byte[]> record : kc.poll(POLL_TIMEOUT)) {
+                                emit.apply(record);
+                            }
+                        } catch (WakeupException e) {
+                            log.debug("Kafka wakeup received for topic '{}'; stopping poll loop", topic);
+                            break;
+                        }
+                    }
+                } finally {
+                    this.consumer = null;
+                }
+            })
+            .groupedWithin(batchSize, batchTimeout)
+            .runForeach(batch -> {
+                writeBatch(batch, generalWriter, entityWriter);
+                pendingCommit.set(buildOffsets(batch));
+            });
 
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -142,7 +178,9 @@ public class TopicRecorder {
     }
 
     public void stop() {
-        source.stop();
+        stopped = true;
+        KafkaConsumer<String, byte[]> c = consumer;
+        if (c != null) c.wakeup();
     }
 
     // -----------------------------------------------------------------------
@@ -231,5 +269,25 @@ public class TopicRecorder {
             }
         }
         return offsets;
+    }
+
+    private static void seekToTimestamp(
+            KafkaConsumer<String, byte[]> kc,
+            Collection<TopicPartition> partitions,
+            Instant timestamp) {
+        long epochMs = timestamp.toEpochMilli();
+        Map<TopicPartition, Long> query = new HashMap<>();
+        for (TopicPartition tp : partitions) query.put(tp, epochMs);
+        var results = kc.offsetsForTimes(query);
+        for (TopicPartition tp : partitions) {
+            var ot = results.get(tp);
+            if (ot != null) {
+                kc.seek(tp, ot.offset());
+                log.debug("Seeked {} to offset {} (timestamp {})", tp, ot.offset(), timestamp);
+            } else {
+                kc.seekToEnd(List.of(tp));
+                log.debug("No messages at or after {} on {}; seeking to end", timestamp, tp);
+            }
+        }
     }
 }

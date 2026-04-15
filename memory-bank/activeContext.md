@@ -1,16 +1,31 @@
 # Active Context
 
 ## Current Work Focus
-Fixed `rebuildKnownEntities` — four bugs resolved after DuckLake catalog loss:
-1. `executeUpdate()` returns 0 for `INSERT…SELECT…ON CONFLICT` with bound `?` in SELECT; replaced with `execute()` + `SELECT COUNT`.
-2. DuckLake catalog reset left `lake.main.entity_*` empty; `resolveEntityDataSource()` falls back to `read_parquet(glob, union_by_name=true)` when catalog table COUNT = 0.
-3. Bound `?` in `SELECT` list of `INSERT…SELECT…GROUP BY` collapses all rows to one group (DuckDB planner bug with table functions); entity_type inlined as string literal.
-4. After catalog-loss recovery, `resolveEntityDataSource()` also re-inserts the orphaned Parquet data back into the DuckLake catalog table so that all downstream replay/stats queries work normally without any code changes.
+Migrated from hand-rolled `com.joxette.kafka` shim to the real `com.softwaremill.jox:kafka:0.5.3` module (published to Maven Central 18 Mar 2026).
+
+**What changed:**
+- `pom.xml`: replaced commented-out block + direct `kafka-clients` dep with `com.softwaremill.jox:kafka:0.5.3` (kafka-clients is now transitive)
+- Deleted `src/main/java/com/joxette/kafka/` (4 files: `ConsumerSettings`, `ProducerSettings`, `KafkaSource`, `KafkaSink`)
+- `BrokerConnectionFactory`: now uses jox fluent builder API (`ConsumerSettings.defaults(groupId).bootstrapServers(...).keyDeserializer(...).property(...)`) and `ProducerSettings.defaults().bootstrapServers(...)...`; security props still applied per-broker; `AdminClient` still built from a raw `Map` (no jox wrapper for admin)
+- `KafkaConfig`: import updated to `com.softwaremill.jox.kafka.ConsumerSettings`
+- `TopicRecorder`: `KafkaSource` replaced with inline `Flows.usingEmit` + `settings.toConsumer()` — identical poll/seek/commit logic, no `KafkaFlow` actor (we need `ConsumerRebalanceListener` for seek which jox's `KafkaFlow` does not expose)
+- `RecordingCoordinator`: import updated
+- `KafkaProducerService`: `KafkaSink` replaced with `KafkaProducer` obtained via `producerSettings.toProducer()`
+- `BrokerController`: peek endpoint uses `ConsumerSettings.defaults(...).bootstrapServers(...).groupId(...).toConsumer()` instead of raw Map + `ConsumerSettings.create()`
+- `TopicRecorderTest`: helper methods rewritten to use fluent API; `ConsumerSettings.create()` factory removed
+
+**Note on jox `KafkaFlow`:** Not used for the recording path because it wraps the consumer in an actor (`KafkaConsumerWrapper`) that doesn't expose `ConsumerRebalanceListener` — required for our seek-to-beginning / seek-to-timestamp functionality. We use `Flows.usingEmit` with a raw `KafkaConsumer` directly, which is the same pattern jox uses internally.
 
 ## What Was Already Done (previously undocumented)
 
 ### Retention enforcement
 `RetentionService` + `RetentionScheduler` + `RetentionRun` / `RetentionStatus` — fully implemented. Deletes rows older than `retention_days` from general cassettes, entity cassettes, and `known_entities`. Cron-driven, guarded by `AtomicBoolean`, logged to `retention_history`.
+
+### Fixed `rebuildKnownEntities` — four bugs resolved after DuckLake catalog loss:
+1. `executeUpdate()` returns 0 for `INSERT…SELECT…ON CONFLICT` with bound `?` in SELECT; replaced with `execute()` + `SELECT COUNT`.
+2. DuckLake catalog reset left `lake.main.entity_*` empty; `resolveEntityDataSource()` falls back to `read_parquet(glob, union_by_name=true)` when catalog table COUNT = 0.
+3. Bound `?` in `SELECT` list of `INSERT…SELECT…GROUP BY` collapses all rows to one group (DuckDB planner bug with table functions); entity_type inlined as string literal.
+4. After catalog-loss recovery, `resolveEntityDataSource()` also re-inserts the orphaned Parquet data back into the DuckLake catalog table so that all downstream replay/stats queries work normally without any code changes.
 
 ### Replay-to-Topic
 `ReplayToTopicService` orchestrates reading from DuckLake and producing to Kafka via `KafkaProducerService` / `KafkaSink`. Both general cassette and entity cassette paths are implemented. Speed multiplier (inter-message delay scaling) and `ReplayProgress` progress events are included.

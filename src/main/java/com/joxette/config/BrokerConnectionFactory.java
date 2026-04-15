@@ -1,13 +1,11 @@
 package com.joxette.config;
 
-import com.joxette.kafka.ConsumerSettings;
-import com.joxette.kafka.ProducerSettings;
 import com.joxette.management.BrokerConfig;
 import com.joxette.management.BrokerRepository;
+import com.softwaremill.jox.kafka.ConsumerSettings;
+import com.softwaremill.jox.kafka.ProducerSettings;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.AdminClientConfig;
-import org.apache.kafka.clients.consumer.ConsumerConfig;
-import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
@@ -44,12 +42,15 @@ public class BrokerConnectionFactory {
      */
     public ConsumerSettings<String, byte[]> consumerSettings(String brokerId) {
         BrokerConfig cfg = resolve(brokerId);
-        Map<String, Object> props = new HashMap<>();
-        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, cfg.bootstrapServers());
-        props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
-        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest");
-        applySecurityProps(props, cfg);
-        return ConsumerSettings.create(props, new StringDeserializer(), new ByteArrayDeserializer());
+        ConsumerSettings<String, byte[]> settings = ConsumerSettings
+                .defaults("joxette-recorder")
+                .bootstrapServers(cfg.bootstrapServers())
+                .keyDeserializer(new StringDeserializer())
+                .valueDeserializer(new ByteArrayDeserializer())
+                .autoOffsetReset(ConsumerSettings.AutoOffsetReset.LATEST)
+                .property("enable.auto.commit", "false");
+        settings = applySecurityProps(settings, cfg);
+        return settings;
     }
 
     /**
@@ -65,14 +66,17 @@ public class BrokerConnectionFactory {
      */
     public ProducerSettings<byte[], byte[]> producerSettings(String brokerId) {
         BrokerConfig cfg = resolve(brokerId);
-        Map<String, Object> props = new HashMap<>();
-        props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, cfg.bootstrapServers());
-        props.put(ProducerConfig.ACKS_CONFIG, "all");
-        props.put(ProducerConfig.ENABLE_IDEMPOTENCE_CONFIG, true);
-        props.put(ProducerConfig.BATCH_SIZE_CONFIG, 65536);
-        props.put(ProducerConfig.LINGER_MS_CONFIG, 5);
-        applySecurityProps(props, cfg);
-        return ProducerSettings.create(props, new ByteArraySerializer(), new ByteArraySerializer());
+        ProducerSettings<byte[], byte[]> settings = ProducerSettings
+                .defaults()
+                .bootstrapServers(cfg.bootstrapServers())
+                .keySerializer(new ByteArraySerializer())
+                .valueSerializer(new ByteArraySerializer())
+                .property("acks", "all")
+                .property("enable.idempotence", "true")
+                .property("batch.size", "65536")
+                .property("linger.ms", "5");
+        settings = applySecurityProps(settings, cfg);
+        return settings;
     }
 
     /**
@@ -91,7 +95,7 @@ public class BrokerConnectionFactory {
         props.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, cfg.bootstrapServers());
         props.put(AdminClientConfig.REQUEST_TIMEOUT_MS_CONFIG, 3_000);
         props.put(AdminClientConfig.DEFAULT_API_TIMEOUT_MS_CONFIG, 5_000);
-        applySecurityProps(props, cfg);
+        applySecurityPropsMap(props, cfg);
         return AdminClient.create(props);
     }
 
@@ -99,7 +103,57 @@ public class BrokerConnectionFactory {
     // Security helpers
     // -------------------------------------------------------------------------
 
-    private void applySecurityProps(Map<String, Object> props, BrokerConfig cfg) {
+    private ConsumerSettings<String, byte[]> applySecurityProps(
+            ConsumerSettings<String, byte[]> settings, BrokerConfig cfg) {
+        String protocol = cfg.securityProtocol() != null ? cfg.securityProtocol() : "PLAINTEXT";
+        settings = settings.property("security.protocol", protocol);
+        if (cfg.requiresSasl()) {
+            String mechanism = cfg.saslMechanism() != null ? cfg.saslMechanism() : "PLAIN";
+            settings = settings
+                    .property("sasl.mechanism", mechanism)
+                    .property("sasl.jaas.config", buildJaasConfig(cfg));
+        }
+        if (cfg.requiresSsl()) {
+            if (cfg.sslTruststorePath() != null) {
+                settings = settings
+                        .property("ssl.truststore.location", cfg.sslTruststorePath())
+                        .property("ssl.truststore.password", cfg.sslTruststorePassword());
+            }
+            if (cfg.sslKeystorePath() != null) {
+                settings = settings
+                        .property("ssl.keystore.location", cfg.sslKeystorePath())
+                        .property("ssl.keystore.password", cfg.sslKeystorePassword());
+            }
+        }
+        return settings;
+    }
+
+    private ProducerSettings<byte[], byte[]> applySecurityProps(
+            ProducerSettings<byte[], byte[]> settings, BrokerConfig cfg) {
+        String protocol = cfg.securityProtocol() != null ? cfg.securityProtocol() : "PLAINTEXT";
+        settings = settings.property("security.protocol", protocol);
+        if (cfg.requiresSasl()) {
+            String mechanism = cfg.saslMechanism() != null ? cfg.saslMechanism() : "PLAIN";
+            settings = settings
+                    .property("sasl.mechanism", mechanism)
+                    .property("sasl.jaas.config", buildJaasConfig(cfg));
+        }
+        if (cfg.requiresSsl()) {
+            if (cfg.sslTruststorePath() != null) {
+                settings = settings
+                        .property("ssl.truststore.location", cfg.sslTruststorePath())
+                        .property("ssl.truststore.password", cfg.sslTruststorePassword());
+            }
+            if (cfg.sslKeystorePath() != null) {
+                settings = settings
+                        .property("ssl.keystore.location", cfg.sslKeystorePath())
+                        .property("ssl.keystore.password", cfg.sslKeystorePassword());
+            }
+        }
+        return settings;
+    }
+
+    private void applySecurityPropsMap(Map<String, Object> props, BrokerConfig cfg) {
         String protocol = cfg.securityProtocol() != null ? cfg.securityProtocol() : "PLAINTEXT";
         props.put("security.protocol", protocol);
         if (cfg.requiresSasl()) {

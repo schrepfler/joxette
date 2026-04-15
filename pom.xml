@@ -99,29 +99,11 @@
             <version>${jox.flows.version}</version>
         </dependency>
 
-        <!--
-            com.softwaremill.jox:kafka v0.5.3 exists in source at
-            https://github.com/softwaremill/jox/tree/master/kafka
-            but has NOT been published to Maven Central.
-
-            com.joxette.kafka provides an equivalent API surface (KafkaSource,
-            KafkaSink, ConsumerSettings, ProducerSettings) in the interim, mirroring
-            the jox:kafka design so the migration is mechanical when the module ships:
-              1. Add the dependency below.
-              2. Delete src/main/java/com/joxette/kafka/.
-              3. Update the two import sites (KafkaConfig, KafkaProducerService).
-
-            <dependency>
-                <groupId>com.softwaremill.jox</groupId>
-                <artifactId>kafka</artifactId>
-                <version>${jox.flows.version}</version>
-            </dependency>
-        -->
-
-        <!-- Apache Kafka clients (direct dependency until jox:kafka is published) -->
+        <!-- Jox Kafka: KafkaFlow, KafkaDrain, KafkaStage, ConsumerSettings, ProducerSettings -->
         <dependency>
-            <groupId>org.apache.kafka</groupId>
-            <artifactId>kafka-clients</artifactId>
+            <groupId>com.softwaremill.jox</groupId>
+            <artifactId>kafka</artifactId>
+            <version>${jox.flows.version}</version>
         </dependency>
 
         <!-- DuckDB JDBC driver -->
@@ -349,9 +331,10 @@
         </plugin>
         <!--
             Generate PNG diagrams from docs/*.puml into docs/.
-            Run: mvn generate-resources  (or just: mvn compile)
+            Run manually: mvn exec:exec@generate-puml-diagrams
             Uses exec-maven-plugin to invoke the plantuml JAR directly,
             avoiding classloader conflicts present in the jeluard wrapper.
+            Not bound to any lifecycle phase — run on demand only.
         -->
         <plugin>
             <groupId>org.codehaus.mojo</groupId>
@@ -360,7 +343,7 @@
             <executions>
                 <execution>
                     <id>generate-puml-diagrams</id>
-                    <phase>generate-resources</phase>
+                    <!-- No <phase> — not bound to the default lifecycle -->
                     <goals>
                         <goal>exec</goal>
                     </goals>
@@ -374,7 +357,6 @@
                             <argument>${project.basedir}/docs</argument>
                             <argument>${project.basedir}/docs/*.puml</argument>
                         </arguments>
-
                     </configuration>
                 </execution>
             </executions>

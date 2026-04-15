@@ -13,7 +13,7 @@ start
 :poll ConsumerRecords;
 
 |TopicRecorder|
-:KafkaSource.subscribe(topic)\n[seek to earliest / timestamp if configured];
+:ConsumerSettings.toConsumer() → KafkaConsumer\nFlows.usingEmit { subscribe(topic) }\n[seek to earliest / timestamp if configured];
 
 repeat
   :groupedWithin(\n  batchSize, batchTimeout\n);
@@ -42,7 +42,7 @@ repeat
     endif
   }
 
-  :source.scheduleCommit(offsets)\n[deferred one poll cycle];
+  :pendingCommit.set(offsets)\n[committed on next poll cycle];
 
 repeat while (topic recorder running?)
 

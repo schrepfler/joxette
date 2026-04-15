@@ -2,7 +2,7 @@ package com.joxette.recording;
 
 import com.joxette.config.BrokerConnectionFactory;
 import com.joxette.config.JoxetteProperties;
-import com.joxette.kafka.ConsumerSettings;
+import com.softwaremill.jox.kafka.ConsumerSettings;
 import com.joxette.management.ConfigRepository;
 import com.joxette.replay.KnownEntitiesRepository;
 import com.joxette.replay.MessageRouter;

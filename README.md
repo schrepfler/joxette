@@ -37,7 +37,11 @@ Storage is powered by [DuckLake](https://ducklake.select/), using its **data inl
 
 ## Architecture
 
-> Diagrams are kept as PlantUML sources in [`docs/`](docs/) and regenerated as PNGs via `mvn generate-resources`.
+> Diagrams are kept as PlantUML sources in [`docs/`](docs/). PNG files are checked in alongside the sources. To regenerate after editing a `.puml` file, run:
+> ```bash
+> mvn exec:exec@generate-puml-diagrams
+> ```
+> Diagram generation is **not** bound to the default build lifecycle — `mvn compile` / `mvn test` / `mvn verify` do not regenerate PNGs.
 
 ### Overall Architecture
 

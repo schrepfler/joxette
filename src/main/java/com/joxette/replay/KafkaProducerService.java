@@ -1,9 +1,10 @@
 package com.joxette.replay;
 
 import com.joxette.config.BrokerConnectionFactory;
-import com.joxette.kafka.KafkaSink;
 import com.joxette.management.BrokerConfig;
+import com.softwaremill.jox.kafka.ProducerSettings;
 import jakarta.annotation.PreDestroy;
+import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.apache.kafka.common.header.internals.RecordHeaders;
@@ -18,7 +19,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Future;
 
 /**
- * Wraps a {@link KafkaSink KafkaSink&lt;byte[], byte[]&gt;} for replay-to-topic operations.
+ * Wraps a {@link KafkaProducer KafkaProducer&lt;byte[], byte[]&gt;} for replay-to-topic operations.
  *
  * <p>Both {@link CassetteRecord} and {@link EntityRecord} carry their payload as
  * base64url-encoded strings (value field) and plain-string keys. This service
@@ -29,7 +30,7 @@ import java.util.concurrent.Future;
  * constructed with the source record's {@code timestamp} so that downstream
  * consumers see event-time ordering identical to the original topic.
  *
- * <p>The sink is configured with {@code acks=all} and idempotence enabled
+ * <p>The producer is configured with {@code acks=all} and idempotence enabled
  * so that every record is durably written exactly once to the target topic.
  */
 @Service
@@ -39,15 +40,19 @@ public class KafkaProducerService {
     private static final Base64.Decoder BASE64 = Base64.getUrlDecoder();
 
     private final BrokerConnectionFactory factory;
-    private final ConcurrentHashMap<String, KafkaSink<byte[], byte[]>> sinks = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, KafkaProducer<byte[], byte[]>> producers =
+            new ConcurrentHashMap<>();
 
     public KafkaProducerService(BrokerConnectionFactory factory) {
         this.factory = factory;
     }
 
-    private KafkaSink<byte[], byte[]> sinkFor(String brokerId) {
+    private KafkaProducer<byte[], byte[]> producerFor(String brokerId) {
         String id = brokerId != null ? brokerId : BrokerConfig.DEFAULT_BROKER_ID;
-        return sinks.computeIfAbsent(id, k -> new KafkaSink<>(factory.producerSettings(k)));
+        return producers.computeIfAbsent(id, k -> {
+            ProducerSettings<byte[], byte[]> settings = factory.producerSettings(k);
+            return settings.toProducer();
+        });
     }
 
     /**
@@ -67,7 +72,7 @@ public class KafkaProducerService {
         long   timestamp  = record.timestamp().toEpochMilli();
         var pr = new ProducerRecord<>(targetTopic, null, timestamp, keyBytes, valueBytes,
                 buildHeaders(record.headers()));
-        return sinkFor(null).send(pr);
+        return producerFor(null).send(pr);
     }
 
     /**
@@ -80,7 +85,7 @@ public class KafkaProducerService {
         long   timestamp  = record.timestamp().toEpochMilli();
         var pr = new ProducerRecord<>(targetTopic, null, timestamp, keyBytes, valueBytes,
                 buildHeaders(record.headers()));
-        return sinkFor(null).send(pr);
+        return producerFor(null).send(pr);
     }
 
     private static RecordHeaders buildHeaders(List<CassetteRecord.Header> headerList) {
@@ -100,8 +105,8 @@ public class KafkaProducerService {
 
     @PreDestroy
     public void close() {
-        log.info("KafkaProducerService closing {} producer(s)", sinks.size());
-        sinks.values().forEach(KafkaSink::close);
+        log.info("KafkaProducerService closing {} producer(s)", producers.size());
+        producers.values().forEach(KafkaProducer::close);
         log.info("KafkaProducerService closed");
     }
 }

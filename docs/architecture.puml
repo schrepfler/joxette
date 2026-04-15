@@ -12,7 +12,7 @@ cloud "Apache Kafka" as kafka #fff8e1
 rectangle "Joxette Service" as joxette #f0f4ff {
 
   rectangle "Recording (per topic)" as recording #e8f5e9 {
-    component [KafkaSource\n(Jox, one per topic)] as consumer
+    component [KafkaConsumer\n(jox-kafka, one per topic)] as consumer
     component [MessageRouter\n(entity extract + route)] as router
     component [CassetteBatchWriter\n(general)] as generalWriter
     component [EntityCassetteBatchWriter\n(entity)] as entityWriter
@@ -41,7 +41,7 @@ rectangle "Joxette Service" as joxette #f0f4ff {
 database "DuckDB Catalog\n(.ducklake file)" as catalog
 storage "Object Storage\n(S3 / GCS / Azure)\nParquet files" as s3
 
-kafka         --> consumer      : consume\n(Jox KafkaSource)
+kafka         --> consumer      : consume\n(jox-kafka ConsumerSettings\n.toConsumer() + Flows.usingEmit)
 consumer      --> router        : Flow<KafkaMessage>
 router        --> generalWriter : generalBatch
 router        --> entityWriter  : entityRoutes

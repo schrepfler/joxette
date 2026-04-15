@@ -1,10 +1,9 @@
 package com.joxette.recording;
 
-import com.joxette.kafka.ConsumerSettings;
+import com.softwaremill.jox.kafka.ConsumerSettings;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.admin.NewTopic;
-import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
@@ -23,7 +22,6 @@ import org.testcontainers.utility.DockerImageName;
 import java.nio.charset.StandardCharsets;
 import java.sql.*;
 import java.time.Duration;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutionException;
@@ -357,30 +355,31 @@ class TopicRecorderTest {
     // -------------------------------------------------------------------------
 
     private ConsumerSettings<String, byte[]> consumerSettings() {
-        Map<String, Object> props = new HashMap<>();
-        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
-        props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
         // Use earliest so messages published before subscription are captured.
-        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
-        return ConsumerSettings.create(props, new StringDeserializer(), new ByteArrayDeserializer());
+        return ConsumerSettings.defaults("joxette-test")
+                .bootstrapServers(kafka.getBootstrapServers())
+                .keyDeserializer(new StringDeserializer())
+                .valueDeserializer(new ByteArrayDeserializer())
+                .autoOffsetReset(ConsumerSettings.AutoOffsetReset.EARLIEST)
+                .property("enable.auto.commit", "false");
     }
 
     /** Base consumer settings that default to {@code auto.offset.reset=latest}. */
     private ConsumerSettings<String, byte[]> consumerSettingsWithLatestDefault() {
-        Map<String, Object> props = new HashMap<>();
-        props.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
-        props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
-        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest");
-        return ConsumerSettings.create(props, new StringDeserializer(), new ByteArrayDeserializer());
+        return ConsumerSettings.defaults("joxette-test")
+                .bootstrapServers(kafka.getBootstrapServers())
+                .keyDeserializer(new StringDeserializer())
+                .valueDeserializer(new ByteArrayDeserializer())
+                .autoOffsetReset(ConsumerSettings.AutoOffsetReset.LATEST)
+                .property("enable.auto.commit", "false");
     }
 
     private KafkaProducer<String, byte[]> newProducer() {
-        Map<String, Object> props = new HashMap<>();
-        props.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
-        props.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class);
-        props.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class);
-        props.put(ProducerConfig.ACKS_CONFIG, "all");
-        return new KafkaProducer<>(props);
+        return new KafkaProducer<>(Map.of(
+                ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers(),
+                ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class,
+                ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class,
+                ProducerConfig.ACKS_CONFIG, "all"));
     }
 
     private void createKafkaTopic(String topic, int partitions) throws Exception {

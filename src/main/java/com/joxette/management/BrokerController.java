@@ -1,11 +1,10 @@
 package com.joxette.management;
 
 import com.joxette.config.BrokerConnectionFactory;
-import com.joxette.kafka.ConsumerSettings;
+import com.softwaremill.jox.kafka.ConsumerSettings;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.ListTopicsOptions;
 import org.apache.kafka.clients.admin.TopicDescription;
-import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.common.PartitionInfo;
@@ -23,7 +22,6 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -209,13 +207,13 @@ public class BrokerController {
         if (limit < 1 || limit > 100) {
             return ResponseEntity.badRequest().build();
         }
+        // Build a one-off consumer for the peek: derive from base settings, override group.id
         ConsumerSettings<String, byte[]> base = connectionFactory.consumerSettings(brokerId);
-        Map<String, Object> props = new HashMap<>(base.toProperties());
-        props.put(ConsumerConfig.GROUP_ID_CONFIG, "joxette-peek-" + UUID.randomUUID());
-        props.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "latest");
-        props.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, false);
-        try (KafkaConsumer<String, byte[]> consumer = new KafkaConsumer<>(
-                props, base.keyDeserializer(), base.valueDeserializer())) {
+        ConsumerSettings<String, byte[]> peekSettings = base
+                .groupId("joxette-peek-" + UUID.randomUUID())
+                .autoOffsetReset(ConsumerSettings.AutoOffsetReset.LATEST);
+
+        try (KafkaConsumer<String, byte[]> consumer = peekSettings.toConsumer()) {
             List<PartitionInfo> parts = consumer.partitionsFor(topic);
             if (parts == null || parts.isEmpty()) {
                 return ResponseEntity.ok(List.of());
