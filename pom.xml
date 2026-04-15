@@ -29,7 +29,9 @@
         <maven-clean-plugin.version>3.5.0</maven-clean-plugin.version>
         <maven-install-plugin.version>3.1.4</maven-install-plugin.version>
         <spring-boot-dependencies.version>4.0.5</spring-boot-dependencies.version>
+        <plantuml.version>1.2026.2</plantuml.version>
     </properties>
+
 
     <dependencyManagement>
         <dependencies>
@@ -340,11 +342,45 @@
                 <artifactId>maven-resources-plugin</artifactId>
                 <version>3.5.0</version>
             </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-deploy-plugin</artifactId>
-                <version>3.1.4</version>
-            </plugin>
-        </plugins>
-    </build>
+        <plugin>
+            <groupId>org.apache.maven.plugins</groupId>
+            <artifactId>maven-deploy-plugin</artifactId>
+            <version>3.1.4</version>
+        </plugin>
+        <!--
+            Generate PNG diagrams from docs/*.puml into docs/.
+            Run: mvn generate-resources  (or just: mvn compile)
+            Uses exec-maven-plugin to invoke the plantuml JAR directly,
+            avoiding classloader conflicts present in the jeluard wrapper.
+        -->
+        <plugin>
+            <groupId>org.codehaus.mojo</groupId>
+            <artifactId>exec-maven-plugin</artifactId>
+            <version>3.5.1</version>
+            <executions>
+                <execution>
+                    <id>generate-puml-diagrams</id>
+                    <phase>generate-resources</phase>
+                    <goals>
+                        <goal>exec</goal>
+                    </goals>
+                    <configuration>
+                        <executable>${java.home}/bin/java</executable>
+                        <arguments>
+                            <argument>-jar</argument>
+                            <argument>${settings.localRepository}/net/sourceforge/plantuml/plantuml/${plantuml.version}/plantuml-${plantuml.version}.jar</argument>
+                            <argument>-tpng</argument>
+                            <argument>-o</argument>
+                            <argument>${project.basedir}/docs</argument>
+                            <argument>${project.basedir}/docs/*.puml</argument>
+                        </arguments>
+
+                    </configuration>
+                </execution>
+            </executions>
+        </plugin>
+
+    </plugins>
+  </build>
+
 </project>

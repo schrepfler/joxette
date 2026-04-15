@@ -1,0 +1,89 @@
+@startuml replay-pipeline-read
+!theme plain
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName monospaced
+skinparam ArrowColor #444444
+skinparam ActivityBorderColor #666666
+
+title Joxette — Replay Pipeline (Read)
+
+|REST Client|
+start
+:HTTP GET /cassettes/topics/{topic}\n  OR /cassettes/entities/{type}/{id}\n  Accept: application/json | text/event-stream | application/x-ndjson\n  params: from, to, cursor, limit, pipeline;
+
+|CassetteController|
+:parse Accept header\n-> response format: paginated JSON / SSE / NDJSON;
+
+if (general cassette?) then (yes)
+  |TopicReplayService|
+  :jOOQ SELECT from lake.main.general_{topic}\nWHERE time range, partition, offset\nQUALIFY ROW_NUMBER() dedup\nORDER BY (timestamp, partition, offset)\nLIMIT limit+1;
+  :decode cursor -> seekAfter(ts, partition, offset);
+else (entity cassette)
+  |EntityReplayService|
+  :jOOQ SELECT from lake.main.entity_{type}\nWHERE entity_id = ?\nQUALIFY ROW_NUMBER() dedup\nORDER BY (timestamp, recorded_at, topic, partition, offset)\nLIMIT limit+1;
+  :SqlPushdownAnalyzer push filter steps to SQL\ndecode cursor -> seekAfter(5-col key);
+endif
+
+|DuckDB|
+:execute query\n(inline buffer + Parquet files on S3);
+:return ResultSet;
+
+|TopicReplayService / EntityReplayService|
+:map rows -> CassetteRecord / EntityRecord\n(base64url-encode value bytes\ndecode headers STRUCT -> List<Header>);
+
+if (TransformPipeline configured?) then (yes)
+  :per record: TransformPipeline.apply()\nfilter_drop / field_set / restamp\ntime_compress / add_header;
+  note right
+    Streaming: shared TransformContext
+    enables stateful steps (time_compress).
+    Paginated: per-message context.
+  end note
+endif
+
+:buildPage(records, limit)\n-> PagedResponse { data, nextCursor, hasMore };
+
+|CassetteController|
+if (SSE?) then (yes)
+  :write SSE events (data: JSON per record);
+else if (NDJSON?) then (yes)
+  :write NDJSON (one JSON object per line);
+else (JSON)
+  :return PagedResponse JSON;
+endif
+
+|REST Client|
+:receive response;
+stop
+
+@enduml
+
+
+@startuml replay-pipeline-to-topic
+!theme plain
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName monospaced
+skinparam ArrowColor #444444
+skinparam ActivityBorderColor #666666
+
+title Joxette — Replay-to-Topic Pipeline
+
+|REST Client|
+start
+:POST /cassettes/topics/{topic}/replay-to-topic\n  OR /cassettes/entities/{type}/{id}/replay-to-topic\n  { targetTopic, brokerId, pipeline, speedMultiplier };
+
+|CassetteController|
+:stream records from DuckLake\n(same query path as read replay);
+
+|KafkaProducerService|
+repeat
+  :MessageTransformer.transform(record)\n-> restamp: shift timestamps so first = now\n-> field substitution: JSONPath, literal or UUID4;
+  :decode value bytes from base64url;
+  :ProducerRecord(targetTopic, timestamp, key, value, headers)\n-> KafkaSink.send() [acks=all, idempotent];
+  :emit ReplayProgress event (SSE);
+repeat while (more records?)
+
+|Apache Kafka|
+:records written to target topic;
+stop
+
+@enduml

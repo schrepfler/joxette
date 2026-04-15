@@ -1,0 +1,105 @@
+@startuml snapshot-create
+!theme plain
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName monospaced
+skinparam ArrowColor #444444
+skinparam ActivityBorderColor #666666
+
+title Joxette — Create & Export Snapshot
+
+|REST Client|
+start
+:POST /cassettes/snapshots { "name": "my-snapshot" }\nOR POST /cassettes/snapshots/export { "name": "my-snapshot" };
+
+|CassetteLifecycleService|
+:validateSnapshotName ([a-zA-Z0-9_-]+);
+:Files.createDirectories(snapshotsBase/name);
+:synchronized(duckDB)\n  EXPORT DATABASE 'snapshotsBase/name'\n  -> all tables as Parquet + schema.sql;
+:directorySize(snapshotDir);
+:INSERT INTO snapshots (name, created_at, size_bytes)\nON CONFLICT DO UPDATE;
+
+if (export to object store?) then (yes)
+  :Files.walk(snapshotDir) -> collect file list;
+  repeat
+    :S3Client.putObject(\n  bucket, prefix/name/relPath, file\n);
+  repeat while (more files?)
+  :deleteDirectory(snapshotDir)\n[local copy removed — S3 is source of truth];
+  :return ObjectStoreSnapshotInfo { name, createdAt, sizeBytes, s3Uri };
+else (local only)
+  :return SnapshotInfo { name, createdAt, sizeBytes };
+endif
+stop
+
+@enduml
+
+
+@startuml snapshot-restore
+!theme plain
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName monospaced
+skinparam ArrowColor #444444
+skinparam ActivityBorderColor #666666
+
+title Joxette — Restore Snapshot
+
+|REST Client|
+start
+:POST /cassettes/snapshots/{name}/restore;
+
+|CassetteLifecycleService|
+note right
+  Stop all active topic recorders
+  before restoring to avoid
+  concurrent writes!
+end note
+:validateSnapshotName(name);
+:check snapshotsBase/name exists;
+:synchronized(duckDB)\n  IMPORT DATABASE 'snapshotsBase/name'\n  -> replaces all existing tables;
+stop
+
+@enduml
+
+
+@startuml snapshot-rebuild-known-entities
+!theme plain
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName monospaced
+skinparam ArrowColor #444444
+skinparam ActivityBorderColor #666666
+
+title Joxette — Rebuild known_entities (Disaster Recovery)
+
+|REST Client|
+start
+:POST /cassettes/rebuild-known-entities;
+
+|CassetteLifecycleService|
+:listEntityTypes() from config;
+:CALL ducklake_flush_inlined_data('lake');
+:CHECKPOINT;
+:DELETE FROM known_entities;
+
+repeat
+  :check table lake.main.entity_{type} exists\n(duckdb_tables());
+
+  if (catalog table has rows?) then (yes)
+    :dataSource = lake.main.entity_{type};
+  else (catalog empty / .ducklake lost)
+    :build glob: objectStoragePath/**/*.parquet;
+    :dataSource = read_parquet(glob, union_by_name=true);
+    :INSERT INTO lake.main.entity_{type}\n  SELECT 13 fixed columns FROM parquetSrc\n  WHERE entity_id IS NOT NULL;
+    note right
+      Re-populates empty DuckLake catalog
+      table from orphaned Parquet files on
+      S3 so downstream queries work normally.
+    end note
+  endif
+
+  :INSERT INTO known_entities\n  SELECT entity_type, entity_id,\n         MIN(recorded_at), MAX(recorded_at)\n  FROM dataSource GROUP BY entity_id\n  ON CONFLICT DO UPDATE;
+  :count rows upserted;
+repeat while (more entity types?)
+
+:return total rows upserted;
+stop
+
+@enduml

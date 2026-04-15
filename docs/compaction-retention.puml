@@ -1,0 +1,84 @@
+@startuml compaction-retention-compaction
+!theme plain
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName monospaced
+skinparam ArrowColor #444444
+skinparam ActivityBorderColor #666666
+
+title Joxette — Compaction Pipeline
+
+|Trigger|
+start
+:POST /compaction/trigger\nOR cron (CompactionScheduler);
+
+|CompactionService|
+:AtomicBoolean.compareAndSet(false, true)\n[skip if already running];
+:INSERT INTO compaction_history (status='running');
+
+fork
+  partition "Entity compaction" {
+    :listEntityTypes() from config DB;
+    repeat
+      :CALL ducklake_merge_adjacent_files(\n  'lake', 'entity_{type}',\n  max_file_size => targetFileSizeMb);
+      :accumulate files_processed / files_created;
+    repeat while (more entity types?)
+  }
+fork again
+  partition "General cassette compaction\n[only if compaction.general.enabled=true]" {
+    :listTopics() WHERE mode IN ('general','both');
+    repeat
+      :CALL ducklake_merge_adjacent_files(\n  'lake', 'general_{topic}',\n  max_file_size => targetFileSizeMb);
+      :accumulate files_processed / files_created;
+    repeat while (more topics?)
+  }
+end fork
+
+:CALL ducklake_flush_inlined_data('lake')\n-> write inline buffer as Parquet to S3;
+:CHECKPOINT\n-> persist catalog to .ducklake file;
+:UPDATE compaction_history (status='completed', file stats);
+:AtomicBoolean.set(false);
+stop
+
+@enduml
+
+
+@startuml compaction-retention-retention
+!theme plain
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName monospaced
+skinparam ArrowColor #444444
+skinparam ActivityBorderColor #666666
+
+title Joxette — Retention Pipeline
+
+|Trigger|
+start
+:POST /retention/trigger\nOR cron (RetentionScheduler);
+
+|RetentionService|
+:AtomicBoolean.compareAndSet(false, true)\n[skip if already running];
+:INSERT INTO retention_history (status='running');
+
+fork
+  partition "Topic retention" {
+    :listTopics() WHERE retention_days IS NOT NULL\nAND mode != 'entity_only';
+    repeat
+      :DELETE FROM lake.main.general_{topic}\nWHERE recorded_at < NOW() - INTERVAL 'N days';
+    repeat while (more topics?)
+  }
+fork again
+  partition "Entity retention" {
+    :listEntityTypes() WHERE retention_days IS NOT NULL;
+    repeat
+      :DELETE FROM lake.main.entity_{type}\nWHERE recorded_at < NOW() - INTERVAL 'N days';
+      :DELETE FROM known_entities\nWHERE entity_type=? AND last_seen < cutoff;
+    repeat while (more entity types?)
+  }
+end fork
+
+:CHECKPOINT;
+:UPDATE retention_history\n(status='completed', rows deleted per table);
+:AtomicBoolean.set(false);
+stop
+
+@enduml

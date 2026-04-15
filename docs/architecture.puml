@@ -1,38 +1,75 @@
-@startuml Joxette Architecture
+@startuml architecture
 !theme plain
 skinparam linetype ortho
 skinparam backgroundColor #FAFAFA
 skinparam defaultFontName monospaced
+skinparam ArrowColor #444444
 
-title Joxette — Kafka Topic Cassette Recorder
+title Joxette — Overall Architecture
 
-rectangle "Joxette Service" {
+cloud "Apache Kafka" as kafka #fff8e1
 
-  rectangle "Recording" {
-    component [Kafka Consumer\n(per topic)] as consumer
-    component [Router\n(entity extract\n+ route)] as router
-    component [DuckLake Writer\n(inline + flush)] as writer
+rectangle "Joxette Service" as joxette #f0f4ff {
+
+  rectangle "Recording (per topic)" as recording #e8f5e9 {
+    component [KafkaSource\n(Jox, one per topic)] as consumer
+    component [MessageRouter\n(entity extract + route)] as router
+    component [CassetteBatchWriter\n(general)] as generalWriter
+    component [EntityCassetteBatchWriter\n(entity)] as entityWriter
+    component [KnownEntitiesRepository] as knownEntities
   }
 
-  component [REST API\n(replay, manage,\ncompact)] as api
-  component [Cron Scheduler] as scheduler
+  rectangle "Replay" as replayBox #e3f2fd {
+    component [TopicReplayService] as topicReplay
+    component [EntityReplayService] as entityReplay
+    component [KafkaProducerService\n(replay-to-topic)] as producer
+    component [MessageTransformer\n(restamp + substitution)] as transformer
+  }
 
-  database "DuckDB + DuckLake\n(catalog + inline\nstorage)" as duckdb
+  rectangle "Maintenance" as maintenance #fce4ec {
+    component [CompactionService\n(ducklake_merge_adjacent_files)] as compaction
+    component [RetentionService\n(DELETE old rows)] as retention
+    component [CassetteLifecycleService\n(snapshots + rebuild)] as lifecycle
+    component [CompactionScheduler\nRetentionScheduler] as schedulers
+  }
+
+  component [REST API\n(Spring Boot controllers)] as api
+
+  database "DuckDB + DuckLake\n(catalog + inline buffer)" as duckdb
 }
 
-cloud "Apache Kafka" as kafka
-database "DuckDB Catalog\n(.ducklake)" as catalog
-storage "Object Storage\n(S3 / GCS / Azure)" as s3
+database "DuckDB Catalog\n(.ducklake file)" as catalog
+storage "Object Storage\n(S3 / GCS / Azure)\nParquet files" as s3
 
-kafka    --> consumer   : consume
-consumer --> router     : Flow<KafkaMessage>
-router   --> writer     : Flow<RoutedBatch>
-writer   --> duckdb     : bulk INSERT
+kafka         --> consumer      : consume\n(Jox KafkaSource)
+consumer      --> router        : Flow<KafkaMessage>
+router        --> generalWriter : generalBatch
+router        --> entityWriter  : entityRoutes
+generalWriter --> duckdb        : bulk INSERT\ngeneral_{topic}
+entityWriter  --> duckdb        : bulk INSERT\nentity_{type}
+entityWriter  --> knownEntities : upsert
+knownEntities --> duckdb        : known_entities
 
-api      --> duckdb     : query / manage
-scheduler --> duckdb    : compact trigger
+api --> topicReplay    : GET /cassettes/topics/**
+api --> entityReplay   : GET /cassettes/entities/**
+api --> producer       : POST replay-to-topic
+api --> compaction     : POST /compaction/trigger
+api --> lifecycle      : POST /cassettes/**/compact\n/snapshots/**
+api --> retention      : POST /retention/trigger
 
-duckdb   --> catalog    : catalog ops
-duckdb   --> s3         : Parquet flush\n(httpfs + DuckLake)
+topicReplay   --> duckdb
+entityReplay  --> duckdb
+producer      --> transformer
+transformer   --> kafka : produce\n(restamp + field subs)
+
+schedulers --> compaction : cron
+schedulers --> retention  : cron
+
+compaction --> duckdb : ducklake_merge_adjacent_files
+retention  --> duckdb : DELETE WHERE\nrecorded_at < cutoff
+lifecycle  --> duckdb : EXPORT/IMPORT DATABASE\nrebuildKnownEntities
+
+duckdb --> catalog : catalog ops\n(CHECKPOINT)
+duckdb --> s3      : Parquet flush\n(httpfs + DuckLake)
 
 @enduml

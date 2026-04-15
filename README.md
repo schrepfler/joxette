@@ -37,59 +37,40 @@ Storage is powered by [DuckLake](https://ducklake.select/), using its **data inl
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────┐
-│                  Joxette Service                 │
-│                                                  │
-│  ┌──────────┐   ┌───────────┐   ┌────────────┐  │
-│  │  Kafka    │──▶│  Router   │──▶│  DuckLake  │  │
-│  │ Consumer  │   │  (entity  │   │  Writer    │  │
-│  │ (per      │   │  extract  │   │  (inline   │  │
-│  │  topic)   │   │  + route) │   │  + flush)  │  │
-│  └──────────┘   └───────────┘   └─────┬──────┘  │
-│                                       │         │
-│  ┌──────────┐                   ┌─────▼──────┐  │
-│  │  REST    │                   │  DuckDB +  │  │
-│  │  API     │──────────────────▶│  DuckLake  │  │
-│  │ (replay, │                   │  (catalog  │  │
-│  │ manage,  │                   │   + inline │  │
-│  │ compact) │                   │   storage) │  │
-│  └──────────┘                   └─────┬──────┘  │
-│                                       │         │
-│  ┌──────────┐                         │         │
-│  │  Cron    │─── compact trigger ─────┘         │
-│  │ Scheduler│                                   │
-│  └──────────┘                                   │
-└─────────────────────────────────────────────────┘
-          │                          │
-          ▼                          ▼
-   ┌────────────┐           ┌──────────────┐
-   │  DuckDB    │           │   Object     │
-   │  Catalog   │           │   Storage    │
-   │  (.ducklake)│          │   (S3/GCS/   │
-   │            │           │    Azure)    │
-   └────────────┘           └──────────────┘
-```
+> Diagrams are kept as PlantUML sources in [`docs/`](docs/) and regenerated as PNGs via `mvn generate-resources`.
+
+### Overall Architecture
+
+![Overall Architecture](docs/architecture.png)
 
 Single process. DuckDB is embedded. Each Kafka consumer topic runs in its own [Jox](https://jox.softwaremill.com/) structured-concurrency scope, providing clean start/stop semantics and back-pressure via flow operators. All threads share one DuckDB JDBC connection; DuckDB serialises writes internally.
 
 ### Recording Pipeline
 
-```
-Jox KafkaSource (per topic)
-    │
-    ▼ .grouped(batchSize, batchTimeout)      ← batching for throughput
-    │
-    ▼ .map(batch → route(batch))             ← entity extraction + routing
-    │
-    ▼ .map(batch → write(batch))             ← DuckLake bulk insert
-    │
-    ▼ .map(result → commit(result))          ← Kafka offset commit
-    │
-    drain
-```
+![Recording Pipeline](docs/recording-pipeline.png)
 
 Back-pressure is natural: slow DuckLake writes → batch buffer fills → Kafka consumption slows → consumer lag increases. Lag is the pressure valve.
+
+### Replay Pipeline
+
+![Replay — Read](docs/replay-pipeline-read.png)
+
+![Replay — To Topic](docs/replay-pipeline-to-topic.png)
+
+### Compaction & Retention
+
+![Compaction](docs/compaction-retention-compaction.png)
+
+![Retention](docs/compaction-retention-retention.png)
+
+### Snapshots & Disaster Recovery
+
+![Create & Export Snapshot](docs/snapshot-create.png)
+
+![Restore Snapshot](docs/snapshot-restore.png)
+
+![Rebuild known_entities](docs/snapshot-rebuild-known-entities.png)
+
 
 ---
 

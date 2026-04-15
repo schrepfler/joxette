@@ -1,0 +1,62 @@
+@startuml recording-pipeline
+!theme plain
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName monospaced
+skinparam ArrowColor #444444
+skinparam ActivityBorderColor #666666
+skinparam ActivityBackgroundColor #e8f5e9
+
+title Joxette — Recording Pipeline (per topic, Jox structured concurrency)
+
+|Kafka|
+start
+:poll ConsumerRecords;
+
+|TopicRecorder|
+:KafkaSource.subscribe(topic)\n[seek to earliest / timestamp if configured];
+
+repeat
+  :groupedWithin(\n  batchSize, batchTimeout\n);
+
+  partition "writeBatch()" {
+    :for each ConsumerRecord in batch\n  toKafkaMessage(record);
+    :MessageRouter.route(msg)\n→ RouteDecision\n  .generalRoute()\n  .entityRoutes();
+
+    if (routeToGeneral?) then (yes)
+      :add to generalBatch\ncollect messageType;
+    endif
+
+    if (entityRoutes not empty?) then (yes)
+      repeat
+        :EntityCassetteBatchWriter\n.writeRoutes(route, msg)\n→ INSERT INTO lake.main.entity_{type};
+        :collect EntityRoute for\nknown_entities upsert;
+      repeat while (more entity routes?)
+    endif
+
+    if (generalBatch not empty?) then (yes)
+      :CassetteBatchWriter.writeBatch()\n→ INSERT INTO lake.main.general_{topic};
+    endif
+
+    if (any entity routes?) then (yes)
+      :KnownEntitiesRepository\n.upsertBatch(routes, now())\n→ UPSERT INTO known_entities;
+    endif
+  }
+
+  :source.scheduleCommit(offsets)\n[deferred one poll cycle];
+
+repeat while (topic recorder running?)
+
+:stop / InterruptedException;
+stop
+
+|DuckLake (Parquet on S3)|
+note right
+  DuckLake buffers inserts inline
+  in the .ducklake catalog file.
+  Once inline threshold is reached
+  (size or row count), data is
+  automatically flushed to Parquet
+  on object storage.
+end note
+
+@enduml
