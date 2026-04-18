@@ -19,6 +19,8 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
 import com.joxette.config.JoxetteProperties;
+import com.joxette.replay.sink.RecordSink;
+import com.joxette.replay.sink.kafka.KafkaRecordSinkFactory;
 import com.joxette.replay.transform.ReplayMetadataInjector;
 import com.joxette.replay.transform.TransformPipeline;
 import com.joxette.replay.transform.TransformPreset;
@@ -84,7 +86,7 @@ public class CassetteController {
     private final EntityReplayService      entityService;
     private final SseReplayHandler         sseHandler;
     private final CassetteLifecycleService lifecycle;
-    private final ReplayToTopicService     replayToTopicService;
+    private final KafkaRecordSinkFactory   sinkFactory;
     private final ScheduledReplayService   scheduledReplayService;
     private final ReplayMetadataInjector   metadataInjector;
     private final TransformPresetRepository presetRepository;
@@ -96,7 +98,7 @@ public class CassetteController {
             EntityReplayService entityService,
             SseReplayHandler sseHandler,
             CassetteLifecycleService lifecycle,
-            ReplayToTopicService replayToTopicService,
+            KafkaRecordSinkFactory sinkFactory,
             ScheduledReplayService scheduledReplayService,
             ReplayMetadataInjector metadataInjector,
             TransformPresetRepository presetRepository,
@@ -106,12 +108,22 @@ public class CassetteController {
         this.entityService          = entityService;
         this.sseHandler             = sseHandler;
         this.lifecycle              = lifecycle;
-        this.replayToTopicService   = replayToTopicService;
+        this.sinkFactory            = sinkFactory;
         this.scheduledReplayService = scheduledReplayService;
         this.metadataInjector       = metadataInjector;
         this.presetRepository       = presetRepository;
         this.properties             = properties;
         this.objectMapper           = objectMapper;
+    }
+
+    /**
+     * Builds a {@link ReplayEngine} bound to the sink for the given broker id
+     * ({@code null} → default broker). Engines are cheap (three field
+     * assignments); the sink itself is cached in the factory.
+     */
+    private ReplayEngine engineFor(String brokerId) {
+        RecordSink sink = sinkFactory.forBroker(brokerId);
+        return new ReplayEngine(topicService, entityService, sink);
     }
 
     // =========================================================================
@@ -1130,7 +1142,7 @@ public class CassetteController {
             throw new IllegalArgumentException("speed must be greater than 0");
         }
         ReplayProgress[] result = {null};
-        replayToTopicService.replayTopicToKafka(topic, req, speed, p -> result[0] = p);
+        engineFor(null).replayTopic(topic, req, speed, p -> result[0] = p);
         return result[0];
     }
 
@@ -1174,7 +1186,7 @@ public class CassetteController {
             throw new IllegalArgumentException("speed must be greater than 0");
         }
         return sseHandler.<ReplayProgress>streamSse(
-                sink -> replayToTopicService.replayTopicToKafka(topic, req, speed, sink));
+                sink -> engineFor(null).replayTopic(topic, req, speed, sink));
     }
 
     @Operation(
@@ -1227,7 +1239,7 @@ public class CassetteController {
             throw new IllegalArgumentException("speed must be greater than 0");
         }
         ReplayProgress[] result = {null};
-        replayToTopicService.replayEntityToKafka(entityType, entityId, req, speed, p -> result[0] = p);
+        engineFor(null).replayEntity(entityType, entityId, req, speed, p -> result[0] = p);
         return result[0];
     }
 
@@ -1275,7 +1287,7 @@ public class CassetteController {
             throw new IllegalArgumentException("speed must be greater than 0");
         }
         return sseHandler.<ReplayProgress>streamSse(
-                sink -> replayToTopicService.replayEntityToKafka(entityType, entityId, req, speed, sink));
+                sink -> engineFor(null).replayEntity(entityType, entityId, req, speed, sink));
     }
 
     // =========================================================================

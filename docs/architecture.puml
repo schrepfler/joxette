@@ -1,75 +1,108 @@
 @startuml architecture
 !theme plain
-skinparam linetype ortho
 skinparam backgroundColor #FAFAFA
 skinparam defaultFontName monospaced
 skinparam ArrowColor #444444
+skinparam nodesep 22
+skinparam ranksep 45
+skinparam componentStyle rectangle
+skinparam component {
+  BorderColor #666666
+  BackgroundColor #ffffff
+}
+skinparam rectangle {
+  BorderColor #888888
+}
 
 title Joxette — Overall Architecture
 
+' =========================================================================
+' External systems (rendered top & bottom for a cleaner layout)
+' =========================================================================
 cloud "Apache Kafka" as kafka #fff8e1
 
+' =========================================================================
+' Joxette service
+' =========================================================================
 rectangle "Joxette Service" as joxette #f0f4ff {
 
+  component [REST API\n(Spring Boot controllers)] as api
+
   rectangle "Recording (per topic)" as recording #e8f5e9 {
-    component [KafkaConsumer\n(jox-kafka, one per topic)] as consumer
-    component [MessageRouter\n(entity extract + route)] as router
-    component [CassetteBatchWriter\n(general)] as generalWriter
-    component [EntityCassetteBatchWriter\n(entity)] as entityWriter
-    component [KnownEntitiesRepository] as knownEntities
+    component [KafkaConsumer\n(jox-kafka)]              as consumer
+    component [MessageRouter\n(extract + route)]        as router
+    component [CassetteBatchWriter\n(general)]          as generalWriter
+    component [EntityCassetteBatchWriter\n(entity)]     as entityWriter
+    component [KnownEntitiesRepository]                 as knownEntities
   }
 
   rectangle "Replay" as replayBox #e3f2fd {
-    component [TopicReplayService] as topicReplay
-    component [EntityReplayService] as entityReplay
-    component [KafkaProducerService\n(replay-to-topic)] as producer
-    component [MessageTransformer\n(restamp + substitution)] as transformer
+    component [ReplayEngine\n(orchestrator,\nbroker-agnostic)]        as engine
+    component [TopicReplayService]                                    as topicReplay
+    component [EntityReplayService]                                   as entityReplay
+    component [MessageTransformer\n(restamp + substitution)]          as transformer
+    component [KafkaRecordSinkFactory\n+ KafkaRecordSink\n(RecordSink)] as sink
   }
 
   rectangle "Maintenance" as maintenance #fce4ec {
-    component [CompactionService\n(ducklake_merge_adjacent_files)] as compaction
-    component [RetentionService\n(DELETE old rows)] as retention
-    component [CassetteLifecycleService\n(snapshots + rebuild)] as lifecycle
-    component [CompactionScheduler\nRetentionScheduler] as schedulers
+    component [CompactionService]        as compaction
+    component [RetentionService]         as retention
+    component [CassetteLifecycleService] as lifecycle
+    component [Schedulers]               as schedulers
   }
-
-  component [REST API\n(Spring Boot controllers)] as api
 
   database "DuckDB + DuckLake\n(catalog + inline buffer)" as duckdb
 }
 
-database "DuckDB Catalog\n(.ducklake file)" as catalog
-storage "Object Storage\n(S3 / GCS / Azure)\nParquet files" as s3
+database "DuckDB Catalog\n(.ducklake file)"              as catalog
+storage  "Object Storage\n(S3 / GCS / Azure)\nParquet"   as s3
 
-kafka         --> consumer      : consume\n(jox-kafka ConsumerSettings\n.toConsumer() + Flows.usingEmit)
+' =========================================================================
+' Recording (Kafka -> router -> writers -> DuckLake)
+' =========================================================================
+kafka         --> consumer      : consume
 consumer      --> router        : Flow<KafkaMessage>
-router        --> generalWriter : generalBatch
-router        --> entityWriter  : entityRoutes
-generalWriter --> duckdb        : bulk INSERT\ngeneral_{topic}
-entityWriter  --> duckdb        : bulk INSERT\nentity_{type}
+router        --> generalWriter
+router        --> entityWriter
+generalWriter --> duckdb        : general_{topic}
+entityWriter  --> duckdb        : entity_{type}
 entityWriter  --> knownEntities : upsert
-knownEntities --> duckdb        : known_entities
+knownEntities --> duckdb
 
-api --> topicReplay    : GET /cassettes/topics/**
-api --> entityReplay   : GET /cassettes/entities/**
-api --> producer       : POST replay-to-topic
-api --> compaction     : POST /compaction/trigger
-api --> lifecycle      : POST /cassettes/**/compact\n/snapshots/**
-api --> retention      : POST /retention/trigger
+' =========================================================================
+' REST API surface
+' =========================================================================
+api --> topicReplay  : GET /cassettes/topics/**
+api --> entityReplay : GET /cassettes/entities/**
+api --> engine       : POST replay-to-topic
+api --> compaction   : /compaction/**
+api --> retention    : /retention/**
+api --> lifecycle    : /cassettes/**/compact\n/snapshots/**
 
-topicReplay   --> duckdb
-entityReplay  --> duckdb
-producer      --> transformer
-transformer   --> kafka : produce\n(restamp + field subs)
+' =========================================================================
+' Replay (engine streams from services, transforms, sends via sink)
+' =========================================================================
+engine       --> topicReplay  : streamAll
+engine       --> entityReplay : streamEntityEvents
+engine       --> transformer  : per record
+engine       --> sink         : RecordSink.send()
+topicReplay  --> duckdb
+entityReplay --> duckdb
+sink         --> kafka        : KafkaProducer.send()
 
+' =========================================================================
+' Maintenance
+' =========================================================================
 schedulers --> compaction : cron
 schedulers --> retention  : cron
+compaction --> duckdb     : merge_adjacent_files
+retention  --> duckdb     : DELETE old rows
+lifecycle  --> duckdb     : EXPORT/IMPORT
 
-compaction --> duckdb : ducklake_merge_adjacent_files
-retention  --> duckdb : DELETE WHERE\nrecorded_at < cutoff
-lifecycle  --> duckdb : EXPORT/IMPORT DATABASE\nrebuildKnownEntities
-
-duckdb --> catalog : catalog ops\n(CHECKPOINT)
-duckdb --> s3      : Parquet flush\n(httpfs + DuckLake)
+' =========================================================================
+' Storage
+' =========================================================================
+duckdb --> catalog : CHECKPOINT
+duckdb --> s3      : Parquet flush\n(httpfs)
 
 @enduml

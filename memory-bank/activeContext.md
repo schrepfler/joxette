@@ -1,6 +1,21 @@
 # Active Context
 
 ## Current Work Focus
+Extracted a reusable `RecordSink` SPI for the replay-to-topic path so the same replay engine can power the service and a future test-kit without dragging in Spring or Kafka imports.
+
+**What changed:**
+- New package `com.joxette.replay.sink` holds the SPI:
+  - `RecordSink` — blocking `send(targetTopic, CassetteRecord|EntityRecord)` that returns a `SendResult` or throws `SinkException`. Virtual-thread friendly; no `Future`/`CompletableFuture` in the interface.
+  - `SinkException` — unchecked, signals permanent transport failure so the engine aborts the run and reports `status=failed`.
+- Kafka impl lives in `com.joxette.replay.sink.kafka`:
+  - `KafkaRecordSink` — blocks on `producer.send(rec).get()`, owns byte/header/timestamp encoding (UTF-8 keys/headers, base64url value decode, source timestamp on the `ProducerRecord`). Does **not** own the `Producer`.
+  - `KafkaRecordSinkFactory` — `@Component` that caches one `KafkaProducer` per broker id (`null` → `BrokerConfig.DEFAULT_BROKER_ID`) and closes all in `@PreDestroy`.
+- `ReplayToTopicService` renamed to `ReplayEngine` and stripped of Spring. Takes `TopicReplayService`, `EntityReplayService`, and any `RecordSink`. `doSend` no longer plumbs `Future.get()` since the sink blocks. `replayTopicToKafka` / `replayEntityToKafka` → `replayTopic` / `replayEntity`.
+- `KafkaProducerService` deleted; `CassetteController` now builds a per-request `ReplayEngine` via `engineFor(brokerId)` that resolves the broker through `KafkaRecordSinkFactory`.
+- New `ReplayToTopicIT` (Testcontainers) seeds a 3-record cassette, POSTs `/cassettes/topics/{topic}/replay-to-topic?speed=2.0`, and asserts order, keys/values, timestamps, and honoured inter-message delay.
+- PlantUML updated: `docs/replay-pipeline.puml` splits the produce path into `ReplayEngine` + `KafkaRecordSink`; `docs/architecture.puml` shows the new trio (`ReplayEngine`, `KafkaRecordSinkFactory`, `KafkaRecordSink`). Diagrams regenerated.
+
+## Previous Focus — `com.softwaremill.jox:kafka:0.5.3` migration
 Migrated from hand-rolled `com.joxette.kafka` shim to the real `com.softwaremill.jox:kafka:0.5.3` module (published to Maven Central 18 Mar 2026).
 
 **What changed:**
@@ -28,7 +43,7 @@ Migrated from hand-rolled `com.joxette.kafka` shim to the real `com.softwaremill
 4. After catalog-loss recovery, `resolveEntityDataSource()` also re-inserts the orphaned Parquet data back into the DuckLake catalog table so that all downstream replay/stats queries work normally without any code changes.
 
 ### Replay-to-Topic
-`ReplayToTopicService` orchestrates reading from DuckLake and producing to Kafka via `KafkaProducerService` / `KafkaSink`. Both general cassette and entity cassette paths are implemented. Speed multiplier (inter-message delay scaling) and `ReplayProgress` progress events are included.
+`ReplayEngine` orchestrates reading from DuckLake and writing to any `RecordSink`. The Kafka implementation (`KafkaRecordSink` + `KafkaRecordSinkFactory`) handles broker routing and producer caching. Both general cassette and entity cassette paths are implemented. Speed multiplier (inter-message delay scaling) and `ReplayProgress` progress events are included. `ReplayToTopicIT` covers the HTTP → engine → Kafka round-trip.
 
 ### Scheduled Replay
 `ScheduledReplayService` — in-memory registry for pending/streaming scheduled replays. Supports register, await-start (cancellable latch), cancel, and status queries. Not persisted across restarts.

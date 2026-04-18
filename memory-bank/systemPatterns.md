@@ -77,7 +77,13 @@ KafkaConsumer.poll() → emit → groupedWithin(batchSize, batchTimeout)
 - REST API is source of truth after first start
 - `MessageRouter` must be reloaded after any REST API config change to pick up new routing rules
 
-### 8. Disaster Recovery
+### 8. Replay Sink SPI
+- `ReplayEngine` is Spring-free. It depends on `TopicReplayService`, `EntityReplayService`, and a `RecordSink` — nothing else — so the same engine can run inside the service or from a standalone test-kit.
+- `RecordSink.send(...)` is **blocking**. On virtual threads this is cheap; we deliberately avoid `Future`/`CompletableFuture` in the SPI. Permanent failures throw `SinkException` so the engine can flip the run to `status=failed`.
+- `KafkaRecordSinkFactory` is the only place that knows about multi-broker routing. It caches one `KafkaProducer` per broker id and hands the sink a `Producer` it does **not** own (factory closes it on `@PreDestroy`).
+- `CassetteController` builds a per-request engine via `engineFor(brokerId)` — the engine itself is single-destination and broker-agnostic.
+
+### 9. Disaster Recovery
 - **Export to object store**: `EXPORT DATABASE 's3://.../snapshots/<name>/'` — writes entire catalog (config tables, known_entities, DuckLake metadata) to S3 directly via httpfs. No local disk used.
 - **Rebuild known_entities**: scans `lake.main.entity_*` tables, computes `(entity_type, entity_id, MIN(recorded_at), MAX(recorded_at))` per entity, upserts into `known_entities`. Used after catalog file loss when Parquet data is still on S3.
 

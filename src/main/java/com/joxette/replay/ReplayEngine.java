@@ -1,22 +1,23 @@
 package com.joxette.replay;
 
+import com.joxette.replay.sink.RecordSink;
+import com.joxette.replay.sink.SinkException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.stereotype.Service;
 
 import java.sql.SQLException;
 import java.time.Instant;
-import java.util.concurrent.ExecutionException;
 import java.util.function.Consumer;
 
 /**
  * Orchestrates replay-to-topic operations: reads records from a DuckLake
- * cassette and produces them back onto a Kafka topic.
+ * cassette and hands them to a {@link RecordSink} that writes to the
+ * destination (typically Kafka).
  *
  * <h2>General cassette replay</h2>
  * <p>Records are streamed from {@code lake.main.general_{topic}} in
  * {@code kafka_timestamp ASC} order (the natural query order), so the target
- * topic receives them in the same wall-clock order as the original topic.
+ * receives them in the same wall-clock order as the original topic.
  *
  * <h2>Entity cassette replay</h2>
  * <p>Records are streamed from {@code lake.main.entity_{type}} filtered by
@@ -35,72 +36,46 @@ import java.util.function.Consumer;
  *   <li>once on successful completion ({@code status = "completed"}),</li>
  *   <li>once on failure ({@code status = "failed"} with {@code errorMessage}).</li>
  * </ul>
- * Callers can wire this sink to an SSE emitter (via
- * {@link SseReplayHandler#streamSse}) or collect the final event synchronously.
  *
- * <h2>Timestamp preservation</h2>
- * <p>Original Kafka timestamps are forwarded to the target topic via the
- * {@link KafkaProducerService} so that downstream consumers see event-time
- * ordering identical to the source topic.
+ * <h2>Reuse</h2>
+ * <p>The engine is pure (no Spring annotations, no Kafka imports) and is
+ * intended to be callable from the Joxette service and from test code alike.
+ * Production code wires it with a Kafka-backed {@link RecordSink}; tests can
+ * wire it with a capturing sink, a Testcontainers-backed sink, or any other
+ * implementation.
  */
-@Service
-public class ReplayToTopicService {
+public class ReplayEngine {
 
-    private static final Logger log = LoggerFactory.getLogger(ReplayToTopicService.class);
+    private static final Logger log = LoggerFactory.getLogger(ReplayEngine.class);
 
     /** Emit a progress event after every N successfully sent records. */
     private static final int PROGRESS_INTERVAL = 100;
 
-    private final TopicReplayService    topicReplayService;
-    private final EntityReplayService   entityReplayService;
-    private final KafkaProducerService  kafkaProducerService;
+    private final TopicReplayService  topicReplayService;
+    private final EntityReplayService entityReplayService;
+    private final RecordSink          sink;
 
-    public ReplayToTopicService(
-            TopicReplayService   topicReplayService,
-            EntityReplayService  entityReplayService,
-            KafkaProducerService kafkaProducerService) {
-        this.topicReplayService   = topicReplayService;
-        this.entityReplayService  = entityReplayService;
-        this.kafkaProducerService = kafkaProducerService;
+    public ReplayEngine(TopicReplayService  topicReplayService,
+                        EntityReplayService entityReplayService,
+                        RecordSink          sink) {
+        this.topicReplayService  = topicReplayService;
+        this.entityReplayService = entityReplayService;
+        this.sink                = sink;
     }
 
     // =========================================================================
-    // General cassette → Kafka
+    // General cassette → sink
     // =========================================================================
 
-    /**
-     * Streams all matching records from the general cassette for {@code sourceTopic}
-     * and produces each one to {@code req.targetTopic()}, preserving
-     * {@code kafka_timestamp} ordering.
-     *
-     * <p>Inter-message delays are scaled by {@code speedMultiplier}: a value of
-     * {@code 1.0} replays in real-time, {@code 2.0} replays at double speed
-     * (half the delays), {@code 0.5} replays at half speed (double the delays).
-     * Pass {@code Double.MAX_VALUE} or any very large value to replay with no
-     * intentional delay.
-     *
-     * <p>If {@code req.transforms()} is non-null and non-identity, a
-     * {@link MessageTransformer} is constructed once for this invocation and
-     * applied to each record before the Kafka send (restamp + field substitutions).
-     * Inter-message delays are always computed from the original recorded timestamps,
-     * independent of any restamp transform.
-     *
-     * <p>The {@code progressSink} is invoked with an {@code "in_progress"}
-     * snapshot every {@value #PROGRESS_INTERVAL} records and with a final
-     * {@code "completed"} or {@code "failed"} event when the replay ends.
-     *
-     * @param speedMultiplier replay speed factor; must be &gt; 0
-     * @throws SQLException if the DuckDB read fails before any Kafka sends occur
-     */
-    public void replayTopicToKafka(
+    public void replayTopic(
             String sourceTopic,
             ReplayToTopicRequest req,
             double speedMultiplier,
             Consumer<ReplayProgress> progressSink
     ) throws SQLException {
-        long[]    counts  = {0L, 0L};   // [0]=sent [1]=errors
-        Instant[] lastTs  = {null};
-        Instant[] prevTs  = {null};
+        long[]    counts = {0L, 0L};
+        Instant[] lastTs = {null};
+        Instant[] prevTs = {null};
 
         MessageTransformer transformer = transformerFor(req);
         log.info("Starting topic replay: source='{}' target='{}' from={} to={} partition={} speed={}x transforms={}",
@@ -116,7 +91,7 @@ public class ReplayToTopicService {
                         prevTs[0] = record.timestamp();
                         CassetteRecord r = transformer != null ? transformer.transform(record) : record;
                         lastTs[0] = r.timestamp();
-                        doSend(() -> kafkaProducerService.send(req.targetTopic(), r), counts);
+                        doSend(() -> sink.send(req.targetTopic(), r), counts);
                         if (counts[0] % PROGRESS_INTERVAL == 0) {
                             progressSink.accept(inProgress(req.targetTopic(), counts, lastTs[0]));
                         }
@@ -135,35 +110,10 @@ public class ReplayToTopicService {
     }
 
     // =========================================================================
-    // Entity cassette → Kafka
+    // Entity cassette → sink
     // =========================================================================
 
-    /**
-     * Streams all matching events for {@code entityId} from the entity cassette
-     * {@code lake.main.entity_{entityType}} and produces each one to
-     * {@code req.targetTopic()}.
-     *
-     * <p>Events are ordered by
-     * {@code (kafka_timestamp, recorded_at, topic, partition, offset)},
-     * which constitutes a merge-sort across all source topics by
-     * {@code kafka_timestamp}.
-     *
-     * <p>Inter-message delays are scaled by {@code speedMultiplier} identically
-     * to {@link #replayTopicToKafka}.
-     *
-     * <p>If {@code req.transforms()} is non-null and non-identity, a
-     * {@link MessageTransformer} is constructed once for this invocation and
-     * applied to each event before the Kafka send.
-     * Inter-message delays are always computed from the original recorded timestamps,
-     * independent of any restamp transform.
-     *
-     * <p>The {@code progressSink} contract is identical to
-     * {@link #replayTopicToKafka}.
-     *
-     * @param speedMultiplier replay speed factor; must be &gt; 0
-     * @throws SQLException if the DuckDB read fails before any Kafka sends occur
-     */
-    public void replayEntityToKafka(
+    public void replayEntity(
             String entityType,
             String entityId,
             ReplayToTopicRequest req,
@@ -187,7 +137,7 @@ public class ReplayToTopicService {
                         prevTs[0] = record.timestamp();
                         EntityRecord r = transformer != null ? transformer.transform(record) : record;
                         lastTs[0] = r.timestamp();
-                        doSend(() -> kafkaProducerService.send(req.targetTopic(), r), counts);
+                        doSend(() -> sink.send(req.targetTopic(), r), counts);
                         if (counts[0] % PROGRESS_INTERVAL == 0) {
                             progressSink.accept(inProgress(req.targetTopic(), counts, lastTs[0]));
                         }
@@ -212,13 +162,6 @@ public class ReplayToTopicService {
     /**
      * Sleeps for the scaled inter-message delay if {@code prev} is not null and
      * {@code current} is strictly after {@code prev}.
-     *
-     * <pre>
-     * delay = (current − prev).toMillis() / speedMultiplier
-     * </pre>
-     *
-     * <p>A {@code speedMultiplier} of {@code 1.0} replays in real-time;
-     * {@code 2.0} halves the gaps; {@code 0.5} doubles them.
      */
     private static void applyDelay(Instant prev, Instant current, double speedMultiplier) {
         if (prev == null || !current.isAfter(prev)) {
@@ -236,10 +179,6 @@ public class ReplayToTopicService {
         }
     }
 
-    /**
-     * Returns a {@link MessageTransformer} for the given request, or {@code null}
-     * if no transforms are configured (avoiding an extra object allocation per record).
-     */
     private static MessageTransformer transformerFor(ReplayToTopicRequest req) {
         ReplayTransformConfig cfg = req.transforms();
         if (cfg == null || cfg.isIdentity()) {
@@ -250,28 +189,21 @@ public class ReplayToTopicService {
 
     @FunctionalInterface
     private interface SendAction {
-        java.util.concurrent.Future<?> execute() throws Exception;
+        RecordSink.SendResult execute();
     }
 
     /**
-     * Executes a send action synchronously.  On success increments {@code counts[0]}.
-     * On failure increments {@code counts[1]} and rethrows as {@link RuntimeException}
-     * to abort the streaming pipeline.
+     * Executes a send. On success increments {@code counts[0]}.
+     * On {@link SinkException} increments {@code counts[1]} and rethrows so
+     * the streaming pipeline aborts.
      */
     private static void doSend(SendAction action, long[] counts) {
         try {
-            action.execute().get();
+            action.execute();
             counts[0]++;
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new RuntimeException("Replay interrupted during Kafka send", e);
-        } catch (ExecutionException e) {
+        } catch (SinkException e) {
             counts[1]++;
-            throw new RuntimeException(
-                    "Kafka send failed: " + e.getCause().getMessage(), e.getCause());
-        } catch (Exception e) {
-            counts[1]++;
-            throw new RuntimeException("Kafka send failed: " + e.getMessage(), e);
+            throw e;
         }
     }
 

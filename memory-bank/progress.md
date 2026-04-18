@@ -57,8 +57,10 @@
 - [x] `PUT /topics/{topic}/retention` — set or clear retention days
 
 ### Replay-to-Topic
-- [x] `KafkaProducerService` — wraps `KafkaSink`/`KafkaProducer` for sending records back to Kafka
-- [x] `ReplayToTopicService` — general cassette replay + entity cassette replay (merge-sorted by `kafka_timestamp`)
+- [x] `RecordSink` SPI — blocking, virtual-thread friendly; `SinkException` signals permanent transport failure
+- [x] `KafkaRecordSink` — `RecordSink` impl; owns byte/header/timestamp encoding, blocks on `producer.send(rec).get()`
+- [x] `KafkaRecordSinkFactory` — `@Component`; caches one `KafkaProducer` per broker id, closes all on shutdown
+- [x] `ReplayEngine` — pure (no Spring); general + entity replay (merge-sorted by `kafka_timestamp`); reusable outside the service
 - [x] Speed multiplier — inter-message delays scaled by `speedMultiplier` (x0.5 slow-down, x1 real-time, x2+ fast-forward)
 - [x] Progress reporting — `ReplayProgress` events emitted every 100 records, plus final `completed`/`failed`
 - [x] `ReplayToTopicRequest` — request DTO with `targetTopic`, time/offset filters, speed, transforms
@@ -109,6 +111,7 @@
 - [x] `CompactionServiceTest`
 - [x] `TopicRecorderTest`
 - [x] `RecordReplayRoundTripIT` — integration test (Testcontainers)
+- [x] `ReplayToTopicIT` — Testcontainers IT: seeds a 3-record general cassette, POSTs replay-to-topic at `speed=2.0`, asserts order, payload fidelity, and inter-message delay
 - [x] `SpringDocIT` — verifies OpenAPI spec loads
 
 ## What's Left / Known Gaps
@@ -140,3 +143,4 @@
 | startFrom: earliest | Hardcoded `latest` | Fully wired: DB → `TopicRecorder.seekToEarliest` / `seekToTimestamp` | RecordingStartupRunner passes `tc.startFrom()` through |
 | Retention enforcement | Config stored, no cron | `RetentionService` + `RetentionScheduler` + `retention_history` | Retention days are now enforced automatically |
 | Replay-to-Kafka | Not started | `ReplayToTopicService` + `KafkaProducerService` + speed multiplier + transforms | Core replay use-case for integration testing |
+| Replay-to-topic shape | `ReplayToTopicService` directly calling `KafkaProducerService` | `ReplayEngine` + pluggable `RecordSink` SPI (`KafkaRecordSink`, factory caches Producer per broker) | Makes the replay path reusable outside Spring (future test-kit) while keeping the engine broker-agnostic |

@@ -61,6 +61,13 @@ Back-pressure is natural: slow DuckLake writes → batch buffer fills → Kafka 
 
 ![Replay — To Topic](docs/replay-pipeline-to-topic.png)
 
+Replay-to-topic is built around a small `RecordSink` SPI
+(`com.joxette.replay.sink.RecordSink`). `ReplayEngine` is plain Java — no
+Spring, no Kafka imports — so the same engine can run inside the service or
+from a test-kit that wires it up with a capturing sink. The production
+implementation (`KafkaRecordSink` + `KafkaRecordSinkFactory`) caches one
+`KafkaProducer` per broker id and handles byte/header/timestamp encoding.
+
 ### Compaction & Retention
 
 ![Compaction](docs/compaction-retention-compaction.png)
