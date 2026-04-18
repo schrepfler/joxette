@@ -10,22 +10,20 @@ import java.time.Instant;
 import java.util.function.Consumer;
 
 /**
- * Orchestrates replay-to-topic operations: reads records from a DuckLake
- * cassette and hands them to a {@link RecordSink} that writes to the
- * destination (typically Kafka).
+ * Orchestrates replay-to-topic operations: pulls records from a
+ * {@link CassetteSource} or {@link EntityCassetteSource} and hands them to a
+ * {@link RecordSink} that writes to the destination (typically Kafka).
  *
  * <h2>General cassette replay</h2>
- * <p>Records are streamed from {@code lake.main.general_{topic}} in
- * {@code kafka_timestamp ASC} order (the natural query order), so the target
- * receives them in the same wall-clock order as the original topic.
+ * <p>Records are streamed in {@code kafka_timestamp ASC} order (the natural
+ * source-ordering contract), so the target receives them in the same
+ * wall-clock order as the original topic.
  *
  * <h2>Entity cassette replay</h2>
- * <p>Records are streamed from {@code lake.main.entity_{type}} filtered by
- * {@code entity_id} and ordered by
- * {@code (kafka_timestamp, recorded_at, topic, partition, offset)}.
- * Because all source topics for an entity share a single cassette table and
- * the ORDER BY covers all source topics, this constitutes an implicit
- * merge-sort across source topics by {@code kafka_timestamp}.
+ * <p>Records are streamed ordered by
+ * {@code (kafka_timestamp, recorded_at, topic, partition, offset)}, which
+ * constitutes an implicit merge-sort across all source topics that fed the
+ * entity.
  *
  * <h2>Progress reporting</h2>
  * <p>Both methods accept a {@code Consumer<ReplayProgress> progressSink} that
@@ -51,16 +49,16 @@ public class ReplayEngine {
     /** Emit a progress event after every N successfully sent records. */
     private static final int PROGRESS_INTERVAL = 100;
 
-    private final TopicReplayService  topicReplayService;
-    private final EntityReplayService entityReplayService;
-    private final RecordSink          sink;
+    private final CassetteSource       cassetteSource;
+    private final EntityCassetteSource entitySource;
+    private final RecordSink           sink;
 
-    public ReplayEngine(TopicReplayService  topicReplayService,
-                        EntityReplayService entityReplayService,
-                        RecordSink          sink) {
-        this.topicReplayService  = topicReplayService;
-        this.entityReplayService = entityReplayService;
-        this.sink                = sink;
+    public ReplayEngine(CassetteSource       cassetteSource,
+                        EntityCassetteSource entitySource,
+                        RecordSink           sink) {
+        this.cassetteSource = cassetteSource;
+        this.entitySource   = entitySource;
+        this.sink           = sink;
     }
 
     // =========================================================================
@@ -83,7 +81,7 @@ public class ReplayEngine {
                 speedMultiplier, transformer != null);
 
         try {
-            topicReplayService.streamAll(
+            cassetteSource.streamAll(
                     sourceTopic, req.from(), req.to(),
                     req.partition(), req.offsetFrom(), req.offsetTo(),
                     record -> {
@@ -130,7 +128,7 @@ public class ReplayEngine {
                 speedMultiplier, transformer != null);
 
         try {
-            entityReplayService.streamEntityEvents(
+            entitySource.streamEntityEvents(
                     entityType, entityId, req.from(), req.to(),
                     record -> {
                         applyDelay(prevTs[0], record.timestamp(), speedMultiplier);

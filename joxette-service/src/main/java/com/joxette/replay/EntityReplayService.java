@@ -50,7 +50,7 @@ import java.util.regex.Pattern;
  * as URL-safe base64.
  */
 @Service
-public class EntityReplayService {
+public class EntityReplayService implements EntityCassetteSource {
 
     private static final Pattern SAFE_IDENTIFIER = Pattern.compile("[a-z][a-z0-9_]*");
     private static final int STREAM_PAGE_SIZE = 500;
@@ -197,6 +197,7 @@ public class EntityReplayService {
      * Convenience overload — equivalent to calling the pipeline-aware variant with
      * {@link TransformPipeline#IDENTITY} (no transformation, no metadata injection).
      */
+    @Override
     public void streamEntityEvents(
             String entityType, String entityId,
             Instant from, Instant to,

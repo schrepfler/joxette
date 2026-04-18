@@ -56,7 +56,7 @@ import java.util.function.Function;
  * {@code ORDER BY} of the query.
  */
 @Service
-public class TopicReplayService {
+public class TopicReplayService implements CassetteSource {
 
     private static final int STREAM_PAGE_SIZE = 500;
 
@@ -195,6 +195,7 @@ public class TopicReplayService {
      * Convenience overload — equivalent to calling the pipeline-aware variant with
      * {@link TransformPipeline#IDENTITY} (no transformation, no metadata injection).
      */
+    @Override
     public void streamAll(
             String topic,
             Instant from, Instant to,
