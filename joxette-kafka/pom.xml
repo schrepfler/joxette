@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.joxette</groupId>
+        <artifactId>joxette-parent</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>joxette-kafka</artifactId>
+    <name>joxette-kafka</name>
+    <description>Kafka-backed RecordSink implementation.</description>
+
+    <!--
+        Holds KafkaRecordSink — the Kafka implementation of the RecordSink SPI. No
+        Spring, no DuckDB. Producer lifecycle is delegated to the caller (the service
+        module's KafkaRecordSinkFactory or a test-kit wiring).
+    -->
+
+    <dependencies>
+        <dependency>
+            <groupId>com.joxette</groupId>
+            <artifactId>joxette-core</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>kafka-clients</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>

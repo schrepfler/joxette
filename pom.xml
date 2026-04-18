@@ -5,10 +5,18 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>com.joxette</groupId>
-    <artifactId>joxette</artifactId>
+    <artifactId>joxette-parent</artifactId>
     <version>0.1.0-SNAPSHOT</version>
-    <name>joxette</name>
+    <packaging>pom</packaging>
+    <name>joxette-parent</name>
     <description>Kafka Topic Cassette Recorder backed by DuckLake</description>
+
+    <modules>
+        <module>joxette-core</module>
+        <module>joxette-kafka</module>
+        <module>joxette-service</module>
+        <module>joxette-test-kit</module>
+    </modules>
 
     <properties>
         <!-- jox structured is compiled as Java 25 preview — this project must be built
@@ -16,6 +24,7 @@
         <java.version>25</java.version>
         <compiler.source>25</compiler.source>
         <compiler.release>25</compiler.release>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <jox.channels.version>1.1.2</jox.channels.version>
         <jox.flows.version>0.5.3</jox.flows.version>
         <duckdb.version>1.5.2.0</duckdb.version>
@@ -30,11 +39,29 @@
         <maven-install-plugin.version>3.1.4</maven-install-plugin.version>
         <spring-boot-dependencies.version>4.0.5</spring-boot-dependencies.version>
         <plantuml.version>1.2026.2</plantuml.version>
+        <swagger-annotations.version>2.2.43</swagger-annotations.version>
     </properties>
-
 
     <dependencyManagement>
         <dependencies>
+            <!-- Internal modules -->
+            <dependency>
+                <groupId>com.joxette</groupId>
+                <artifactId>joxette-core</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.joxette</groupId>
+                <artifactId>joxette-kafka</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.joxette</groupId>
+                <artifactId>joxette-test-kit</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+
+            <!-- BOMs -->
             <dependency>
                 <groupId>org.springframework.boot</groupId>
                 <artifactId>spring-boot-dependencies</artifactId>
@@ -49,231 +76,94 @@
                 <type>pom</type>
                 <scope>import</scope>
             </dependency>
+
+            <!-- Swagger annotations (used by DTOs in joxette-core; Spring Boot BOM ships
+                 the old non-jakarta artifact, so we pin the jakarta one explicitly). -->
+            <dependency>
+                <groupId>io.swagger.core.v3</groupId>
+                <artifactId>swagger-annotations-jakarta</artifactId>
+                <version>${swagger-annotations.version}</version>
+            </dependency>
         </dependencies>
     </dependencyManagement>
 
-    <dependencies>
-        <!-- Spring Boot Web (REST API) -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-web</artifactId>
-        </dependency>
-
-        <!-- Spring Boot Actuator (health, metrics) -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-actuator</artifactId>
-        </dependency>
-
-        <!-- Micrometer Prometheus registry -->
-        <dependency>
-            <groupId>io.micrometer</groupId>
-            <artifactId>micrometer-registry-prometheus</artifactId>
-        </dependency>
-
-        <!-- Configuration metadata processor -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-configuration-processor</artifactId>
-            <optional>true</optional>
-        </dependency>
-
-        <!-- Jox channels: virtual-thread channels -->
-        <dependency>
-            <groupId>com.softwaremill.jox</groupId>
-            <artifactId>channels</artifactId>
-            <version>${jox.channels.version}</version>
-        </dependency>
-
-        <!-- Jox flows: reactive-style pipeline operators -->
-        <dependency>
-            <groupId>com.softwaremill.jox</groupId>
-            <artifactId>flows</artifactId>
-            <version>${jox.flows.version}</version>
-        </dependency>
-
-        <!-- Jox structured concurrency -->
-        <dependency>
-            <groupId>com.softwaremill.jox</groupId>
-            <artifactId>structured</artifactId>
-            <version>${jox.flows.version}</version>
-        </dependency>
-
-        <!-- Jox Kafka: KafkaFlow, KafkaDrain, KafkaStage, ConsumerSettings, ProducerSettings -->
-        <dependency>
-            <groupId>com.softwaremill.jox</groupId>
-            <artifactId>kafka</artifactId>
-            <version>${jox.flows.version}</version>
-        </dependency>
-
-        <!-- DuckDB JDBC driver -->
-        <dependency>
-            <groupId>org.duckdb</groupId>
-            <artifactId>duckdb_jdbc</artifactId>
-            <version>${duckdb.version}</version>
-        </dependency>
-
-        <!-- jOOQ: type-safe SQL DSL -->
-        <dependency>
-            <groupId>org.jooq</groupId>
-            <artifactId>jooq</artifactId>
-            <version>${jooq.version}</version>
-        </dependency>
-
-        <!-- SpringDoc OpenAPI (Swagger UI + api-docs) -->
-        <dependency>
-            <groupId>org.springdoc</groupId>
-            <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
-            <version>${springdoc-openapi-starter-webmvc-ui.version}</version>
-        </dependency>
-
-        <!-- AWS SDK v2 S3 client (snapshot export to object store) -->
-        <dependency>
-            <groupId>software.amazon.awssdk</groupId>
-            <artifactId>url-connection-client</artifactId>
-        </dependency>
-
-        <dependency>
-            <groupId>software.amazon.awssdk</groupId>
-            <artifactId>s3</artifactId>
-        </dependency>
-
-        <!-- Jackson for JSON handling in REST API -->
-        <dependency>
-            <groupId>com.fasterxml.jackson.core</groupId>
-            <artifactId>jackson-databind</artifactId>
-        </dependency>
-
-        <!-- JSONPath for entity ID extraction from message values -->
-        <dependency>
-            <groupId>com.jayway.jsonpath</groupId>
-            <artifactId>json-path</artifactId>
-        </dependency>
-
-        <!-- Spring Boot Test -->
-        <dependency>
-            <groupId>org.springframework.boot</groupId>
-            <artifactId>spring-boot-starter-test</artifactId>
-            <scope>test</scope>
-        </dependency>
-
-        <!-- Testcontainers core -->
-        <dependency>
-            <groupId>org.testcontainers</groupId>
-            <artifactId>testcontainers</artifactId>
-            <scope>test</scope>
-        </dependency>
-
-        <!-- Testcontainers JUnit 5 integration -->
-        <dependency>
-            <groupId>org.testcontainers</groupId>
-            <artifactId>testcontainers-junit-jupiter</artifactId>
-            <scope>test</scope>
-        </dependency>
-
-        <!-- Testcontainers Kafka (Redpanda compatible) -->
-        <dependency>
-            <groupId>org.testcontainers</groupId>
-            <artifactId>testcontainers-kafka</artifactId>
-            <scope>test</scope>
-        </dependency>
-
-        <!-- Testcontainers MinIO — for DuckLake S3 integration tests -->
-        <dependency>
-            <groupId>org.testcontainers</groupId>
-            <artifactId>testcontainers-minio</artifactId>
-            <scope>test</scope>
-        </dependency>
-
-    </dependencies>
-
     <build>
+        <pluginManagement>
+            <plugins>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-compiler-plugin</artifactId>
+                    <version>${maven-compiler-plugin.version}</version>
+                    <configuration>
+                        <release>${compiler.release}</release>
+                        <source>${compiler.source}</source>
+                        <compilerArgs>
+                            <arg>--enable-preview</arg>
+                            <arg>-parameters</arg>
+                        </compilerArgs>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-surefire-plugin</artifactId>
+                    <version>${maven-surefire-plugin.version}</version>
+                    <configuration>
+                        <jvm>${java.home}/bin/java</jvm>
+                        <argLine>--enable-preview</argLine>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.springframework.boot</groupId>
+                    <artifactId>spring-boot-maven-plugin</artifactId>
+                    <version>${spring-boot-dependencies.version}</version>
+                    <configuration>
+                        <jvmArguments>--enable-preview</jvmArguments>
+                    </configuration>
+                </plugin>
+                <plugin>
+                    <groupId>org.jooq</groupId>
+                    <artifactId>jooq-codegen-maven</artifactId>
+                    <version>${jooq.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-jar-plugin</artifactId>
+                    <version>${maven-jar-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-clean-plugin</artifactId>
+                    <version>${maven-clean-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-install-plugin</artifactId>
+                    <version>${maven-install-plugin.version}</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-site-plugin</artifactId>
+                    <version>3.21.0</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-resources-plugin</artifactId>
+                    <version>3.5.0</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-deploy-plugin</artifactId>
+                    <version>3.1.4</version>
+                </plugin>
+                <plugin>
+                    <groupId>org.codehaus.mojo</groupId>
+                    <artifactId>exec-maven-plugin</artifactId>
+                    <version>3.5.1</version>
+                </plugin>
+            </plugins>
+        </pluginManagement>
+
         <plugins>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-compiler-plugin</artifactId>
-                <version>${maven-compiler-plugin.version}</version>
-                <configuration>
-                    <release>${compiler.release}</release>
-                    <source>${compiler.source}</source>
-                    <compilerArgs>
-                        <arg>--enable-preview</arg>
-                        <arg>-parameters</arg>
-                    </compilerArgs>
-                </configuration>
-            </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-surefire-plugin</artifactId>
-                <version>${maven-surefire-plugin.version}</version>
-                <configuration>
-                    <jvm>${java.home}/bin/java</jvm>
-                    <argLine>--enable-preview</argLine>
-                    <systemPropertyVariables>
-                        <!-- Skip Spring's classpath scanner failing on preview anonymous
-                             classes (e.g. ParameterizedTypeReference<>(){}) -->
-<!--                        <spring.classformat.ignore>true</spring.classformat.ignore>-->
-                    </systemPropertyVariables>
-                </configuration>
-            </plugin>
-            <plugin>
-                <groupId>org.springframework.boot</groupId>
-                <artifactId>spring-boot-maven-plugin</artifactId>
-                <version>${spring-boot-dependencies.version}</version>
-                <configuration>
-                    <jvmArguments>--enable-preview</jvmArguments>
-                </configuration>
-            </plugin>
-            <plugin>
-                <groupId>org.jooq</groupId>
-                <artifactId>jooq-codegen-maven</artifactId>
-                <version>${jooq.version}</version>
-                <executions>
-                    <execution>
-                        <id>jooq-codegen</id>
-                        <phase>generate-sources</phase>
-                        <goals>
-                            <goal>generate</goal>
-                        </goals>
-                    </execution>
-                </executions>
-                <dependencies>
-                    <!-- DDLDatabase interprets DDL via jOOQ's parser; no JDBC driver needed -->
-                    <dependency>
-                        <groupId>org.jooq</groupId>
-                        <artifactId>jooq-meta-extensions</artifactId>
-                        <version>${jooq.version}</version>
-                    </dependency>
-                </dependencies>
-                <configuration>
-                    <generator>
-                        <database>
-                            <name>org.jooq.meta.extensions.ddl.DDLDatabase</name>
-                            <!-- DDLDatabase places unqualified tables in PUBLIC -->
-                            <inputSchema>PUBLIC</inputSchema>
-                            <properties>
-                                <property>
-                                    <key>scripts</key>
-                                    <value>src/main/resources/db/jooq-codegen-schema.sql</value>
-                                </property>
-                                <!-- Preserve lower-case table/column names from the DDL -->
-                                <property>
-                                    <key>defaultNameCase</key>
-                                    <value>as_is</value>
-                                </property>
-                                <property>
-                                    <key>sort</key>
-                                    <value>semantic</value>
-                                </property>
-                            </properties>
-                        </database>
-                        <target>
-                            <packageName>com.joxette.db.jooq</packageName>
-                            <directory>target/generated-sources/jooq</directory>
-                        </target>
-                    </generator>
-                </configuration>
-            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-enforcer-plugin</artifactId>
@@ -299,70 +189,7 @@
                     </execution>
                 </executions>
             </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-jar-plugin</artifactId>
-                <version>${maven-jar-plugin.version}</version>
-            </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-clean-plugin</artifactId>
-                <version>${maven-clean-plugin.version}</version>
-            </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-install-plugin</artifactId>
-                <version>${maven-install-plugin.version}</version>
-            </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-site-plugin</artifactId>
-                <version>3.21.0</version>
-            </plugin>
-            <plugin>
-                <groupId>org.apache.maven.plugins</groupId>
-                <artifactId>maven-resources-plugin</artifactId>
-                <version>3.5.0</version>
-            </plugin>
-        <plugin>
-            <groupId>org.apache.maven.plugins</groupId>
-            <artifactId>maven-deploy-plugin</artifactId>
-            <version>3.1.4</version>
-        </plugin>
-        <!--
-            Generate PNG diagrams from docs/*.puml into docs/.
-            Run manually: mvn exec:exec@generate-puml-diagrams
-            Uses exec-maven-plugin to invoke the plantuml JAR directly,
-            avoiding classloader conflicts present in the jeluard wrapper.
-            Not bound to any lifecycle phase — run on demand only.
-        -->
-        <plugin>
-            <groupId>org.codehaus.mojo</groupId>
-            <artifactId>exec-maven-plugin</artifactId>
-            <version>3.5.1</version>
-            <executions>
-                <execution>
-                    <id>generate-puml-diagrams</id>
-                    <!-- No <phase> — not bound to the default lifecycle -->
-                    <goals>
-                        <goal>exec</goal>
-                    </goals>
-                    <configuration>
-                        <executable>${java.home}/bin/java</executable>
-                        <arguments>
-                            <argument>-jar</argument>
-                            <argument>${settings.localRepository}/net/sourceforge/plantuml/plantuml/${plantuml.version}/plantuml-${plantuml.version}.jar</argument>
-                            <argument>-tpng</argument>
-                            <argument>-o</argument>
-                            <argument>${project.basedir}/docs</argument>
-                            <argument>${project.basedir}/docs/*.puml</argument>
-                        </arguments>
-                    </configuration>
-                </execution>
-            </executions>
-        </plugin>
-
-    </plugins>
-  </build>
+        </plugins>
+    </build>
 
 </project>

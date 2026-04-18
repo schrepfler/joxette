@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.joxette</groupId>
+        <artifactId>joxette-parent</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>joxette-core</artifactId>
+    <name>joxette-core</name>
+    <description>Replay domain types, transformer, engine SPIs — no Spring/DuckDB/jOOQ.</description>
+
+    <!--
+        joxette-core is intentionally free of Spring, DuckDB, and jOOQ. It holds the
+        replay-to-topic domain types (CassetteRecord, EntityRecord, ReplayProgress,
+        ReplayToTopicRequest, ReplayTransformConfig), the RecordSink SPI, the
+        cassette source interfaces (CassetteSource, EntityCassetteSource), the
+        stateless MessageTransformer, and the ReplayEngine orchestrator.
+    -->
+
+    <dependencies>
+        <dependency>
+            <groupId>org.slf4j</groupId>
+            <artifactId>slf4j-api</artifactId>
+        </dependency>
+
+        <!-- Jackson + Swagger annotations for DTO-level metadata (no runtime Jackson/Swagger dep). -->
+        <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-annotations</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.swagger.core.v3</groupId>
+            <artifactId>swagger-annotations-jakarta</artifactId>
+        </dependency>
+
+        <!-- JSONPath drives field substitutions in MessageTransformer. -->
+        <dependency>
+            <groupId>com.jayway.jsonpath</groupId>
+            <artifactId>json-path</artifactId>
+        </dependency>
+
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+</project>
