@@ -4,11 +4,15 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.joxette.replay.CassetteRecord;
 import com.joxette.replay.transform.ReplayMessage;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -33,69 +37,57 @@ class MaskHashStepTest {
     }
 
     // -------------------------------------------------------------------------
-    // Basic hash — no prefix, no salt
+    // Group 1: Hash output variations — no-prefix, with-prefix, no-salt, with-salt
     // -------------------------------------------------------------------------
 
-    @Test
-    void hashesFieldValueToSha256Hex() {
-        var step = new MaskHashStep("$.value.email", null, null);
-        ReplayMessage msg = msg("{\"email\":\"alice@example.com\"}");
+    /**
+     * @param prefix           prefix arg (empty string means null)
+     * @param salt             salt arg (empty string means null)
+     * @param inputValue       the raw field value in JSON
+     * @param expectedHashInput the string fed into SHA-256 (salt + inputValue)
+     */
+    @ParameterizedTest(name = "[{index}] prefix=''{0}'' salt=''{1}'' input=''{2}''")
+    @CsvSource(delimiterString = "|", value = {
+            // prefix | salt       | inputValue         | expectedHashInput
+            "         |            | alice@example.com  | alice@example.com",
+            "anon-    |            | alice@example.com  | alice@example.com",
+            "         | secret-salt| alice@example.com  | secret-saltalice@example.com",
+            "anon-    | fixed-salt | bob@example.com    | fixed-saltbob@example.com",
+    })
+    void hashOutputVariations(String prefix, String salt, String inputValue, String expectedHashInput) {
+        String prefixArg = (prefix == null || prefix.isBlank()) ? null : prefix.trim();
+        String saltArg   = (salt   == null || salt.isBlank())   ? null : salt.trim();
 
-        step.apply(msg);
+        var step = new MaskHashStep("$.value.email", prefixArg, saltArg);
+        ReplayMessage message = msg("{\"email\":\"" + inputValue.trim() + "\"}");
 
-        String json = decode(msg.value);
-        // exact expected hash of "alice@example.com"
-        String expected = sha256Hex("alice@example.com");
-        assertThat(json).contains("\"email\":\"" + expected + "\"");
-        assertThat(json).doesNotContain("alice@example.com");
+        step.apply(message);
+
+        String json = decode(message.value);
+        String expectedHash = sha256Hex(expectedHashInput.trim());
+        String expectedField = (prefixArg != null ? prefixArg : "") + expectedHash;
+        assertThat(json).contains("\"email\":\"" + expectedField + "\"");
+        assertThat(json).doesNotContain(inputValue.trim());
     }
 
-    // -------------------------------------------------------------------------
-    // Prefix prepended to hash output
-    // -------------------------------------------------------------------------
-
     @Test
-    void prependsPrefixToHash() {
-        var step = new MaskHashStep("$.value.email", "anon-", null);
-        ReplayMessage msg = msg("{\"email\":\"alice@example.com\"}");
+    void hashOutputIsFull64CharHex() {
+        var step = new MaskHashStep("$.value.field", null, null);
+        ReplayMessage message = msg("{\"field\":\"value\"}");
 
-        step.apply(msg);
+        step.apply(message);
 
-        String json = decode(msg.value);
-        String expected = "anon-" + sha256Hex("alice@example.com");
-        assertThat(json).contains("\"email\":\"" + expected + "\"");
-    }
-
-    // -------------------------------------------------------------------------
-    // Salt mixed into hash input
-    // -------------------------------------------------------------------------
-
-    @Test
-    void saltChangesHashOutput() {
-        String email = "alice@example.com";
-        var stepNoSalt   = new MaskHashStep("$.value.email", null, null);
-        var stepWithSalt = new MaskHashStep("$.value.email", null, "secret-salt");
-
-        ReplayMessage msg1 = msg("{\"email\":\"" + email + "\"}");
-        ReplayMessage msg2 = msg("{\"email\":\"" + email + "\"}");
-
-        stepNoSalt.apply(msg1);
-        stepWithSalt.apply(msg2);
-
-        String hash1 = extractEmailValue(decode(msg1.value));
-        String hash2 = extractEmailValue(decode(msg2.value));
-
-        assertThat(hash1).isNotEqualTo(hash2);
-        assertThat(hash2).isEqualTo(sha256Hex("secret-salt" + email));
+        String json = decode(message.value);
+        int start = json.indexOf("\"field\":\"") + 9;
+        int end   = json.indexOf("\"", start);
+        assertThat(json.substring(start, end)).hasSize(64).matches("[0-9a-f]+");
     }
 
     @Test
     void saltedHashIsReproducible() {
-        String email = "bob@example.com";
         var step = new MaskHashStep("$.value.email", "anon-", "fixed-salt");
-
-        ReplayMessage msg1 = msg("{\"email\":\"" + email + "\"}");
-        ReplayMessage msg2 = msg("{\"email\":\"" + email + "\"}");
+        ReplayMessage msg1 = msg("{\"email\":\"bob@example.com\"}");
+        ReplayMessage msg2 = msg("{\"email\":\"bob@example.com\"}");
 
         step.apply(msg1);
         step.apply(msg2);
@@ -104,61 +96,30 @@ class MaskHashStepTest {
     }
 
     // -------------------------------------------------------------------------
-    // Null / absent field — skipped
+    // Group 2: Edge case inputs — field is skipped when absent/null/no body
     // -------------------------------------------------------------------------
 
-    @Test
-    void nullFieldValueIsSkipped() {
+    static Stream<ReplayMessage> edgeCaseMessages() {
+        return Stream.of(
+                msg("{\"email\":null,\"id\":\"1\"}"),  // null field value
+                msg("{\"id\":\"1\"}"),                  // absent field
+                msg(null)                               // null value body
+        );
+    }
+
+    @ParameterizedTest(name = "[{index}] edge case message")
+    @MethodSource("edgeCaseMessages")
+    void edgeCaseInputsAreSkippedWithoutThrow(ReplayMessage message) {
         var step = new MaskHashStep("$.value.email", "anon-", null);
-        ReplayMessage msg = msg("{\"email\":null,\"id\":\"1\"}");
+        String originalValue = message.value;
 
-        step.apply(msg);
+        step.apply(message);
 
-        // email should remain null (not hashed)
-        assertThat(decode(msg.value)).contains("\"email\":null");
-    }
-
-    @Test
-    void absentFieldIsSkipped() {
-        var step = new MaskHashStep("$.value.email", "anon-", null);
-        ReplayMessage msg = msg("{\"id\":\"1\"}");
-
-        step.apply(msg);  // must not throw, email path absent
-
-        assertThat(decode(msg.value)).doesNotContain("\"email\"");
-    }
-
-    @Test
-    void nullValueBodyIsSkipped() {
-        var step = new MaskHashStep("$.value.email", "anon-", null);
-        ReplayMessage msg = msg(null);
-
-        step.apply(msg);  // must not throw
-
-        assertThat(msg.value).isNull();
+        assertThat(message.value).isEqualTo(originalValue);
     }
 
     // -------------------------------------------------------------------------
-    // Hash output is full 64-character hex string
-    // -------------------------------------------------------------------------
-
-    @Test
-    void hashOutputIsFull64CharHex() {
-        var step = new MaskHashStep("$.value.field", null, null);
-        ReplayMessage msg = msg("{\"field\":\"value\"}");
-
-        step.apply(msg);
-
-        String json = decode(msg.value);
-        // extract value between "field":" and closing "
-        int start = json.indexOf("\"field\":\"") + 9;
-        int end   = json.indexOf("\"", start);
-        String hash = json.substring(start, end);
-        assertThat(hash).hasSize(64).matches("[0-9a-f]+");
-    }
-
-    // -------------------------------------------------------------------------
-    // Jackson deserialization
+    // Jackson deserialisation
     // -------------------------------------------------------------------------
 
     @Test
@@ -184,12 +145,6 @@ class MaskHashStepTest {
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
-
-    private String extractEmailValue(String json) {
-        int start = json.indexOf("\"email\":\"") + 9;
-        int end   = json.indexOf("\"", start);
-        return json.substring(start, end);
-    }
 
     private static String sha256Hex(String input) {
         try {
