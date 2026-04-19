@@ -1,7 +1,15 @@
 package com.joxette.replay.transform;
 
+import com.joxette.replay.transform.gap.FragmentDefinition;
+import com.joxette.replay.transform.gap.MessagePattern;
+
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 
 /**
  * Mutable per-stream state shared across all {@link TransformPipeline#apply} calls
@@ -60,6 +68,37 @@ public final class TransformContext {
      * Set once per message by {@link TransformPipeline} before dispatching steps.
      */
     private long sequence = 0;
+
+    /** Timestamp of the previous message, used to compute inter-message gap duration. Null for first message. */
+    private Instant prevMsgTimestamp = null;
+
+    /**
+     * Per-predicate match history: each predicate maps to an ordered list of all messages
+     * that matched it, represented as (timestamp, sequenceIndex) pairs.
+     */
+    private final Map<MessagePattern, List<MatchedOccurrence>> anchorTracker = new LinkedHashMap<>();
+
+    /**
+     * Resolved fragment spans: fragment name → resolved span. Only populated once both
+     * from+to anchors of a fragment are satisfied (and the optional IfClause passes).
+     */
+    private final Map<String, ResolvedFragment> resolvedFragments = new HashMap<>();
+
+    /** Fragment definitions loaded from the preset. Set by the pipeline on construction. */
+    private List<FragmentDefinition> fragmentDefs = List.of();
+
+    /**
+     * All MessagePatterns to actively observe during replay — derived from both fragment
+     * definitions and gap selector anchors. Set once by the pipeline via
+     * {@link #setWatchedPatterns(java.util.List)}.
+     */
+    private List<MessagePattern> watchedPatterns = List.of();
+
+    /** A matched occurrence of a MessagePattern — the message timestamp and pipeline sequence index. */
+    public record MatchedOccurrence(Instant timestamp, long sequenceIndex) {}
+
+    /** A fully resolved fragment span. */
+    public record ResolvedFragment(Instant startAt, Instant endAt, long eventCount) {}
 
     // -------------------------------------------------------------------------
     // Constructors
@@ -153,5 +192,52 @@ public final class TransformContext {
     /** Sets the per-message sequence ordinal; called by the pipeline before dispatching steps. */
     void setCurrentSequence(long seq) {
         this.sequence = seq;
+    }
+
+    /** Timestamp of the message immediately preceding the current one; null for the first message. */
+    public Instant getPrevMsgTimestamp() {
+        return prevMsgTimestamp;
+    }
+
+    /** Records the current message timestamp as the previous one, called after gap evaluation. */
+    public void setPrevMsgTimestamp(Instant ts) {
+        this.prevMsgTimestamp = ts;
+    }
+
+    /** Live anchor-match history indexed by MessagePattern. */
+    public Map<MessagePattern, List<MatchedOccurrence>> getAnchorTracker() {
+        return anchorTracker;
+    }
+
+    /** Resolved fragment spans indexed by fragment name. */
+    public Map<String, ResolvedFragment> getResolvedFragments() {
+        return resolvedFragments;
+    }
+
+    /** Fragment definitions loaded from the preset. */
+    public List<FragmentDefinition> getFragmentDefs() {
+        return fragmentDefs;
+    }
+
+    /** Called once by the pipeline after construction to inject fragment definitions from the preset. */
+    public void setFragmentDefs(List<FragmentDefinition> defs) {
+        this.fragmentDefs = defs != null ? List.copyOf(defs) : List.of();
+    }
+
+    /** All patterns the pipeline should track during message observation. */
+    public List<MessagePattern> getWatchedPatterns() {
+        return watchedPatterns;
+    }
+
+    /** Called once by the pipeline to register all patterns to track. */
+    public void setWatchedPatterns(List<MessagePattern> patterns) {
+        this.watchedPatterns = patterns != null ? List.copyOf(patterns) : List.of();
+    }
+
+    /**
+     * Records a match for the given pattern, creating the list entry if absent.
+     */
+    public void recordAnchorMatch(MessagePattern pattern, MatchedOccurrence occurrence) {
+        anchorTracker.computeIfAbsent(pattern, k -> new ArrayList<>()).add(occurrence);
     }
 }

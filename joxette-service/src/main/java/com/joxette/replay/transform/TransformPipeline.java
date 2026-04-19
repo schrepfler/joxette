@@ -3,6 +3,9 @@ package com.joxette.replay.transform;
 import com.jayway.jsonpath.JsonPath;
 import com.jayway.jsonpath.PathNotFoundException;
 import com.joxette.replay.CassetteRecord;
+import com.joxette.replay.transform.gap.FragmentDefinition;
+import com.joxette.replay.transform.gap.GapEvaluator;
+import com.joxette.replay.transform.gap.MessagePattern;
 import com.joxette.replay.transform.steps.AddComputedFieldStep;
 import com.joxette.replay.transform.steps.AddHeaderStep;
 import com.joxette.replay.transform.steps.ConditionalStep;
@@ -11,6 +14,7 @@ import com.joxette.replay.transform.steps.DeleteFieldStep;
 import com.joxette.replay.transform.steps.FanOutStep;
 import com.joxette.replay.transform.steps.FilterDropStep;
 import com.joxette.replay.transform.steps.FlattenFieldStep;
+import com.joxette.replay.transform.steps.GapTransformStep;
 import com.joxette.replay.transform.steps.KeyFromValueStep;
 import com.joxette.replay.transform.steps.MergePatchStep;
 import com.joxette.replay.transform.steps.NullKeyStep;
@@ -24,10 +28,13 @@ import com.joxette.replay.transform.steps.TimeShiftStep;
 import com.joxette.replay.transform.steps.WallTimeStep;
 
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -110,6 +117,7 @@ public final class TransformPipeline {
     private final List<TransformStep>    steps;
     private final ReplayMetadataInjector injector;        // null only for IDENTITY
     private final AtomicLong             sequenceCounter; // REPLAY_SEQUENCE source
+    private final List<FragmentDefinition> fragmentDefs;  // injected into TransformContext
 
     /**
      * Creates a pipeline with the given steps and metadata injector.
@@ -119,8 +127,20 @@ public final class TransformPipeline {
      *                 {@code null} is only valid for the {@link #IDENTITY} sentinel
      */
     public TransformPipeline(List<TransformStep> steps, ReplayMetadataInjector injector) {
-        this.steps           = List.copyOf(steps);
-        this.injector        = injector;
+        this(steps, injector, List.of());
+    }
+
+    /**
+     * Creates a pipeline with steps, injector, and fragment definitions.
+     * Fragment definitions are injected into every {@link TransformContext} so that
+     * {@link GapEvaluator} can resolve fragment spans during streaming.
+     */
+    public TransformPipeline(List<TransformStep> steps,
+                             ReplayMetadataInjector injector,
+                             List<FragmentDefinition> fragmentDefs) {
+        this.steps        = List.copyOf(steps);
+        this.injector     = injector;
+        this.fragmentDefs = fragmentDefs != null ? List.copyOf(fragmentDefs) : List.of();
         this.sequenceCounter = new AtomicLong(0);
     }
 
@@ -145,8 +165,12 @@ public final class TransformPipeline {
             injector.inject(msg, replayId);
         }
 
-        TransformContext ctx = new TransformContext();
+        TransformContext ctx = newContext();
         ctx.setCurrentSequence(sequenceCounter.getAndIncrement());
+
+        // Observe this message for gap/fragment anchor tracking before dispatching steps
+        GapEvaluator.observeMessage(msg, ctx);
+        ctx.setPrevMsgTimestamp(msg.timestamp);
 
         // Start with the single input message
         List<ReplayMessage> current = new ArrayList<>();
@@ -214,7 +238,11 @@ public final class TransformPipeline {
         // Step 2: advance the per-message sequence counter
         ctx.setCurrentSequence(sequenceCounter.getAndIncrement());
 
-        // Step 3: user-defined steps in order
+        // Step 3: observe message for gap/fragment tracking (before steps, while prevMsgTimestamp
+        // still points at the previous message — needed for gap duration computation)
+        GapEvaluator.observeMessage(msg, ctx);
+
+        // Step 4: user-defined steps in order
         for (TransformStep stepOrGuard : steps) {
             // Unwrap GuardedStep — evaluate the guard; skip this step if it doesn't match
             final TransformStep step;
@@ -233,6 +261,12 @@ public final class TransformPipeline {
                 case TimeShiftStep    s   -> s.apply(msg);
                 case TimeCompressStep s   -> s.apply(msg, ctx);
                 case TimeFreezeStep   s   -> s.apply(msg, ctx);
+                case GapTransformStep gts -> {
+                    GapEvaluator.resolveGapDuration(gts.select(), msg, ctx).ifPresent(gap -> {
+                        Duration newGap = GapEvaluator.applyOperation(gap, gts.operation());
+                        ctx.setPendingSleep(newGap);
+                    });
+                }
                 // FanOutStep not applicable in streaming context — pass through
                 case FanOutStep ignored   -> { }
                 case RenameFieldStep      s -> s.apply(msg, ctx);
@@ -259,7 +293,61 @@ public final class TransformPipeline {
             }
         }
 
+        // Advance prevMsgTimestamp after all steps (including gap steps) have run
+        ctx.setPrevMsgTimestamp(msg.timestamp);
+
         return Optional.of(msg);
+    }
+
+    // -------------------------------------------------------------------------
+    // Context initialization
+    // -------------------------------------------------------------------------
+
+    /** Creates and initialises a {@link TransformContext} with fragment defs and watched patterns. */
+    private TransformContext newContext() {
+        TransformContext ctx = new TransformContext();
+        ctx.setFragmentDefs(fragmentDefs);
+        ctx.setWatchedPatterns(collectWatchedPatterns());
+        return ctx;
+    }
+
+    /**
+     * Collects all {@link MessagePattern} references from fragment definitions and
+     * {@link GapTransformStep} selectors so that {@link GapEvaluator} can observe them.
+     * Uses insertion-ordered set to deduplicate while preserving order.
+     */
+    private List<MessagePattern> collectWatchedPatterns() {
+        Set<MessagePattern> patterns = new LinkedHashSet<>();
+        for (FragmentDefinition frag : fragmentDefs) {
+            collectFromPattern(frag.from(), patterns);
+            collectFromPattern(frag.to(),   patterns);
+        }
+        for (TransformStep step : steps) {
+            if (step instanceof GapTransformStep gts) {
+                var sel = gts.select();
+                if (sel.after()  != null) collectFromPattern(sel.after(),  patterns);
+                if (sel.before() != null) collectFromPattern(sel.before(), patterns);
+            }
+        }
+        return List.copyOf(patterns);
+    }
+
+    /** Recursively adds a pattern and any nested patterns (e.g. first_after anchor). */
+    private static void collectFromPattern(MessagePattern p, Set<MessagePattern> out) {
+        if (p == null) return;
+        out.add(p);
+        if (p.quantifier() instanceof MessagePattern.Quantifier.FirstAfter fa) {
+            collectFromPattern(fa.after(), out);
+        }
+    }
+
+    /**
+     * Creates a fresh {@link TransformContext} configured with this pipeline's fragment
+     * definitions and watched patterns. Use this to initialise the shared context for
+     * streaming (SSE / NDJSON) replay paths.
+     */
+    public TransformContext newStreamingContext() {
+        return newContext();
     }
 
     /** Returns {@code true} when this is the no-op {@link #IDENTITY} sentinel. */
@@ -280,7 +368,7 @@ public final class TransformPipeline {
      * injector. Used after SQL pushdown analysis to create a pruned pipeline.
      */
     public TransformPipeline withSteps(List<TransformStep> newSteps) {
-        return new TransformPipeline(newSteps, this.injector);
+        return new TransformPipeline(newSteps, this.injector, this.fragmentDefs);
     }
 
     // =========================================================================
@@ -323,6 +411,11 @@ public final class TransformPipeline {
             case TimeShiftStep     s   -> { current.forEach(s::apply);               yield current; }
             case TimeCompressStep  s   -> { current.forEach(m -> s.apply(m, ctx));   yield current; }
             case TimeFreezeStep    s   -> { current.forEach(m -> s.apply(m, ctx));   yield current; }
+            case GapTransformStep gts -> {
+                // Paginated path: evaluate gap per message — each has its own fresh ctx so
+                // prevMsgTimestamp is always null; gap transforms are no-ops on paginated paths.
+                yield current;
+            }
             case RenameFieldStep      s -> { current.forEach(m -> s.apply(m, ctx)); yield current; }
             case DeleteFieldStep      s -> { current.forEach(m -> s.apply(m, ctx)); yield current; }
             case FlattenFieldStep     s -> { current.forEach(m -> s.apply(m, ctx)); yield current; }
