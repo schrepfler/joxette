@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { cassettesApi } from '#/api/client'
-import type { TransformPipeline } from '#/transforms/types'
+import type { TransformPipeline, GapTransformStep, PipelineStep } from '#/transforms/types'
 import { serializeSteps } from '#/transforms/types'
 import type { CassetteRecord, EntityRecord } from '#/api/client'
+import { GapTimeline, resolveFragmentsClientSide } from './GapTimeline'
 
 interface Props {
   pipeline: TransformPipeline
@@ -11,6 +12,8 @@ interface Props {
   entityType?: string
   entityId?: string
   onClose: () => void
+  /** Called when user adds a GapTransformStep from the timeline panel */
+  onAddStep?: (step: PipelineStep) => void
 }
 
 type PreviewResult = {
@@ -18,7 +21,7 @@ type PreviewResult = {
   transformed: CassetteRecord | EntityRecord
 }[]
 
-export function PipelineDryRun({ pipeline, mode, topic, entityType, entityId, onClose }: Props) {
+export function PipelineDryRun({ pipeline, mode, topic, entityType, entityId, onClose, onAddStep }: Props) {
   const [limit, setLimit] = useState(5)
   const [results, setResults] = useState<PreviewResult | null>(null)
   const [loading, setLoading] = useState(false)
@@ -93,18 +96,45 @@ export function PipelineDryRun({ pipeline, mode, topic, entityType, entityId, on
           <p style={{ fontSize: 13, color: '#718096' }}>No records matched the query.</p>
         )}
 
-        {results && results.length > 0 && (
-          <div style={{ overflowY: 'auto', flex: 1 }}>
-            <p style={{ fontSize: 12, color: '#718096', margin: '0 0 0.75rem' }}>
-              Showing {results.length} message{results.length !== 1 ? 's' : ''} — before and after transforms applied.
-            </p>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-              {results.map((r, i) => (
-                <MessageDiff key={i} index={i} original={r.original} transformed={r.transformed} />
-              ))}
+        {results && results.length > 0 && (() => {
+          const previewMessages = results.map(r => r.original as CassetteRecord)
+          const fragments = pipeline.fragments ?? []
+          const resolved = resolveFragmentsClientSide(previewMessages, fragments)
+          const existingGapSteps = pipeline.steps
+            .filter(s => s.type === 'gap_transform') as GapTransformStep[]
+
+          return (
+            <div style={{ overflowY: 'auto', flex: 1 }}>
+              <p style={{ fontSize: 12, color: '#718096', margin: '0 0 0.75rem' }}>
+                Showing {results.length} message{results.length !== 1 ? 's' : ''} — before and after transforms applied.
+              </p>
+
+              {/* Timeline — only show when onAddStep is wired and there are gaps */}
+              {onAddStep && previewMessages.length > 1 && (
+                <div style={{ border: '1px solid #e2e8f0', borderRadius: 6, padding: '0.65rem', marginBottom: '1rem', background: '#f7fafc' }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: '#4a5568', marginBottom: '0.5rem' }}>
+                    Timeline — click a gap to add a transform step
+                  </div>
+                  <GapTimeline
+                    messages={previewMessages}
+                    fragments={fragments}
+                    resolvedFragments={resolved}
+                    onAddStep={step => {
+                      onAddStep({ ...step, _id: crypto.randomUUID() } as PipelineStep)
+                    }}
+                    existingGapSteps={existingGapSteps}
+                  />
+                </div>
+              )}
+
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                {results.map((r, i) => (
+                  <MessageDiff key={i} index={i} original={r.original} transformed={r.transformed} />
+                ))}
+              </div>
             </div>
-          </div>
-        )}
+          )
+        })()}
       </div>
     </div>
   )

@@ -208,6 +208,11 @@ export function TransformPipelineBuilder({
           entityType={entityType}
           entityId={entityId}
           onClose={() => setShowDryRun(false)}
+          onAddStep={newStep => {
+            const updated = [...steps, newStep]
+            onChange({ ...pipeline, steps: updated })
+            setExpandedIndex(updated.length - 1)
+          }}
         />
       )}
     </div>
