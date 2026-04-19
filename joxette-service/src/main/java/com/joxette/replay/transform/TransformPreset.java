@@ -1,6 +1,7 @@
 package com.joxette.replay.transform;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.joxette.replay.transform.gap.FragmentDefinition;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.time.Instant;
@@ -26,6 +27,9 @@ public record TransformPreset(
 
         @Schema(description = "Ordered list of transform pipeline steps")
         List<TransformStep> steps,
+
+        @Schema(description = "Named fragment (phase-capture) definitions resolved per cassette; empty by default")
+        List<FragmentDefinition> fragments,
 
         @Schema(description = "When this preset was created (UTC)")
         Instant createdAt,

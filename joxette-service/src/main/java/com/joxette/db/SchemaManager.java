@@ -287,10 +287,12 @@ public class SchemaManager {
                     name        VARCHAR     NOT NULL PRIMARY KEY,
                     description VARCHAR,
                     steps       JSON        NOT NULL,
+                    fragments   JSON,
                     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
                     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
                 )
                 """);
+            stmt.execute("ALTER TABLE transform_presets ADD COLUMN IF NOT EXISTS fragments JSON");
 
             stmt.execute("""
                 CREATE TABLE IF NOT EXISTS broker_configs (

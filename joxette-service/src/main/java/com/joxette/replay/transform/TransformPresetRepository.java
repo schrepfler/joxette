@@ -2,6 +2,7 @@ package com.joxette.replay.transform;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.joxette.replay.transform.gap.FragmentDefinition;
 import org.jooq.DSLContext;
 import org.jooq.Field;
 import org.jooq.Record;
@@ -26,12 +27,13 @@ import java.util.Optional;
 @Repository
 public class TransformPresetRepository {
 
-    private static final Table<?>              TBL       = DSL.table(DSL.name("transform_presets"));
-    private static final Field<String>         F_NAME    = DSL.field(DSL.name("name"),        String.class);
-    private static final Field<String>         F_DESC    = DSL.field(DSL.name("description"), String.class);
-    private static final Field<String>         F_STEPS   = DSL.field(DSL.name("steps"),       String.class);
-    private static final Field<OffsetDateTime> F_CREATED = DSL.field(DSL.name("created_at"),  OffsetDateTime.class);
-    private static final Field<OffsetDateTime> F_UPDATED = DSL.field(DSL.name("updated_at"),  OffsetDateTime.class);
+    private static final Table<?>              TBL         = DSL.table(DSL.name("transform_presets"));
+    private static final Field<String>         F_NAME      = DSL.field(DSL.name("name"),        String.class);
+    private static final Field<String>         F_DESC      = DSL.field(DSL.name("description"), String.class);
+    private static final Field<String>         F_STEPS     = DSL.field(DSL.name("steps"),       String.class);
+    private static final Field<String>         F_FRAGMENTS = DSL.field(DSL.name("fragments"),   String.class);
+    private static final Field<OffsetDateTime> F_CREATED   = DSL.field(DSL.name("created_at"),  OffsetDateTime.class);
+    private static final Field<OffsetDateTime> F_UPDATED   = DSL.field(DSL.name("updated_at"),  OffsetDateTime.class);
 
     private final DSLContext   dsl;
     private final ObjectMapper objectMapper;
@@ -44,7 +46,7 @@ public class TransformPresetRepository {
     /** Returns all presets ordered by name ascending. */
     public List<TransformPreset> listAll() {
         return dsl
-                .select(F_NAME, F_DESC, F_STEPS, F_CREATED, F_UPDATED)
+                .select(F_NAME, F_DESC, F_STEPS, F_FRAGMENTS, F_CREATED, F_UPDATED)
                 .from(TBL)
                 .orderBy(F_NAME.asc())
                 .fetch(this::map);
@@ -53,7 +55,7 @@ public class TransformPresetRepository {
     /** Returns the preset with the given name, or empty if none found. */
     public Optional<TransformPreset> findByName(String name) {
         return dsl
-                .select(F_NAME, F_DESC, F_STEPS, F_CREATED, F_UPDATED)
+                .select(F_NAME, F_DESC, F_STEPS, F_FRAGMENTS, F_CREATED, F_UPDATED)
                 .from(TBL)
                 .where(F_NAME.eq(name))
                 .fetchOptional(this::map);
@@ -126,12 +128,24 @@ public class TransformPresetRepository {
         } catch (JsonProcessingException e) {
             steps = List.of();
         }
+        String fragmentsJson = r.get(F_FRAGMENTS);
+        List<FragmentDefinition> fragments;
+        try {
+            fragments = (fragmentsJson != null)
+                    ? objectMapper.readValue(fragmentsJson,
+                            objectMapper.getTypeFactory()
+                                    .constructCollectionType(List.class, FragmentDefinition.class))
+                    : List.of();
+        } catch (JsonProcessingException e) {
+            fragments = List.of();
+        }
         OffsetDateTime created = r.get(F_CREATED);
         OffsetDateTime updated = r.get(F_UPDATED);
         return new TransformPreset(
                 r.get(F_NAME),
                 r.get(F_DESC),
                 steps,
+                fragments,
                 created != null ? created.toInstant() : null,
                 updated != null ? updated.toInstant() : null);
     }

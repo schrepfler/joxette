@@ -26,6 +26,7 @@ import com.joxette.replay.transform.steps.TemplateStep;
 import com.joxette.replay.transform.steps.TimeCompressStep;
 import com.joxette.replay.transform.steps.TimeFreezeStep;
 import com.joxette.replay.transform.steps.TimeShiftStep;
+import com.joxette.replay.transform.steps.GapTransformStep;
 import com.joxette.replay.transform.steps.WallTimeStep;
 
 /**
@@ -70,7 +71,8 @@ import com.joxette.replay.transform.steps.WallTimeStep;
     @JsonSubTypes.Type(value = RedirectTopicStep.class,    name = "redirect_topic"),
     @JsonSubTypes.Type(value = FanOutStep.class,           name = "fan_out"),
     @JsonSubTypes.Type(value = FilterDropStep.class,       name = "filter_drop"),
-    @JsonSubTypes.Type(value = ConditionalStep.class,      name = "conditional")
+    @JsonSubTypes.Type(value = ConditionalStep.class,      name = "conditional"),
+    @JsonSubTypes.Type(value = GapTransformStep.class,     name = "gap_transform")
 })
 public interface TransformStep {
 
