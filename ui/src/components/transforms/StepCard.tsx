@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { draggable, dropTargetForElements } from '@atlaskit/pragmatic-drag-and-drop/element/adapter'
 import { attachClosestEdge, extractClosestEdge, type Edge } from '@atlaskit/pragmatic-drag-and-drop-hitbox/closest-edge'
 import { STEP_DEF_MAP } from '#/transforms/definitions'
-import type { PipelineStep, Predicate, FragmentDefinition } from '#/transforms/types'
+import type { PipelineStep, Predicate, FragmentDefinition, GapTransformStep, GapSelector, GapOperation, MessagePattern } from '#/transforms/types'
 import { isLeafPredicate } from '#/transforms/types'
 import { StepConfigForm } from './StepConfigForm'
 
@@ -174,7 +174,73 @@ function buildParamSummary(step: PipelineStep): string {
     case 'fan_out': return `→ ${(s.topics as string[]).join(', ')}`
     case 'filter_drop': return predicateSummary(s.predicate as Predicate)
     case 'conditional': return `if: ${predicateSummary(s.condition as Predicate)}`
+    case 'gap_transform': return gapTransformSummary(step as GapTransformStep)
     default: return ''
+  }
+}
+
+function gapTransformSummary(step: GapTransformStep): string {
+  const sel = selectorSummary(step.select)
+  const op = operationSummary(step.operation)
+  return `${op} ${sel}`.trim()
+}
+
+function selectorSummary(sel: GapSelector): string {
+  if (sel.within_fragment) {
+    const dur = durationFilter(sel)
+    return `within ${sel.within_fragment}${dur}`
+  }
+  if (sel.after && sel.before) {
+    const dur = durationFilter(sel)
+    return `between ${patternSummary(sel.after)} and ${patternSummary(sel.before)}${dur}`
+  }
+  if (sel.after) {
+    const dur = durationFilter(sel)
+    return `after ${patternSummary(sel.after)}${dur}`
+  }
+  if (sel.before) {
+    const dur = durationFilter(sel)
+    return `before ${patternSummary(sel.before)}${dur}`
+  }
+  const dur = durationFilter(sel)
+  return dur ? `all gaps${dur}` : 'all gaps'
+}
+
+function durationFilter(sel: GapSelector): string {
+  if (sel.min_duration_ms != null && sel.max_duration_ms != null)
+    return ` (${fmtMs(sel.min_duration_ms)}–${fmtMs(sel.max_duration_ms)})`
+  if (sel.min_duration_ms != null) return ` (≥${fmtMs(sel.min_duration_ms)})`
+  if (sel.max_duration_ms != null) return ` (≤${fmtMs(sel.max_duration_ms)})`
+  return ''
+}
+
+function fmtMs(ms: number): string {
+  return ms >= 1000 ? `${ms / 1000}s` : `${ms}ms`
+}
+
+function patternSummary(p: MessagePattern): string {
+  const pred = p.predicate
+  const field = isLeafPredicate(pred) ? pred.field || '?' : '?'
+  const val = isLeafPredicate(pred) && pred.value != null ? ` ${pred.value}` : ''
+  const q = quantifierLabel(p.quantifier)
+  return `${q} ${field}${val}`
+}
+
+function quantifierLabel(q: MessagePattern['quantifier']): string {
+  if (q === 'first') return 'first'
+  if (q === 'last') return 'last'
+  if (q === 'any') return 'any'
+  if (typeof q === 'object' && 'nth' in q) return `#${q.nth}`
+  return 'first after…'
+}
+
+function operationSummary(op: GapOperation): string {
+  switch (op.op) {
+    case 'cut': return 'Cut'
+    case 'hold': return `Hold → ${fmtMs(op.target_ms)}`
+    case 'trim': return op.by_factor != null ? `Trim ×${op.by_factor}` : `Trim −${fmtMs(op.by_ms ?? 0)}`
+    case 'pad': return `Pad +${fmtMs(op.by_ms)}`
+    case 'scale': return `Scale ×${op.factor}`
   }
 }
 
@@ -193,6 +259,7 @@ const CATEGORY_COLORS: Record<string, string> = {
   Headers: '#e53e3e',
   Routing: '#dd6b20',
   Logic: '#718096',
+  Gaps: '#0987a0',
 }
 
 const cardStyle: React.CSSProperties = {
