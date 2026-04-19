@@ -2,6 +2,8 @@ package com.joxette.replay.transform;
 
 import com.joxette.replay.CassetteRecord;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -52,24 +54,16 @@ class PredicateEvaluatorTest {
     // EQ / NEQ — top-level fields
     // =========================================================================
 
-    @Test
-    void eq_topLevel_trueWhenTopicMatches() {
-        assertThat(eval(leaf("$.topic", EQ, "orders"), msg("orders", 0, 0L, "k", null))).isTrue();
-    }
-
-    @Test
-    void eq_topLevel_falseWhenTopicDiffers() {
-        assertThat(eval(leaf("$.topic", EQ, "orders"), msg("payments", 0, 0L, "k", null))).isFalse();
-    }
-
-    @Test
-    void neq_topLevel_trueWhenTopicDiffers() {
-        assertThat(eval(leaf("$.topic", NEQ, "orders"), msg("payments", 0, 0L, "k", null))).isTrue();
-    }
-
-    @Test
-    void neq_topLevel_falseWhenTopicMatches() {
-        assertThat(eval(leaf("$.topic", NEQ, "orders"), msg("orders", 0, 0L, "k", null))).isFalse();
+    @ParameterizedTest
+    @CsvSource({
+        "$.topic, EQ,  orders,   orders, true",
+        "$.topic, EQ,  payments, orders, false",
+        "$.topic, NEQ, payments, orders, true",
+        "$.topic, NEQ, orders,   orders, false"
+    })
+    void eqNeq_topLevel(String field, String op, String testValue, String compareValue, boolean expected) {
+        assertThat(eval(leaf(field, Predicate.Operator.valueOf(op), compareValue),
+                msg(testValue, 0, 0L, "k", null))).isEqualTo(expected);
     }
 
     // =========================================================================
@@ -101,59 +95,29 @@ class PredicateEvaluatorTest {
     }
 
     // =========================================================================
-    // GT / GTE / LT / LTE — numeric comparisons
+    // GT / GTE / LT / LTE — top-level and nested $.value.* numeric comparisons
     // =========================================================================
 
-    @Test
-    void gt_trueWhenPartitionAboveThreshold() {
-        assertThat(eval(leaf("$.partition", GT, 3), msg("t", 5, 0L, "k", null))).isTrue();
-    }
-
-    @Test
-    void gt_falseWhenPartitionAtThreshold() {
-        assertThat(eval(leaf("$.partition", GT, 5), msg("t", 5, 0L, "k", null))).isFalse();
-    }
-
-    @Test
-    void gte_trueWhenOffsetAtThreshold() {
-        assertThat(eval(leaf("$.offset", GTE, 100), msg("t", 0, 100L, "k", null))).isTrue();
-    }
-
-    @Test
-    void gte_falseWhenOffsetBelowThreshold() {
-        assertThat(eval(leaf("$.offset", GTE, 100), msg("t", 0, 99L, "k", null))).isFalse();
-    }
-
-    @Test
-    void lt_trueWhenPartitionBelowThreshold() {
-        assertThat(eval(leaf("$.partition", LT, 10), msg("t", 3, 0L, "k", null))).isTrue();
-    }
-
-    @Test
-    void lt_falseWhenPartitionAtThreshold() {
-        assertThat(eval(leaf("$.partition", LT, 5), msg("t", 5, 0L, "k", null))).isFalse();
-    }
-
-    @Test
-    void lte_trueWhenOffsetAtThreshold() {
-        assertThat(eval(leaf("$.offset", LTE, 50), msg("t", 0, 50L, "k", null))).isTrue();
-    }
-
-    @Test
-    void lte_falseWhenOffsetAboveThreshold() {
-        assertThat(eval(leaf("$.offset", LTE, 50), msg("t", 0, 51L, "k", null))).isFalse();
-    }
-
-    @Test
-    void gt_trueOnNestedNumericField() {
-        assertThat(eval(leaf("$.value.amount", GT, 99),
-                msg("t", 0, 0L, "k", "{\"amount\":150}"))).isTrue();
-    }
-
-    @Test
-    void lte_trueOnNestedNumericFieldAtBoundary() {
-        assertThat(eval(leaf("$.value.amount", LTE, 150),
-                msg("t", 0, 0L, "k", "{\"amount\":150}"))).isTrue();
+    @ParameterizedTest
+    @CsvSource({
+        "$.partition,    GT,  5,   3,   true",
+        "$.partition,    GT,  5,   5,   false",
+        "$.offset,       GTE, 100, 100, true",
+        "$.offset,       GTE, 99,  100, false",
+        "$.partition,    LT,  3,   10,  true",
+        "$.partition,    LT,  5,   5,   false",
+        "$.offset,       LTE, 50,  50,  true",
+        "$.offset,       LTE, 51,  50,  false",
+        "$.value.amount, GT,  150, 99,  true",
+        "$.value.amount, LTE, 150, 150, true"
+    })
+    void numericComparisons(String field, String op, int testValue, int compareValue, boolean expected) {
+        ReplayMessage m = switch (field) {
+            case "$.partition" -> msg("t", testValue, 0L, "k", null);
+            case "$.offset"    -> msg("t", 0, (long) testValue, "k", null);
+            default            -> msg("t", 0, 0L, "k", "{\"amount\":" + testValue + "}");
+        };
+        assertThat(eval(leaf(field, Predicate.Operator.valueOf(op), compareValue), m)).isEqualTo(expected);
     }
 
     // =========================================================================
