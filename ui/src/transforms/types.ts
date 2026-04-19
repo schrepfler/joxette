@@ -205,6 +205,61 @@ export interface ConditionalStep {
 // Union type
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Gap / Fragment types — Phase 3
+// ---------------------------------------------------------------------------
+
+export type Quantifier =
+  | 'first'
+  | 'last'
+  | 'any'
+  | { nth: number }
+  | { first_after: MessagePattern }
+
+export type MessagePattern = {
+  predicate: Predicate
+  quantifier: Quantifier
+}
+
+export type FragmentIfClause = {
+  min_duration_ms?: number
+  max_duration_ms?: number
+}
+
+export type FragmentDefinition = {
+  name: string
+  label: string
+  color: string
+  from: MessagePattern
+  to: MessagePattern
+  if?: FragmentIfClause
+}
+
+export type GapSelector = {
+  after?: MessagePattern
+  before?: MessagePattern
+  within_fragment?: string
+  min_duration_ms?: number
+  max_duration_ms?: number
+}
+
+export type GapOperation =
+  | { op: 'cut' }
+  | { op: 'hold'; target_ms: number }
+  | { op: 'trim'; by_ms?: number; by_factor?: number }
+  | { op: 'pad'; by_ms: number }
+  | { op: 'scale'; factor: number }
+
+export type GapTransformStep = {
+  type: 'gap_transform'
+  select: GapSelector
+  operation: GapOperation
+}
+
+// ---------------------------------------------------------------------------
+// Union type
+// ---------------------------------------------------------------------------
+
 export type TransformStep =
   | WallTimeStep
   | TimeShiftStep
@@ -231,6 +286,7 @@ export type TransformStep =
   | FanOutStep
   | FilterDropStep
   | ConditionalStep
+  | GapTransformStep
 
 // ---------------------------------------------------------------------------
 // Pipeline — ordered list of steps (wraps TransformStep[] for the builder UI)

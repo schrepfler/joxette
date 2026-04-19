@@ -17,6 +17,7 @@ export const STEP_CATEGORIES = [
   'Headers',
   'Routing',
   'Logic',
+  'Gaps',
 ] as const
 
 export type StepCategory = (typeof STEP_CATEGORIES)[number]
@@ -203,6 +204,17 @@ export const STEP_DEFINITIONS: StepDef[] = [
     category: 'Logic',
     description: 'Apply different steps based on a condition predicate',
     defaults: () => ({ condition: { field: '$.value.amount', operator: 'GT' as const, value: 1000 }, then_steps: [], else_steps: [] }),
+  },
+  // ---- Gaps ----
+  {
+    type: 'gap_transform',
+    label: 'Gap Transform',
+    category: 'Gaps',
+    description: 'Cut, hold, trim, pad or scale a gap between messages',
+    defaults: () => ({
+      select: { after: { predicate: { field: '$.value.type', operator: 'EQ' as const, value: '' }, quantifier: 'first' as const } },
+      operation: { op: 'cut' as const },
+    }),
   },
 ]
 

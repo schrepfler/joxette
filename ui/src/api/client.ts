@@ -211,6 +211,7 @@ export interface TransformPreset {
   name: string
   description?: string
   steps: import('../transforms/types').TransformStep[]
+  fragments?: import('../transforms/types').FragmentDefinition[]
   createdAt?: string
   updatedAt?: string
 }
