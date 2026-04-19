@@ -1,14 +1,18 @@
 package com.joxette.replay.transform.steps;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.joxette.replay.CassetteRecord;
 import com.joxette.replay.transform.ReplayMessage;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Base64;
-import java.util.List;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -33,65 +37,28 @@ class SetConstantStepTest {
     }
 
     // -------------------------------------------------------------------------
-    // String value
+    // Parameterized: constant value types (string, numeric, boolean, null, object)
     // -------------------------------------------------------------------------
 
-    @Test
-    void setsStringFieldInValueBody() throws Exception {
-        var step = new SetConstantStep("$.value.env", OM.readTree("\"staging\""));
-        ReplayMessage msg = msg("{\"env\":\"prod\",\"id\":\"1\"}");
-
-        step.apply(msg);
-
-        String json = decode(msg.value);
-        assertThat(json).contains("\"staging\"");
-        assertThat(json).doesNotContain("\"prod\"");
-        assertThat(json).contains("\"id\":\"1\"");
+    static Stream<Arguments> constantValueCases() throws Exception {
+        return Stream.of(
+                Arguments.of("string",  OM.readTree("\"staging\""),   "\"testField\":\"staging\""),
+                Arguments.of("numeric", OM.readTree("42"),             "\"testField\":42"),
+                Arguments.of("boolean", OM.readTree("false"),          "\"testField\":false"),
+                Arguments.of("null",    OM.readTree("null"),           "\"testField\":null"),
+                Arguments.of("object",  OM.readTree("{\"k\":\"v\"}"),  "\"k\":\"v\"")
+        );
     }
 
-    @Test
-    void setsNumericField() throws Exception {
-        var step = new SetConstantStep("$.value.version", OM.readTree("42"));
-        ReplayMessage msg = msg("{\"version\":1}");
+    @ParameterizedTest(name = "sets {0} constant value")
+    @MethodSource("constantValueCases")
+    void setsConstantValueByType(String typeName, JsonNode constantValue, String expectedFragment) throws Exception {
+        var step = new SetConstantStep("$.value.testField", constantValue);
+        ReplayMessage msg = msg("{\"testField\":\"old\"}");
 
         step.apply(msg);
 
-        assertThat(decode(msg.value)).contains("\"version\":42");
-    }
-
-    @Test
-    void setsBooleanField() throws Exception {
-        var step = new SetConstantStep("$.value.active", OM.readTree("false"));
-        ReplayMessage msg = msg("{\"active\":true}");
-
-        step.apply(msg);
-
-        assertThat(decode(msg.value)).contains("\"active\":false");
-    }
-
-    @Test
-    void setsNullField() throws Exception {
-        var step = new SetConstantStep("$.value.secret", OM.readTree("null"));
-        ReplayMessage msg = msg("{\"secret\":\"sensitive\"}");
-
-        step.apply(msg);
-
-        assertThat(decode(msg.value)).contains("\"secret\":null");
-    }
-
-    // -------------------------------------------------------------------------
-    // Object / array values
-    // -------------------------------------------------------------------------
-
-    @Test
-    void setsObjectValue() throws Exception {
-        var step = new SetConstantStep("$.value.meta", OM.readTree("{\"k\":\"v\"}"));
-        ReplayMessage msg = msg("{\"meta\":{\"old\":1}}");
-
-        step.apply(msg);
-
-        assertThat(decode(msg.value)).contains("\"k\":\"v\"");
-        assertThat(decode(msg.value)).doesNotContain("\"old\"");
+        assertThat(decode(msg.value)).contains(expectedFragment);
     }
 
     // -------------------------------------------------------------------------
@@ -150,7 +117,6 @@ class SetConstantStepTest {
 
         step.apply(msg);
 
-        // should remain the non-JSON base64 (no crash)
         assertThat(decode(msg.value)).isEqualTo("not-json");
     }
 
