@@ -17,6 +17,8 @@ import {
 import { MatchStepRow } from './sequence/MatchStepRow'
 import { CleanDataSection } from './sequence/CleanDataSection'
 import type { CleanDataState } from './sequence/CleanDataSection'
+import { SequenceExamplesPane } from './sequence/SequenceExamplesPane'
+import { SequenceModelPanel } from './sequence/SequenceModelPanel'
 
 interface Props {
   mode: 'topic' | 'entity'
@@ -83,13 +85,16 @@ function inferStepLabel(step: MatchStep, fallbackIndex: number): string {
 }
 
 export function SequenceQueryPanel({ mode, topic, entityType, onSaveFragment }: Props) {
-  const { query, results, loading, error } = useSequenceStore()
+  const { query, loading, error } = useSequenceStore()
   const { steps, constraints } = query
   const colors = stepColors(steps)
 
   const [cleanData, setCleanData] = useState<CleanDataState>({})
   const [optionsOpen, setOptionsOpen] = useState(false)
   const [solOpen, setSolOpen] = useState(false)
+  const [fragmentDialog, setFragmentDialog] = useState<{
+    name: string; label: string; color: string
+  } | null>(null)
 
   // Debounced query execution
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -113,42 +118,49 @@ export function SequenceQueryPanel({ mode, topic, entityType, onSaveFragment }: 
     reorderSteps(fromIndex, toIndex)
   }
 
-  function handleSaveFragment() {
+  function handleOpenSaveDialog() {
     if (!onSaveFragment || steps.length < 1) return
     const first = steps[0]
     const last = steps[steps.length - 1]
-    const fragment: FragmentDefinition = {
+    setFragmentDialog({
       name: `sequence_${Date.now()}`,
       label: `${inferStepLabel(first, 0)} → ${inferStepLabel(last, steps.length - 1)}`,
       color: colors[first._id] ?? '#4f6ef7',
+    })
+  }
+
+  function handleConfirmFragment() {
+    if (!onSaveFragment || !fragmentDialog || steps.length < 1) return
+    const first = steps[0]
+    const last = steps[steps.length - 1]
+    const fragment: FragmentDefinition = {
+      name: fragmentDialog.name,
+      label: fragmentDialog.label,
+      color: fragmentDialog.color,
       from: { predicate: first.predicate, quantifier: 'first' },
       to: { predicate: last.predicate, quantifier: 'last' },
       ...(constraints?.maxDurationMs ? { if: { max_duration_ms: constraints.maxDurationMs } } : {}),
     }
     onSaveFragment(fragment)
+    setFragmentDialog(null)
   }
 
   const sol = buildSOL(steps, constraints)
 
   return (
-    <div style={panelStyle}>
-      {/* Panel header */}
-      <div style={headerRowStyle}>
-        <span style={headerLabelStyle}>▸ Match</span>
+    <div style={outerPanelStyle}>
+      {/* Panel header — spans full width */}
+      <div style={panelHeaderStyle}>
+        <span style={headerLabelStyle}>▸ Sequence Query</span>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
           {loading && <span style={loadingBadgeStyle}>…</span>}
-          {results && (
-            <span style={resultBadgeStyle}>
-              {results.matchedSequences.toLocaleString()} sequences ({Math.round(results.matchRate * 100)}%)
-            </span>
-          )}
           <button style={solBtnStyle} onClick={() => setSolOpen(v => !v)} title="View SOL query">
             View SOL
           </button>
         </div>
       </div>
 
-      {/* SOL popover */}
+      {/* SOL popover — spans full width */}
       {solOpen && (
         <div style={solPopoverStyle}>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
@@ -159,7 +171,7 @@ export function SequenceQueryPanel({ mode, topic, entityType, onSaveFragment }: 
         </div>
       )}
 
-      {/* Error banner */}
+      {/* Error banner — spans full width */}
       {error && (
         <div style={errorBannerStyle}>
           <span style={{ fontSize: 12, color: '#c53030' }}>{error}</span>
@@ -167,94 +179,112 @@ export function SequenceQueryPanel({ mode, topic, entityType, onSaveFragment }: 
         </div>
       )}
 
-      {/* Clean data section */}
-      <CleanDataSection value={cleanData} onChange={setCleanData} />
+      {/* Two-column body */}
+      <div style={columnsStyle}>
+        {/* LEFT column — fixed w-80 */}
+        <div style={leftColumnStyle}>
+          {/* Clean data section */}
+          <CleanDataSection value={cleanData} onChange={setCleanData} />
 
-      {/* Step list */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
-        {steps.map((step, i) => (
-          <MatchStepRow
-            key={step._id}
-            step={step}
-            stepIndex={i}
-            color={colors[step._id] ?? '#4f6ef7'}
-            onUpdate={patch => updateStep(step._id, patch)}
-            onRemove={() => removeStep(step._id)}
-            onMove={handleMove}
-            isFirst={i === 0}
-            isLast={i === steps.length - 1}
-          />
-        ))}
+          {/* Step list */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+            {steps.map((step, i) => (
+              <MatchStepRow
+                key={step._id}
+                step={step}
+                stepIndex={i}
+                color={colors[step._id] ?? '#4f6ef7'}
+                onUpdate={patch => updateStep(step._id, patch)}
+                onRemove={() => removeStep(step._id)}
+                onMove={handleMove}
+                isFirst={i === 0}
+                isLast={i === steps.length - 1}
+              />
+            ))}
+          </div>
+
+          {/* Add step */}
+          <button style={addStepBtnStyle} onClick={() => addStep(defaultStep())}>
+            + Add step
+          </button>
+
+          {/* Sequence options */}
+          <div style={{ ...sectionStyle, marginTop: 8 }}>
+            <button style={sectionHeaderBtnStyle} onClick={() => setOptionsOpen(v => !v)}>
+              <span style={sectionLabelStyle}>▸ Sequence options</span>
+              <span style={{ fontSize: 10, color: '#a0aec0', marginLeft: 'auto' }}>
+                {optionsOpen ? '▴' : '▾'}
+              </span>
+            </button>
+            {optionsOpen && (
+              <div style={{ padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <DurationInput
+                  label="Max duration"
+                  valueMs={constraints?.maxDurationMs}
+                  onChange={v => setConstraints({ ...constraints, maxDurationMs: v })}
+                />
+                <DurationInput
+                  label="Min duration"
+                  valueMs={constraints?.minDurationMs}
+                  onChange={v => setConstraints({ ...constraints, minDurationMs: v })}
+                />
+              </div>
+            )}
+          </div>
+
+          {/* Sequence model */}
+          <SequenceModelPanel />
+
+          {/* Save as Fragment */}
+          {onSaveFragment && steps.length >= 2 && (
+            <button style={saveFragmentBtnStyle} onClick={handleOpenSaveDialog}>
+              Save as Fragment
+            </button>
+          )}
+        </div>
+
+        {/* RIGHT column — fills remaining space */}
+        <div style={rightColumnStyle}>
+          <SequenceExamplesPane />
+        </div>
       </div>
 
-      {/* Add step */}
-      <button style={addStepBtnStyle} onClick={() => addStep(defaultStep())}>
-        + Add step
-      </button>
-
-      {/* Sequence options */}
-      <div style={{ ...sectionStyle, marginTop: 8 }}>
-        <button style={sectionHeaderBtnStyle} onClick={() => setOptionsOpen(v => !v)}>
-          <span style={sectionLabelStyle}>▸ Sequence options</span>
-          <span style={{ fontSize: 10, color: '#a0aec0', marginLeft: 'auto' }}>
-            {optionsOpen ? '▴' : '▾'}
-          </span>
-        </button>
-        {optionsOpen && (
-          <div style={{ padding: '8px 10px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <DurationInput
-              label="Max duration"
-              valueMs={constraints?.maxDurationMs}
-              onChange={v => setConstraints({ ...constraints, maxDurationMs: v })}
+      {/* Save as Fragment dialog */}
+      {fragmentDialog && (
+        <div style={dialogOverlayStyle}>
+          <div style={dialogBoxStyle}>
+            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 12, color: '#2d3748' }}>
+              Save as Fragment
+            </div>
+            <label style={dialogLabelStyle}>Name</label>
+            <input
+              style={dialogInputStyle}
+              value={fragmentDialog.name}
+              onChange={e => setFragmentDialog(d => d ? { ...d, name: e.target.value } : d)}
             />
-            <DurationInput
-              label="Min duration"
-              valueMs={constraints?.minDurationMs}
-              onChange={v => setConstraints({ ...constraints, minDurationMs: v })}
+            <label style={dialogLabelStyle}>Label</label>
+            <input
+              style={dialogInputStyle}
+              value={fragmentDialog.label}
+              onChange={e => setFragmentDialog(d => d ? { ...d, label: e.target.value } : d)}
             />
-          </div>
-        )}
-      </div>
-
-      {/* Sequence model — reach rates */}
-      {results && results.reachRates.length > 0 && (
-        <div style={{ ...sectionStyle, marginTop: 8 }}>
-          <div style={sectionLabelRowStyle}>
-            <span style={sectionLabelStyle}>▸ Sequence model</span>
-          </div>
-          <div style={{ padding: '6px 10px', display: 'flex', flexDirection: 'column', gap: 4 }}>
-            {steps.map((step, i) => {
-              const rate = results.reachRates[i] ?? 0
-              const label = inferStepLabel(step, i)
-              return (
-                <div key={step._id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                  <div style={{
-                    width: 10, height: 10, borderRadius: 2, background: colors[step._id] ?? '#4f6ef7', flexShrink: 0,
-                  }} />
-                  <span style={{ fontSize: 12, color: '#4a5568', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {label}
-                  </span>
-                  <div style={{ width: 80, height: 6, background: '#e2e8f0', borderRadius: 3, overflow: 'hidden' }}>
-                    <div style={{
-                      width: `${Math.round(rate * 100)}%`, height: '100%',
-                      background: colors[step._id] ?? '#4f6ef7',
-                    }} />
-                  </div>
-                  <span style={{ fontSize: 11, color: '#718096', width: 36, textAlign: 'right' }}>
-                    {Math.round(rate * 100)}%
-                  </span>
-                </div>
-              )
-            })}
+            <label style={dialogLabelStyle}>Color</label>
+            <input
+              type="color"
+              style={{ ...dialogInputStyle, padding: '2px 4px', height: 32, cursor: 'pointer' }}
+              value={fragmentDialog.color}
+              onChange={e => setFragmentDialog(d => d ? { ...d, color: e.target.value } : d)}
+            />
+            <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
+              <button style={dialogCancelBtnStyle} onClick={() => setFragmentDialog(null)}>
+                Cancel
+              </button>
+              <button style={dialogConfirmBtnStyle} onClick={handleConfirmFragment}>
+                Save
+              </button>
+            </div>
           </div>
         </div>
-      )}
-
-      {/* Save as Fragment */}
-      {onSaveFragment && steps.length >= 2 && (
-        <button style={saveFragmentBtnStyle} onClick={handleSaveFragment}>
-          Save as Fragment
-        </button>
       )}
     </div>
   )
@@ -290,21 +320,30 @@ function DurationInput({ label, valueMs, onChange }: { label: string; valueMs?: 
 // Styles
 // ---------------------------------------------------------------------------
 
-const panelStyle: React.CSSProperties = {
-  display: 'flex', flexDirection: 'column', padding: '12px', minWidth: 280,
+const outerPanelStyle: React.CSSProperties = {
+  display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden',
 }
-const headerRowStyle: React.CSSProperties = {
-  display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10,
+const panelHeaderStyle: React.CSSProperties = {
+  display: 'flex', alignItems: 'center', gap: 8,
+  padding: '10px 12px', borderBottom: '1px solid var(--color-border, #e2e8f0)', flexShrink: 0,
+}
+const columnsStyle: React.CSSProperties = {
+  display: 'flex', flex: 1, overflow: 'hidden',
+}
+const leftColumnStyle: React.CSSProperties = {
+  width: 320, flexShrink: 0, display: 'flex', flexDirection: 'column',
+  padding: '12px', overflowY: 'auto',
+  borderRight: '1px solid var(--color-border, #e2e8f0)',
+}
+const rightColumnStyle: React.CSSProperties = {
+  flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden',
+  minWidth: 0,
 }
 const headerLabelStyle: React.CSSProperties = {
   fontSize: 13, fontWeight: 800, color: '#2d3748', textTransform: 'uppercase', letterSpacing: '0.05em',
 }
 const loadingBadgeStyle: React.CSSProperties = {
   fontSize: 11, color: '#718096', padding: '2px 6px', background: '#edf2f7', borderRadius: 10,
-}
-const resultBadgeStyle: React.CSSProperties = {
-  fontSize: 11, color: '#2b6cb0', padding: '2px 8px', background: '#ebf8ff',
-  border: '1px solid #bee3f8', borderRadius: 10,
 }
 const solBtnStyle: React.CSSProperties = {
   padding: '3px 10px', fontSize: 11, fontWeight: 600, background: '#fff',
@@ -343,9 +382,6 @@ const sectionHeaderBtnStyle: React.CSSProperties = {
 const sectionLabelStyle: React.CSSProperties = {
   fontSize: 12, fontWeight: 700, color: '#4a5568', textTransform: 'uppercase', letterSpacing: '0.04em',
 }
-const sectionLabelRowStyle: React.CSSProperties = {
-  padding: '8px 10px',
-}
 const saveFragmentBtnStyle: React.CSSProperties = {
   marginTop: 12, padding: '7px 14px', fontSize: 12, fontWeight: 700,
   background: '#4f6ef7', color: '#fff', border: 'none',
@@ -353,4 +389,29 @@ const saveFragmentBtnStyle: React.CSSProperties = {
 }
 const durationInputStyle: React.CSSProperties = {
   width: 70, padding: '3px 6px', border: '1px solid #cbd5e0', borderRadius: 4, fontSize: 12,
+}
+const dialogOverlayStyle: React.CSSProperties = {
+  position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', display: 'flex',
+  alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+}
+const dialogBoxStyle: React.CSSProperties = {
+  background: '#fff', borderRadius: 10, padding: '20px 24px', minWidth: 320, maxWidth: 400,
+  boxShadow: '0 8px 32px rgba(0,0,0,0.18)',
+  display: 'flex', flexDirection: 'column', gap: 4,
+}
+const dialogLabelStyle: React.CSSProperties = {
+  fontSize: 11, fontWeight: 600, color: '#718096', textTransform: 'uppercase',
+  letterSpacing: '0.04em', marginTop: 8, marginBottom: 2, display: 'block',
+}
+const dialogInputStyle: React.CSSProperties = {
+  width: '100%', padding: '6px 8px', border: '1px solid #cbd5e0', borderRadius: 5,
+  fontSize: 13, boxSizing: 'border-box',
+}
+const dialogCancelBtnStyle: React.CSSProperties = {
+  padding: '7px 16px', fontSize: 13, background: '#edf2f7', color: '#4a5568',
+  border: 'none', borderRadius: 6, cursor: 'pointer',
+}
+const dialogConfirmBtnStyle: React.CSSProperties = {
+  padding: '7px 16px', fontSize: 13, fontWeight: 700, background: '#4f6ef7',
+  color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer',
 }
