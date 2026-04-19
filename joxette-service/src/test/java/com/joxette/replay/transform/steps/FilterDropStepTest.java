@@ -6,6 +6,8 @@ import com.joxette.replay.transform.Predicate.Operator;
 import com.joxette.replay.transform.ReplayMessage;
 import com.joxette.replay.transform.TransformPipeline;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -15,10 +17,6 @@ import java.util.List;
 import static com.joxette.replay.transform.Predicate.Operator.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Unit tests for {@link FilterDropStep} — each operator, top-level field extraction,
- * nested value JSON extraction, and pass-through when predicate does not match.
- */
 class FilterDropStepTest {
 
     private static final Base64.Encoder ENC = Base64.getUrlEncoder().withoutPadding();
@@ -48,110 +46,69 @@ class FilterDropStepTest {
     }
 
     // =========================================================================
-    // EQ / NEQ
+    // EQ / NEQ / GT / GTE / LT / LTE — numeric fields
     // =========================================================================
 
-    @Test
-    void eq_dropsWhenPartitionMatches() {
-        assertThat(apply(fds("$.partition", EQ, 3), msg(3, 0L, "t", null))).isEmpty();
-    }
-
-    @Test
-    void eq_passesWhenPartitionDiffers() {
-        assertThat(apply(fds("$.partition", EQ, 3), msg(2, 0L, "t", null))).hasSize(1);
-    }
-
-    @Test
-    void neq_dropsWhenPartitionDiffers() {
-        assertThat(apply(fds("$.partition", NEQ, 3), msg(5, 0L, "t", null))).isEmpty();
-    }
-
-    @Test
-    void neq_passesWhenPartitionEquals() {
-        assertThat(apply(fds("$.partition", NEQ, 3), msg(3, 0L, "t", null))).hasSize(1);
-    }
-
-    // =========================================================================
-    // GT / GTE / LT / LTE
-    // =========================================================================
-
-    @Test
-    void gt_dropsWhenOffsetAboveThreshold() {
-        assertThat(apply(fds("$.offset", GT, 100), msg(0, 200L, "t", null))).isEmpty();
-    }
-
-    @Test
-    void gt_passesWhenOffsetAtThreshold() {
-        assertThat(apply(fds("$.offset", GT, 100), msg(0, 100L, "t", null))).hasSize(1);
-    }
-
-    @Test
-    void gte_dropsWhenOffsetAtThreshold() {
-        assertThat(apply(fds("$.offset", GTE, 100), msg(0, 100L, "t", null))).isEmpty();
-    }
-
-    @Test
-    void lt_dropsWhenOffsetBelowThreshold() {
-        assertThat(apply(fds("$.offset", LT, 50), msg(0, 10L, "t", null))).isEmpty();
-    }
-
-    @Test
-    void lte_dropsWhenOffsetAtThreshold() {
-        assertThat(apply(fds("$.offset", LTE, 50), msg(0, 50L, "t", null))).isEmpty();
-    }
-
-    @Test
-    void lte_passesWhenOffsetAboveThreshold() {
-        assertThat(apply(fds("$.offset", LTE, 50), msg(0, 51L, "t", null))).hasSize(1);
+    @ParameterizedTest(name = "{1} on {0}: threshold={2}, partition={3}, offset={4} => shouldDrop={5}")
+    @CsvSource({
+        "$.partition, EQ,  3,   3,   0, true",
+        "$.partition, EQ,  3,   2,   0, false",
+        "$.partition, NEQ, 3,   5,   0, true",
+        "$.partition, NEQ, 3,   3,   0, false",
+        "$.offset,    GT,  100, 0, 200, true",
+        "$.offset,    GT,  100, 0, 100, false",
+        "$.offset,    GTE, 100, 0, 100, true",
+        "$.offset,    LT,  50,  0,  10, true",
+        "$.offset,    LTE, 50,  0,  50, true",
+        "$.offset,    LTE, 50,  0,  51, false"
+    })
+    void numericComparisonOperators(String field, String opName, int threshold,
+                                     int partition, long offset, boolean shouldDrop) {
+        var result = apply(fds(field, Operator.valueOf(opName), threshold),
+                           msg(partition, offset, "t", null));
+        if (shouldDrop) assertThat(result).isEmpty();
+        else            assertThat(result).hasSize(1);
     }
 
     // =========================================================================
-    // CONTAINS
+    // CONTAINS / MATCHES — string fields
     // =========================================================================
 
-    @Test
-    void contains_dropsWhenTopicContainsSubstring() {
-        assertThat(apply(fds("$.topic", CONTAINS, "staging"), msg(0, 0L, "orders-staging", null))).isEmpty();
-    }
-
-    @Test
-    void contains_passesWhenTopicDoesNotContainSubstring() {
-        assertThat(apply(fds("$.topic", CONTAINS, "staging"), msg(0, 0L, "orders-prod", null))).hasSize(1);
-    }
-
-    // =========================================================================
-    // MATCHES (regex)
-    // =========================================================================
-
-    @Test
-    void matches_dropsWhenTopicMatchesRegex() {
-        assertThat(apply(fds("$.topic", MATCHES, "^orders-.*"), msg(0, 0L, "orders-prod", null))).isEmpty();
-    }
-
-    @Test
-    void matches_passesWhenTopicDoesNotMatchRegex() {
-        assertThat(apply(fds("$.topic", MATCHES, "^orders-.*"), msg(0, 0L, "payments-prod", null))).hasSize(1);
+    @ParameterizedTest(name = "{0} ''{1}'' on topic ''{2}'' => shouldDrop={3}")
+    @CsvSource({
+        "CONTAINS, staging,    orders-staging, true",
+        "CONTAINS, staging,    orders-prod,    false",
+        "MATCHES,  ^orders-.*, orders-prod,    true",
+        "MATCHES,  ^orders-.*, payments-prod,  false"
+    })
+    void stringOperators(String opName, String pattern, String topic, boolean shouldDrop) {
+        var result = apply(fds("$.topic", Operator.valueOf(opName), pattern),
+                           msg(0, 0L, topic, null));
+        if (shouldDrop) assertThat(result).isEmpty();
+        else            assertThat(result).hasSize(1);
     }
 
     // =========================================================================
     // IS_NULL / IS_NOT_NULL
     // =========================================================================
 
-    @Test
-    void isNull_dropsWhenKeyIsNull() {
-        Instant ts  = Instant.parse("2024-01-01T00:00:00Z");
-        var     rec = new CassetteRecord("t", 0, 0L, ts, ts, null, null, null, null);
-        assertThat(apply(fds("$.key", IS_NULL, null), new ReplayMessage(rec))).isEmpty();
-    }
-
-    @Test
-    void isNull_passesWhenKeyIsPresent() {
-        assertThat(apply(fds("$.key", IS_NULL, null), msg(0, 0L, "t", null))).hasSize(1);
-    }
-
-    @Test
-    void isNotNull_dropsWhenKeyPresent() {
-        assertThat(apply(fds("$.key", IS_NOT_NULL, null), msg(0, 0L, "t", null))).isEmpty();
+    @ParameterizedTest(name = "{0} with nullKey={1} => shouldDrop={2}")
+    @CsvSource({
+        "IS_NULL,     true,  true",
+        "IS_NULL,     false, false",
+        "IS_NOT_NULL, false, true"
+    })
+    void nullCheckOperators(String opName, boolean useNullKey, boolean shouldDrop) {
+        ReplayMessage message;
+        if (useNullKey) {
+            Instant ts = Instant.parse("2024-01-01T00:00:00Z");
+            message = new ReplayMessage(new CassetteRecord("t", 0, 0L, ts, ts, null, null, null, null));
+        } else {
+            message = msg(0, 0L, "t", null);
+        }
+        var result = apply(fds("$.key", Operator.valueOf(opName), null), message);
+        if (shouldDrop) assertThat(result).isEmpty();
+        else            assertThat(result).hasSize(1);
     }
 
     // =========================================================================
