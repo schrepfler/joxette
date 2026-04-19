@@ -1,5 +1,6 @@
 package com.joxette.management;
 
+import com.joxette.recording.RecorderStatus;
 import com.joxette.recording.RecordingCoordinator;
 import com.joxette.replay.MessageRouter;
 import org.slf4j.Logger;
@@ -11,6 +12,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.sql.SQLException;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 
@@ -59,10 +61,10 @@ public class TopicController {
 
     @GetMapping(produces = MediaType.APPLICATION_JSON_VALUE)
     public List<TopicConfig> listTopics() throws SQLException {
-        Set<String> active = coordinator.activeTopics();
+        Map<String, RecorderStatus> running = coordinator.listRunning();
         return config.listTopics().stream()
                 .map(tc -> new TopicConfig(tc.topic(), tc.mode(), tc.paused(),
-                        active.contains(tc.topic()), tc.retentionDays(), tc.startFrom(), tc.brokerId()))
+                        running.containsKey(tc.topic()), tc.retentionDays(), tc.startFrom(), tc.brokerId()))
                 .toList();
     }
 
@@ -151,6 +153,21 @@ public class TopicController {
         config.findTopic(topic).ifPresent(tc -> coordinator.startTopic(topic, tc.startFrom()));
         return config.findTopic(topic).map(ResponseEntity::ok)
                 .orElse(ResponseEntity.notFound().build());
+    }
+
+    @PostMapping("/{topic}/restart")
+    public ResponseEntity<RecorderStatus> restartTopic(@PathVariable String topic) throws SQLException {
+        if (config.findTopic(topic).isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+        coordinator.restartTopic(topic);
+        RecorderStatus status = coordinator.listRunning().get(topic);
+        return status != null ? ResponseEntity.ok(status) : ResponseEntity.accepted().build();
+    }
+
+    @GetMapping(value = "/status", produces = MediaType.APPLICATION_JSON_VALUE)
+    public Map<String, RecorderStatus> recorderStatus() {
+        return coordinator.listRunning();
     }
 
     // -------------------------------------------------------------------------

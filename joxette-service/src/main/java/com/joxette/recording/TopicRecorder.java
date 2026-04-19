@@ -26,6 +26,7 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
 /**
@@ -67,6 +68,9 @@ public class TopicRecorder {
             new AtomicReference<>();
 
     private volatile boolean stopped = false;
+
+    private volatile Instant lastBatchAt;
+    private final AtomicLong consumerLag = new AtomicLong(-1);
 
     public TopicRecorder(
             String topic,
@@ -137,7 +141,9 @@ public class TopicRecorder {
                             kc.commitSync(toCommit);
                         }
                         try {
-                            for (ConsumerRecord<String, byte[]> record : kc.poll(POLL_TIMEOUT)) {
+                            var records = kc.poll(POLL_TIMEOUT);
+                            updateLag(kc);
+                            for (ConsumerRecord<String, byte[]> record : records) {
                                 emit.apply(record);
                             }
                         } catch (WakeupException e) {
@@ -171,6 +177,10 @@ public class TopicRecorder {
         KafkaConsumer<String, byte[]> c = consumer;
         if (c != null) c.wakeup();
     }
+
+    public Instant lastBatchAt() { return lastBatchAt; }
+
+    public long consumerLag() { return consumerLag.get(); }
 
     // -----------------------------------------------------------------------
     // Batch write
@@ -207,6 +217,7 @@ public class TopicRecorder {
 
         WriteBatch wb = WriteBatch.of(topic, generalRecords, generalMessageTypes, entityItems);
         writeChannel.submit(wb);
+        lastBatchAt = Instant.now();
 
         if (!allRoutes.isEmpty()) {
             try {
@@ -221,6 +232,21 @@ public class TopicRecorder {
     // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------
+
+    private void updateLag(KafkaConsumer<String, byte[]> kc) {
+        try {
+            var endOffsets = kc.endOffsets(kc.assignment());
+            long lag = 0;
+            for (var entry : endOffsets.entrySet()) {
+                var committed = kc.committed(java.util.Set.of(entry.getKey())).get(entry.getKey());
+                long position = committed != null ? committed.offset() : kc.position(entry.getKey());
+                lag += Math.max(0, entry.getValue() - position);
+            }
+            consumerLag.set(lag);
+        } catch (Exception e) {
+            // Non-fatal: lag tracking is best-effort
+        }
+    }
 
     private static KafkaMessage toKafkaMessage(ConsumerRecord<String, byte[]> record) {
         List<KafkaMessage.Header> headers = new ArrayList<>();
