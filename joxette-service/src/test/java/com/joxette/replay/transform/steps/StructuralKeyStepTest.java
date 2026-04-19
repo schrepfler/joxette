@@ -6,10 +6,15 @@ import com.joxette.replay.CassetteRecord;
 import com.joxette.replay.transform.TransformContext;
 import com.joxette.replay.transform.ReplayMessage;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -405,64 +410,27 @@ class StructuralKeyStepTest {
     // RemapKeyStep
     // =========================================================================
 
-    @Test
-    void remapKey_literalValue() {
-        var step = new RemapKeyStep("new-key", null);
-        var m = msg("{\"id\":\"1\"}");
-
-        step.apply(m, ctx(0));
-
-        assertThat(decode(m.key)).isEqualTo("new-key");
+    static Stream<Arguments> remapKeyCases() {
+        return Stream.of(
+            // template,                             prefix,    messageValue,                         expectedKey
+            Arguments.of("new-key",                 null,      "{\"id\":\"1\"}",                     "new-key"),
+            Arguments.of("order",                   "replay-", "{\"id\":\"1\"}",                     "replay-order"),
+            Arguments.of("${$.value.order_id}",     null,      "{\"order_id\":\"ORD-42\"}",          "ORD-42"),
+            Arguments.of("${$.value.id}",           "ord-",    "{\"id\":\"99\"}",                    "ord-99"),
+            Arguments.of("${$.value.missing}",      "k-",      "{\"id\":\"1\"}",                     "k-"),
+            Arguments.of("${$.value.type}-${$.value.id}", null, "{\"type\":\"order\",\"id\":\"7\"}", "order-7")
+        );
     }
 
-    @Test
-    void remapKey_literalWithPrefix() {
-        var step = new RemapKeyStep("order", "replay-");
-        var m = msg("{\"id\":\"1\"}");
+    @ParameterizedTest
+    @MethodSource("remapKeyCases")
+    void remapKey(String template, String prefix, String messageValue, String expectedKey) {
+        var step = new RemapKeyStep(template, prefix);
+        var m = msg(messageValue);
 
         step.apply(m, ctx(0));
 
-        assertThat(decode(m.key)).isEqualTo("replay-order");
-    }
-
-    @Test
-    void remapKey_templateFromMessageValue() {
-        var step = new RemapKeyStep("${$.value.order_id}", null);
-        var m = msg("{\"order_id\":\"ORD-42\"}");
-
-        step.apply(m, ctx(0));
-
-        assertThat(decode(m.key)).isEqualTo("ORD-42");
-    }
-
-    @Test
-    void remapKey_templateWithPrefix() {
-        var step = new RemapKeyStep("${$.value.id}", "ord-");
-        var m = msg("{\"id\":\"99\"}");
-
-        step.apply(m, ctx(0));
-
-        assertThat(decode(m.key)).isEqualTo("ord-99");
-    }
-
-    @Test
-    void remapKey_unresolvedPlaceholderBecomesEmpty() {
-        var step = new RemapKeyStep("${$.value.missing}", "k-");
-        var m = msg("{\"id\":\"1\"}");
-
-        step.apply(m, ctx(0));
-
-        assertThat(decode(m.key)).isEqualTo("k-");
-    }
-
-    @Test
-    void remapKey_multipleTemplatePlaceholders() {
-        var step = new RemapKeyStep("${$.value.type}-${$.value.id}", null);
-        var m = msg("{\"type\":\"order\",\"id\":\"7\"}");
-
-        step.apply(m, ctx(0));
-
-        assertThat(decode(m.key)).isEqualTo("order-7");
+        assertThat(decode(m.key)).isEqualTo(expectedKey);
     }
 
     // =========================================================================
@@ -494,44 +462,26 @@ class StructuralKeyStepTest {
     // KeyFromValueStep
     // =========================================================================
 
-    @Test
-    void keyFromValue_setsKeyFromField() {
-        var step = new KeyFromValueStep("$.value.order_id");
-        var m = msg("{\"order_id\":\"ORD-99\",\"status\":\"ok\"}");
+    // jsonPath, valueJson, expectedKey  (null sentinel = expect null key)
+    @ParameterizedTest
+    @CsvSource({
+        "$.value.order_id, {\"order_id\":\"ORD-99\"COMMA\"status\":\"ok\"}, ORD-99",
+        "$.value.id,       {\"id\":42},                                      42",
+        "$.value.id,       {\"id\":null},                                    NULL",
+        "$.value.nonexistent, {\"x\":1},                                     NULL"
+    })
+    void keyFromValue_extraction(String jsonPath, String valueJson, String expectedKey) {
+        String json = valueJson.replace("COMMA", ",");
+        var step = new KeyFromValueStep(jsonPath);
+        var m = msg(json);
 
         step.apply(m, ctx(0));
 
-        assertThat(decode(m.key)).isEqualTo("ORD-99");
-    }
-
-    @Test
-    void keyFromValue_numericFieldStringified() {
-        var step = new KeyFromValueStep("$.value.id");
-        var m = msg("{\"id\":42}");
-
-        step.apply(m, ctx(0));
-
-        assertThat(decode(m.key)).isEqualTo("42");
-    }
-
-    @Test
-    void keyFromValue_nullNodeSetsNullKey() {
-        var step = new KeyFromValueStep("$.value.id");
-        var m = msg("{\"id\":null}");
-
-        step.apply(m, ctx(0));
-
-        assertThat(m.key).isNull();
-    }
-
-    @Test
-    void keyFromValue_absentPathSetsNullKey() {
-        var step = new KeyFromValueStep("$.value.nonexistent");
-        var m = msg("{\"x\":1}");
-
-        step.apply(m, ctx(0));
-
-        assertThat(m.key).isNull();
+        if ("NULL".equals(expectedKey)) {
+            assertThat(m.key).isNull();
+        } else {
+            assertThat(decode(m.key)).isEqualTo(expectedKey);
+        }
     }
 
     @Test
