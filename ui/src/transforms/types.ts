@@ -296,6 +296,8 @@ export type TransformStep =
 export interface TransformPipeline {
   /** Steps in execution order. Each step has a UI-only `_id` for React keys. */
   steps: PipelineStep[]
+  /** Named phase captures, resolved per cassette during replay/dry-run. */
+  fragments?: FragmentDefinition[]
 }
 
 /**
@@ -305,7 +307,7 @@ export interface TransformPipeline {
  */
 export type PipelineStep = TransformStep & { _id: string; when?: Predicate }
 
-export const emptyPipeline = (): TransformPipeline => ({ steps: [] })
+export const emptyPipeline = (): TransformPipeline => ({ steps: [], fragments: [] })
 
 /** Strip the `_id` field before sending to the server. Preserves all other fields including `when`. */
 export function serializeSteps(steps: PipelineStep[]): TransformStep[] {

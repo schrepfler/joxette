@@ -1,21 +1,23 @@
 import { useState } from 'react'
-import type { PipelineStep } from '#/transforms/types'
+import type { PipelineStep, FragmentDefinition, GapTransformStep, GapSelector, MessagePattern } from '#/transforms/types'
 import { PredicateBuilder } from './PredicateBuilder'
 import { NestedPipelineBuilder } from './NestedPipelineBuilder'
+import { PatternBuilder } from './PatternBuilder'
 
 interface Props {
   step: PipelineStep
   onChange: (updated: PipelineStep) => void
+  fragments?: FragmentDefinition[]
 }
 
-export function StepConfigForm({ step, onChange }: Props) {
+export function StepConfigForm({ step, onChange, fragments }: Props) {
   function patch(fields: object) {
     onChange({ ...step, ...fields } as PipelineStep)
   }
 
   return (
     <>
-      {renderStepFields(step, patch)}
+      {renderStepFields(step, patch, fragments ?? [])}
       <WhenGuardSection step={step} onChange={onChange} />
     </>
   )
@@ -25,7 +27,7 @@ export function StepConfigForm({ step, onChange }: Props) {
 // Step-specific field renderers
 // ---------------------------------------------------------------------------
 
-function renderStepFields(step: PipelineStep, patch: (fields: object) => void) {
+function renderStepFields(step: PipelineStep, patch: (fields: object) => void, fragments: FragmentDefinition[]) {
   switch (step.type) {
     case 'wall_time':
       return (
@@ -332,6 +334,15 @@ function renderStepFields(step: PipelineStep, patch: (fields: object) => void) {
         </div>
       )
 
+    case 'gap_transform':
+      return (
+        <GapTransformFields
+          step={step}
+          patch={patch}
+          fragments={fragments}
+        />
+      )
+
     default:
       return <p style={noParamsStyle}>Unknown step type.</p>
   }
@@ -577,4 +588,246 @@ const removeGuardBtnStyle: React.CSSProperties = {
   borderRadius: 3,
   padding: '1px 6px',
   cursor: 'pointer',
+}
+
+// ---------------------------------------------------------------------------
+// GapTransformFields — gap_transform step config
+// ---------------------------------------------------------------------------
+
+const DEFAULT_PATTERN: MessagePattern = { predicate: { field: '', operator: 'EQ' }, quantifier: 'first' }
+
+const GAP_SELECTOR_MODES = [
+  { value: 'after', label: 'After message' },
+  { value: 'before', label: 'Before message' },
+  { value: 'between', label: 'Between two messages' },
+  { value: 'within_fragment', label: 'Within phase' },
+  { value: 'threshold', label: 'Duration threshold only' },
+] as const
+type SelectorMode = typeof GAP_SELECTOR_MODES[number]['value']
+
+function selectorMode(sel: GapSelector): SelectorMode {
+  if (sel.within_fragment) return 'within_fragment'
+  if (sel.after && sel.before) return 'between'
+  if (sel.after) return 'after'
+  if (sel.before) return 'before'
+  return 'threshold'
+}
+
+const GAP_OPS = ['cut', 'hold', 'trim', 'pad', 'scale'] as const
+
+function GapTransformFields({
+  step,
+  patch,
+  fragments,
+}: {
+  step: GapTransformStep
+  patch: (fields: object) => void
+  fragments: FragmentDefinition[]
+}) {
+  const sel = step.select
+  const op = step.operation
+  const mode = selectorMode(sel)
+
+  function patchSel(fields: Partial<GapSelector>) {
+    patch({ select: { ...sel, ...fields } })
+  }
+
+  function setMode(m: SelectorMode) {
+    switch (m) {
+      case 'after': patch({ select: { after: sel.after ?? DEFAULT_PATTERN, min_duration_ms: sel.min_duration_ms } }); break
+      case 'before': patch({ select: { before: sel.before ?? DEFAULT_PATTERN, min_duration_ms: sel.min_duration_ms } }); break
+      case 'between': patch({ select: { after: sel.after ?? DEFAULT_PATTERN, before: sel.before ?? DEFAULT_PATTERN, min_duration_ms: sel.min_duration_ms } }); break
+      case 'within_fragment': patch({ select: { within_fragment: fragments[0]?.name ?? '', min_duration_ms: sel.min_duration_ms } }); break
+      case 'threshold': patch({ select: { min_duration_ms: sel.min_duration_ms } }); break
+    }
+  }
+
+  function setOpType(opType: string) {
+    switch (opType) {
+      case 'cut': patch({ operation: { op: 'cut' } }); break
+      case 'hold': patch({ operation: { op: 'hold', target_ms: (op as { target_ms?: number }).target_ms ?? 500 } }); break
+      case 'trim': patch({ operation: { op: 'trim', by_ms: (op as { by_ms?: number }).by_ms ?? 1000 } }); break
+      case 'pad': patch({ operation: { op: 'pad', by_ms: (op as { by_ms?: number }).by_ms ?? 500 } }); break
+      case 'scale': patch({ operation: { op: 'scale', factor: (op as { factor?: number }).factor ?? 0.5 } }); break
+    }
+  }
+
+  return (
+    <div style={{ padding: '0.75rem 0', display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+      {/* Selector */}
+      <div>
+        <label style={labelStyle}>Gap selector</label>
+        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: '0.5rem' }}>
+          {GAP_SELECTOR_MODES.map(m => (
+            <button
+              key={m.value}
+              onClick={() => setMode(m.value)}
+              style={{
+                padding: '2px 8px', fontSize: 11, fontWeight: 600,
+                border: '1px solid #cbd5e0', borderRadius: 3, cursor: 'pointer',
+                background: mode === m.value ? '#3182ce' : '#fff',
+                color: mode === m.value ? '#fff' : '#4a5568',
+              }}
+            >
+              {m.label}
+            </button>
+          ))}
+        </div>
+
+        {(mode === 'after' || mode === 'between') && (
+          <div style={{ marginBottom: '0.5rem' }}>
+            <div style={subLabelStyle}>After</div>
+            <PatternBuilder
+              value={sel.after ?? DEFAULT_PATTERN}
+              onChange={p => patchSel({ after: p })}
+            />
+          </div>
+        )}
+        {(mode === 'before' || mode === 'between') && (
+          <div style={{ marginBottom: '0.5rem' }}>
+            <div style={subLabelStyle}>Before</div>
+            <PatternBuilder
+              value={sel.before ?? DEFAULT_PATTERN}
+              onChange={p => patchSel({ before: p })}
+            />
+          </div>
+        )}
+        {mode === 'within_fragment' && (
+          <div style={{ marginBottom: '0.5rem' }}>
+            <div style={subLabelStyle}>Phase</div>
+            {fragments.length === 0 ? (
+              <p style={{ fontSize: 12, color: '#a0aec0', margin: 0 }}>No phases defined. Add one in the Phases section above.</p>
+            ) : (
+              <select
+                value={sel.within_fragment ?? fragments[0].name}
+                onChange={e => patchSel({ within_fragment: e.target.value })}
+                style={{ padding: '0.25rem 0.4rem', border: '1px solid #cbd5e0', borderRadius: 4, fontSize: 12 }}
+              >
+                {fragments.map(f => (
+                  <option key={f.name} value={f.name}>{f.label || f.name}</option>
+                ))}
+              </select>
+            )}
+          </div>
+        )}
+
+        {/* Duration threshold filters (always available) */}
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <label style={{ fontSize: 12, color: '#4a5568', display: 'flex', alignItems: 'center', gap: 4 }}>
+            Min duration
+            <input
+              type="number" min={0}
+              value={sel.min_duration_ms ?? ''}
+              placeholder="—"
+              onChange={e => patchSel({ min_duration_ms: e.target.value === '' ? undefined : parseInt(e.target.value) })}
+              style={{ width: 80, padding: '2px 5px', fontSize: 12, border: '1px solid #cbd5e0', borderRadius: 4, boxSizing: 'border-box' }}
+            />
+            <span style={{ fontSize: 11, color: '#a0aec0' }}>ms</span>
+          </label>
+          <label style={{ fontSize: 12, color: '#4a5568', display: 'flex', alignItems: 'center', gap: 4 }}>
+            Max duration
+            <input
+              type="number" min={0}
+              value={sel.max_duration_ms ?? ''}
+              placeholder="—"
+              onChange={e => patchSel({ max_duration_ms: e.target.value === '' ? undefined : parseInt(e.target.value) })}
+              style={{ width: 80, padding: '2px 5px', fontSize: 12, border: '1px solid #cbd5e0', borderRadius: 4, boxSizing: 'border-box' }}
+            />
+            <span style={{ fontSize: 11, color: '#a0aec0' }}>ms</span>
+          </label>
+        </div>
+      </div>
+
+      {/* Operation */}
+      <div>
+        <label style={labelStyle}>Operation</label>
+        <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', marginBottom: '0.5rem' }}>
+          {GAP_OPS.map(o => (
+            <button
+              key={o}
+              onClick={() => setOpType(o)}
+              style={{
+                padding: '2px 10px', fontSize: 11, fontWeight: 600,
+                border: '1px solid #cbd5e0', borderRadius: 3, cursor: 'pointer',
+                background: op.op === o ? '#805ad5' : '#fff',
+                color: op.op === o ? '#fff' : '#4a5568',
+                textTransform: 'uppercase',
+              }}
+            >
+              {o}
+            </button>
+          ))}
+        </div>
+        {op.op === 'hold' && (
+          <label style={{ fontSize: 12, color: '#4a5568', display: 'flex', alignItems: 'center', gap: 4 }}>
+            Target duration
+            <input
+              type="number" min={0}
+              value={op.target_ms}
+              onChange={e => patch({ operation: { op: 'hold', target_ms: parseInt(e.target.value) || 0 } })}
+              style={{ width: 90, padding: '2px 5px', fontSize: 12, border: '1px solid #cbd5e0', borderRadius: 4 }}
+            />
+            <span style={{ fontSize: 11, color: '#a0aec0' }}>ms</span>
+          </label>
+        )}
+        {op.op === 'trim' && (
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <label style={{ fontSize: 12, color: '#4a5568', display: 'flex', alignItems: 'center', gap: 4 }}>
+              By ms
+              <input
+                type="number" min={0}
+                value={op.by_ms ?? ''}
+                placeholder="—"
+                onChange={e => patch({ operation: { op: 'trim', by_ms: e.target.value === '' ? undefined : parseInt(e.target.value), by_factor: op.by_factor } })}
+                style={{ width: 80, padding: '2px 5px', fontSize: 12, border: '1px solid #cbd5e0', borderRadius: 4 }}
+              />
+              <span style={{ fontSize: 11, color: '#a0aec0' }}>ms</span>
+            </label>
+            <label style={{ fontSize: 12, color: '#4a5568', display: 'flex', alignItems: 'center', gap: 4 }}>
+              By factor
+              <input
+                type="number" step={0.01} min={0} max={1}
+                value={op.by_factor ?? ''}
+                placeholder="—"
+                onChange={e => patch({ operation: { op: 'trim', by_ms: op.by_ms, by_factor: e.target.value === '' ? undefined : parseFloat(e.target.value) } })}
+                style={{ width: 70, padding: '2px 5px', fontSize: 12, border: '1px solid #cbd5e0', borderRadius: 4 }}
+              />
+            </label>
+          </div>
+        )}
+        {op.op === 'pad' && (
+          <label style={{ fontSize: 12, color: '#4a5568', display: 'flex', alignItems: 'center', gap: 4 }}>
+            Extend by
+            <input
+              type="number" min={0}
+              value={op.by_ms}
+              onChange={e => patch({ operation: { op: 'pad', by_ms: parseInt(e.target.value) || 0 } })}
+              style={{ width: 90, padding: '2px 5px', fontSize: 12, border: '1px solid #cbd5e0', borderRadius: 4 }}
+            />
+            <span style={{ fontSize: 11, color: '#a0aec0' }}>ms</span>
+          </label>
+        )}
+        {op.op === 'scale' && (
+          <label style={{ fontSize: 12, color: '#4a5568', display: 'flex', alignItems: 'center', gap: 4 }}>
+            Factor
+            <input
+              type="number" step={0.01} min={0}
+              value={op.factor}
+              onChange={e => patch({ operation: { op: 'scale', factor: parseFloat(e.target.value) || 0 } })}
+              style={{ width: 80, padding: '2px 5px', fontSize: 12, border: '1px solid #cbd5e0', borderRadius: 4 }}
+            />
+            <span style={{ fontSize: 11, color: '#a0aec0' }}>×</span>
+          </label>
+        )}
+        {op.op === 'cut' && (
+          <p style={{ margin: 0, fontSize: 12, color: '#718096' }}>Eliminates the gap — the next message plays immediately after the previous one.</p>
+        )}
+      </div>
+    </div>
+  )
+}
+
+const subLabelStyle: React.CSSProperties = {
+  fontSize: 11, fontWeight: 700, color: '#718096',
+  textTransform: 'uppercase', letterSpacing: '0.04em', marginBottom: '0.3rem',
 }

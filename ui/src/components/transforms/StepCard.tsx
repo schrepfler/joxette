@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { draggable, dropTargetForElements } from '@atlaskit/pragmatic-drag-and-drop/element/adapter'
 import { attachClosestEdge, extractClosestEdge, type Edge } from '@atlaskit/pragmatic-drag-and-drop-hitbox/closest-edge'
 import { STEP_DEF_MAP } from '#/transforms/definitions'
-import type { PipelineStep, Predicate } from '#/transforms/types'
+import type { PipelineStep, Predicate, FragmentDefinition } from '#/transforms/types'
 import { isLeafPredicate } from '#/transforms/types'
 import { StepConfigForm } from './StepConfigForm'
 
@@ -16,11 +16,12 @@ interface Props {
   onDelete: () => void
   onMove: (fromIndex: number, toIndex: number) => void
   disabled?: boolean
+  fragments?: FragmentDefinition[]
 }
 
 const STEP_DND_TYPE = 'joxette:transform-step'
 
-export function StepCard({ step, index, total, expanded, onToggleExpand, onChange, onDelete, onMove, disabled }: Props) {
+export function StepCard({ step, index, total, expanded, onToggleExpand, onChange, onDelete, onMove, disabled, fragments }: Props) {
   const cardRef = useRef<HTMLDivElement>(null)
   const handleRef = useRef<HTMLButtonElement>(null)
   const [closestEdge, setClosestEdge] = useState<Edge | null>(null)
@@ -130,7 +131,7 @@ export function StepCard({ step, index, total, expanded, onToggleExpand, onChang
         {/* Expanded config form */}
         {expanded && (
           <div style={{ borderTop: '1px solid #e2e8f0', marginTop: '0.5rem' }}>
-            <StepConfigForm step={step} onChange={onChange} />
+            <StepConfigForm step={step} onChange={onChange} fragments={fragments} />
           </div>
         )}
       </div>

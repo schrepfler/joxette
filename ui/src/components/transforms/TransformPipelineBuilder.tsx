@@ -6,11 +6,13 @@ import {
   type TransformPipeline,
   type PipelineStep,
   type TransformStep,
+  type FragmentDefinition,
 } from '#/transforms/types'
 import { StepCard } from './StepCard'
 import { StepPicker } from './StepPicker'
 import { PresetManager } from './PresetManager'
 import { PipelineDryRun } from './PipelineDryRun'
+import { FragmentManager } from './FragmentManager'
 
 interface Props {
   pipeline: TransformPipeline
@@ -127,6 +129,12 @@ export function TransformPipelineBuilder({
       {/* Body */}
       {open && (
         <div style={{ padding: '0.75rem' }}>
+          {/* Fragment / phase manager */}
+          <FragmentManager
+            fragments={pipeline.fragments ?? []}
+            onChange={(frags: FragmentDefinition[]) => onChange({ ...pipeline, fragments: frags })}
+          />
+
           {/* Step list */}
           {steps.map((step, i) => (
             <StepCard
@@ -140,6 +148,7 @@ export function TransformPipelineBuilder({
               onDelete={() => deleteStep(i)}
               onMove={moveStep}
               disabled={disabled}
+              fragments={pipeline.fragments}
             />
           ))}
 
