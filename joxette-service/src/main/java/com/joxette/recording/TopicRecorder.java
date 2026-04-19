@@ -18,8 +18,6 @@ import org.apache.kafka.common.header.Header;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.sql.Connection;
-import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.format.DateTimeParseException;
@@ -35,20 +33,15 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * <h2>Pipeline design</h2>
  * <ol>
- *   <li>A {@link KafkaConsumer} (obtained from {@link ConsumerSettings#toConsumer()}) drives
- *       the Kafka consumer, emitting one {@link ConsumerRecord} at a time via a Jox
- *       {@code Flow} built with {@code Flows.usingEmit}.</li>
+ *   <li>A {@link KafkaConsumer} drives the Kafka consumer, emitting one {@link ConsumerRecord}
+ *       at a time via a Jox {@code Flow} built with {@code Flows.usingEmit}.</li>
  *   <li>{@code groupedWithin} accumulates records into bounded batches.</li>
- *   <li>For each batch, each record is routed via {@link MessageRouter}:
- *     <ul>
- *       <li>If {@code routeToGeneral} is true, the record is written to the
- *           general cassette ({@code lake.main.general_{topic}}).</li>
- *       <li>For each {@link EntityRoute}, the record is written to the
- *           corresponding entity cassette ({@code lake.main.entity_{type}}).</li>
- *     </ul>
- *   </li>
- *   <li>After a successful batch write, the distinct entity routes are upserted
- *       into {@code known_entities} and Kafka offsets are committed synchronously.</li>
+ *   <li>For each batch, each record is routed via {@link MessageRouter}.</li>
+ *   <li>A {@link WriteBatch} is submitted to {@link DuckLakeWriteChannel}, which serializes
+ *       all DuckDB writes through a single virtual thread. The submit call blocks until the
+ *       write completes, propagating backpressure into the flow pipeline.</li>
+ *   <li>After a successful write, entity routes are upserted into {@code known_entities}
+ *       and Kafka offsets are committed synchronously on the next poll cycle.</li>
  * </ol>
  */
 public class TopicRecorder {
@@ -58,7 +51,7 @@ public class TopicRecorder {
 
     private final String topic;
     private final ConsumerSettings<String, byte[]> settings;
-    private final Connection duckDbConnection;
+    private final DuckLakeWriteChannel writeChannel;
     private final int batchSize;
     private final Duration batchTimeout;
     private final MessageRouter router;
@@ -78,19 +71,19 @@ public class TopicRecorder {
     public TopicRecorder(
             String topic,
             ConsumerSettings<String, byte[]> baseSettings,
-            Connection duckDbConnection,
+            DuckLakeWriteChannel writeChannel,
             int batchSize,
             long batchTimeoutMs,
             MessageRouter router,
             KnownEntitiesRepository knownEntities,
             String startFrom) {
-        this.topic            = topic;
-        this.duckDbConnection = duckDbConnection;
-        this.batchSize        = batchSize;
-        this.batchTimeout     = Duration.ofMillis(batchTimeoutMs);
-        this.router           = router;
-        this.knownEntities    = knownEntities;
-        this.seekToEarliest   = "earliest".equals(startFrom);
+        this.topic        = topic;
+        this.writeChannel = writeChannel;
+        this.batchSize    = batchSize;
+        this.batchTimeout = Duration.ofMillis(batchTimeoutMs);
+        this.router       = router;
+        this.knownEntities = knownEntities;
+        this.seekToEarliest = "earliest".equals(startFrom);
 
         Instant ts = null;
         if (!seekToEarliest && startFrom != null && !"latest".equals(startFrom) && !startFrom.isBlank()) {
@@ -102,9 +95,7 @@ public class TopicRecorder {
         }
         this.seekToTimestamp = ts;
 
-        // Override group.id per topic; optionally override auto.offset.reset
-        ConsumerSettings<String, byte[]> s = baseSettings
-                .groupId("joxette-recorder-" + topic);
+        ConsumerSettings<String, byte[]> s = baseSettings.groupId("joxette-recorder-" + topic);
         if (seekToEarliest) {
             s = s.autoOffsetReset(ConsumerSettings.AutoOffsetReset.EARLIEST);
         }
@@ -118,9 +109,7 @@ public class TopicRecorder {
     public void run() throws Exception {
         log.info("Starting recorder for topic '{}'", topic);
 
-        try (CassetteBatchWriter generalWriter = new CassetteBatchWriter(topic, duckDbConnection);
-             EntityCassetteBatchWriter entityWriter = new EntityCassetteBatchWriter(duckDbConnection)) {
-
+        try {
             Flows.<ConsumerRecord<String, byte[]>>usingEmit(emit -> {
                 try (KafkaConsumer<String, byte[]> kc = settings.toConsumer()) {
                     this.consumer = kc;
@@ -162,7 +151,7 @@ public class TopicRecorder {
             })
             .groupedWithin(batchSize, batchTimeout)
             .runForeach(batch -> {
-                writeBatch(batch, generalWriter, entityWriter);
+                writeBatch(batch);
                 pendingCommit.set(buildOffsets(batch));
             });
 
@@ -188,17 +177,16 @@ public class TopicRecorder {
     // -----------------------------------------------------------------------
 
     /**
-     * Routes each record in the batch, writes to general and/or entity cassettes,
-     * then upserts the discovered entities into {@code known_entities}.
+     * Routes each record, builds a {@link WriteBatch}, submits it to the
+     * {@link DuckLakeWriteChannel}, and upserts the discovered entities into
+     * {@code known_entities} after a successful write.
      */
-    private void writeBatch(
-            List<ConsumerRecord<String, byte[]>> batch,
-            CassetteBatchWriter generalWriter,
-            EntityCassetteBatchWriter entityWriter) throws SQLException {
-
+    private void writeBatch(List<ConsumerRecord<String, byte[]>> batch) throws Exception {
         log.trace("Processing batch of {} records for topic '{}'", batch.size(), topic);
-        List<ConsumerRecord<String, byte[]>> generalBatch = new ArrayList<>();
+
+        List<ConsumerRecord<String, byte[]>> generalRecords = new ArrayList<>();
         List<String> generalMessageTypes = new ArrayList<>();
+        List<WriteBatch.EntityWriteItem> entityItems = new ArrayList<>();
         List<EntityRoute> allRoutes = new ArrayList<>();
 
         for (ConsumerRecord<String, byte[]> record : batch) {
@@ -207,30 +195,22 @@ public class TopicRecorder {
 
             GeneralRoute gr = decision.generalRoute();
             if (gr != null) {
-                generalBatch.add(record);
+                generalRecords.add(record);
                 generalMessageTypes.add(gr.messageType());
             }
+
             if (!decision.entityRoutes().isEmpty()) {
-                for (EntityRoute route : decision.entityRoutes()) {
-                    try {
-                        entityWriter.writeRoutes(List.of(route), msg);
-                    } catch (SQLException e) {
-                        log.error("Failed to write entity route for type={} id={}: {}",
-                                route.entityType(), route.entityId(), e.getMessage());
-                        throw e;
-                    }
-                    allRoutes.add(route);
-                }
+                entityItems.add(new WriteBatch.EntityWriteItem(decision.entityRoutes(), msg));
+                allRoutes.addAll(decision.entityRoutes());
             }
         }
 
-        if (!generalBatch.isEmpty()) {
-            generalWriter.writeBatch(generalBatch, generalMessageTypes);
-        }
+        WriteBatch wb = WriteBatch.of(topic, generalRecords, generalMessageTypes, entityItems);
+        writeChannel.submit(wb);
 
         if (!allRoutes.isEmpty()) {
             try {
-                knownEntities.upsertBatch(allRoutes, java.time.Instant.now());
+                knownEntities.upsertBatch(allRoutes, Instant.now());
             } catch (Exception e) {
                 log.warn("Failed to upsert known_entities batch: {}", e.getMessage());
                 // Non-fatal: entity registry is best-effort; don't abort the batch

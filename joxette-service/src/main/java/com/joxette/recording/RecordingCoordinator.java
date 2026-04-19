@@ -13,7 +13,6 @@ import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 
-import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -35,7 +34,7 @@ public class RecordingCoordinator {
     private final JoxetteProperties properties;
     private final BrokerConnectionFactory brokerConnectionFactory;
     private final ConfigRepository configRepository;
-    private final Connection duckDbConnection;
+    private final DuckLakeWriteChannel writeChannel;
     private final MessageRouter messageRouter;
     private final KnownEntitiesRepository knownEntities;
 
@@ -47,13 +46,13 @@ public class RecordingCoordinator {
             JoxetteProperties properties,
             BrokerConnectionFactory brokerConnectionFactory,
             @Lazy ConfigRepository configRepository,
-            Connection duckDbConnection,
+            DuckLakeWriteChannel writeChannel,
             MessageRouter messageRouter,
             KnownEntitiesRepository knownEntities) {
         this.properties = properties;
         this.brokerConnectionFactory = brokerConnectionFactory;
         this.configRepository = configRepository;
-        this.duckDbConnection = duckDbConnection;
+        this.writeChannel = writeChannel;
         this.messageRouter = messageRouter;
         this.knownEntities = knownEntities;
     }
@@ -141,7 +140,7 @@ public class RecordingCoordinator {
         TopicRecorder recorder = new TopicRecorder(
                 topic,
                 settings,
-                duckDbConnection,
+                writeChannel,
                 cfg.getBatchSize(),
                 cfg.getBatchTimeoutMs(),
                 messageRouter,

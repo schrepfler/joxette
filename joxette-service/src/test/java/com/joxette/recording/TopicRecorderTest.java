@@ -1,5 +1,6 @@
 package com.joxette.recording;
 
+import com.joxette.config.JoxetteProperties;
 import com.softwaremill.jox.kafka.ConsumerSettings;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.AdminClientConfig;
@@ -58,6 +59,7 @@ class TopicRecorderTest {
     private static final String CASSETTE_TABLE = "lake.main.general_" + SANITIZED;
 
     private Connection duckDB;
+    private DuckLakeWriteChannel writeChannel;
     private TopicRecorder recorder;
     private Thread recorderThread;
     /** Routes all messages to the general cassette (no entity routing). */
@@ -92,7 +94,11 @@ class TopicRecorderTest {
             ps.executeBatch();
         }
 
-        ConfigRepository configRepo = new ConfigRepository(duckDB, new com.joxette.config.JoxetteProperties());
+        JoxetteProperties props = new JoxetteProperties();
+        writeChannel = new DuckLakeWriteChannel(duckDB, props);
+        writeChannel.start();
+
+        ConfigRepository configRepo = new ConfigRepository(duckDB, props);
         generalRouter  = new MessageRouter(configRepo, new EntityIdExtractor());
         noopEntities   = new com.joxette.replay.KnownEntitiesRepository(
                 org.jooq.impl.DSL.using(duckDB, org.jooq.SQLDialect.DUCKDB));
@@ -104,6 +110,7 @@ class TopicRecorderTest {
     void tearDown() throws Exception {
         if (recorder != null) recorder.stop();
         if (recorderThread != null) recorderThread.join(5_000);
+        if (writeChannel != null) writeChannel.stop();
         if (duckDB != null && !duckDB.isClosed()) duckDB.close();
         deleteKafkaTopic(TOPIC);
         deleteKafkaTopic("recorder.multi.test");
@@ -125,7 +132,7 @@ class TopicRecorderTest {
             }
         }
 
-        recorder = new TopicRecorder(TOPIC, consumerSettings(), duckDB, 100, 200, generalRouter, noopEntities, "latest");
+        recorder = new TopicRecorder(TOPIC, consumerSettings(), writeChannel, 100, 200, generalRouter, noopEntities, "latest");
         recorderThread = Thread.ofVirtual().name("test-recorder").start(() -> {
             try {
                 recorder.run();
@@ -166,7 +173,7 @@ class TopicRecorderTest {
             producer.send(rec).get();
         }
 
-        recorder = new TopicRecorder(TOPIC, consumerSettings(), duckDB, 10, 200, generalRouter, noopEntities, "latest");
+        recorder = new TopicRecorder(TOPIC, consumerSettings(), writeChannel, 10, 200, generalRouter, noopEntities, "latest");
         recorderThread = Thread.ofVirtual().name("test-recorder-hdr").start(() -> {
             try { recorder.run(); } catch (Exception ignored) {}
         });
@@ -221,7 +228,7 @@ class TopicRecorderTest {
         // Capture time just before the recorder writes so we can bound recorded_at.
         java.time.Instant beforeRecord = java.time.Instant.now();
 
-        recorder = new TopicRecorder(TOPIC, consumerSettings(), duckDB, 100, 200, generalRouter, noopEntities, "latest");
+        recorder = new TopicRecorder(TOPIC, consumerSettings(), writeChannel, 100, 200, generalRouter, noopEntities, "latest");
         recorderThread = Thread.ofVirtual().name("test-recorder-fields").start(() -> {
             try { recorder.run(); } catch (Exception ignored) {}
         });
@@ -292,7 +299,7 @@ class TopicRecorderTest {
             }
         }
 
-        TopicRecorder multiRecorder = new TopicRecorder(multiTopic, consumerSettings(), duckDB, 20, 300, generalRouter, noopEntities, "latest");
+        TopicRecorder multiRecorder = new TopicRecorder(multiTopic, consumerSettings(), writeChannel, 20, 300, generalRouter, noopEntities, "latest");
         Thread multiThread = Thread.ofVirtual().name("test-multi-recorder").start(() -> {
             try { multiRecorder.run(); } catch (Exception ignored) {}
         });
@@ -332,7 +339,7 @@ class TopicRecorderTest {
         }
 
         // Base props deliberately use "latest" — TopicRecorder must override via seek.
-        recorder = new TopicRecorder(TOPIC, consumerSettingsWithLatestDefault(), duckDB,
+        recorder = new TopicRecorder(TOPIC, consumerSettingsWithLatestDefault(), writeChannel,
                 100, 500, generalRouter, noopEntities, "earliest");
         recorderThread = Thread.ofVirtual().name("test-recorder-earliest").start(() -> {
             try { recorder.run(); } catch (Exception ignored) {}

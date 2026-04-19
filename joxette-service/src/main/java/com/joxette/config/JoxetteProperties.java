@@ -3,7 +3,9 @@ package com.joxette.config;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 @ConfigurationProperties(prefix = "joxette")
 public class JoxetteProperties {
@@ -14,6 +16,7 @@ public class JoxetteProperties {
     private Retention retention = new Retention();
     private Kafka kafka = new Kafka();
     private Recording recording = new Recording();
+    private Threading threading = new Threading();
     private Replay replay = new Replay();
     private Bootstrap bootstrap = new Bootstrap();
     private S3 s3 = new S3();
@@ -269,6 +272,33 @@ public class JoxetteProperties {
     }
 
     // -----------------------------------------------------------------------
+    // Threading
+    // -----------------------------------------------------------------------
+
+    public static class Threading {
+        /** Capacity of the bounded Jox channel feeding the single DuckDB write VT. */
+        private int writeChannelCapacity = 128;
+        /** Default parallelism for Kafka source flows (per topic). */
+        private int defaultSourceParallelism = 1;
+        /** Per-topic parallelism overrides (topic name → parallelism). */
+        private Map<String, Integer> topicParallelism = new HashMap<>();
+        /** Thread type used for the compaction background job: "virtual" or "platform". */
+        private String compactionThreadType = "virtual";
+
+        public int getWriteChannelCapacity() { return writeChannelCapacity; }
+        public void setWriteChannelCapacity(int writeChannelCapacity) { this.writeChannelCapacity = writeChannelCapacity; }
+
+        public int getDefaultSourceParallelism() { return defaultSourceParallelism; }
+        public void setDefaultSourceParallelism(int defaultSourceParallelism) { this.defaultSourceParallelism = defaultSourceParallelism; }
+
+        public Map<String, Integer> getTopicParallelism() { return topicParallelism; }
+        public void setTopicParallelism(Map<String, Integer> topicParallelism) { this.topicParallelism = topicParallelism; }
+
+        public String getCompactionThreadType() { return compactionThreadType; }
+        public void setCompactionThreadType(String compactionThreadType) { this.compactionThreadType = compactionThreadType; }
+    }
+
+    // -----------------------------------------------------------------------
     // Replay
     // -----------------------------------------------------------------------
 
@@ -494,6 +524,9 @@ public class JoxetteProperties {
 
     public Recording getRecording() { return recording; }
     public void setRecording(Recording recording) { this.recording = recording; }
+
+    public Threading getThreading() { return threading; }
+    public void setThreading(Threading threading) { this.threading = threading; }
 
     public Replay getReplay() { return replay; }
     public void setReplay(Replay replay) { this.replay = replay; }

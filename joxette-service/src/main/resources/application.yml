@@ -72,6 +72,11 @@ joxette:
     batch-size: 10000
     batch-timeout-ms: 1000
 
+  threading:
+    write-channel-capacity: 128
+    default-source-parallelism: 1
+    compaction-thread-type: virtual
+
   replay:
     max-scheduled: 50
 
