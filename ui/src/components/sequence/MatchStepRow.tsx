@@ -3,6 +3,7 @@ import { draggable, dropTargetForElements } from '@atlaskit/pragmatic-drag-and-d
 import { attachClosestEdge, extractClosestEdge, type Edge } from '@atlaskit/pragmatic-drag-and-drop-hitbox/closest-edge'
 import type { MatchStep, Predicate } from '#/transforms/types'
 import { PredicateBuilder } from '../transforms/PredicateBuilder'
+import type { FieldContext } from '#/api/client'
 
 interface Props {
   step: MatchStep
@@ -13,11 +14,12 @@ interface Props {
   onMove: (fromIndex: number, toIndex: number) => void
   isFirst: boolean
   isLast: boolean
+  fieldContext?: FieldContext
 }
 
 const STEP_DND_TYPE = 'joxette:sequence-step'
 
-export function MatchStepRow({ step, stepIndex: index, color, onUpdate, onRemove, onMove, isLast }: Props) {
+export function MatchStepRow({ step, stepIndex: index, color, onUpdate, onRemove, onMove, isLast, fieldContext }: Props) {
   const cardRef = useRef<HTMLDivElement>(null)
   const handleRef = useRef<HTMLButtonElement>(null)
   const [closestEdge, setClosestEdge] = useState<Edge | null>(null)
@@ -170,6 +172,7 @@ export function MatchStepRow({ step, stepIndex: index, color, onUpdate, onRemove
               value={step.predicate}
               onChange={p => onUpdate({ predicate: p ?? { field: '', operator: 'EQ' } })}
               depth={0}
+              fieldContext={fieldContext}
             />
           </div>
         )}

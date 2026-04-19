@@ -15,6 +15,7 @@ import {
   stepColors,
 } from '#/stores/sequenceStore'
 import { MatchStepRow } from './sequence/MatchStepRow'
+import type { FieldContext } from '#/api/client'
 import { CleanDataSection } from './sequence/CleanDataSection'
 import type { CleanDataState } from './sequence/CleanDataSection'
 import { SequenceExamplesPane } from './sequence/SequenceExamplesPane'
@@ -85,6 +86,9 @@ function inferStepLabel(step: MatchStep, fallbackIndex: number): string {
 }
 
 export function SequenceQueryPanel({ mode, topic, entityType, onSaveFragment }: Props) {
+  const fieldContext: FieldContext = mode === 'entity'
+    ? { mode: 'entity', entityType }
+    : { mode: 'topic', topic }
   const { query, loading, error } = useSequenceStore()
   const { steps, constraints } = query
   const colors = stepColors(steps)
@@ -199,6 +203,7 @@ export function SequenceQueryPanel({ mode, topic, entityType, onSaveFragment }: 
                 onMove={handleMove}
                 isFirst={i === 0}
                 isLast={i === steps.length - 1}
+                fieldContext={fieldContext}
               />
             ))}
           </div>

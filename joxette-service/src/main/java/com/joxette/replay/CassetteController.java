@@ -93,6 +93,7 @@ public class CassetteController {
     private final JoxetteProperties         properties;
     private final ObjectMapper              objectMapper;
     private final SequenceMatchService      sequenceMatchService;
+    private final FieldSuggestionsService   fieldSuggestionsService;
 
     public CassetteController(
             TopicReplayService topicService,
@@ -105,18 +106,20 @@ public class CassetteController {
             TransformPresetRepository presetRepository,
             JoxetteProperties properties,
             ObjectMapper objectMapper,
-            SequenceMatchService sequenceMatchService) {
-        this.topicService           = topicService;
-        this.entityService          = entityService;
-        this.sseHandler             = sseHandler;
-        this.lifecycle              = lifecycle;
-        this.sinkFactory            = sinkFactory;
-        this.scheduledReplayService = scheduledReplayService;
-        this.metadataInjector       = metadataInjector;
-        this.presetRepository       = presetRepository;
-        this.properties             = properties;
-        this.objectMapper           = objectMapper;
-        this.sequenceMatchService   = sequenceMatchService;
+            SequenceMatchService sequenceMatchService,
+            FieldSuggestionsService fieldSuggestionsService) {
+        this.topicService             = topicService;
+        this.entityService            = entityService;
+        this.sseHandler               = sseHandler;
+        this.lifecycle                = lifecycle;
+        this.sinkFactory              = sinkFactory;
+        this.scheduledReplayService   = scheduledReplayService;
+        this.metadataInjector         = metadataInjector;
+        this.presetRepository         = presetRepository;
+        this.properties               = properties;
+        this.objectMapper             = objectMapper;
+        this.sequenceMatchService     = sequenceMatchService;
+        this.fieldSuggestionsService  = fieldSuggestionsService;
     }
 
     /**
@@ -713,6 +716,56 @@ public class CassetteController {
             @PathVariable String entityId
     ) throws SQLException {
         return entityService.getEntityStats(entityType, entityId);
+    }
+
+    // =========================================================================
+    // Field suggestions
+    // =========================================================================
+
+    @Operation(
+        operationId = "getTopicFields",
+        summary = "JSONPath field suggestions for a topic cassette",
+        description = "Samples the last `limit` messages from the topic cassette and returns " +
+                      "deduplicated JSONPath paths extracted from the message value, plus fixed " +
+                      "envelope paths ($.key, $.topic, …). Useful for autocomplete in query builders."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Sorted list of JSONPath suggestions",
+            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                examples = @ExampleObject(name = "fields", value =
+                    "{\"fields\":[\"$.headers\",\"$.key\",\"$.offset\",\"$.partition\",\"$.timestamp\"," +
+                    "\"$.topic\",\"$.value.orderId\",\"$.value.status\"]}")))
+    })
+    @GetMapping(value = "/topics/{topic}/fields", produces = MediaType.APPLICATION_JSON_VALUE)
+    public Map<String, List<String>> getTopicFields(
+            @Parameter(description = "Topic name", required = true)
+            @PathVariable String topic,
+            @Parameter(description = "Max messages to sample")
+            @RequestParam(defaultValue = "500") int limit) {
+        return Map.of("fields", fieldSuggestionsService.forTopic(topic, limit));
+    }
+
+    @Operation(
+        operationId = "getEntityFields",
+        summary = "JSONPath field suggestions for an entity cassette",
+        description = "Samples the last `limit` messages from the entity cassette and returns " +
+                      "deduplicated JSONPath paths extracted from the message value, plus fixed " +
+                      "envelope paths. Useful for autocomplete in query builders."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Sorted list of JSONPath suggestions",
+            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                examples = @ExampleObject(name = "fields", value =
+                    "{\"fields\":[\"$.headers\",\"$.key\",\"$.offset\",\"$.partition\",\"$.timestamp\"," +
+                    "\"$.topic\",\"$.value.entityId\",\"$.value.type\"]}")))
+    })
+    @GetMapping(value = "/entities/{entityType}/fields", produces = MediaType.APPLICATION_JSON_VALUE)
+    public Map<String, List<String>> getEntityFields(
+            @Parameter(description = "Entity type name", required = true)
+            @PathVariable String entityType,
+            @Parameter(description = "Max messages to sample")
+            @RequestParam(defaultValue = "500") int limit) {
+        return Map.of("fields", fieldSuggestionsService.forEntityType(entityType, limit));
     }
 
     // =========================================================================

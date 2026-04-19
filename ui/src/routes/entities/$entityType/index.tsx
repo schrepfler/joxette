@@ -24,6 +24,7 @@ import { ConfirmDialog } from '../../../components/ConfirmDialog'
 import { TruncateDialog } from '../../../components/TruncateDialog'
 import { useToast } from '../../../components/Toast'
 import { useDebounce } from '../../../hooks/useDebounce'
+import { FieldCombobox } from '../../../components/transforms/PredicateBuilder'
 
 export const Route = createFileRoute('/entities/$entityType/')({
   component: EntityTypeDetailPage,
@@ -34,6 +35,7 @@ const entityColHelper = createColumnHelper<EntityInfo>()
 // ---- AddSourceModal ----
 
 function AddSourceModal({ entityType, onClose }: { entityType: string; onClose: () => void }) {
+  const fieldCtx = { mode: 'entity' as const, entityType }
   const qc = useQueryClient()
   const { addToast } = useToast()
   const [topic, setTopic] = useState('')
@@ -104,12 +106,10 @@ function AddSourceModal({ entityType, onClose }: { entityType: string; onClose: 
                   <option value="key">key</option>
                   <option value="header">header</option>
                 </select>
-                <input
-                  style={{ ...inputStyleFull, fontSize: 13 }}
-                  placeholder="e.g. $.order_id"
-                  value={m.idExpression}
-                  onChange={e => updateMatcher(i, { idExpression: e.target.value })}
-                  required
+                <FieldCombobox
+                  fieldValue={m.idExpression}
+                  onChange={v => updateMatcher(i, { idExpression: v })}
+                  fieldContext={fieldCtx}
                 />
                 <button
                   type="button"
@@ -141,6 +141,7 @@ function SourceCard({
   source: EntitySourceConfig
   onDeleteSource: (topic: string) => void
 }) {
+  const fieldCtx = { mode: 'entity' as const, entityType }
   const qc = useQueryClient()
   const { addToast } = useToast()
   const [showAddMatcher, setShowAddMatcher] = useState(false)
@@ -260,12 +261,10 @@ function SourceCard({
               {(f) => (
                 <div>
                   <label style={{ ...labelStyle, marginBottom: 3 }}>ID Expression *</label>
-                  <input
-                    style={{ ...inputStyle, width: 180 }}
-                    placeholder="e.g. $.order_id"
-                    value={f.state.value}
-                    onChange={e => f.handleChange(e.target.value)}
-                    required
+                  <FieldCombobox
+                    fieldValue={f.state.value}
+                    onChange={v => f.handleChange(v)}
+                    fieldContext={fieldCtx}
                   />
                 </div>
               )}

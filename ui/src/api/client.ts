@@ -393,6 +393,14 @@ export const cassettesApi = {
   /** Rebuild the known_entities registry by scanning all entity cassette tables. */
   rebuildKnownEntities: () =>
     request<{ rebuilt: number }>('/cassettes/entities/rebuild-known-entities', { method: 'POST' }),
+
+  getTopicFields: (topic: string, limit = 500) =>
+    request<{ fields: string[] }>(`/cassettes/topics/${encodeURIComponent(topic)}/fields?limit=${limit}`)
+      .then(r => r.fields),
+
+  getEntityFields: (entityType: string, limit = 500) =>
+    request<{ fields: string[] }>(`/cassettes/entities/${encodeURIComponent(entityType)}/fields?limit=${limit}`)
+      .then(r => r.fields),
   /** Find sequences matching a SequenceQuery across a topic or entity cassette. */
   matchSequences: (
     mode: 'topic' | 'entity',
@@ -446,6 +454,16 @@ export const cassettesApi = {
     }
     return Promise.reject(new Error('Invalid mode or missing topic/entity params'))
   },
+}
+
+// ---- Field suggestions ----
+
+export type FieldContext = { mode: 'topic' | 'entity'; topic?: string; entityType?: string }
+
+export function fetchFieldSuggestions(ctx: FieldContext): Promise<string[]> {
+  if (ctx.mode === 'topic' && ctx.topic) return cassettesApi.getTopicFields(ctx.topic)
+  if (ctx.mode === 'entity' && ctx.entityType) return cassettesApi.getEntityFields(ctx.entityType)
+  return Promise.reject(new Error('Invalid field context'))
 }
 
 // ---- Streaming ----

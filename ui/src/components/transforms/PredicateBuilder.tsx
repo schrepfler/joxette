@@ -1,5 +1,29 @@
+import { useEffect, useRef, useState } from 'react'
 import type { Predicate, PredicateLeaf, PredicateAnd, PredicateOr, PredicateNot, FilterOperator } from '#/transforms/types'
 import { isLeafPredicate } from '#/transforms/types'
+import { fetchFieldSuggestions, type FieldContext } from '#/api/client'
+
+const STATIC_FIELD_SUGGESTIONS = [
+  '$.headers',
+  '$.key',
+  '$.offset',
+  '$.partition',
+  '$.timestamp',
+  '$.topic',
+  '$.value.id',
+  '$.value.status',
+  '$.value.type',
+  '$.value.version',
+]
+
+const ENVELOPE_DESCRIPTIONS: Record<string, string> = {
+  '$.headers': 'Kafka headers list',
+  '$.key': 'Message key',
+  '$.offset': 'Kafka partition offset',
+  '$.partition': 'Kafka partition number',
+  '$.timestamp': 'Kafka producer timestamp',
+  '$.topic': 'Source topic name',
+}
 
 interface PredicateBuilderProps {
   value: Predicate | null | undefined
@@ -10,6 +34,8 @@ interface PredicateBuilderProps {
   depth?: number
   /** Renders an ✕ button that calls this when clicked. */
   onRemove?: () => void
+  /** When present, fetch live field suggestions from the backend. */
+  fieldContext?: FieldContext
 }
 
 const OPERATORS: { value: FilterOperator; label: string }[] = [
@@ -27,7 +53,7 @@ const OPERATORS: { value: FilterOperator; label: string }[] = [
 
 const BORDER_COLORS = ['#e2e8f0', '#bee3f8', '#c6f6d5', '#fefcbf', '#fed7d7']
 
-export function PredicateBuilder({ value, onChange, nullable, depth = 0, onRemove }: PredicateBuilderProps) {
+export function PredicateBuilder({ value, onChange, nullable, depth = 0, onRemove, fieldContext }: PredicateBuilderProps) {
   // Empty / nullable state
   if (!value) {
     if (nullable) {
@@ -54,6 +80,7 @@ export function PredicateBuilder({ value, onChange, nullable, depth = 0, onRemov
           onChange({ match: 'and', predicates: [value, { field: '', operator: 'EQ' }] })
         }
         onRemove={onRemove}
+        fieldContext={fieldContext}
       />
     )
   }
@@ -73,6 +100,7 @@ export function PredicateBuilder({ value, onChange, nullable, depth = 0, onRemov
       }}
       onRemove={onRemove}
       depth={depth}
+      fieldContext={fieldContext}
     />
   )
 }
@@ -86,23 +114,22 @@ function LeafEditor({
   onChange,
   onGroupify,
   onRemove,
+  fieldContext,
 }: {
   value: PredicateLeaf
   onChange: (p: Predicate | null) => void
   onGroupify: () => void
   onRemove?: () => void
+  fieldContext?: FieldContext
 }) {
   const needsValue = value.operator !== 'IS_NULL' && value.operator !== 'IS_NOT_NULL'
 
   return (
     <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap' }}>
-      <input
-        type="text"
-        placeholder="$.value.field"
-        value={value.field}
-        onChange={e => onChange({ ...value, field: e.target.value })}
-        style={fieldInputStyle}
-        title="JSONPath field expression"
+      <FieldCombobox
+        fieldValue={value.field}
+        onChange={f => onChange({ ...value, field: f })}
+        fieldContext={fieldContext}
       />
       <select
         value={value.operator}
@@ -140,6 +167,98 @@ function LeafEditor({
 }
 
 // ---------------------------------------------------------------------------
+// Field combobox with lazy-loaded backend suggestions
+// ---------------------------------------------------------------------------
+
+export function FieldCombobox({
+  fieldValue,
+  onChange,
+  fieldContext,
+}: {
+  fieldValue: string
+  onChange: (v: string) => void
+  fieldContext?: FieldContext
+}) {
+  const [open, setOpen] = useState(false)
+  const [activeIdx, setActiveIdx] = useState(0)
+  const [suggestions, setSuggestions] = useState<string[]>(STATIC_FIELD_SUGGESTIONS)
+  const fetchedRef = useRef(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+
+  // Fetch once on first focus
+  function ensureSuggestions() {
+    if (fetchedRef.current) return
+    fetchedRef.current = true
+    if (!fieldContext) return
+    fetchFieldSuggestions(fieldContext)
+      .then(fields => setSuggestions(fields))
+      .catch(() => { /* keep static fallback */ })
+  }
+  const filtered = suggestions.filter(s =>
+    s.toLowerCase().includes(fieldValue.toLowerCase())
+  ).slice(0, 8)
+
+  useEffect(() => {
+    setActiveIdx(0)
+  }, [fieldValue])
+
+  useEffect(() => {
+    if (!open) return
+    function handleMouseDown(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false)
+      }
+    }
+    document.addEventListener('mousedown', handleMouseDown)
+    return () => document.removeEventListener('mousedown', handleMouseDown)
+  }, [open])
+
+  function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (!open || filtered.length === 0) return
+    if (e.key === 'ArrowDown') { e.preventDefault(); setActiveIdx(i => Math.min(i + 1, filtered.length - 1)) }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setActiveIdx(i => Math.max(i - 1, 0)) }
+    else if (e.key === 'Enter') { e.preventDefault(); onChange(filtered[activeIdx]); setOpen(false) }
+    else if (e.key === 'Escape') { setOpen(false) }
+  }
+
+  return (
+    <div ref={containerRef} style={{ position: 'relative' }}>
+      <input
+        type="text"
+        placeholder="$.value.field"
+        value={fieldValue}
+        onFocus={() => { ensureSuggestions(); setOpen(true) }}
+        onChange={e => { onChange(e.target.value); setOpen(true) }}
+        onKeyDown={handleKeyDown}
+        style={fieldInputStyle}
+        title="JSONPath field expression"
+        autoComplete="off"
+      />
+      {open && filtered.length > 0 && (
+        <div style={dropdownStyle}>
+          {filtered.map((s, i) => (
+            <div
+              key={s}
+              style={{
+                ...dropdownRowStyle,
+                background: i === activeIdx ? '#ebf8ff' : '#fff',
+              }}
+              onMouseDown={e => { e.preventDefault(); onChange(s); setOpen(false) }}
+              onMouseEnter={() => setActiveIdx(i)}
+            >
+              <span style={dropdownPathStyle}>{s}</span>
+              {ENVELOPE_DESCRIPTIONS[s] && (
+                <span style={dropdownDescStyle}>{ENVELOPE_DESCRIPTIONS[s]}</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Compound editor (AND / OR / NOT)
 // ---------------------------------------------------------------------------
 
@@ -149,12 +268,14 @@ function CompoundEditor({
   onSimplify,
   onRemove,
   depth,
+  fieldContext,
 }: {
   value: PredicateAnd | PredicateOr | PredicateNot
   onChange: (p: Predicate | null) => void
   onSimplify: () => void
   onRemove?: () => void
   depth: number
+  fieldContext?: FieldContext
 }) {
   const { match } = value
   const borderColor = BORDER_COLORS[depth % BORDER_COLORS.length]
@@ -212,6 +333,7 @@ function CompoundEditor({
               onChange({ match: 'not', predicate: inner ?? { field: '', operator: 'EQ' } })
             }
             depth={depth + 1}
+            fieldContext={fieldContext}
           />
         </div>
       )}
@@ -244,6 +366,7 @@ function CompoundEditor({
                     : undefined
                 }
                 depth={depth + 1}
+                fieldContext={fieldContext}
               />
             )
           })}
@@ -345,4 +468,40 @@ const matchBtnStyle: React.CSSProperties = {
   borderRadius: 3,
   cursor: 'pointer',
   letterSpacing: '0.04em',
+}
+const dropdownStyle: React.CSSProperties = {
+  position: 'absolute',
+  top: '100%',
+  left: 0,
+  zIndex: 100,
+  marginTop: 2,
+  background: '#fff',
+  border: '1px solid #cbd5e0',
+  borderRadius: 5,
+  boxShadow: '0 4px 12px rgba(0,0,0,0.1)',
+  minWidth: 220,
+  maxHeight: 208,
+  overflowY: 'auto',
+}
+const dropdownRowStyle: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'baseline',
+  justifyContent: 'space-between',
+  gap: 8,
+  padding: '5px 10px',
+  cursor: 'pointer',
+}
+const dropdownPathStyle: React.CSSProperties = {
+  fontFamily: 'monospace',
+  fontSize: 12,
+  color: '#2d3748',
+  whiteSpace: 'nowrap',
+}
+const dropdownDescStyle: React.CSSProperties = {
+  fontSize: 11,
+  color: '#a0aec0',
+  whiteSpace: 'nowrap',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  maxWidth: 120,
 }
