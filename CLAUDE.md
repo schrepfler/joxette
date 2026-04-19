@@ -276,6 +276,84 @@ joxette:
 
 ---
 
+## Threading Model
+
+### Virtual Threads (Java 25)
+
+Spring Boot 4 runs on a virtual thread executor by default. Every HTTP request, scheduled task, and Jox-managed fiber runs on a virtual thread. Platform thread pool sizing (`corePoolSize`, `maxPoolSize`) is irrelevant — the JVM schedules virtual threads onto carrier threads automatically. The only tuning knob is the number of carrier threads, which defaults to `Runtime.availableProcessors()` and rarely needs changing.
+
+Virtual threads make blocking I/O cheap. Kafka poll, DuckDB JDBC calls, and object storage reads all block without consuming carrier threads. No reactive programming or async callbacks are required.
+
+### DuckDB Write Serialization
+
+DuckDB enforces single-writer semantics. Rather than relying on JDBC-level synchronization, all write paths funnel through a single bounded `Channel<WriteBatch>` (Jox). One dedicated virtual thread drains this channel and executes every INSERT/UPSERT sequentially.
+
+This mirrors the Akka pinned-dispatcher pattern for blocking I/O: one logical thread owns the resource. The difference is that here no explicit thread pinning is needed — the drain loop is a tight virtual-thread loop that never yields voluntarily between dequeue and execute, so the JVM keeps it on the same carrier for the duration of each write.
+
+```
+Kafka VT 1 ──┐
+Kafka VT 2 ──┼──▶  Channel<WriteBatch> (bounded, capacity N)  ──▶  drain VT  ──▶  DuckDB
+Kafka VT N ──┘
+```
+
+Reads (replay API) bypass the channel entirely: each request opens a separate `Statement` on the shared `Connection`. DuckDB permits concurrent reads.
+
+### Thread and Scope Responsibilities
+
+| Subsystem | Concurrency unit | Parallelism | Notes |
+|---|---|---|---|
+| Kafka consumers | One Jox supervised scope per topic | Dynamic (one VT per source by default) | Managed by `RecordingCoordinator` |
+| DuckDB writes | Single VT draining `Channel<WriteBatch>` | 1 always | Serializes all INSERTs; natural backpressure via channel capacity |
+| DuckDB reads (replay) | Virtual thread per HTTP request | Unbounded (VT) | Separate `Statement` per request; concurrent reads safe |
+| Compaction | Dedicated Jox scope, cron-triggered | 1 (isolated lifecycle) | Reads and writes; holds write channel slot during merge |
+| REST API | Spring Boot 4 virtual thread executor | Unbounded (VT) | Default; no configuration needed |
+
+### Dynamic Topology
+
+`RecordingCoordinator` owns a `Map<String, RecorderScope>` keyed by topic name.
+
+- **Add topic**: fork a new child Jox scope under the coordinator's root scope; the scope starts the Kafka source and wires it to the shared write channel.
+- **Remove topic**: cancel the scope for that topic; the Kafka source stops, in-flight batches already enqueued on the write channel drain normally before the scope exits.
+- **Write channel**: created once at startup, lives for the service lifetime. Adding or removing topics does not recreate or resize it.
+
+### Backpressure
+
+The write channel capacity (`N × batchSize` slots) is the primary backpressure valve. When DuckDB writes are slow, the channel fills, Jox `send` blocks the producing virtual thread, the Kafka poll loop stalls, and consumer lag rises. Lag is the observable downstream indicator of write pressure.
+
+No explicit flow-control protocol is needed — Jox channel semantics provide it for free.
+
+### Per-Topic Write Isolation Tradeoff
+
+The default design uses a single global write channel shared across all topics.
+
+| Approach | Pros | Cons |
+|---|---|---|
+| Single global channel (default) | Simple; one drain loop; no per-table coordination | A slow table (large entity merge) can delay writes for unrelated topics |
+| Per-table channels | Noisy-neighbor isolation; each topic drains independently | N drain loops; N-way coordination on `known_entities` upserts; more complex lifecycle |
+
+Start with the single channel. If noisy-neighbor latency becomes measurable, promote to per-table channels by adding a `Map<String, Channel<WriteBatch>>` in `CassetteBatchWriter` and a drain VT per channel.
+
+### Configuration
+
+```yaml
+joxette:
+  threading:
+    write-channel-capacity: 128          # slots in the global write channel (default 128)
+    default-source-parallelism: 1        # VTs per Kafka source (default 1)
+    topic-parallelism:
+      high-volume-topic: 2               # per-topic override
+    compaction-thread-type: virtual      # virtual | platform (default virtual)
+```
+
+| Property | Default | Effect |
+|---|---|---|
+| `write-channel-capacity` | `128` | Bounded channel size; raise if write bursts cause unnecessary consumer lag |
+| `default-source-parallelism` | `1` | VTs per Jox KafkaSource; increase only for high-partition topics with CPU-bound routing |
+| `topic-parallelism.<topic>` | inherits default | Per-topic parallelism override |
+| `compaction-thread-type` | `virtual` | Set to `platform` if a compaction library holds a monitor across I/O and triggers virtual-thread pinning warnings |
+
+---
+
 ## Compaction
 
 ### What Gets Compacted
