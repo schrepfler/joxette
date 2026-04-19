@@ -1,14 +1,20 @@
 package com.joxette.replay.transform.steps;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.joxette.replay.CassetteRecord;
 import com.joxette.replay.transform.ReplayMessage;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.List;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -33,98 +39,57 @@ class CoalesceStepTest {
     }
 
     // -------------------------------------------------------------------------
-    // First source wins
+    // Group 1: Source prioritization
     // -------------------------------------------------------------------------
 
-    @Test
-    void usesFirstNonNullSource() {
+    static Stream<Arguments> sourcePrioritizationCases() {
+        return Stream.of(
+                Arguments.of("{\"order_id\":\"ORD-1\",\"legacy_id\":\"L-99\",\"id\":null}", "ORD-1"),
+                Arguments.of("{\"order_id\":null,\"legacy_id\":\"L-99\",\"id\":null}", "L-99"),
+                Arguments.of("{\"legacy_id\":\"L-77\",\"id\":null}", "L-77")
+        );
+    }
+
+    @ParameterizedTest
+    @MethodSource("sourcePrioritizationCases")
+    void sourcePrioritization(String valueJson, String expectedSelected) {
         var step = new CoalesceStep(
                 List.of("$.value.order_id", "$.value.legacy_id"),
                 "$.value.id",
                 null);
-        ReplayMessage msg = msg("{\"order_id\":\"ORD-1\",\"legacy_id\":\"L-99\",\"id\":null}");
+        ReplayMessage msg = msg(valueJson);
 
         step.apply(msg);
 
-        assertThat(decode(msg.value)).contains("\"id\":\"ORD-1\"");
-    }
-
-    @Test
-    void skipsNullFirstSourceUsesSecond() {
-        var step = new CoalesceStep(
-                List.of("$.value.order_id", "$.value.legacy_id"),
-                "$.value.id",
-                null);
-        ReplayMessage msg = msg("{\"order_id\":null,\"legacy_id\":\"L-99\",\"id\":null}");
-
-        step.apply(msg);
-
-        assertThat(decode(msg.value)).contains("\"id\":\"L-99\"");
-    }
-
-    @Test
-    void skipsAbsentFirstSourceUsesSecond() {
-        var step = new CoalesceStep(
-                List.of("$.value.order_id", "$.value.legacy_id"),
-                "$.value.id",
-                null);
-        // order_id not present
-        ReplayMessage msg = msg("{\"legacy_id\":\"L-77\",\"id\":null}");
-
-        step.apply(msg);
-
-        assertThat(decode(msg.value)).contains("\"id\":\"L-77\"");
+        assertThat(decode(msg.value)).contains("\"id\":\"" + expectedSelected + "\"");
     }
 
     // -------------------------------------------------------------------------
-    // Fallback when all sources null
+    // Group 2: Fallback behavior
     // -------------------------------------------------------------------------
 
-    @Test
-    void writesFallbackWhenAllSourcesNull() throws Exception {
-        var step = new CoalesceStep(
-                List.of("$.value.order_id", "$.value.legacy_id"),
-                "$.value.id",
-                OM.readTree("\"unknown\""));
-        ReplayMessage msg = msg("{\"order_id\":null,\"legacy_id\":null,\"id\":null}");
+    @ParameterizedTest
+    @CsvSource({
+            "true,  true,  fallback-val",
+            "true,  false, fallback-val",
+            "false, true,  original",
+    })
+    void fallbackBehavior(boolean hasFallback, boolean allSourcesNull, String expectedResult) throws Exception {
+        JsonNode fallback = hasFallback ? OM.readTree("\"fallback-val\"") : null;
+        var step = new CoalesceStep(List.of("$.value.order_id"), "$.value.id", fallback);
+        // allSourcesNull=true → field present but null; false → field absent entirely
+        String valueJson = allSourcesNull
+                ? "{\"order_id\":null,\"id\":\"original\"}"
+                : "{\"id\":\"original\"}";
+        ReplayMessage msg = msg(valueJson);
 
         step.apply(msg);
 
-        assertThat(decode(msg.value)).contains("\"id\":\"unknown\"");
-    }
-
-    @Test
-    void writesFallbackWhenAllSourcesAbsent() throws Exception {
-        var step = new CoalesceStep(
-                List.of("$.value.order_id"),
-                "$.value.id",
-                OM.readTree("42"));
-        ReplayMessage msg = msg("{\"id\":null}");  // order_id absent
-
-        step.apply(msg);
-
-        assertThat(decode(msg.value)).contains("\"id\":42");
+        assertThat(decode(msg.value)).contains("\"id\":\"" + expectedResult + "\"");
     }
 
     // -------------------------------------------------------------------------
-    // No fallback, all sources null — target unchanged
-    // -------------------------------------------------------------------------
-
-    @Test
-    void targetUnchangedWhenAllSourcesNullAndNoFallback() {
-        var step = new CoalesceStep(
-                List.of("$.value.order_id", "$.value.legacy_id"),
-                "$.value.id",
-                null);
-        ReplayMessage msg = msg("{\"order_id\":null,\"legacy_id\":null,\"id\":\"original\"}");
-
-        step.apply(msg);
-
-        assertThat(decode(msg.value)).contains("\"id\":\"original\"");
-    }
-
-    // -------------------------------------------------------------------------
-    // Empty sources list — target unchanged
+    // Empty sources list — fallback applied
     // -------------------------------------------------------------------------
 
     @Test
@@ -137,12 +102,11 @@ class CoalesceStepTest {
 
         step.apply(msg);
 
-        // fallback is written because no sources were tried (all "null")
         assertThat(decode(msg.value)).contains("\"id\":\"fallback\"");
     }
 
     // -------------------------------------------------------------------------
-    // Null sources defaults to empty list
+    // Constructor: null sources defaults to empty list
     // -------------------------------------------------------------------------
 
     @Test
@@ -152,7 +116,7 @@ class CoalesceStepTest {
     }
 
     // -------------------------------------------------------------------------
-    // Null value body — sources read null, fallback applied if present
+    // Null value body — fallback creates field
     // -------------------------------------------------------------------------
 
     @Test
