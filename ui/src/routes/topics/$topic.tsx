@@ -16,8 +16,10 @@ import { ErrorMessage } from '../../components/ErrorMessage'
 import { TruncateDialog } from '../../components/TruncateDialog'
 import { ConfirmDialog } from '../../components/ConfirmDialog'
 import { ReplayToTopicPanel } from '../../components/ReplayToTopicPanel'
+import { SequenceQueryPanel } from '../../components/SequenceQueryPanel'
 import { useToast } from '../../components/Toast'
 import { useDebounce } from '../../hooks/useDebounce'
+import type { FragmentDefinition } from '../../transforms/types'
 
 // ── JSON viewer ────────────────────────────────────────────────────────────────
 function tryDecodeBase64(s: string): string | null {
@@ -171,6 +173,8 @@ function TopicDetailPage() {
   const [showTruncateDialog, setShowTruncateDialog] = useState(false)
   const [showAddMatcher, setShowAddMatcher] = useState(false)
   const [confirmDeleteMatcher, setConfirmDeleteMatcher] = useState<string | null>(null)
+  const [activeTab, setActiveTab] = useState<'records' | 'sequence'>('records')
+  const [_replayPipelineFragments, setReplayPipelineFragments] = useState<FragmentDefinition[]>([])
 
   // Streaming state
   const [streamMode, setStreamMode] = useState<StreamMode>('json')
@@ -513,7 +517,42 @@ function TopicDetailPage() {
             totalCount={statsQuery.data?.rowCount}
           />
 
-          {/* Replay panel */}
+          {/* Tab bar */}
+          <div style={{ display: 'flex', borderBottom: '1px solid #e2e8f0', marginBottom: '1rem', gap: 0 }}>
+            {(['records', 'sequence'] as const).map(tab => (
+              <button
+                key={tab}
+                onClick={() => setActiveTab(tab)}
+                style={{
+                  padding: '0.5rem 1.25rem',
+                  background: 'none',
+                  border: 'none',
+                  borderBottom: activeTab === tab ? '2px solid #3182ce' : '2px solid transparent',
+                  cursor: 'pointer',
+                  fontSize: 14,
+                  fontWeight: activeTab === tab ? 600 : 400,
+                  color: activeTab === tab ? '#3182ce' : '#718096',
+                  marginBottom: -1,
+                }}
+              >
+                {tab === 'records' ? 'Records' : 'Sequence'}
+              </button>
+            ))}
+          </div>
+
+          {/* Sequence tab */}
+          {activeTab === 'sequence' && (
+            <div style={{ marginBottom: '1.5rem' }}>
+              <SequenceQueryPanel
+                mode="topic"
+                topic={topic}
+                onSaveFragment={(frag) => setReplayPipelineFragments(fs => [...fs, frag])}
+              />
+            </div>
+          )}
+
+          {/* Records tab */}
+          {activeTab === 'records' && (
           <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '1rem 1.25rem' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
               <h3 style={{ margin: 0, fontSize: 15 }}>Replay Records</h3>
@@ -613,6 +652,7 @@ function TopicDetailPage() {
               </>
             )}
           </div>
+          )}
         </>
       )}
       {showTruncateDialog && (
