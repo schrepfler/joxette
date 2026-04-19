@@ -10,9 +10,6 @@ export const STEP_COLORS = [
   '#9b59b6',
   '#1abc9c',
   '#e67e22',
-  '#3498db',
-  '#e91e63',
-  '#00bcd4',
 ]
 
 interface SequenceState {
