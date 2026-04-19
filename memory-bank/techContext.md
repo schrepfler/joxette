@@ -156,30 +156,91 @@ DockerImageName.parse("apache/kafka-native:4.0.2")
 
 ## File Layout
 
-```
-src/main/java/com/joxette/
-├── config/           JoxetteProperties, DuckDBConfig, KafkaConfig, WebConfig, SchedulingConfig
-├── db/               DuckLakeManager, SchemaManager
-├── management/       TopicController, EntityController, ConfigRepository,
-│                     RecordingStartupRunner, TopicConfig, EntityTypeConfig,
-│                     EntitySourceConfig, HealthController
-├── recording/        RecordingCoordinator, TopicRecorder, CassetteBatchWriter,
-│                     EntityCassetteBatchWriter
-├── replay/           CassetteController, CassetteLifecycleService,
-│                     TopicReplayService, EntityReplayService,
-│                     MessageRouter, EntityIdExtractor, KnownEntitiesRepository,
-│                     SseReplayHandler, + record types
-└── compaction/       CompactionController, CompactionService, CompactionScheduler
+The project is a Maven multi-module build. Modules are layered so that the
+replay engine and its SPIs can be depended on without dragging in Spring,
+DuckDB, or Kafka.
 
-ui/src/
-├── api/client.ts     All API calls; types for all DTOs
-├── routes/           File-based routing (TanStack Router)
-│   ├── topics/       index.tsx (list), $topic.tsx (detail + replay)
-│   ├── entities/     index.tsx (list + rebuild), $entityType/index.tsx (detail),
-│   │                 $entityType/$entityId.tsx (entity replay)
-│   ├── compaction/   index.tsx
-│   ├── snapshots/    index.tsx (list + create local + export to S3)
-│   └── health/       index.tsx
-└── components/       Layout, Header, Footer, LoadingSpinner, ErrorMessage,
-                      ConfirmDialog, Toast, ThemeToggle
 ```
+joxette/                              # parent POM: <modules>, dependencyManagement, pluginManagement
+├── pom.xml
+├── docker-compose.yml
+├── jikkou/
+├── docs/                             # PlantUML sources + rendered PNGs
+├── memory-bank/                      # Claude memory bank
+│
+├── joxette-core/                     # Pure Java. No Spring, no DuckDB, no Kafka.
+│   └── src/main/java/com/joxette/replay/
+│       ├── CassetteRecord.java, EntityRecord.java, PagedResponse.java,
+│       │                            ReplayProgress.java, ReplayToTopicRequest.java,
+│       │                            ReplayTransformConfig.java, FieldSubstitution.java
+│       ├── CassetteSource.java       SPI — read a general cassette
+│       ├── EntityCassetteSource.java SPI — read an entity cassette
+│       ├── MessageTransformer.java   restamp + JSONPath field substitution (no jOOQ)
+│       ├── ReplayEngine.java         orchestrator: source → transform → sink
+│       └── sink/
+│           ├── RecordSink.java       SPI — blocking send
+│           └── SinkException.java
+│
+├── joxette-kafka/                    # Depends on joxette-core + kafka-clients.
+│   └── src/main/java/com/joxette/replay/sink/kafka/
+│       └── KafkaRecordSink.java      RecordSink impl (owns byte/header/ts encoding)
+│
+├── joxette-service/                  # Spring Boot app. Depends on joxette-core + joxette-kafka.
+│   └── src/main/java/com/joxette/
+│       ├── JoxetteApplication.java
+│       ├── config/                   JoxetteProperties, DuckDBConfig, KafkaConfig, WebConfig,
+│       │                             SchedulingConfig, S3Config, BrokerConnectionFactory,
+│       │                             OpenApiConfig, JacksonConfig
+│       ├── db/                       DuckLakeManager, SchemaManager
+│       ├── management/               TopicController, EntityController, BrokerController,
+│       │                             ConfigRepository, RecordingStartupRunner,
+│       │                             HealthController, MatcherPreviewController,
+│       │                             TransformPresetsController, ConfigController
+│       ├── recording/                RecordingCoordinator, TopicRecorder,
+│       │                             CassetteBatchWriter, EntityCassetteBatchWriter
+│       ├── replay/                   CassetteController, CassetteLifecycleService,
+│       │                             TopicReplayService (impl CassetteSource),
+│       │                             EntityReplayService (impl EntityCassetteSource),
+│       │                             MessageRouter, EntityIdExtractor,
+│       │                             KnownEntitiesRepository, SseReplayHandler,
+│       │                             ScheduledReplayService, + record types
+│       │   ├── sink/kafka/           KafkaRecordSinkFactory (per-broker producer cache)
+│       │   └── transform/            TransformPipeline, steps/, Predicate, GuardedStep,
+│       │                             TransformPreset, ReplayMetadataInjector
+│       └── compaction/               CompactionController, CompactionService,
+│                                     CompactionScheduler, RetentionService, RetentionScheduler
+│
+├── joxette-test-kit/                 # Depends on joxette-core + joxette-kafka. No DuckDB, no Spring.
+│   └── src/main/java/com/joxette/testkit/
+│       ├── InMemoryCassetteSource.java        impl CassetteSource
+│       ├── InMemoryEntityCassetteSource.java  impl EntityCassetteSource
+│       ├── CapturingRecordSink.java           impl RecordSink (non-Kafka; captures sends)
+│       └── ReplayEngineBuilder.java           fluent builder — wires a ReplayEngine in-process
+│
+└── ui/src/
+    ├── api/client.ts                 All API calls; types for all DTOs
+    ├── routes/                       File-based routing (TanStack Router)
+    │   ├── topics/                   index.tsx (list), $topic.tsx (detail + replay)
+    │   ├── entities/                 index.tsx (list + rebuild),
+    │   │                             $entityType/index.tsx (detail),
+    │   │                             $entityType/$entityId.tsx (entity replay)
+    │   ├── compaction/               index.tsx
+    │   ├── snapshots/                index.tsx (list + create local + export to S3)
+    │   └── health/                   index.tsx
+    └── components/                   Layout, Header, Footer, LoadingSpinner, ErrorMessage,
+                                       ConfirmDialog, Toast, ThemeToggle
+```
+
+### Module boundaries (enforced by POMs)
+
+| Module | May depend on | Must NOT depend on |
+|---|---|---|
+| `joxette-core` | slf4j-api, jackson-annotations, swagger-annotations-jakarta, json-path | Spring, DuckDB, jOOQ, Kafka |
+| `joxette-kafka` | joxette-core, kafka-clients | Spring, DuckDB, jOOQ |
+| `joxette-service` | joxette-core, joxette-kafka, Spring Boot, DuckDB, jOOQ, jox | — |
+| `joxette-test-kit` | joxette-core, joxette-kafka | DuckDB, jOOQ, Spring |
+
+The jOOQ codegen plugin and PlantUML `exec` plugin live only under `joxette-service`.
+`swagger-annotations-jakarta` is pinned to `2.2.43` in the parent `dependencyManagement`
+because the Spring Boot BOM still ships the older non-jakarta variant, and core DTOs use
+`@Schema`.

@@ -1,6 +1,36 @@
 # Active Context
 
-## Current Work Focus
+## Current Work Focus — Maven module split (joxette-core / joxette-kafka / joxette-service / joxette-test-kit)
+Split the single-module project into four Maven modules so the replay engine and its SPIs
+can be consumed outside the Spring Boot service. Core has no Spring / DuckDB / Kafka on its
+classpath; test-kit has no DuckDB.
+
+**What changed:**
+- Parent `pom.xml` rewritten: `<modules>` declares the four modules, all third-party deps lifted
+  into `dependencyManagement`, plugins into `pluginManagement`. New property
+  `swagger-annotations.version=2.2.43` + explicit dep entry — the Spring Boot BOM ships the old
+  non-jakarta variant, but core DTOs use `@Schema`, so we need the jakarta JAR.
+- **`joxette-core`** — pure Java. Holds the replay engine, DTOs, and SPIs:
+  `CassetteSource`, `EntityCassetteSource`, `sink.RecordSink`, `SinkException`, plus
+  `ReplayEngine`, `MessageTransformer`, `CassetteRecord`, `EntityRecord`, `PagedResponse`,
+  `ReplayProgress`, `ReplayToTopicRequest`, `ReplayTransformConfig`, `FieldSubstitution`.
+  Deps: slf4j-api, jackson-annotations, swagger-annotations-jakarta, json-path, junit (test).
+- **`joxette-kafka`** — `KafkaRecordSink` (impl `RecordSink`). Deps: joxette-core + kafka-clients.
+- **`joxette-service`** — Spring Boot app. `TopicReplayService implements CassetteSource`,
+  `EntityReplayService implements EntityCassetteSource`. `KafkaRecordSinkFactory` lives here
+  (it's the only piece that knows about per-broker routing). jOOQ codegen + PlantUML exec
+  plugin moved here (PlantUML path now `../docs`).
+- **`joxette-test-kit`** — new module. `InMemoryCassetteSource`, `InMemoryEntityCassetteSource`,
+  `CapturingRecordSink`, and a fluent `ReplayEngineBuilder`. `ReplayEngineBuilderTest` proves
+  the kit drives a `ReplayEngine` with zero Joxette-service classes — no DuckDB, no Spring,
+  no Kafka broker; asserts ordering and honoured `speed=2.0` inter-message delay.
+- `ReplayEngine` updated to depend on the core SPIs rather than the concrete DuckLake-backed
+  services. Complex `TransformPipeline` (jOOQ-bound via `SqlPushdownAnalyzer`) stays in
+  service; the simpler `MessageTransformer` used by the engine moves to core cleanly.
+- Diagrams & docs refreshed: `docs/architecture.puml` shows the four module rectangles and
+  the `joxette-test-kit` consumer path.
+
+## Previous Focus — RecordSink SPI extraction
 Extracted a reusable `RecordSink` SPI for the replay-to-topic path so the same replay engine can power the service and a future test-kit without dragging in Spring or Kafka imports.
 
 **What changed:**
@@ -15,7 +45,7 @@ Extracted a reusable `RecordSink` SPI for the replay-to-topic path so the same r
 - New `ReplayToTopicIT` (Testcontainers) seeds a 3-record cassette, POSTs `/cassettes/topics/{topic}/replay-to-topic?speed=2.0`, and asserts order, keys/values, timestamps, and honoured inter-message delay.
 - PlantUML updated: `docs/replay-pipeline.puml` splits the produce path into `ReplayEngine` + `KafkaRecordSink`; `docs/architecture.puml` shows the new trio (`ReplayEngine`, `KafkaRecordSinkFactory`, `KafkaRecordSink`). Diagrams regenerated.
 
-## Previous Focus — `com.softwaremill.jox:kafka:0.5.3` migration
+## Older Focus — `com.softwaremill.jox:kafka:0.5.3` migration
 Migrated from hand-rolled `com.joxette.kafka` shim to the real `com.softwaremill.jox:kafka:0.5.3` module (published to Maven Central 18 Mar 2026).
 
 **What changed:**

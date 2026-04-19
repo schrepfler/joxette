@@ -22,9 +22,12 @@ title Joxette — Overall Architecture
 cloud "Apache Kafka" as kafka #fff8e1
 
 ' =========================================================================
-' Joxette service
+' Joxette service (Maven module: joxette-service)
+' Solid borders highlight the Maven-module boundaries — joxette-core holds
+' the replay engine + DTOs + SPIs, joxette-kafka holds the Kafka RecordSink,
+' joxette-service wires DuckLake storage + Spring controllers on top.
 ' =========================================================================
-rectangle "Joxette Service" as joxette #f0f4ff {
+rectangle "joxette-service (Spring Boot)" as joxette #f0f4ff {
 
   component [REST API\n(Spring Boot controllers)] as api
 
@@ -37,11 +40,20 @@ rectangle "Joxette Service" as joxette #f0f4ff {
   }
 
   rectangle "Replay" as replayBox #e3f2fd {
-    component [ReplayEngine\n(orchestrator,\nbroker-agnostic)]        as engine
-    component [TopicReplayService]                                    as topicReplay
-    component [EntityReplayService]                                   as entityReplay
-    component [MessageTransformer\n(restamp + substitution)]          as transformer
-    component [KafkaRecordSinkFactory\n+ KafkaRecordSink\n(RecordSink)] as sink
+    rectangle "joxette-core" as coreBox #e8eaf6 {
+      component [ReplayEngine\n(orchestrator)]                          as engine
+      component [MessageTransformer\n(restamp + substitution)]          as transformer
+      interface  "CassetteSource"        as cassetteSourceSpi
+      interface  "EntityCassetteSource"  as entitySourceSpi
+      interface  "RecordSink"            as recordSinkSpi
+    }
+    component [TopicReplayService\n(impl CassetteSource)]        as topicReplay
+    component [EntityReplayService\n(impl EntityCassetteSource)] as entityReplay
+
+    rectangle "joxette-kafka" as kafkaBox #e0f2f1 {
+      component [KafkaRecordSink\n(impl RecordSink)] as kafkaSink
+    }
+    component [KafkaRecordSinkFactory\n(per-broker producer cache)] as sinkFactory
   }
 
   rectangle "Maintenance" as maintenance #fce4ec {
@@ -53,6 +65,19 @@ rectangle "Joxette Service" as joxette #f0f4ff {
 
   database "DuckDB + DuckLake\n(catalog + inline buffer)" as duckdb
 }
+
+' =========================================================================
+' Test-kit: consumes the same SPIs with in-memory sources + capturing sink
+' =========================================================================
+rectangle "joxette-test-kit (optional)" as testkit #fffde7 {
+  component [InMemoryCassetteSource\n+ InMemoryEntityCassetteSource] as memSources
+  component [CapturingRecordSink]                                    as capSink
+  component [ReplayEngineBuilder]                                    as testBuilder
+}
+testBuilder ..> engine          : wires
+memSources  ..|> cassetteSourceSpi
+memSources  ..|> entitySourceSpi
+capSink     ..|> recordSinkSpi
 
 database "DuckDB Catalog\n(.ducklake file)"              as catalog
 storage  "Object Storage\n(S3 / GCS / Azure)\nParquet"   as s3

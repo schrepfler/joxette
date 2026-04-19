@@ -2,6 +2,15 @@
 
 ## What Works
 
+### Maven module layout
+- [x] Four Maven modules: `joxette-core`, `joxette-kafka`, `joxette-service`, `joxette-test-kit`
+- [x] `joxette-core` — replay engine + DTOs + SPIs (`CassetteSource`, `EntityCassetteSource`, `RecordSink`); no Spring / DuckDB / Kafka on the classpath
+- [x] `joxette-kafka` — `KafkaRecordSink` (depends on core + kafka-clients only)
+- [x] `joxette-service` — Spring Boot app; `TopicReplayService`/`EntityReplayService` implement the core SPIs; `KafkaRecordSinkFactory` owns per-broker producer cache
+- [x] `joxette-test-kit` — `InMemoryCassetteSource`, `InMemoryEntityCassetteSource`, `CapturingRecordSink`, `ReplayEngineBuilder` — drives a `ReplayEngine` in-process with no DuckDB / Spring / Kafka broker
+- [x] `ReplayEngineBuilderTest` proves the kit can replay a cassette into a capturing sink at `speed=2.0`
+- [x] `swagger-annotations-jakarta` pinned to `2.2.43` in parent `dependencyManagement` (Spring Boot BOM ships the old non-jakarta variant)
+
 ### Recording Pipeline
 - [x] Kafka consumer (Jox KafkaSource) per topic, managed by `RecordingCoordinator`
 - [x] Batch accumulation via `groupedWithin(batchSize, batchTimeout)`
@@ -144,3 +153,5 @@
 | Retention enforcement | Config stored, no cron | `RetentionService` + `RetentionScheduler` + `retention_history` | Retention days are now enforced automatically |
 | Replay-to-Kafka | Not started | `ReplayToTopicService` + `KafkaProducerService` + speed multiplier + transforms | Core replay use-case for integration testing |
 | Replay-to-topic shape | `ReplayToTopicService` directly calling `KafkaProducerService` | `ReplayEngine` + pluggable `RecordSink` SPI (`KafkaRecordSink`, factory caches Producer per broker) | Makes the replay path reusable outside Spring (future test-kit) while keeping the engine broker-agnostic |
+| Project layout | Single Maven module | Four modules (`joxette-core` / `joxette-kafka` / `joxette-service` / `joxette-test-kit`) | Test-kit consumers must be able to depend on the replay engine without pulling in Spring, DuckDB, or jOOQ |
+| Replay source coupling | Engine took concrete `TopicReplayService` / `EntityReplayService` | Engine takes `CassetteSource` / `EntityCassetteSource` SPIs (core) | Lets in-memory sources drive the engine for tests; DuckLake-backed services just `implements` the SPIs |

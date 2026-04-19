@@ -384,47 +384,75 @@ Generated sources land in `target/generated-sources/jooq/`.
 
 ## Project Structure
 
+Joxette is a Maven multi-module build. Modules are layered so the replay engine
+and its SPIs can be consumed without dragging in Spring, DuckDB, or Kafka.
+
 ```
 joxette/
-├── pom.xml                          # Maven build
+├── pom.xml                          # Parent POM — <modules> + dependencyManagement + pluginManagement
 ├── docker-compose.yml               # Local Kafka (KRaft, apache/kafka-native)
-├── jikkou/
-│   ├── topics.yml                   # Kafka topic definitions
-│   └── jikkou.yml                   # Jikkou CLI config
-├── src/
-│   ├── main/
-│   │   ├── java/com/joxette/
-│   │   │   ├── JoxetteApplication.java
-│   │   │   ├── bootstrap/           # First-start YAML config loader
-│   │   │   ├── config/              # Spring configuration beans & properties
-│   │   │   ├── db/                  # DuckDB/DuckLake schema & connection
-│   │   │   ├── management/          # Topic & entity CRUD controllers
-│   │   │   ├── model/               # Domain model records
-│   │   │   ├── recording/           # Jox Kafka consumer + batch writer
-│   │   │   ├── replay/              # Cassette replay services & controllers
-│   │   │   ├── compaction/          # Compaction service, scheduler, controller
-│   │   │   └── repository/          # Config repository (jOOQ)
-│   │   └── resources/
-│   │       ├── application.yml
-│   │       └── db/
-│   │           ├── init.sql                 # DuckDB schema DDL
-│   │           └── jooq-codegen-schema.sql  # jOOQ codegen input
-│   └── test/
-│       └── java/com/joxette/
-│           ├── compaction/          # Compaction unit tests
-│           ├── recording/           # Recorder unit tests
-│           ├── replay/              # Replay service unit tests
-│           ├── it/                  # Integration tests (Testcontainers)
+├── docs/                            # PlantUML sources + rendered PNGs
+├── jikkou/                          # Kafka topic definitions (topics.yml, jikkou.yml)
+│
+├── joxette-core/                    # Pure Java. No Spring / DuckDB / Kafka on the classpath.
+│   └── src/main/java/com/joxette/replay/
+│       ├── CassetteRecord, EntityRecord, PagedResponse, ReplayProgress, ReplayToTopicRequest,
+│       │                                ReplayTransformConfig, FieldSubstitution     (DTOs)
+│       ├── CassetteSource, EntityCassetteSource                                      (SPIs)
+│       ├── MessageTransformer                                                        (restamp + JSONPath)
+│       ├── ReplayEngine                                                              (orchestrator)
+│       └── sink/{RecordSink, SinkException}                                          (sink SPI)
+│
+├── joxette-kafka/                   # Depends on joxette-core + kafka-clients.
+│   └── src/main/java/com/joxette/replay/sink/kafka/KafkaRecordSink.java
+│
+├── joxette-service/                 # Spring Boot app. Depends on joxette-core + joxette-kafka.
+│   ├── pom.xml                      # Owns jOOQ codegen + PlantUML exec plugin
+│   └── src/
+│       ├── main/java/com/joxette/
+│       │   ├── JoxetteApplication.java
+│       │   ├── config/              # Spring beans: DuckDB, Kafka, S3, Web, Scheduling, OpenAPI
+│       │   ├── db/                  # DuckLakeManager, SchemaManager
+│       │   ├── management/          # Topic / Entity / Broker controllers, config repository
+│       │   ├── recording/           # Kafka consumer + batch writers (jox)
+│       │   ├── replay/              # TopicReplayService (CassetteSource impl),
+│       │   │                        # EntityReplayService (EntityCassetteSource impl),
+│       │   │                        # CassetteController, KafkaRecordSinkFactory,
+│       │   │                        # MessageRouter, transform/ (jOOQ-bound pipeline)
+│       │   └── compaction/          # Compaction + Retention services, schedulers, controllers
+│       ├── main/resources/
+│       │   ├── application.yml
+│       │   └── db/{init.sql, jooq-codegen-schema.sql}
+│       └── test/java/com/joxette/
+│           ├── compaction/ recording/ replay/ management/           # unit tests
+│           ├── it/                  # Integration tests (Testcontainers Kafka + DuckDB)
 │           └── support/             # DuckDB test support utilities
+│
+├── joxette-test-kit/                # Depends on joxette-core + joxette-kafka. No DuckDB, no Spring.
+│   └── src/main/java/com/joxette/testkit/
+│       ├── InMemoryCassetteSource        # impl CassetteSource
+│       ├── InMemoryEntityCassetteSource  # impl EntityCassetteSource
+│       ├── CapturingRecordSink           # impl RecordSink (non-Kafka; captures sends)
+│       └── ReplayEngineBuilder           # fluent builder — wires a ReplayEngine in-process
+│
 └── ui/                              # React 19 frontend (pnpm)
     ├── src/
     │   ├── api/                     # API client
     │   ├── components/              # Shared UI components
     │   ├── hooks/                   # Custom React hooks
     │   ├── routes/                  # TanStack Router file-based routes
-    │   └── stores/                  # TanStack Store (global state)
+    │   └── stores/                  # Zustand stores
     └── public/
 ```
+
+### Module boundaries
+
+| Module | Depends on | Forbidden on classpath |
+|---|---|---|
+| `joxette-core` | slf4j-api, jackson-annotations, swagger-annotations-jakarta, json-path | Spring, DuckDB, jOOQ, Kafka |
+| `joxette-kafka` | joxette-core, kafka-clients | Spring, DuckDB, jOOQ |
+| `joxette-service` | joxette-core, joxette-kafka, Spring Boot, DuckDB, jOOQ, jox | — |
+| `joxette-test-kit` | joxette-core, joxette-kafka | DuckDB, jOOQ, Spring |
 
 ---
 

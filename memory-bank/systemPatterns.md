@@ -77,11 +77,18 @@ KafkaConsumer.poll() → emit → groupedWithin(batchSize, batchTimeout)
 - REST API is source of truth after first start
 - `MessageRouter` must be reloaded after any REST API config change to pick up new routing rules
 
-### 8. Replay Sink SPI
-- `ReplayEngine` is Spring-free. It depends on `TopicReplayService`, `EntityReplayService`, and a `RecordSink` — nothing else — so the same engine can run inside the service or from a standalone test-kit.
+### 8. Replay Source & Sink SPIs
+- `ReplayEngine` lives in `joxette-core` and is Spring-free. It depends on three core SPIs — `CassetteSource`, `EntityCassetteSource`, `RecordSink` — and nothing else, so the same engine can run inside the service or from a standalone test-kit.
+- `CassetteSource.streamAll(topic, from, to, partition, offsetFrom, offsetTo, sink)` and `EntityCassetteSource.streamEntityEvents(entityType, entityId, from, to, sink)` are callback-style: callers push records into a `Consumer<CassetteRecord>` / `Consumer<EntityRecord>`. In the service, `TopicReplayService` / `EntityReplayService` implement them backed by jOOQ/DuckLake; in the test-kit, `InMemoryCassetteSource` / `InMemoryEntityCassetteSource` implement them against pre-sorted lists.
 - `RecordSink.send(...)` is **blocking**. On virtual threads this is cheap; we deliberately avoid `Future`/`CompletableFuture` in the SPI. Permanent failures throw `SinkException` so the engine can flip the run to `status=failed`.
-- `KafkaRecordSinkFactory` is the only place that knows about multi-broker routing. It caches one `KafkaProducer` per broker id and hands the sink a `Producer` it does **not** own (factory closes it on `@PreDestroy`).
+- `KafkaRecordSink` (in `joxette-kafka`) wraps a `Producer` and owns byte/header/timestamp encoding but does not own the `Producer`. `KafkaRecordSinkFactory` (in `joxette-service`) is the only place that knows about multi-broker routing: it caches one `KafkaProducer` per broker id and closes all on `@PreDestroy`.
 - `CassetteController` builds a per-request engine via `engineFor(brokerId)` — the engine itself is single-destination and broker-agnostic.
+
+### 9. Module Boundaries
+- `joxette-core` — pure Java, no Spring / DuckDB / jOOQ / Kafka. Holds DTOs (`CassetteRecord`, `EntityRecord`, `ReplayProgress`, `ReplayToTopicRequest`, `ReplayTransformConfig`, `FieldSubstitution`, `PagedResponse`), the `MessageTransformer` (restamp + JSONPath substitution), the three SPIs (`CassetteSource`, `EntityCassetteSource`, `sink.RecordSink` + `SinkException`), and `ReplayEngine`.
+- `joxette-kafka` — depends on core + `kafka-clients` only. Holds `KafkaRecordSink` so test-kit consumers that want a real Kafka sink don't need Spring.
+- `joxette-service` — Spring Boot app. Depends on core + kafka modules. Implements the SPIs against DuckLake/jOOQ; owns the `KafkaRecordSinkFactory` producer cache and the Spring controllers. `TransformPipeline` (which uses `SqlPushdownAnalyzer` and is therefore jOOQ-bound) stays here; only the simpler `MessageTransformer` was moved to core.
+- `joxette-test-kit` — depends on core + kafka modules. No DuckDB, no Spring. Ships `InMemoryCassetteSource`, `InMemoryEntityCassetteSource`, `CapturingRecordSink`, and a fluent `ReplayEngineBuilder` so external consumers can drive the engine in-process.
 
 ### 9. Disaster Recovery
 - **Export to object store**: `EXPORT DATABASE 's3://.../snapshots/<name>/'` — writes entire catalog (config tables, known_entities, DuckLake metadata) to S3 directly via httpfs. No local disk used.
