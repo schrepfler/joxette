@@ -6,34 +6,22 @@ import com.joxette.replay.transform.TransformStep;
 import org.jooq.SQLDialect;
 import org.jooq.impl.DSL;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.util.List;
 import java.util.Set;
+import java.util.stream.Stream;
 
 import static com.joxette.replay.transform.Predicate.Operator.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Unit tests for {@link SqlPushdownAnalyzer}.
- *
- * <p>Tests verify:
- * <ul>
- *   <li>Eligible steps are pushed down and removed from remaining steps.</li>
- *   <li>Ineligible steps (nested {@code $.value.*}, non-pushdown operators on
- *       numeric columns) remain in Java.</li>
- *   <li>The generated WHERE fragment is semantically correct (drop when matches
- *       → negate in SQL).</li>
- *   <li>The order of remaining steps is preserved.</li>
- *   <li>The IDENTITY pipeline case (empty steps) is handled.</li>
- * </ul>
- */
 class SqlPushdownAnalyzerTest {
 
-    /** Eligible fields for the entity cassette service (includes $.topic). */
     private static final Set<String> ENTITY_ELIGIBLE = Set.of(
             "$.topic", "$.partition", "$.offset", "$.timestamp", "$.key", "$.recorded_at");
 
-    /** Eligible fields for the general cassette service (no $.topic column). */
     private static final Set<String> TOPIC_ELIGIBLE = Set.of(
             "$.partition", "$.offset", "$.timestamp", "$.key", "$.recorded_at");
 
@@ -46,104 +34,66 @@ class SqlPushdownAnalyzerTest {
     }
 
     // =========================================================================
-    // Basic pushdown
+    // Group 1: Eligible pushdown cases
     // =========================================================================
 
-    @Test
-    void eligible_partitionEqPushedDown() {
-        var fds = fds("$.partition", EQ, 3);
-        var result = SqlPushdownAnalyzer.analyze(List.of(fds), TOPIC_ELIGIBLE);
-
-        assertThat(result.remainingSteps()).isEmpty();
-        String where = sql(result.pushdownCondition());
-        // EQ → negate → !=
-        assertThat(where).containsIgnoringCase("kafka_partition")
-                         .containsAnyOf("!=", "<>", "not");
+    static Stream<Arguments> eligiblePushdownCases() {
+        return Stream.of(
+            // EQ negated to <> in SQL
+            Arguments.of(EQ,          "$.partition", 3,           TOPIC_ELIGIBLE,  List.of("kafka_partition", "<>")),
+            // GTE drops when >= 100 → SQL WHERE < 100
+            Arguments.of(GTE,         "$.offset",    100,         TOPIC_ELIGIBLE,  List.of("kafka_offset", "100")),
+            // EQ on $.topic available only in the entity-cassette service
+            Arguments.of(EQ,          "$.topic",     "audit.log", ENTITY_ELIGIBLE, List.of("topic")),
+            // IS_NULL drops when null → SQL WHERE IS NOT NULL
+            Arguments.of(IS_NULL,     "$.key",       null,        TOPIC_ELIGIBLE,  List.of("kafka_key", "is not null")),
+            // IS_NOT_NULL drops when non-null → SQL WHERE IS NULL
+            Arguments.of(IS_NOT_NULL, "$.key",       null,        TOPIC_ELIGIBLE,  List.of("kafka_key", "is null")),
+            // CONTAINS on string column
+            Arguments.of(CONTAINS,    "$.topic",     "staging",   ENTITY_ELIGIBLE, List.of("topic", "staging")),
+            // MATCHES on string column — negated regexp in SQL
+            Arguments.of(MATCHES,     "$.key",       "^order-.*", TOPIC_ELIGIBLE,  List.of("kafka_key", "not"))
+        );
     }
 
-    @Test
-    void eligible_offsetGtePushedDown() {
-        var fds = fds("$.offset", GTE, 100);
-        var result = SqlPushdownAnalyzer.analyze(List.of(fds), TOPIC_ELIGIBLE);
+    @ParameterizedTest(name = "[{index}] {0} on {1} is pushed to SQL WHERE")
+    @MethodSource("eligiblePushdownCases")
+    void eligible_pushedToSqlWhereClause(Predicate.Operator operator, String field, Object value,
+                                          Set<String> eligibleFields, List<String> expectedSqlParts) {
+        var fds = fds(field, operator, value);
+        var result = SqlPushdownAnalyzer.analyze(List.of(fds), eligibleFields);
 
         assertThat(result.remainingSteps()).isEmpty();
         String where = sql(result.pushdownCondition());
-        // GTE drops when >= 100 → SQL WHERE < 100
-        assertThat(where).containsIgnoringCase("kafka_offset");
-        assertThat(where).contains("100");
-    }
-
-    @Test
-    void eligible_topicEqPushedDownForEntityService() {
-        var fds = fds("$.topic", EQ, "audit.log");
-        var result = SqlPushdownAnalyzer.analyze(List.of(fds), ENTITY_ELIGIBLE);
-
-        assertThat(result.remainingSteps()).isEmpty();
-        String where = sql(result.pushdownCondition());
-        assertThat(where).containsIgnoringCase("topic");
-    }
-
-    @Test
-    void eligible_isNullPushedDown() {
-        var fds = fds("$.key", IS_NULL, null);
-        var result = SqlPushdownAnalyzer.analyze(List.of(fds), TOPIC_ELIGIBLE);
-
-        assertThat(result.remainingSteps()).isEmpty();
-        String where = sql(result.pushdownCondition());
-        // IS_NULL drops when null → SQL WHERE IS NOT NULL
-        assertThat(where).containsIgnoringCase("kafka_key")
-                         .containsIgnoringCase("is not null");
-    }
-
-    @Test
-    void eligible_isNotNullPushedDown() {
-        var fds = fds("$.key", IS_NOT_NULL, null);
-        var result = SqlPushdownAnalyzer.analyze(List.of(fds), TOPIC_ELIGIBLE);
-
-        assertThat(result.remainingSteps()).isEmpty();
-        String where = sql(result.pushdownCondition());
-        assertThat(where).containsIgnoringCase("kafka_key")
-                         .containsIgnoringCase("is null");
+        expectedSqlParts.forEach(part -> assertThat(where).containsIgnoringCase(part));
     }
 
     // =========================================================================
-    // Ineligible cases (remain in Java)
+    // Group 2: Ineligible cases (remain in Java)
     // =========================================================================
 
-    @Test
-    void ineligible_nestedValueFieldRemainsInJava() {
-        var fds = fds("$.value.status", EQ, "cancelled");
-        var result = SqlPushdownAnalyzer.analyze(List.of(fds), ENTITY_ELIGIBLE);
+    static Stream<Arguments> ineligibleFilterDropCases() {
+        return Stream.of(
+            Arguments.of(EQ,       "$.value.status", "cancelled", ENTITY_ELIGIBLE,
+                         "nested value field is not a top-level column"),
+            Arguments.of(EQ,       "$.topic",        "orders",    TOPIC_ELIGIBLE,
+                         "topic has no column in the general cassette table"),
+            Arguments.of(MATCHES,  "$.partition",    "^3$",       TOPIC_ELIGIBLE,
+                         "MATCHES is only pushed down for string columns"),
+            Arguments.of(CONTAINS, "$.offset",       "5",         TOPIC_ELIGIBLE,
+                         "CONTAINS is only pushed down for string columns")
+        );
+    }
+
+    @ParameterizedTest(name = "[{index}] {0} on {1} stays in Java — {4}")
+    @MethodSource("ineligibleFilterDropCases")
+    void ineligible_remainsInJava(Predicate.Operator operator, String field, Object value,
+                                   Set<String> eligibleFields, String reason) {
+        var fds = fds(field, operator, value);
+        var result = SqlPushdownAnalyzer.analyze(List.of(fds), eligibleFields);
 
         assertThat(result.remainingSteps()).containsExactly(fds);
-        // pushdown condition should be identity (no extra WHERE fragment)
         assertThat(sql(result.pushdownCondition())).isEqualToIgnoringCase("true");
-    }
-
-    @Test
-    void ineligible_topicFieldRemainsInJavaForGeneralCassetteService() {
-        // $.topic is not in TOPIC_ELIGIBLE (no column in general cassette tables)
-        var fds = fds("$.topic", EQ, "orders");
-        var result = SqlPushdownAnalyzer.analyze(List.of(fds), TOPIC_ELIGIBLE);
-
-        assertThat(result.remainingSteps()).containsExactly(fds);
-    }
-
-    @Test
-    void ineligible_matchesOnNumericColumnRemainsInJava() {
-        // MATCHES only pushed down for string columns; partition is numeric
-        var fds = fds("$.partition", MATCHES, "^3$");
-        var result = SqlPushdownAnalyzer.analyze(List.of(fds), TOPIC_ELIGIBLE);
-
-        assertThat(result.remainingSteps()).containsExactly(fds);
-    }
-
-    @Test
-    void ineligible_containsOnNumericColumnRemainsInJava() {
-        var fds = fds("$.offset", CONTAINS, "5");
-        var result = SqlPushdownAnalyzer.analyze(List.of(fds), TOPIC_ELIGIBLE);
-
-        assertThat(result.remainingSteps()).containsExactly(fds);
     }
 
     @Test
@@ -161,33 +111,29 @@ class SqlPushdownAnalyzerTest {
 
     @Test
     void mixed_eligiblePushedDownIneligibleRemains() {
-        var fdsPartition  = fds("$.partition", EQ, 3);           // eligible
-        var fdsValueField = fds("$.value.status", EQ, "done");   // ineligible (nested)
-        var redirect      = new RedirectTopicStep("orders-staging");             // ineligible (not FilterDrop)
+        var fdsPartition  = fds("$.partition", EQ, 3);
+        var fdsValueField = fds("$.value.status", EQ, "done");
+        var redirect      = new RedirectTopicStep("orders-staging");
 
         var result = SqlPushdownAnalyzer.analyze(
                 List.of(fdsPartition, fdsValueField, redirect), TOPIC_ELIGIBLE);
 
-        // Only the partition step was pushed down
         assertThat(result.remainingSteps())
                 .containsExactly(fdsValueField, redirect);
-
-        String where = sql(result.pushdownCondition());
-        assertThat(where).containsIgnoringCase("kafka_partition");
+        assertThat(sql(result.pushdownCondition())).containsIgnoringCase("kafka_partition");
     }
 
     @Test
     void mixed_orderOfRemainingStepsPreserved() {
         var a = new RedirectTopicStep("a");
-        var b = fds("$.value.x", EQ, "y");   // ineligible
+        var b = fds("$.value.x", EQ, "y");
         var c = new RemoveHeaderStep("x-trace");
-        var d = fds("$.partition", EQ, 5);   // eligible → pushed down
+        var d = fds("$.partition", EQ, 5);
         var e = new AddHeaderStep("x-env", "test", false);
 
         var result = SqlPushdownAnalyzer.analyze(
                 List.of(a, b, c, d, e), TOPIC_ELIGIBLE);
 
-        // d was pushed down; a, b, c, e remain in order
         assertThat(result.remainingSteps())
                 .extracting(Object::getClass)
                 .containsExactly(
@@ -212,33 +158,6 @@ class SqlPushdownAnalyzerTest {
     }
 
     // =========================================================================
-    // String column CONTAINS / MATCHES pushdown
-    // =========================================================================
-
-    @Test
-    void containsOnStringColumnPushedDown() {
-        var fds = fds("$.topic", CONTAINS, "staging");
-        var result = SqlPushdownAnalyzer.analyze(List.of(fds), ENTITY_ELIGIBLE);
-
-        assertThat(result.remainingSteps()).isEmpty();
-        String where = sql(result.pushdownCondition());
-        assertThat(where).containsIgnoringCase("topic");
-        assertThat(where).containsIgnoringCase("staging");
-    }
-
-    @Test
-    void matchesOnStringColumnPushedDown() {
-        var fds = fds("$.key", MATCHES, "^order-.*");
-        var result = SqlPushdownAnalyzer.analyze(List.of(fds), TOPIC_ELIGIBLE);
-
-        assertThat(result.remainingSteps()).isEmpty();
-        String where = sql(result.pushdownCondition());
-        assertThat(where).containsIgnoringCase("kafka_key");
-        // Should negate the regexp_matches call
-        assertThat(where).containsAnyOf("not", "NOT");
-    }
-
-    // =========================================================================
     // Compound predicate pushdown (and / or / not)
     // =========================================================================
 
@@ -252,7 +171,6 @@ class SqlPushdownAnalyzerTest {
 
         assertThat(result.remainingSteps()).isEmpty();
         String where = sql(result.pushdownCondition());
-        // Positive condition: (partition=3 AND offset<100), negated for the keep clause
         assertThat(where).containsIgnoringCase("kafka_partition");
         assertThat(where).containsIgnoringCase("kafka_offset");
         assertThat(where).containsAnyOf("not", "NOT");
@@ -280,13 +198,11 @@ class SqlPushdownAnalyzerTest {
         var result = SqlPushdownAnalyzer.analyze(List.of(fds), TOPIC_ELIGIBLE);
 
         assertThat(result.remainingSteps()).isEmpty();
-        String where = sql(result.pushdownCondition());
-        assertThat(where).containsIgnoringCase("kafka_partition");
+        assertThat(sql(result.pushdownCondition())).containsIgnoringCase("kafka_partition");
     }
 
     @Test
     void compoundAnd_mixedEligibleIneligibleRemainsInJava() {
-        // One leaf references $.value.status which is not a top-level column → whole AND ineligible
         var predicate = new Predicate.And(List.of(
                 new Predicate.Leaf("$.partition", EQ, 3),
                 new Predicate.Leaf("$.value.status", EQ, "done")));
@@ -299,7 +215,6 @@ class SqlPushdownAnalyzerTest {
 
     @Test
     void compoundOr_withHeaderFieldRemainsInJava() {
-        // $.headers[x-env] is not a top-level column → ineligible
         var predicate = new Predicate.Or(List.of(
                 new Predicate.Leaf("$.partition", EQ, 0),
                 new Predicate.Leaf("$.headers[x-env]", EQ, "staging")));
@@ -311,7 +226,6 @@ class SqlPushdownAnalyzerTest {
 
     @Test
     void compoundNested_allTopLevelLeavesPushedDown() {
-        // AND( EQ(partition,0), OR( EQ(topic,"a"), EQ(topic,"b") ) ) — all leaves eligible
         var inner = new Predicate.Or(List.of(
                 new Predicate.Leaf("$.topic", EQ, "a"),
                 new Predicate.Leaf("$.topic", EQ, "b")));
@@ -329,8 +243,6 @@ class SqlPushdownAnalyzerTest {
 
     @Test
     void compoundNested_deeplyIneligibleLeafBubblesUp() {
-        // Deeply nested: AND( EQ(partition,0), NOT( OR( EQ($.value.x,"y"), EQ(topic,"t") ) ) )
-        // $.value.x is ineligible → whole compound stays in Java
         var deepIneligible = new Predicate.Or(List.of(
                 new Predicate.Leaf("$.value.x", EQ, "y"),
                 new Predicate.Leaf("$.topic", EQ, "t")));
@@ -352,7 +264,6 @@ class SqlPushdownAnalyzerTest {
 
         var result = SqlPushdownAnalyzer.analyze(List.of(compound, leafStep), TOPIC_ELIGIBLE);
 
-        // Both steps pushed down; remaining should be empty
         assertThat(result.remainingSteps()).isEmpty();
         String where = sql(result.pushdownCondition());
         assertThat(where).containsIgnoringCase("kafka_partition");
