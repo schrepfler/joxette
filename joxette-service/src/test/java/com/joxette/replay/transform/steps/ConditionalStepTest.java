@@ -5,25 +5,20 @@ import com.joxette.replay.transform.Predicate;
 import com.joxette.replay.transform.ReplayMessage;
 import com.joxette.replay.transform.TransformPipeline;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.List;
+import java.util.stream.Stream;
 
 import static com.joxette.replay.transform.Predicate.Operator.*;
 import static org.assertj.core.api.Assertions.assertThat;
 
-/**
- * Unit tests for {@link ConditionalStep}:
- * <ul>
- *   <li>Condition true path — then_steps applied</li>
- *   <li>Condition false path — else_steps applied (or pass-through when absent)</li>
- *   <li>Nested conditional inside then/else</li>
- *   <li>filter_drop inside a branch drops the message</li>
- *   <li>$.headers[key] extraction in condition</li>
- * </ul>
- */
 class ConditionalStepTest {
 
     private static final Base64.Encoder ENC = Base64.getUrlEncoder().withoutPadding();
@@ -51,80 +46,47 @@ class ConditionalStepTest {
         return new ReplayMessage(r);
     }
 
-    /** Convenience factory for simple leaf-predicate conditions. */
     private static Predicate cond(String field, Predicate.Operator op, Object value) {
         return new Predicate.Leaf(field, op, value);
     }
 
-    /** Convenience factory for filter_drop steps. */
     private static FilterDropStep fds(String field, Predicate.Operator op, Object value) {
         return new FilterDropStep(new Predicate.Leaf(field, op, value));
     }
 
-    /** Runs a single-step pipeline with no injector. */
     private static List<ReplayMessage> apply(ConditionalStep step, ReplayMessage m) {
         return new TransformPipeline(List.of(step), null).apply(m, "rid");
     }
 
     // =========================================================================
-    // Condition true — then_steps applied
+    // Condition branch matrix — (condition true/false) × (else steps present/absent)
     // =========================================================================
 
-    @Test
-    void conditionTrue_thenStepsApplied() {
-        var condition  = cond("$.topic", EQ, "orders");
-        var thenHeader = new AddHeaderStep("x-routed", "yes", false);
-        var step       = new ConditionalStep(condition, List.of(thenHeader), List.of());
+    @ParameterizedTest(name = "conditionMatches={0}, hasElseSteps={1} → branch={2}")
+    @CsvSource({
+        "true,  false, then",
+        "true,  true,  then",
+        "false, true,  else",
+        "false, false, none"
+    })
+    void conditionBranchMatrix(boolean conditionMatches, boolean hasElseSteps, String expectedBranch) {
+        var condition = cond("$.topic", EQ, "orders");
+        var thenStep  = new AddHeaderStep("x-branch", "then", false);
+        var elseStep  = new AddHeaderStep("x-branch", "else", false);
+        var step = hasElseSteps
+                ? new ConditionalStep(condition, List.of(thenStep), List.of(elseStep))
+                : new ConditionalStep(condition, List.of(thenStep), List.of());
 
-        List<ReplayMessage> result = apply(step, msg("orders"));
-
-        assertThat(result).hasSize(1);
-        assertThat(result.get(0).headers)
-                .anyMatch(h -> "x-routed".equals(h.key()) && "yes".equals(h.value()));
-    }
-
-    @Test
-    void conditionTrue_elseStepsNotApplied() {
-        var condition  = cond("$.topic", EQ, "orders");
-        var thenHeader = new AddHeaderStep("x-branch", "then", false);
-        var elseHeader = new AddHeaderStep("x-branch", "else", false);
-        var step       = new ConditionalStep(condition, List.of(thenHeader), List.of(elseHeader));
-
-        List<ReplayMessage> result = apply(step, msg("orders"));
+        String topic = conditionMatches ? "orders" : "payments";
+        var result   = apply(step, msg(topic));
 
         assertThat(result).hasSize(1);
-        assertThat(result.get(0).headers).hasSize(1);
-        assertThat(result.get(0).headers.get(0).value()).isEqualTo("then");
-    }
-
-    // =========================================================================
-    // Condition false — else_steps applied
-    // =========================================================================
-
-    @Test
-    void conditionFalse_elseStepsApplied() {
-        var condition  = cond("$.topic", EQ, "orders");
-        var thenHeader = new AddHeaderStep("x-branch", "then", false);
-        var elseHeader = new AddHeaderStep("x-branch", "else", false);
-        var step       = new ConditionalStep(condition, List.of(thenHeader), List.of(elseHeader));
-
-        List<ReplayMessage> result = apply(step, msg("payments"));
-
-        assertThat(result).hasSize(1);
-        assertThat(result.get(0).headers).hasSize(1);
-        assertThat(result.get(0).headers.get(0).value()).isEqualTo("else");
-    }
-
-    @Test
-    void conditionFalse_noElseSteps_messagePasses() {
-        var condition  = cond("$.topic", EQ, "orders");
-        var thenHeader = new AddHeaderStep("x-routed", "yes", false);
-        var step       = new ConditionalStep(condition, List.of(thenHeader), List.of());
-
-        List<ReplayMessage> result = apply(step, msg("payments"));
-
-        assertThat(result).hasSize(1);
-        assertThat(result.get(0).headers).isEmpty();
+        if ("none".equals(expectedBranch)) {
+            assertThat(result.get(0).headers).isEmpty();
+        } else {
+            assertThat(result.get(0).headers).hasSize(1);
+            assertThat(result.get(0).headers.get(0).value()).isEqualTo(expectedBranch);
+        }
     }
 
     // =========================================================================
@@ -172,7 +134,7 @@ class ConditionalStepTest {
     @Test
     void dropInThenBranch_dropsMessage() {
         var condition = cond("$.topic", EQ, "orders");
-        var dropStep  = fds("$.topic", EQ, "orders"); // same predicate = always drops
+        var dropStep  = fds("$.topic", EQ, "orders");
         var step      = new ConditionalStep(condition, List.of(dropStep), List.of());
 
         List<ReplayMessage> result = apply(step, msg("orders"));
@@ -197,7 +159,6 @@ class ConditionalStepTest {
         var dropStep  = fds("$.partition", EQ, 0);
         var step      = new ConditionalStep(condition, List.of(dropStep), List.of());
 
-        // topic=payments → condition false → else is empty → passes through
         List<ReplayMessage> result = apply(step, msg("payments"));
 
         assertThat(result).hasSize(1);
@@ -207,44 +168,44 @@ class ConditionalStepTest {
     // $.headers[key] extraction in condition
     // =========================================================================
 
-    @Test
-    void headerCondition_thenBranchWhenHeaderMatches() {
-        var condition  = cond("$.headers[x-env]", NEQ, "prod");
+    static Stream<Arguments> headerConditionCases() {
+        return Stream.of(
+                Arguments.of(
+                        msgWithHeader("x-env", "staging"),
+                        cond("$.headers[x-env]", NEQ, "prod"),
+                        true,
+                        "header present, NEQ prod (staging) → then branch applied"
+                ),
+                Arguments.of(
+                        msgWithHeader("x-env", "prod"),
+                        cond("$.headers[x-env]", NEQ, "prod"),
+                        false,
+                        "header present but equals prod → condition false → pass-through"
+                ),
+                Arguments.of(
+                        msg("t"),
+                        cond("$.headers[x-env]", IS_NOT_NULL, null),
+                        false,
+                        "missing header → IS_NOT_NULL false → pass-through"
+                )
+        );
+    }
+
+    @ParameterizedTest(name = "{3}")
+    @MethodSource("headerConditionCases")
+    void headerCondition(ReplayMessage message, Predicate condition, boolean expectThenBranch, String displayName) {
         var thenHeader = new AddHeaderStep("x-redacted", "true", false);
         var step       = new ConditionalStep(condition, List.of(thenHeader), List.of());
 
-        // Header x-env = staging → NEQ prod → true → then_steps run
-        List<ReplayMessage> result = apply(step, msgWithHeader("x-env", "staging"));
+        var result = apply(step, message);
 
         assertThat(result).hasSize(1);
-        assertThat(result.get(0).headers)
-                .anyMatch(h -> "x-redacted".equals(h.key()) && "true".equals(h.value()));
-    }
-
-    @Test
-    void headerCondition_elseBranchWhenHeaderDoesNotMatch() {
-        var condition  = cond("$.headers[x-env]", NEQ, "prod");
-        var thenHeader = new AddHeaderStep("x-redacted", "true", false);
-        var step       = new ConditionalStep(condition, List.of(thenHeader), List.of());
-
-        // x-env = prod → NEQ prod → false → else_steps (empty) → pass-through
-        List<ReplayMessage> result = apply(step, msgWithHeader("x-env", "prod"));
-
-        assertThat(result).hasSize(1);
-        assertThat(result.get(0).headers).noneMatch(h -> "x-redacted".equals(h.key()));
-    }
-
-    @Test
-    void headerCondition_missingHeader_treatedAsNull() {
-        var condition  = cond("$.headers[x-env]", IS_NOT_NULL, null);
-        var thenHeader = new AddHeaderStep("x-present", "yes", false);
-        var step       = new ConditionalStep(condition, List.of(thenHeader), List.of());
-
-        // No headers on the message → IS_NOT_NULL → null → false → else_steps (empty)
-        List<ReplayMessage> result = apply(step, msg("t"));
-
-        assertThat(result).hasSize(1);
-        assertThat(result.get(0).headers).noneMatch(h -> "x-present".equals(h.key()));
+        if (expectThenBranch) {
+            assertThat(result.get(0).headers)
+                    .anyMatch(h -> "x-redacted".equals(h.key()) && "true".equals(h.value()));
+        } else {
+            assertThat(result.get(0).headers).noneMatch(h -> "x-redacted".equals(h.key()));
+        }
     }
 
     // =========================================================================
