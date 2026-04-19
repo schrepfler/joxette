@@ -393,6 +393,27 @@ export const cassettesApi = {
   /** Rebuild the known_entities registry by scanning all entity cassette tables. */
   rebuildKnownEntities: () =>
     request<{ rebuilt: number }>('/cassettes/entities/rebuild-known-entities', { method: 'POST' }),
+  /** Find sequences matching a SequenceQuery across a topic or entity cassette. */
+  matchSequences: (
+    mode: 'topic' | 'entity',
+    params: { topic?: string; entityType?: string },
+    query: import('../transforms/types').SequenceQuery,
+  ): Promise<import('../transforms/types').SequenceMatchResponse> => {
+    if (mode === 'topic' && params.topic) {
+      return request(`/cassettes/topics/${encodeURIComponent(params.topic)}/match-sequences`, {
+        method: 'POST',
+        body: JSON.stringify(query),
+      })
+    }
+    if (mode === 'entity' && params.entityType) {
+      return request(`/cassettes/entities/${encodeURIComponent(params.entityType)}/match-sequences`, {
+        method: 'POST',
+        body: JSON.stringify(query),
+      })
+    }
+    return Promise.reject(new Error('Invalid mode or missing topic/entityType params'))
+  },
+
   /** Dry-run: apply a transform pipeline to the first N records and return before/after pairs. */
   previewTransforms: (req: PreviewTransformsRequest) => {
     const { mode, topic, entityType, entityId, steps, limit = 5 } = req

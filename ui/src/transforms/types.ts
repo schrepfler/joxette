@@ -314,3 +314,40 @@ export function serializeSteps(steps: PipelineStep[]): TransformStep[] {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   return steps.map(({ _id: _, ...rest }) => rest as TransformStep)
 }
+
+// ---------------------------------------------------------------------------
+// Sequence query types — SequenceQueryPanel
+// ---------------------------------------------------------------------------
+
+export type MatchStep = {
+  _id: string
+  predicate: Predicate
+  label?: string
+  required: boolean
+  repeated: boolean
+  gap: 'any' | 'immediate'
+}
+
+export type SequenceConstraints = {
+  maxDurationMs?: number
+  minDurationMs?: number
+}
+
+export type SequenceQuery = {
+  steps: MatchStep[]
+  constraints?: SequenceConstraints
+}
+
+export type MatchedSequence = {
+  anchorTimestamps: string[]
+  messages: import('../api/client').CassetteRecord[]
+  durationMs: number
+}
+
+export type SequenceMatchResponse = {
+  totalMessages: number
+  matchedSequences: number
+  matchRate: number
+  reachRates: number[]
+  examples: MatchedSequence[]
+}
