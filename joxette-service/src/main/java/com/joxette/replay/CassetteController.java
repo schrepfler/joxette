@@ -82,16 +82,17 @@ public class CassetteController {
 
     private static final int DEFAULT_LIMIT = 100;
 
-    private final TopicReplayService       topicService;
-    private final EntityReplayService      entityService;
-    private final SseReplayHandler         sseHandler;
-    private final CassetteLifecycleService lifecycle;
-    private final KafkaRecordSinkFactory   sinkFactory;
-    private final ScheduledReplayService   scheduledReplayService;
-    private final ReplayMetadataInjector   metadataInjector;
+    private final TopicReplayService        topicService;
+    private final EntityReplayService       entityService;
+    private final SseReplayHandler          sseHandler;
+    private final CassetteLifecycleService  lifecycle;
+    private final KafkaRecordSinkFactory    sinkFactory;
+    private final ScheduledReplayService    scheduledReplayService;
+    private final ReplayMetadataInjector    metadataInjector;
     private final TransformPresetRepository presetRepository;
-    private final JoxetteProperties        properties;
-    private final ObjectMapper             objectMapper;
+    private final JoxetteProperties         properties;
+    private final ObjectMapper              objectMapper;
+    private final SequenceMatchService      sequenceMatchService;
 
     public CassetteController(
             TopicReplayService topicService,
@@ -103,7 +104,8 @@ public class CassetteController {
             ReplayMetadataInjector metadataInjector,
             TransformPresetRepository presetRepository,
             JoxetteProperties properties,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            SequenceMatchService sequenceMatchService) {
         this.topicService           = topicService;
         this.entityService          = entityService;
         this.sseHandler             = sseHandler;
@@ -114,6 +116,7 @@ public class CassetteController {
         this.presetRepository       = presetRepository;
         this.properties             = properties;
         this.objectMapper           = objectMapper;
+        this.sequenceMatchService   = sequenceMatchService;
     }
 
     /**
@@ -1523,6 +1526,67 @@ public class CassetteController {
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType("application/x-ndjson"))
                 .body(stream);
+    }
+
+    // =========================================================================
+    // Sequence matching
+    // =========================================================================
+
+    @Operation(
+        operationId = "matchTopicSequences",
+        summary = "Match message sequences in a topic cassette",
+        description = "Scans the general cassette for the given topic in timestamp order and runs an " +
+                      "NFA-style sequence match over the step predicates supplied in the request body. " +
+                      "Returns aggregate statistics (totalMessages, matchRate, per-step reachRates) " +
+                      "and up to `limit` (default 25) example MatchedSequence objects."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Sequence match results",
+            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                schema = @Schema(implementation = SequenceMatchService.SequenceMatchResponse.class))),
+        @ApiResponse(responseCode = "400", description = "Invalid request body",
+            content = @Content(schema = @Schema(type = "string"))),
+        @ApiResponse(responseCode = "500", description = "Database error",
+            content = @Content(schema = @Schema(type = "string")))
+    })
+    @PostMapping(value = "/topics/{topic}/match-sequences",
+                 consumes = MediaType.APPLICATION_JSON_VALUE,
+                 produces = MediaType.APPLICATION_JSON_VALUE)
+    public SequenceMatchService.SequenceMatchResponse matchTopicSequences(
+            @Parameter(description = "Kafka topic name", required = true, example = "orders")
+            @PathVariable String topic,
+            @RequestBody SequenceMatchService.SequenceMatchRequest req
+    ) throws SQLException {
+        return sequenceMatchService.matchTopic(topicService, topic, req);
+    }
+
+    @Operation(
+        operationId = "matchEntitySequences",
+        summary = "Match message sequences in an entity cassette",
+        description = "Scans the entity cassette for the given entity type/id in timestamp order and runs " +
+                      "an NFA-style sequence match over the step predicates supplied in the request body. " +
+                      "Returns aggregate statistics and up to `limit` (default 25) example sequences."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Sequence match results",
+            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                schema = @Schema(implementation = SequenceMatchService.SequenceMatchResponse.class))),
+        @ApiResponse(responseCode = "400", description = "Invalid entity type or request body",
+            content = @Content(schema = @Schema(type = "string"))),
+        @ApiResponse(responseCode = "500", description = "Database error",
+            content = @Content(schema = @Schema(type = "string")))
+    })
+    @PostMapping(value = "/entities/{entityType}/match-sequences",
+                 consumes = MediaType.APPLICATION_JSON_VALUE,
+                 produces = MediaType.APPLICATION_JSON_VALUE)
+    public SequenceMatchService.SequenceMatchResponse matchEntitySequences(
+            @Parameter(description = "Entity type name (must match `[a-z][a-z0-9_]*`)", required = true, example = "order")
+            @PathVariable String entityType,
+            @Parameter(description = "Entity identifier", required = true, example = "order-42")
+            @RequestParam String entityId,
+            @RequestBody SequenceMatchService.SequenceMatchRequest req
+    ) throws SQLException {
+        return sequenceMatchService.matchEntity(entityService, entityType, entityId, req);
     }
 
     // =========================================================================
