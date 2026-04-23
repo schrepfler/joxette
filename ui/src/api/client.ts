@@ -483,7 +483,7 @@ export type EntityStreamParams = {
   to?: string
 }
 
-async function streamLines(
+export async function streamLines(
   url: string,
   accept: string,
   onLine: (line: string) => void,
@@ -518,9 +518,18 @@ async function streamLines(
       buf += decoder.decode(value, { stream: true })
       const lines = buf.split('\n')
       buf = lines.pop() ?? ''
-      for (const line of lines) onLine(line)
+      for (const raw of lines) {
+        // Normalize CRLF.
+        const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw
+        // Drop SSE comment lines (e.g. ":heartbeat") silently — these are
+        // keepalives from the follow-mode backend and must never reach the
+        // record parser.
+        if (line.startsWith(':')) continue
+        onLine(line)
+      }
     }
-    if (buf.trim()) onLine(buf)
+    const tail = buf.endsWith('\r') ? buf.slice(0, -1) : buf
+    if (tail && !tail.startsWith(':')) onLine(tail)
     onDone()
   } catch (e) {
     if ((e as Error).name === 'AbortError') return
@@ -534,21 +543,104 @@ function extractData(line: string, isSse: boolean): string | null {
   return t || null
 }
 
+/** Backend-emitted status transitions for follow-mode streams. */
+export type StreamStatusEvent = 'follow' | 'overflow'
+
+export interface RecordStreamCallbacks<R> {
+  onRecord: (r: R) => void
+  /** Optional: receive follow-mode status transitions (follow preamble, overflow terminal). */
+  onStatus?: (event: StreamStatusEvent) => void
+  onDone: () => void
+  onError: (e: Error) => void
+}
+
+/**
+ * Build an SSE event parser. The parser consumes lines emitted by
+ * {@link streamLines} (one line at a time, including blank lines as
+ * SSE-block terminators) and dispatches on blank-line boundaries:
+ *  - blocks whose `event:` is `message` (the SSE default) → onRecord
+ *  - blocks with an explicit `event:` name → onEvent(name, data)
+ *
+ * Heartbeat `:`-prefixed comment lines are already dropped by streamLines.
+ */
+function createSseParser(
+  onRecord: (json: string) => void,
+  onEvent: (name: string, json: string) => void,
+): (line: string) => void {
+  let currentEvent: string | null = null
+  const dataBuf: string[] = []
+  return (line: string) => {
+    // SSE block terminator (blank line, possibly trailing \r).
+    if (line === '' || line === '\r') {
+      if (dataBuf.length > 0) {
+        const data = dataBuf.join('\n')
+        if (currentEvent == null || currentEvent === 'message') onRecord(data)
+        else onEvent(currentEvent, data)
+      }
+      currentEvent = null
+      dataBuf.length = 0
+      return
+    }
+    if (line.startsWith('event:')) {
+      currentEvent = line.slice(6).trim()
+    } else if (line.startsWith('data:')) {
+      // Strip single leading space after `data:` per the SSE spec.
+      const v = line.slice(5)
+      dataBuf.push(v.startsWith(' ') ? v.slice(1) : v)
+    }
+    // Ignore id:, retry:, and unknown fields.
+  }
+}
+
+type EventEnvelope = { event?: string }
+
+function readEventName(evt: unknown): string | null {
+  if (evt == null || typeof evt !== 'object') return null
+  const e = (evt as EventEnvelope).event
+  return typeof e === 'string' ? e : null
+}
+
+/** Build an NDJSON line handler that distinguishes records from status events. */
+function createNdjsonHandler<R>(
+  onRecord: (r: R) => void,
+  onStatus: ((e: StreamStatusEvent) => void) | undefined,
+): (line: string) => void {
+  return (line: string) => {
+    const data = extractData(line, false)
+    if (!data) return
+    let parsed: unknown
+    try { parsed = JSON.parse(data) } catch { return }
+    const eventName = readEventName(parsed)
+    if (eventName != null) {
+      // Any envelope with a top-level `event` is a backend status line.
+      // Surface follow/overflow; silently drop heartbeats and unknowns.
+      if (eventName === 'follow' || eventName === 'overflow') onStatus?.(eventName)
+      return
+    }
+    onRecord(parsed as R)
+  }
+}
+
 export function streamTopicRecords(
   topic: string,
   mode: 'sse' | 'ndjson',
-  params: TopicStreamParams,
-  callbacks: { onRecord: (r: CassetteRecord) => void; onDone: () => void; onError: (e: Error) => void },
+  params: TopicStreamParams & { follow?: boolean },
+  callbacks: RecordStreamCallbacks<CassetteRecord>,
 ): AbortController {
-  const url = `${API_BASE}/cassettes/topics/${encodeURIComponent(topic)}${buildQuery(params)}`
+  const { follow, ...rest } = params
+  const query = buildQuery(follow ? { ...rest, follow: 'true' } : rest)
+  const url = `${API_BASE}/cassettes/topics/${encodeURIComponent(topic)}${query}`
   const accept = mode === 'sse' ? 'text/event-stream' : 'application/x-ndjson'
-  const isSse = mode === 'sse'
   const ctrl = new AbortController()
-  void streamLines(url, accept, (line) => {
-    const data = extractData(line, isSse)
-    if (!data) return
-    try { callbacks.onRecord(JSON.parse(data) as CassetteRecord) } catch { /* skip malformed line */ }
-  }, callbacks.onDone, callbacks.onError, ctrl.signal)
+  const onLine = mode === 'sse'
+    ? createSseParser(
+        (data) => { try { callbacks.onRecord(JSON.parse(data) as CassetteRecord) } catch { /* skip */ } },
+        (name) => {
+          if (name === 'follow' || name === 'overflow') callbacks.onStatus?.(name)
+        },
+      )
+    : createNdjsonHandler<CassetteRecord>(callbacks.onRecord, callbacks.onStatus)
+  void streamLines(url, accept, onLine, callbacks.onDone, callbacks.onError, ctrl.signal)
   return ctrl
 }
 
@@ -556,20 +648,28 @@ export function streamEntityRecords(
   entityType: string,
   entityId: string,
   mode: 'sse' | 'ndjson',
-  params: EntityStreamParams,
-  callbacks: { onRecord: (r: EntityRecord) => void; onDone: () => void; onError: (e: Error) => void },
+  params: EntityStreamParams & { follow?: boolean },
+  callbacks: RecordStreamCallbacks<EntityRecord>,
 ): AbortController {
-  const url = `${API_BASE}/cassettes/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}${buildQuery(params)}`
+  const { follow, ...rest } = params
+  const query = buildQuery(follow ? { ...rest, follow: 'true' } : rest)
+  const url = `${API_BASE}/cassettes/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}${query}`
   const accept = mode === 'sse' ? 'text/event-stream' : 'application/x-ndjson'
-  const isSse = mode === 'sse'
   const ctrl = new AbortController()
-  void streamLines(url, accept, (line) => {
-    const data = extractData(line, isSse)
-    if (!data) return
-    try { callbacks.onRecord(JSON.parse(data) as EntityRecord) } catch { /* skip malformed line */ }
-  }, callbacks.onDone, callbacks.onError, ctrl.signal)
+  const onLine = mode === 'sse'
+    ? createSseParser(
+        (data) => { try { callbacks.onRecord(JSON.parse(data) as EntityRecord) } catch { /* skip */ } },
+        (name) => {
+          if (name === 'follow' || name === 'overflow') callbacks.onStatus?.(name)
+        },
+      )
+    : createNdjsonHandler<EntityRecord>(callbacks.onRecord, callbacks.onStatus)
+  void streamLines(url, accept, onLine, callbacks.onDone, callbacks.onError, ctrl.signal)
   return ctrl
 }
+
+// Exported for unit tests only.
+export const __testables = { createSseParser, createNdjsonHandler }
 
 /** Stream topic records via POST with a full transform pipeline (SSE). */
 export function streamTopicRecordsWithTransform(

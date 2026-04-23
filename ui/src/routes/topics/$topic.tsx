@@ -17,6 +17,7 @@ import { TruncateDialog } from '../../components/TruncateDialog'
 import { ConfirmDialog } from '../../components/ConfirmDialog'
 import { ReplayToTopicPanel } from '../../components/ReplayToTopicPanel'
 import { SequenceQueryPanel } from '../../components/SequenceQueryPanel'
+import { StreamStatusBadge, type StreamStatus } from '../../components/StreamStatusBadge'
 import { useToast } from '../../components/Toast'
 import { useDebounce } from '../../hooks/useDebounce'
 import type { FragmentDefinition } from '../../transforms/types'
@@ -151,6 +152,10 @@ function AddMatcherModal({ topic, onClose }: { topic: string; onClose: () => voi
 const trunc = (s: string | null, n: number) =>
   s == null ? '—' : s.length > n ? s.slice(0, n) + '…' : s
 
+function isStreamActive(s: StreamStatus): boolean {
+  return s === 'streaming' || s === 'draining' || s === 'tailing'
+}
+
 function formatBytes(b: number) {
   if (b < 1024) return `${b} B`
   if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`
@@ -178,12 +183,15 @@ function TopicDetailPage() {
 
   // Streaming state
   const [streamMode, setStreamMode] = useState<StreamMode>('json')
-  const [streamStatus, setStreamStatus] = useState<'idle' | 'streaming' | 'done' | 'error'>('idle')
+  const [followLive, setFollowLive] = useState(false)
+  const [streamStatus, setStreamStatus] = useState<StreamStatus>('idle')
   const [streamedRecords, setStreamedRecords] = useState<CassetteRecord[]>([])
   const [streamError, setStreamError] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const streamBufferRef = useRef<CassetteRecord[]>([])
   const flushIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const followActiveRef = useRef(false)
+  const terminalRef = useRef(false)
 
   // Debounced filters
   const from = useDebounce(fromRaw, 300)
@@ -267,13 +275,18 @@ function TopicDetailPage() {
     abortRef.current?.abort()
     abortRef.current = null
     if (flushIntervalRef.current) { clearInterval(flushIntervalRef.current); flushIntervalRef.current = null }
-    setStreamStatus(s => s === 'streaming' ? 'idle' : s)
+    followActiveRef.current = false
+    terminalRef.current = true
+    setStreamedRecords([...streamBufferRef.current])
+    setStreamStatus(s => isStreamActive(s) ? 'stopped' : s)
   }
 
   function clearStream() {
     abortRef.current?.abort()
     abortRef.current = null
     if (flushIntervalRef.current) { clearInterval(flushIntervalRef.current); flushIntervalRef.current = null }
+    followActiveRef.current = false
+    terminalRef.current = false
     streamBufferRef.current = []
     setStreamedRecords([])
     setStreamError(null)
@@ -283,23 +296,41 @@ function TopicDetailPage() {
   function startStream() {
     if (streamMode === 'json') return
     clearStream()
-    setStreamStatus('streaming')
+    const isFollowing = followLive
+    setStreamStatus(isFollowing ? 'draining' : 'streaming')
     flushIntervalRef.current = setInterval(() => {
       setStreamedRecords([...streamBufferRef.current])
     }, 250)
-    const params: TopicStreamParams = {
+    const params: TopicStreamParams & { follow?: boolean } = {
       from: from || undefined,
-      to: to || undefined,
+      // When following, bounded ranges are rejected by the backend (HTTP 400).
+      // The UI also greys these inputs out; defence in depth: drop them here.
+      to: isFollowing ? undefined : (to || undefined),
       partition: partition ? Number(partition) : undefined,
       offset_from: offsetFrom ? Number(offsetFrom) : undefined,
-      offset_to: offsetTo ? Number(offsetTo) : undefined,
+      offset_to: isFollowing ? undefined : (offsetTo ? Number(offsetTo) : undefined),
+      follow: isFollowing || undefined,
     }
     abortRef.current = streamTopicRecords(topic, streamMode, params, {
       onRecord: (r) => { streamBufferRef.current.push(r) },
+      onStatus: (event) => {
+        if (event === 'follow') {
+          followActiveRef.current = true
+          setStreamStatus('tailing')
+        } else if (event === 'overflow') {
+          terminalRef.current = true
+          setStreamStatus('overflow')
+        }
+      },
       onDone: () => {
         if (flushIntervalRef.current) { clearInterval(flushIntervalRef.current); flushIntervalRef.current = null }
         setStreamedRecords([...streamBufferRef.current])
-        setStreamStatus('done')
+        // In follow mode, any natural end-of-stream is an unexpected disconnect
+        // (follow streams don't complete). A terminal overflow already set the
+        // status — preserve it.
+        if (terminalRef.current) return
+        if (isFollowing) setStreamStatus('disconnected')
+        else setStreamStatus('done')
       },
       onError: (e) => {
         if (flushIntervalRef.current) { clearInterval(flushIntervalRef.current); flushIntervalRef.current = null }
@@ -321,7 +352,8 @@ function TopicDetailPage() {
     abortRef.current?.abort()
     abortRef.current = null
     if (flushIntervalRef.current) { clearInterval(flushIntervalRef.current); flushIntervalRef.current = null }
-    setStreamStatus(s => s === 'streaming' ? 'idle' : s)
+    followActiveRef.current = false
+    setStreamStatus(s => (s === 'streaming' || s === 'draining' || s === 'tailing') ? 'idle' : s)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [from, to, partition, offsetFrom, offsetTo])
 
@@ -581,44 +613,55 @@ function TopicDetailPage() {
 
             {/* Filters */}
             <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: '1rem' }}>
-              {[
-                ['From', fromRaw, setFromRaw, 'datetime-local'],
-                ['To', toRaw, setToRaw, 'datetime-local'],
-                ['Partition', partitionRaw, setPartitionRaw, 'number'],
-                ['Offset From', offsetFromRaw, setOffsetFromRaw, 'number'],
-                ['Offset To', offsetToRaw, setOffsetToRaw, 'number'],
-              ].map(([label, val, setter, type]) => (
-                <div key={label as string}>
-                  <label style={labelStyle}>{label as string}</label>
-                  <input
-                    type={type as string}
-                    style={{ ...inputStyle, width: 170 }}
-                    value={val as string}
-                    onChange={e => (setter as React.Dispatch<React.SetStateAction<string>>)(e.target.value)}
-                  />
-                </div>
-              ))}
+              {([
+                ['From', fromRaw, setFromRaw, 'datetime-local', false],
+                ['To', toRaw, setToRaw, 'datetime-local', true],
+                ['Partition', partitionRaw, setPartitionRaw, 'number', false],
+                ['Offset From', offsetFromRaw, setOffsetFromRaw, 'number', false],
+                ['Offset To', offsetToRaw, setOffsetToRaw, 'number', true],
+              ] as Array<[string, string, React.Dispatch<React.SetStateAction<string>>, string, boolean]>).map(([label, val, setter, type, disabledByFollow]) => {
+                const disabled = disabledByFollow && followLive && streamMode !== 'json'
+                return (
+                  <div key={label}>
+                    <label style={{ ...labelStyle, color: disabled ? '#a0aec0' : labelStyle.color }}>{label}</label>
+                    <input
+                      type={type}
+                      disabled={disabled}
+                      title={disabled ? 'Disabled while following live — bounded ranges are incompatible with follow mode' : undefined}
+                      style={{ ...inputStyle, width: 170, ...(disabled ? disabledInputStyle : null) }}
+                      value={val}
+                      onChange={e => setter(e.target.value)}
+                    />
+                  </div>
+                )
+              })}
             </div>
 
             {/* Streaming controls */}
             {streamMode !== 'json' && (
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: '0.75rem' }}>
-                {streamStatus !== 'streaming' ? (
+              <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
+                {!isStreamActive(streamStatus) ? (
                   <button style={primaryBtnStyle} onClick={startStream}>Start Streaming</button>
                 ) : (
                   <button style={{ ...primaryBtnStyle, background: '#e53e3e' }} onClick={stopStream}>Stop</button>
                 )}
-                {streamedRecords.length > 0 && streamStatus !== 'streaming' && (
+                {streamedRecords.length > 0 && !isStreamActive(streamStatus) && (
                   <button style={secondaryBtnStyle} onClick={clearStream}>Clear</button>
                 )}
-                <span style={{
-                  fontSize: 13,
-                  color: streamStatus === 'done' ? '#276749' : streamStatus === 'error' ? '#e53e3e' : '#718096',
-                }}>
-                  {streamStatus === 'streaming' && `● Receiving\u2026 ${streamedRecords.length.toLocaleString()} records`}
-                  {streamStatus === 'done' && `\u2713 Complete \u2014 ${streamedRecords.length.toLocaleString()} records`}
-                  {streamStatus === 'error' && streamError && `\u2717 ${streamError}`}
-                </span>
+                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#4a5568', cursor: isStreamActive(streamStatus) ? 'not-allowed' : 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={followLive}
+                    onChange={e => setFollowLive(e.target.checked)}
+                    disabled={isStreamActive(streamStatus)}
+                  />
+                  Follow live
+                </label>
+                <StreamStatusBadge
+                  status={streamStatus}
+                  count={streamedRecords.length}
+                  errorMessage={streamError}
+                />
               </div>
             )}
 
@@ -676,6 +719,7 @@ function TopicDetailPage() {
 
 const labelStyle: React.CSSProperties = { display: 'block', marginBottom: 4, fontSize: 13, fontWeight: 600, color: '#4a5568' }
 const inputStyle: React.CSSProperties = { padding: '0.4rem 0.6rem', border: '1px solid #cbd5e0', borderRadius: 4, fontSize: 14 }
+const disabledInputStyle: React.CSSProperties = { background: '#f7fafc', color: '#a0aec0', cursor: 'not-allowed' }
 const inputStyleFull: React.CSSProperties = { width: '100%', padding: '0.4rem 0.6rem', border: '1px solid #cbd5e0', borderRadius: 4, fontSize: 14, boxSizing: 'border-box' }
 const primaryBtnStyle: React.CSSProperties = { padding: '0.45rem 1rem', background: '#3182ce', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 14 }
 const cancelBtnStyle: React.CSSProperties = { padding: '0.45rem 1rem', background: '#fff', color: '#4a5568', border: '1px solid #cbd5e0', borderRadius: 4, cursor: 'pointer', fontSize: 14 }

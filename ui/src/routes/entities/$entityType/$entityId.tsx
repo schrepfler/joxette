@@ -15,6 +15,7 @@ import { ErrorMessage } from '../../../components/ErrorMessage'
 import { ConfirmDialog } from '../../../components/ConfirmDialog'
 import { ReplayToTopicPanel } from '../../../components/ReplayToTopicPanel'
 import { SequenceQueryPanel } from '../../../components/SequenceQueryPanel'
+import { StreamStatusBadge, type StreamStatus } from '../../../components/StreamStatusBadge'
 import { useToast } from '../../../components/Toast'
 import { useDebounce } from '../../../hooks/useDebounce'
 import type { FragmentDefinition } from '../../../transforms/types'
@@ -86,6 +87,10 @@ const colHelper = createColumnHelper<EntityRecord>()
 const trunc = (s: string | null, n: number) =>
   s == null ? '—' : s.length > n ? s.slice(0, n) + '…' : s
 
+function isStreamActive(s: StreamStatus): boolean {
+  return s === 'streaming' || s === 'draining' || s === 'tailing'
+}
+
 function EntityInstancePage() {
   const { entityType, entityId } = Route.useParams()
   const navigate = useNavigate()
@@ -103,12 +108,15 @@ function EntityInstancePage() {
 
   // Streaming state
   const [streamMode, setStreamMode] = useState<StreamMode>('json')
-  const [streamStatus, setStreamStatus] = useState<'idle' | 'streaming' | 'done' | 'error'>('idle')
+  const [followLive, setFollowLive] = useState(false)
+  const [streamStatus, setStreamStatus] = useState<StreamStatus>('idle')
   const [streamedRecords, setStreamedRecords] = useState<EntityRecord[]>([])
   const [streamError, setStreamError] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const streamBufferRef = useRef<EntityRecord[]>([])
   const flushIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const followActiveRef = useRef(false)
+  const terminalRef = useRef(false)
 
   const statsQuery = useQuery({
     queryKey: ['cassettes', 'entities', entityType, entityId, 'stats'],
@@ -139,13 +147,18 @@ function EntityInstancePage() {
     abortRef.current?.abort()
     abortRef.current = null
     if (flushIntervalRef.current) { clearInterval(flushIntervalRef.current); flushIntervalRef.current = null }
-    setStreamStatus(s => s === 'streaming' ? 'idle' : s)
+    followActiveRef.current = false
+    terminalRef.current = true
+    setStreamedRecords([...streamBufferRef.current])
+    setStreamStatus(s => (s === 'streaming' || s === 'draining' || s === 'tailing') ? 'stopped' : s)
   }
 
   function clearStream() {
     abortRef.current?.abort()
     abortRef.current = null
     if (flushIntervalRef.current) { clearInterval(flushIntervalRef.current); flushIntervalRef.current = null }
+    followActiveRef.current = false
+    terminalRef.current = false
     streamBufferRef.current = []
     setStreamedRecords([])
     setStreamError(null)
@@ -155,20 +168,35 @@ function EntityInstancePage() {
   function startStream() {
     if (streamMode === 'json') return
     clearStream()
-    setStreamStatus('streaming')
+    const isFollowing = followLive
+    setStreamStatus(isFollowing ? 'draining' : 'streaming')
     flushIntervalRef.current = setInterval(() => {
       setStreamedRecords([...streamBufferRef.current])
     }, 250)
-    const params: EntityStreamParams = {
+    const params: EntityStreamParams & { follow?: boolean } = {
       from: from || undefined,
-      to: to || undefined,
+      // Follow mode rejects bounded ranges server-side; the `to` input is
+      // also greyed out in the UI. Guard both paths.
+      to: isFollowing ? undefined : (to || undefined),
+      follow: isFollowing || undefined,
     }
     abortRef.current = streamEntityRecords(entityType, entityId, streamMode, params, {
       onRecord: (r) => { streamBufferRef.current.push(r) },
+      onStatus: (event) => {
+        if (event === 'follow') {
+          followActiveRef.current = true
+          setStreamStatus('tailing')
+        } else if (event === 'overflow') {
+          terminalRef.current = true
+          setStreamStatus('overflow')
+        }
+      },
       onDone: () => {
         if (flushIntervalRef.current) { clearInterval(flushIntervalRef.current); flushIntervalRef.current = null }
         setStreamedRecords([...streamBufferRef.current])
-        setStreamStatus('done')
+        if (terminalRef.current) return
+        if (isFollowing) setStreamStatus('disconnected')
+        else setStreamStatus('done')
       },
       onError: (e) => {
         if (flushIntervalRef.current) { clearInterval(flushIntervalRef.current); flushIntervalRef.current = null }
@@ -190,7 +218,8 @@ function EntityInstancePage() {
     abortRef.current?.abort()
     abortRef.current = null
     if (flushIntervalRef.current) { clearInterval(flushIntervalRef.current); flushIntervalRef.current = null }
-    setStreamStatus(s => s === 'streaming' ? 'idle' : s)
+    followActiveRef.current = false
+    setStreamStatus(s => (s === 'streaming' || s === 'draining' || s === 'tailing') ? 'idle' : s)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [from, to])
 
@@ -367,38 +396,59 @@ function EntityInstancePage() {
         </div>
 
         <div style={{ display: 'flex', gap: 10, marginBottom: '1rem', flexWrap: 'wrap' }}>
-          {[['From', fromRaw, setFromRaw], ['To', toRaw, setToRaw]].map(([label, val, setter]) => (
-            <div key={label as string}>
-              <label style={labelStyle}>{label as string}</label>
-              <input
-                type="datetime-local"
-                style={{ padding: '0.4rem 0.6rem', border: '1px solid #cbd5e0', borderRadius: 4, fontSize: 14, width: 200 }}
-                value={val as string}
-                onChange={e => (setter as React.Dispatch<React.SetStateAction<string>>)(e.target.value)}
-              />
-            </div>
-          ))}
+          {([
+            ['From', fromRaw, setFromRaw, false],
+            ['To', toRaw, setToRaw, true],
+          ] as Array<[string, string, React.Dispatch<React.SetStateAction<string>>, boolean]>).map(([label, val, setter, disabledByFollow]) => {
+            const disabled = disabledByFollow && followLive && streamMode !== 'json'
+            return (
+              <div key={label}>
+                <label style={{ ...labelStyle, color: disabled ? '#a0aec0' : labelStyle.color }}>{label}</label>
+                <input
+                  type="datetime-local"
+                  disabled={disabled}
+                  title={disabled ? 'Disabled while following live — bounded ranges are incompatible with follow mode' : undefined}
+                  style={{
+                    padding: '0.4rem 0.6rem',
+                    border: '1px solid #cbd5e0',
+                    borderRadius: 4,
+                    fontSize: 14,
+                    width: 200,
+                    ...(disabled ? { background: '#f7fafc', color: '#a0aec0', cursor: 'not-allowed' } : null),
+                  }}
+                  value={val}
+                  onChange={e => setter(e.target.value)}
+                />
+              </div>
+            )
+          })}
         </div>
 
         {/* Streaming controls */}
         {streamMode !== 'json' && (
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: '0.75rem' }}>
-            {streamStatus !== 'streaming' ? (
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
+            {!isStreamActive(streamStatus) ? (
               <button style={primaryBtnStyle} onClick={startStream}>Start Streaming</button>
             ) : (
               <button style={{ ...primaryBtnStyle, background: '#e53e3e' }} onClick={stopStream}>Stop</button>
             )}
-            {streamedRecords.length > 0 && streamStatus !== 'streaming' && (
+            {streamedRecords.length > 0 && !isStreamActive(streamStatus) && (
               <button style={secondaryBtnStyle} onClick={clearStream}>Clear</button>
             )}
-            <span style={{
-              fontSize: 13,
-              color: streamStatus === 'done' ? '#276749' : streamStatus === 'error' ? '#e53e3e' : '#718096',
-            }}>
-              {streamStatus === 'streaming' && `● Receiving\u2026 ${streamedRecords.length.toLocaleString()} records`}
-              {streamStatus === 'done' && `\u2713 Complete \u2014 ${streamedRecords.length.toLocaleString()} records`}
-              {streamStatus === 'error' && streamError && `\u2717 ${streamError}`}
-            </span>
+            <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#4a5568', cursor: isStreamActive(streamStatus) ? 'not-allowed' : 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={followLive}
+                onChange={e => setFollowLive(e.target.checked)}
+                disabled={isStreamActive(streamStatus)}
+              />
+              Follow live
+            </label>
+            <StreamStatusBadge
+              status={streamStatus}
+              count={streamedRecords.length}
+              errorMessage={streamError}
+            />
           </div>
         )}
 
