@@ -315,11 +315,52 @@ public class JoxetteProperties {
          */
         private int maxTransformSteps = 50;
 
+        private Follow follow = new Follow();
+
         public int getMaxScheduled() { return maxScheduled; }
         public void setMaxScheduled(int maxScheduled) { this.maxScheduled = maxScheduled; }
 
         public int getMaxTransformSteps() { return maxTransformSteps; }
         public void setMaxTransformSteps(int maxTransformSteps) { this.maxTransformSteps = maxTransformSteps; }
+
+        public Follow getFollow() { return follow; }
+        public void setFollow(Follow follow) { this.follow = follow; }
+
+        /**
+         * Tunables for the {@code follow=true} streaming replay mode.
+         *
+         * <p>The follow bus registers per-stream subscriptions that buffer newly-committed
+         * records into a bounded in-memory queue.  These limits protect the service from
+         * unbounded memory growth when a client consumes slower than writes are committing.
+         */
+        public static class Follow {
+            /**
+             * Bounded queue capacity for each follow subscription.  A subscription whose
+             * queue fills up is marked overflowed and its stream is terminated by Task B.
+             */
+            private int bufferCapacity = 1024;
+
+            /**
+             * Maximum number of concurrent follow subscriptions across the service.
+             * New follow requests beyond this limit are rejected with HTTP 503.
+             */
+            private int maxSubscriptions = 64;
+
+            /**
+             * Heartbeat cadence (in seconds) for idle follow streams, used by Task B
+             * to keep proxies from closing long-lived SSE/NDJSON connections.
+             */
+            private int heartbeatSeconds = 15;
+
+            public int getBufferCapacity() { return bufferCapacity; }
+            public void setBufferCapacity(int bufferCapacity) { this.bufferCapacity = bufferCapacity; }
+
+            public int getMaxSubscriptions() { return maxSubscriptions; }
+            public void setMaxSubscriptions(int maxSubscriptions) { this.maxSubscriptions = maxSubscriptions; }
+
+            public int getHeartbeatSeconds() { return heartbeatSeconds; }
+            public void setHeartbeatSeconds(int heartbeatSeconds) { this.heartbeatSeconds = heartbeatSeconds; }
+        }
     }
 
     // -----------------------------------------------------------------------

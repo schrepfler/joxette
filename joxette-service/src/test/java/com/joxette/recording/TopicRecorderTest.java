@@ -95,7 +95,7 @@ class TopicRecorderTest {
         }
 
         JoxetteProperties props = new JoxetteProperties();
-        writeChannel = new DuckLakeWriteChannel(duckDB, props);
+        writeChannel = new DuckLakeWriteChannel(duckDB, props, new CassetteRecordingBus(props));
         writeChannel.start();
 
         ConfigRepository configRepo = new ConfigRepository(duckDB, props);

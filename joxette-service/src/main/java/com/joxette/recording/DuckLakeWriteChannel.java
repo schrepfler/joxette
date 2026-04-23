@@ -36,13 +36,17 @@ public class DuckLakeWriteChannel {
 
     private final Connection duckDbConnection;
     private final int capacity;
+    private final CassetteRecordingBus bus;
 
     private Channel<WriteBatch> channel;
     private Thread drainThread;
 
-    public DuckLakeWriteChannel(Connection duckDbConnection, JoxetteProperties properties) {
+    public DuckLakeWriteChannel(Connection duckDbConnection,
+                                 JoxetteProperties properties,
+                                 CassetteRecordingBus bus) {
         this.duckDbConnection = duckDbConnection;
         this.capacity = properties.getThreading().getWriteChannelCapacity();
+        this.bus = bus;
     }
 
     @PostConstruct
@@ -140,6 +144,15 @@ public class DuckLakeWriteChannel {
             }
 
             batch.result().complete(new WriteResult(batch.topic(), written));
+            if (bus != null) {
+                try {
+                    bus.publish(batch);
+                } catch (RuntimeException be) {
+                    // Must never break the drain VT — bus publication is best-effort.
+                    log.warn("Recording bus publish failed for topic '{}': {}",
+                            batch.topic(), be.getMessage(), be);
+                }
+            }
         } catch (Exception e) {
             log.error("Failed to write batch for topic '{}': {}", batch.topic(), e.getMessage(), e);
             batch.result().completeExceptionally(e);
