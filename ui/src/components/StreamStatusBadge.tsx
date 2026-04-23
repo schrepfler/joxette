@@ -1,4 +1,7 @@
 import type { CSSProperties } from 'react'
+import { StatusDot } from '../design/primitives/Badge'
+import { SignatureRule } from '../design/primitives/SignatureRule'
+import { Tabular } from '../design/primitives/Tabular'
 
 /**
  * Status vocabulary for record streams.
@@ -28,112 +31,147 @@ interface Props {
   status: StreamStatus
   count?: number
   errorMessage?: string | null
+  /**
+   * When true, the signature rule draws in underneath the badge during
+   * draining→tailing transitions. This is the design-system moment; let it
+   * breathe. Defaults to true.
+   */
+  withRule?: boolean
 }
 
-// Keyframes emitted once, lazily, so the component can ship its own animations
-// without depending on the global stylesheet.
-const STYLE_ID = 'stream-status-badge-keyframes'
-function ensureKeyframes() {
-  if (typeof document === 'undefined') return
-  if (document.getElementById(STYLE_ID)) return
-  const el = document.createElement('style')
-  el.id = STYLE_ID
-  el.textContent = `
-@keyframes stream-spin { to { transform: rotate(360deg) } }
-@keyframes stream-pulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
-`.trim()
-  document.head.appendChild(el)
+interface Descriptor {
+  label: string
+  dot: React.ReactNode | null
+  tone: 'neutral' | 'accent' | 'live' | 'warn' | 'error' | 'muted'
+  showCount: boolean
+  countLabel?: string
 }
 
-export function StreamStatusBadge({ status, count, errorMessage }: Props) {
-  ensureKeyframes()
-  const n = (count ?? 0).toLocaleString()
-
+function describe(status: StreamStatus, _count: number, errorMessage?: string | null): Descriptor {
   switch (status) {
     case 'idle':
-      return null
-
+      return { label: 'Ready', dot: <StatusDot shape="ring" color="var(--ink-tertiary)" />, tone: 'muted', showCount: false }
     case 'draining':
-      return (
-        <span style={{ ...textBase, color: '#4a5568' }}>
-          <span style={spinnerStyle} aria-label="Draining history" />
-          Replaying history — {n} records
-        </span>
-      )
-
+      return {
+        label: 'Replaying history',
+        dot: <StatusDot shape="ring" color="var(--accent)" />,
+        tone: 'accent',
+        showCount: true,
+        countLabel: 'records so far',
+      }
     case 'tailing':
-      return (
-        <span style={{ ...textBase, color: '#276749' }}>
-          <span style={{ ...dotStyle, background: '#38a169', animation: 'stream-pulse 1.4s ease-in-out infinite' }} />
-          Live — {n} records
-        </span>
-      )
-
+      return {
+        label: 'Live',
+        dot: <StatusDot shape="pulse" color="var(--signal-live)" />,
+        tone: 'live',
+        showCount: true,
+        countLabel: 'records',
+      }
     case 'streaming':
-      return (
-        <span style={{ ...textBase, color: '#718096' }}>
-          <span style={{ ...dotStyle, background: '#3182ce' }} />
-          Receiving… {n} records
-        </span>
-      )
-
+      return {
+        label: 'Receiving',
+        dot: <StatusDot shape="ring" color="var(--accent)" />,
+        tone: 'accent',
+        showCount: true,
+      }
     case 'done':
-      return (
-        <span style={{ ...textBase, color: '#276749' }}>
-          <span style={{ ...dotStyle, background: '#38a169' }} />✓ Complete — {n} records
-        </span>
-      )
-
+      return {
+        label: 'Complete',
+        dot: <StatusDot shape="filled" color="var(--signal-live)" />,
+        tone: 'live',
+        showCount: true,
+      }
     case 'overflow':
-      return (
-        <span style={{ ...textBase, color: '#c53030' }}>
-          <span style={{ ...dotStyle, background: '#e53e3e' }} />✗ Dropped — client too slow
-        </span>
-      )
-
+      return {
+        label: 'Dropped — client too slow',
+        dot: <StatusDot shape="square" color="var(--signal-error)" />,
+        tone: 'error',
+        showCount: false,
+      }
     case 'disconnected':
-      return (
-        <span style={{ ...textBase, color: '#b7791f' }}>
-          <span style={{ ...dotStyle, background: '#dd6b20' }} />Disconnected — {n} records
-        </span>
-      )
-
+      return {
+        label: 'Disconnected',
+        dot: <StatusDot shape="slash" color="var(--signal-warn)" />,
+        tone: 'warn',
+        showCount: true,
+      }
     case 'stopped':
-      return (
-        <span style={{ ...textBase, color: '#4a5568' }}>
-          <span style={{ ...dotStyle, background: '#a0aec0' }} />Stopped — {n} records
-        </span>
-      )
-
+      return {
+        label: 'Stopped',
+        dot: <StatusDot shape="filled" color="var(--ink-tertiary)" />,
+        tone: 'muted',
+        showCount: true,
+      }
     case 'error':
-      return (
-        <span style={{ ...textBase, color: '#c53030' }}>
-          ✗ {errorMessage ?? 'Stream error'}
-        </span>
-      )
+      return {
+        label: errorMessage ?? 'Stream error',
+        dot: <StatusDot shape="square" color="var(--signal-error)" />,
+        tone: 'error',
+        showCount: false,
+      }
   }
 }
 
-const textBase: CSSProperties = {
-  fontSize: 13,
-  display: 'inline-flex',
-  alignItems: 'center',
-  gap: 6,
+const toneInk: Record<Descriptor['tone'], string> = {
+  neutral: 'var(--ink-primary)',
+  accent:  'var(--ink-primary)',
+  live:    'var(--signal-live)',
+  warn:    'var(--signal-warn)',
+  error:   'var(--signal-error)',
+  muted:   'var(--ink-tertiary)',
 }
 
-const dotStyle: CSSProperties = {
-  width: 8,
-  height: 8,
-  borderRadius: '50%',
-  display: 'inline-block',
-}
+export function StreamStatusBadge({ status, count, errorMessage, withRule = true }: Props) {
+  if (status === 'idle') return null
 
-const spinnerStyle: CSSProperties = {
-  width: 10,
-  height: 10,
-  borderRadius: '50%',
-  border: '2px solid #cbd5e0',
-  borderTopColor: '#3182ce',
-  display: 'inline-block',
-  animation: 'stream-spin 0.8s linear infinite',
+  const n = count ?? 0
+  const d = describe(status, n, errorMessage)
+  const tailing = status === 'tailing'
+
+  const labelStyle: CSSProperties = {
+    fontFamily: 'var(--font-body)',
+    fontSize: 'var(--type-caption-size)',
+    fontWeight: 540,
+    letterSpacing: '0.01em',
+    color: toneInk[d.tone],
+    lineHeight: 1.25,
+  }
+
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      style={{
+        display: 'inline-flex',
+        flexDirection: 'column',
+        gap: 8,
+        minWidth: 0,
+      }}
+    >
+      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
+        {d.dot}
+        <span style={labelStyle}>{d.label}</span>
+        {d.showCount && (
+          <>
+            <span
+              aria-hidden
+              style={{
+                width: 1,
+                height: 12,
+                background: 'var(--rule-strong)',
+                display: 'inline-block',
+              }}
+            />
+            <Tabular size="xs" muted>
+              {n.toLocaleString()}
+              {d.countLabel && <span style={{ marginLeft: 4, fontFamily: 'var(--font-body)', letterSpacing: '0.005em' }}>{d.countLabel}</span>}
+            </Tabular>
+          </>
+        )}
+      </div>
+      {withRule && (
+        <SignatureRule active={tailing} color="var(--signal-live)" />
+      )}
+    </div>
+  )
 }

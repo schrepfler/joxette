@@ -7,9 +7,19 @@ import {
   createColumnHelper,
 } from '@tanstack/react-table'
 import { useForm } from '@tanstack/react-form'
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, type CSSProperties } from 'react'
 import { VisualJson, TreeView, type JsonValue } from '@visual-json/react'
-import { topicsApi, brokersApi, cassettesApi, streamTopicRecords, type CassetteRecord, type StreamMode, type TopicStreamParams, type TopicMatcherConfig, type AddMatcherRequest } from '../../api/client'
+import {
+  topicsApi,
+  brokersApi,
+  cassettesApi,
+  streamTopicRecords,
+  type CassetteRecord,
+  type StreamMode,
+  type TopicStreamParams,
+  type TopicMatcherConfig,
+  type AddMatcherRequest,
+} from '../../api/client'
 import { Layout } from '../../components/Layout'
 import { LoadingSpinner } from '../../components/LoadingSpinner'
 import { ErrorMessage } from '../../components/ErrorMessage'
@@ -20,6 +30,7 @@ import { SequenceQueryPanel } from '../../components/SequenceQueryPanel'
 import { StreamStatusBadge, type StreamStatus } from '../../components/StreamStatusBadge'
 import { useToast } from '../../components/Toast'
 import { useDebounce } from '../../hooks/useDebounce'
+import { Button, Input, Select, Hairline, Tabular, Badge, StatusDot } from '../../design/primitives'
 import type { FragmentDefinition } from '../../transforms/types'
 
 // ── JSON viewer ────────────────────────────────────────────────────────────────
@@ -44,32 +55,53 @@ function tryParseValue(s: string | null): { parsed: JsonValue; raw: string } | n
 
 function ValueCell({ raw }: { raw: string | null }) {
   const [open, setOpen] = useState(false)
-  if (!raw) return <span style={{ color: '#a0aec0' }}>—</span>
+  if (!raw) return <span style={{ color: 'var(--ink-tertiary)' }}>—</span>
   const result = tryParseValue(raw)
   const isJson = result !== null
   const preview = raw.length > 80 ? raw.slice(0, 80) + '…' : raw
 
-  if (!isJson) return <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{preview}</span>
+  if (!isJson) {
+    return (
+      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--type-mono-size)', color: 'var(--ink-primary)' }}>
+        {preview}
+      </span>
+    )
+  }
 
-  // Use the decoded JSON string for the preview, not the raw (possibly base64) value
   const decodedPreview = result.raw.length > 80 ? result.raw.slice(0, 80) + '…' : result.raw
 
   return (
     <div>
-      <span
+      <button
+        type="button"
         onClick={() => setOpen(o => !o)}
         title={open ? 'Collapse' : 'Expand JSON'}
         style={{
           cursor: 'pointer',
-          fontFamily: 'monospace',
-          fontSize: 12,
-          color: '#2b6cb0',
+          fontFamily: 'var(--font-mono)',
+          fontSize: 'var(--type-mono-size)',
+          color: 'var(--accent)',
           userSelect: 'none',
+          background: 'none',
+          border: 0,
+          padding: 0,
+          display: 'inline-flex',
+          alignItems: 'baseline',
+          gap: 6,
+          textAlign: 'left',
         }}
       >
-        <span style={{ marginRight: 4, fontSize: 10, display: 'inline-block', transform: open ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.15s' }}>▶</span>
-        {open ? (result.raw !== raw ? 'JSON (base64-decoded)' : 'JSON') : decodedPreview}
-      </span>
+        <span
+          aria-hidden
+          style={{
+            fontSize: 9,
+            display: 'inline-block',
+            transform: open ? 'rotate(90deg)' : 'rotate(0deg)',
+            transition: 'transform var(--duration-quick) var(--ease-out-soft)',
+          }}
+        >▶</span>
+        {open ? (result.raw !== raw ? 'JSON — base64 decoded' : 'JSON') : decodedPreview}
+      </button>
       {open && (
         <div style={vjTheme}>
           <VisualJson value={result.parsed}>
@@ -107,41 +139,51 @@ function AddMatcherModal({ topic, onClose }: { topic: string; onClose: () => voi
   return (
     <div style={overlayStyle} onClick={onClose}>
       <div style={modalStyle} onClick={e => e.stopPropagation()}>
-        <h2 style={{ margin: '0 0 1.25rem', fontSize: 18 }}>Add Matcher</h2>
-        <form onSubmit={e => { e.preventDefault(); void form.handleSubmit() }}>
+        <h2 className="type-h2" style={{ margin: '0 0 8px' }}>Add matcher</h2>
+        <p style={{ margin: '0 0 24px', color: 'var(--ink-secondary)', fontSize: 'var(--type-caption-size)' }}>
+          Tag incoming messages so they can be grouped by an extracted identifier.
+        </p>
+        <form onSubmit={e => { e.preventDefault(); void form.handleSubmit() }} style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
           <form.Field name="messageType">
             {(f) => (
-              <div style={fieldWrap}>
-                <label style={labelStyle}>Message Type *</label>
-                <input style={inputStyleFull} value={f.state.value} onChange={e => f.handleChange(e.target.value)} required />
-              </div>
+              <Input
+                label="Message type *"
+                value={f.state.value}
+                onChange={e => f.handleChange(e.target.value)}
+                required
+              />
             )}
           </form.Field>
           <form.Field name="idSource">
             {(f) => (
-              <div style={fieldWrap}>
-                <label style={labelStyle}>ID Source</label>
-                <select style={inputStyleFull} value={f.state.value} onChange={e => f.handleChange(e.target.value)}>
-                  <option value="value">value</option>
-                  <option value="key">key</option>
-                  <option value="header">header</option>
-                </select>
-              </div>
+              <Select
+                label="ID source"
+                value={f.state.value}
+                onChange={e => f.handleChange(e.target.value)}
+              >
+                <option value="value">value</option>
+                <option value="key">key</option>
+                <option value="header">header</option>
+              </Select>
             )}
           </form.Field>
           <form.Field name="idExpression">
             {(f) => (
-              <div style={fieldWrap}>
-                <label style={labelStyle}>ID Expression *</label>
-                <input style={inputStyleFull} placeholder="e.g. $.order_id" value={f.state.value} onChange={e => f.handleChange(e.target.value)} required />
-              </div>
+              <Input
+                label="ID expression *"
+                mono
+                placeholder="$.order_id"
+                value={f.state.value}
+                onChange={e => f.handleChange(e.target.value)}
+                required
+              />
             )}
           </form.Field>
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: '0.5rem' }}>
-            <button type="button" onClick={onClose} style={cancelBtnStyle}>Cancel</button>
-            <button type="submit" disabled={mutation.isPending} style={primaryBtnStyle}>
-              {mutation.isPending ? 'Adding…' : 'Add'}
-            </button>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 8 }}>
+            <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
+            <Button type="submit" variant="primary" disabled={mutation.isPending}>
+              {mutation.isPending ? 'Adding…' : 'Add matcher'}
+            </Button>
           </div>
         </form>
       </div>
@@ -193,7 +235,6 @@ function TopicDetailPage() {
   const followActiveRef = useRef(false)
   const terminalRef = useRef(false)
 
-  // Debounced filters
   const from = useDebounce(fromRaw, 300)
   const to = useDebounce(toRaw, 300)
   const partition = useDebounce(partitionRaw, 300)
@@ -303,8 +344,6 @@ function TopicDetailPage() {
     }, 250)
     const params: TopicStreamParams & { follow?: boolean } = {
       from: from || undefined,
-      // When following, bounded ranges are rejected by the backend (HTTP 400).
-      // The UI also greys these inputs out; defence in depth: drop them here.
       to: isFollowing ? undefined : (to || undefined),
       partition: partition ? Number(partition) : undefined,
       offset_from: offsetFrom ? Number(offsetFrom) : undefined,
@@ -325,9 +364,6 @@ function TopicDetailPage() {
       onDone: () => {
         if (flushIntervalRef.current) { clearInterval(flushIntervalRef.current); flushIntervalRef.current = null }
         setStreamedRecords([...streamBufferRef.current])
-        // In follow mode, any natural end-of-stream is an unexpected disconnect
-        // (follow streams don't complete). A terminal overflow already set the
-        // status — preserve it.
         if (terminalRef.current) return
         if (isFollowing) setStreamStatus('disconnected')
         else setStreamStatus('done')
@@ -341,13 +377,11 @@ function TopicDetailPage() {
     })
   }
 
-  // Abort on unmount
   useEffect(() => () => {
     abortRef.current?.abort()
     if (flushIntervalRef.current) clearInterval(flushIntervalRef.current)
   }, [])
 
-  // Stop stream when filters change so the user knows the data is stale
   useEffect(() => {
     abortRef.current?.abort()
     abortRef.current = null
@@ -358,13 +392,25 @@ function TopicDetailPage() {
   }, [from, to, partition, offsetFrom, offsetTo])
 
   const matcherColumns = [
-    matcherColHelper.accessor('messageType', { header: 'Message Type' }),
-    matcherColHelper.accessor('idSource', { header: 'ID Source' }),
-    matcherColHelper.accessor('idExpression', { header: 'ID Expression' }),
+    matcherColHelper.accessor('messageType', {
+      header: 'Message type',
+      cell: i => <span style={{ color: 'var(--ink-primary)', fontWeight: 500 }}>{i.getValue()}</span>,
+    }),
+    matcherColHelper.accessor('idSource', {
+      header: 'Source',
+      cell: i => <Tabular size="xs">{i.getValue()}</Tabular>,
+    }),
+    matcherColHelper.accessor('idExpression', {
+      header: 'Expression',
+      cell: i => <Tabular size="xs">{i.getValue()}</Tabular>,
+    }),
     matcherColHelper.display({
-      id: 'actions', header: 'Actions',
+      id: 'actions',
+      header: '',
       cell: ({ row }) => (
-        <button style={dangerBtnSmall} onClick={() => setConfirmDeleteMatcher(row.original.messageType)}>Delete</button>
+        <Button size="sm" variant="danger" onClick={() => setConfirmDeleteMatcher(row.original.messageType)}>
+          Remove
+        </Button>
       ),
     }),
   ]
@@ -376,12 +422,34 @@ function TopicDetailPage() {
   })
 
   const columns = [
-    colHelper.accessor('timestamp', { header: 'Timestamp', cell: i => i.getValue().slice(0, 19).replace('T', ' ') }),
-    colHelper.accessor('partition', { header: 'Partition' }),
-    colHelper.accessor('offset', { header: 'Offset' }),
-    colHelper.accessor('key', { header: 'Key', cell: i => trunc(i.getValue(), 40) }),
-    colHelper.accessor('value', { header: 'Value', cell: i => <ValueCell raw={i.getValue()} /> }),
-    colHelper.accessor('recordedAt', { header: 'Recorded At', cell: i => i.getValue().slice(0, 19).replace('T', ' ') }),
+    colHelper.accessor('timestamp', {
+      header: 'Timestamp',
+      cell: i => <Tabular>{i.getValue().slice(0, 19).replace('T', ' ')}</Tabular>,
+    }),
+    colHelper.accessor('partition', {
+      header: 'Part.',
+      cell: i => <Tabular muted>{i.getValue()}</Tabular>,
+    }),
+    colHelper.accessor('offset', {
+      header: 'Offset',
+      cell: i => <Tabular>{i.getValue().toLocaleString()}</Tabular>,
+    }),
+    colHelper.accessor('key', {
+      header: 'Key',
+      cell: i => {
+        const v = i.getValue()
+        if (v == null) return <span style={{ color: 'var(--ink-tertiary)' }}>—</span>
+        return <Tabular muted>{trunc(v, 40)}</Tabular>
+      },
+    }),
+    colHelper.accessor('value', {
+      header: 'Value',
+      cell: i => <ValueCell raw={i.getValue()} />,
+    }),
+    colHelper.accessor('recordedAt', {
+      header: 'Recorded',
+      cell: i => <Tabular muted>{i.getValue().slice(0, 19).replace('T', ' ')}</Tabular>,
+    }),
   ]
 
   const tableData = streamMode === 'json' ? (recordsQuery.data?.data ?? []) : streamedRecords
@@ -404,143 +472,216 @@ function TopicDetailPage() {
     setCursor(prev || undefined)
   }
 
+  const isPaused = topicQuery.data?.paused ?? false
+
   return (
     <Layout>
       {topicQuery.isLoading && <LoadingSpinner />}
       {topicQuery.error && <ErrorMessage message={(topicQuery.error as Error).message} />}
       {topicQuery.data && (
-        <>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: '1.5rem' }}>
-            <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>{topic}</h1>
-            <span style={{ background: topicQuery.data.paused ? '#fed7d7' : '#c6f6d5', color: topicQuery.data.paused ? '#9b2c2c' : '#276749', padding: '2px 8px', borderRadius: 12, fontSize: 12 }}>
-              {topicQuery.data.paused ? 'Paused' : 'Active'}
-            </span>
-          </div>
-
-          {/* Stats */}
-          {statsQuery.data && (
-            <div style={{ display: 'flex', gap: 16, marginBottom: '1.5rem', flexWrap: 'wrap' }}>
-              {[
-                ['Records', statsQuery.data.rowCount.toLocaleString()],
-                ['Size', formatBytes(statsQuery.data.estimatedSizeBytes)],
-                ['Table', statsQuery.data.tableName],
+        <div
+          style={{
+            maxWidth: 1180,
+            marginInline: 'auto',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 'var(--space-7)',
+            paddingBlock: 'var(--space-5)',
+          }}
+        >
+          {/* ── Editorial header ────────────────────────────────────── */}
+          <header>
+            <div
+              style={{
+                fontFamily: 'var(--font-body)',
+                fontSize: 'var(--type-micro-size)',
+                letterSpacing: 'var(--type-micro-tracking)',
+                textTransform: 'uppercase',
+                fontWeight: 'var(--type-micro-weight)',
+                color: 'var(--ink-tertiary)',
+                marginBottom: 12,
+              }}
+            >
+              Topic cassette
+            </div>
+            <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 24, flexWrap: 'wrap' }}>
+              <h1
+                className="type-display"
+                style={{ margin: 0, color: 'var(--ink-primary)' }}
+              >
+                {topic}
+              </h1>
+              <Badge
+                tone={isPaused ? 'warn' : 'live'}
+                dot={{
+                  shape: isPaused ? 'slash' : 'filled',
+                  color: isPaused ? 'var(--signal-warn)' : 'var(--signal-live)',
+                }}
+              >
+                {isPaused ? 'Paused' : 'Recording'}
+              </Badge>
+            </div>
+            {/* Mono metadata strip */}
+            <div
+              style={{
+                display: 'flex',
+                gap: 32,
+                flexWrap: 'wrap',
+                alignItems: 'baseline',
+                marginTop: 20,
+              }}
+            >
+              {statsQuery.data && [
+                ['records', statsQuery.data.rowCount.toLocaleString()],
+                ['size', formatBytes(statsQuery.data.estimatedSizeBytes)],
+                ['table', statsQuery.data.tableName],
+                ['mode', topicQuery.data.mode],
               ].map(([k, v]) => (
-                <div key={k} style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 6, padding: '0.6rem 1rem', minWidth: 120 }}>
-                  <div style={{ fontSize: 11, color: '#718096', marginBottom: 2 }}>{k}</div>
-                  <div style={{ fontSize: 16, fontWeight: 600 }}>{v}</div>
+                <div key={k} style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+                  <span
+                    style={{
+                      fontFamily: 'var(--font-body)',
+                      fontSize: 'var(--type-micro-size)',
+                      letterSpacing: 'var(--type-micro-tracking)',
+                      textTransform: 'uppercase',
+                      fontWeight: 'var(--type-micro-weight)',
+                      color: 'var(--ink-tertiary)',
+                    }}
+                  >
+                    {k}
+                  </span>
+                  <Tabular size="md">{v}</Tabular>
                 </div>
               ))}
             </div>
-          )}
+            <Hairline style={{ marginTop: 24 }} />
+          </header>
 
-          {/* Edit form */}
-          <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '1rem 1.25rem', marginBottom: '1.5rem' }}>
-            <h3 style={{ margin: '0 0 0.75rem', fontSize: 15 }}>Edit Topic</h3>
-            <form onSubmit={(e) => { e.preventDefault(); void form.handleSubmit() }} style={{ display: 'flex', gap: 12, alignItems: 'flex-end', flexWrap: 'wrap' }}>
+          {/* ── Actions (toolbar) ───────────────────────────────────── */}
+          <section>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+              <Link
+                to="/topics/$topic/timeline"
+                params={{ topic }}
+                style={{ textDecoration: 'none' }}
+              >
+                <Button variant="secondary">Timeline</Button>
+              </Link>
+              <Button
+                variant="secondary"
+                onClick={() => compactMutation.mutate()}
+                disabled={compactMutation.isPending}
+              >
+                {compactMutation.isPending ? 'Compacting…' : 'Compact'}
+              </Button>
+              <Button variant="danger" onClick={() => setShowTruncateDialog(true)}>
+                Truncate
+              </Button>
+            </div>
+          </section>
+
+          {/* ── Config ──────────────────────────────────────────────── */}
+          <section style={sectionStyle}>
+            <SectionTitle kicker="Configuration" title="Recording settings" />
+            <form
+              onSubmit={(e) => { e.preventDefault(); void form.handleSubmit() }}
+              style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 24, alignItems: 'end' }}
+            >
               <form.Field name="mode">
                 {(field) => (
-                  <div>
-                    <label style={labelStyle}>Mode</label>
-                    <select style={{ ...inputStyle, width: 160 }} value={field.state.value} onChange={e => field.handleChange(e.target.value)}>
-                      <option value="general">general</option>
-                      <option value="entity_only">entity_only</option>
-                      <option value="both">both</option>
-                    </select>
-                  </div>
+                  <Select
+                    label="Mode"
+                    value={field.state.value}
+                    onChange={e => field.handleChange(e.target.value)}
+                  >
+                    <option value="general">General</option>
+                    <option value="entity_only">Entity only</option>
+                    <option value="both">Both</option>
+                  </Select>
                 )}
               </form.Field>
               <form.Field name="brokerId">
                 {(field) => (
-                  <div>
-                    <label style={labelStyle}>Broker</label>
-                    <select style={{ ...inputStyle, width: 220 }} value={field.state.value ?? ''} onChange={e => field.handleChange(e.target.value)}>
-                      <option value="">(default)</option>
-                      {brokers.map(b => (
-                        <option key={b.brokerId} value={b.brokerId}>{b.brokerId} — {b.bootstrapServers}</option>
-                      ))}
-                    </select>
-                  </div>
+                  <Select
+                    label="Broker"
+                    value={field.state.value ?? ''}
+                    onChange={e => field.handleChange(e.target.value)}
+                  >
+                    <option value="">(default)</option>
+                    {brokers.map(b => (
+                      <option key={b.brokerId} value={b.brokerId}>{b.brokerId} — {b.bootstrapServers}</option>
+                    ))}
+                  </Select>
                 )}
               </form.Field>
-              <button type="submit" disabled={updateMutation.isPending} style={primaryBtnStyle}>Save</button>
+              <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                <Button type="submit" variant="primary" disabled={updateMutation.isPending}>
+                  Save
+                </Button>
+              </div>
             </form>
-            <div style={{ borderTop: '1px solid #e2e8f0', marginTop: '0.75rem', paddingTop: '0.75rem' }}>
-              <p style={{ margin: '0 0 0.5rem', fontSize: 13, color: '#718096' }}>
-                {topicQuery.data.retentionDays
-                  ? `Data retained for ${topicQuery.data.retentionDays} days`
-                  : 'No retention limit (unlimited)'}
-              </p>
-              <form onSubmit={e => { e.preventDefault(); void retentionForm.handleSubmit() }} style={{ display: 'flex', gap: 12, alignItems: 'flex-end' }}>
-                <retentionForm.Field name="retentionDays">
-                  {(field) => (
-                    <div>
-                      <label style={labelStyle}>Retention (days, 0 = unlimited)</label>
-                      <input
-                        type="number" min="0"
-                        style={{ ...inputStyle, width: 120 }}
-                        value={field.state.value}
-                        onChange={e => field.handleChange(Number(e.target.value))}
-                      />
-                    </div>
-                  )}
-                </retentionForm.Field>
-                <button type="submit" disabled={retentionMutation.isPending} style={primaryBtnStyle}>
-                  {retentionMutation.isPending ? 'Saving…' : 'Save'}
-                </button>
-              </form>
-            </div>
-          </div>
 
-          {/* Matchers */}
-          <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '1rem 1.25rem', marginBottom: '1.5rem' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.5rem' }}>
-              <h3 style={{ margin: 0, fontSize: 15 }}>Matchers</h3>
-              <button style={primaryBtnStyle} onClick={() => setShowAddMatcher(true)}>+ Add Matcher</button>
+            <Hairline style={{ margin: '28px 0 20px' }} />
+
+            <form
+              onSubmit={e => { e.preventDefault(); void retentionForm.handleSubmit() }}
+              style={{ display: 'flex', gap: 24, alignItems: 'end', flexWrap: 'wrap' }}
+            >
+              <retentionForm.Field name="retentionDays">
+                {(field) => (
+                  <Input
+                    label="Retention (days — 0 is unlimited)"
+                    type="number"
+                    min={0}
+                    mono
+                    value={field.state.value}
+                    onChange={e => field.handleChange(Number(e.target.value))}
+                    style={{ width: 160 }}
+                  />
+                )}
+              </retentionForm.Field>
+              <p style={{
+                margin: 0,
+                color: 'var(--ink-tertiary)',
+                fontSize: 'var(--type-caption-size)',
+                flex: 1,
+              }}>
+                {topicQuery.data.retentionDays
+                  ? <>Data retained for <Tabular size="xs">{topicQuery.data.retentionDays}</Tabular> days.</>
+                  : <>No retention limit — data is kept indefinitely.</>}
+              </p>
+              <Button type="submit" variant="secondary" disabled={retentionMutation.isPending}>
+                {retentionMutation.isPending ? 'Saving…' : 'Save retention'}
+              </Button>
+            </form>
+          </section>
+
+          {/* ── Matchers ────────────────────────────────────────────── */}
+          <section style={sectionStyle}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
+              <SectionTitle kicker="Matchers" title="Message tagging rules" compact />
+              <Button variant="primary" size="sm" onClick={() => setShowAddMatcher(true)}>
+                Add matcher
+              </Button>
             </div>
-            <p style={{ margin: '0 0 0.75rem', fontSize: 13, color: '#718096' }}>
-              Tag messages with a <code>messageType</code> by extracting an ID from the message header, key, or value. First matching rule wins.
+            <p style={{ margin: '0 0 20px', fontSize: 'var(--type-caption-size)', color: 'var(--ink-secondary)', maxWidth: 620 }}>
+              Tag messages with a <code>messageType</code> by extracting an identifier from the message header, key, or value. The first matching rule wins.
             </p>
             {matchersQuery.isLoading && <LoadingSpinner />}
             {matchersQuery.error && <ErrorMessage message={(matchersQuery.error as Error).message} />}
             {!matchersQuery.isLoading && (
-              <table style={tableStyle}>
-                <thead>
-                  {matcherTable.getHeaderGroups().map(hg => (
-                    <tr key={hg.id}>{hg.headers.map(h => <th key={h.id} style={thStyle}>{flexRender(h.column.columnDef.header, h.getContext())}</th>)}</tr>
-                  ))}
-                </thead>
-                <tbody>
-                  {matcherTable.getRowModel().rows.length === 0 && (
-                    <tr><td colSpan={4} style={{ ...tdStyle, color: '#a0aec0', fontStyle: 'italic' }}>No matchers configured</td></tr>
-                  )}
-                  {matcherTable.getRowModel().rows.map(row => (
-                    <tr key={row.id}>
-                      {row.getVisibleCells().map(cell => <td key={cell.id} style={tdStyle}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+              matcherTable.getRowModel().rows.length === 0 ? (
+                <EmptyBlock
+                  headline="No matchers yet"
+                  body="Add a matcher to tag incoming messages. Matchers let you group records by a business identifier without changing their structure."
+                />
+              ) : (
+                <RuledTable table={matcherTable} />
+              )
             )}
-          </div>
+          </section>
 
-          {/* Actions */}
-          <div style={{ display: 'flex', gap: 8, marginBottom: '1.5rem', flexWrap: 'wrap', alignItems: 'center' }}>
-            <Link
-              to="/topics/$topic/timeline"
-              params={{ topic }}
-              style={{ ...primaryBtnStyle, background: '#3182ce', textDecoration: 'none', display: 'inline-block' }}
-            >
-              ⏱ Timeline
-            </Link>
-            <button style={{ ...primaryBtnStyle, background: '#805ad5' }} onClick={() => compactMutation.mutate()} disabled={compactMutation.isPending}>
-              {compactMutation.isPending ? 'Compacting…' : 'Compact'}
-            </button>
-            <button style={{ ...primaryBtnStyle, background: '#e53e3e' }} onClick={() => setShowTruncateDialog(true)}>
-              Truncate
-            </button>
-          </div>
-
-          {/* Replay to Topic panel */}
+          {/* ── Replay to topic (untouched, per brief) ──────────────── */}
           <ReplayToTopicPanel
             mode="topic"
             topic={topic}
@@ -549,154 +690,186 @@ function TopicDetailPage() {
             totalCount={statsQuery.data?.rowCount}
           />
 
-          {/* Tab bar */}
-          <div style={{ display: 'flex', borderBottom: '1px solid #e2e8f0', marginBottom: '1rem', gap: 0 }}>
-            {(['records', 'sequence'] as const).map(tab => (
-              <button
-                key={tab}
-                onClick={() => setActiveTab(tab)}
-                style={{
-                  padding: '0.5rem 1.25rem',
-                  background: 'none',
-                  border: 'none',
-                  borderBottom: activeTab === tab ? '2px solid #3182ce' : '2px solid transparent',
-                  cursor: 'pointer',
-                  fontSize: 14,
-                  fontWeight: activeTab === tab ? 600 : 400,
-                  color: activeTab === tab ? '#3182ce' : '#718096',
-                  marginBottom: -1,
-                }}
-              >
-                {tab === 'records' ? 'Records' : 'Sequence'}
-              </button>
-            ))}
+          {/* ── Tabs ────────────────────────────────────────────────── */}
+          <div>
+            <div style={{ display: 'inline-flex', gap: 2, position: 'relative' }}>
+              {(['records', 'sequence'] as const).map(tab => {
+                const active = activeTab === tab
+                return (
+                  <button
+                    key={tab}
+                    type="button"
+                    onClick={() => setActiveTab(tab)}
+                    style={{
+                      padding: '10px 18px 12px',
+                      background: 'none',
+                      border: 0,
+                      cursor: 'pointer',
+                      fontFamily: 'var(--font-body)',
+                      fontSize: '0.9375rem',
+                      fontWeight: active ? 600 : 440,
+                      color: active ? 'var(--ink-primary)' : 'var(--ink-tertiary)',
+                      position: 'relative',
+                      transition: 'color var(--duration-quick) var(--ease-out-soft)',
+                    }}
+                  >
+                    {tab === 'records' ? 'Records' : 'Sequence'}
+                    <span
+                      aria-hidden
+                      style={{
+                        position: 'absolute',
+                        left: 18,
+                        right: 18,
+                        bottom: 0,
+                        height: 2,
+                        background: 'var(--accent)',
+                        transform: active ? 'scaleX(1)' : 'scaleX(0)',
+                        transformOrigin: 'left',
+                        transition: 'transform var(--duration-default) var(--ease-out-soft)',
+                      }}
+                    />
+                  </button>
+                )
+              })}
+            </div>
+            <Hairline />
           </div>
 
-          {/* Sequence tab */}
           {activeTab === 'sequence' && (
-            <div style={{ marginBottom: '1.5rem' }}>
+            <section>
               <SequenceQueryPanel
                 mode="topic"
                 topic={topic}
                 onSaveFragment={(frag) => setReplayPipelineFragments(fs => [...fs, frag])}
               />
-            </div>
+            </section>
           )}
 
-          {/* Records tab */}
           {activeTab === 'records' && (
-          <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '1rem 1.25rem' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
-              <h3 style={{ margin: 0, fontSize: 15 }}>Replay Records</h3>
-              {/* Stream mode toggle */}
-              <div style={{ display: 'flex', border: '1px solid #cbd5e0', borderRadius: 4, overflow: 'hidden' }}>
-                {(['json', 'sse', 'ndjson'] as StreamMode[]).map((m, i) => (
-                  <button
-                    key={m}
-                    onClick={() => { clearStream(); setStreamMode(m) }}
-                    style={{
-                      padding: '0.3rem 0.75rem',
-                      background: streamMode === m ? '#3182ce' : '#fff',
-                      color: streamMode === m ? '#fff' : '#4a5568',
-                      border: 'none',
-                      borderRight: i < 2 ? '1px solid #cbd5e0' : 'none',
-                      cursor: 'pointer',
-                      fontSize: 12,
-                      fontWeight: streamMode === m ? 600 : 400,
-                    }}
-                  >
-                    {m === 'json' ? 'Paged' : m.toUpperCase()}
-                  </button>
-                ))}
+            <section style={sectionStyle}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 20, flexWrap: 'wrap', marginBottom: 20 }}>
+                <SectionTitle kicker="Replay" title="Records" compact />
+                <SegmentedControl
+                  value={streamMode}
+                  onChange={(v) => { clearStream(); setStreamMode(v) }}
+                  options={[
+                    { value: 'json', label: 'Paged' },
+                    { value: 'sse', label: 'SSE' },
+                    { value: 'ndjson', label: 'NDJSON' },
+                  ]}
+                />
               </div>
-            </div>
 
-            {/* Filters */}
-            <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: '1rem' }}>
-              {([
-                ['From', fromRaw, setFromRaw, 'datetime-local', false],
-                ['To', toRaw, setToRaw, 'datetime-local', true],
-                ['Partition', partitionRaw, setPartitionRaw, 'number', false],
-                ['Offset From', offsetFromRaw, setOffsetFromRaw, 'number', false],
-                ['Offset To', offsetToRaw, setOffsetToRaw, 'number', true],
-              ] as Array<[string, string, React.Dispatch<React.SetStateAction<string>>, string, boolean]>).map(([label, val, setter, type, disabledByFollow]) => {
-                const disabled = disabledByFollow && followLive && streamMode !== 'json'
-                return (
-                  <div key={label}>
-                    <label style={{ ...labelStyle, color: disabled ? '#a0aec0' : labelStyle.color }}>{label}</label>
-                    <input
+              {/* Filter strip — ruled inputs, generous space */}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))', gap: 24, marginBottom: 24 }}>
+                {([
+                  ['From', fromRaw, setFromRaw, 'datetime-local', false],
+                  ['To', toRaw, setToRaw, 'datetime-local', true],
+                  ['Partition', partitionRaw, setPartitionRaw, 'number', false],
+                  ['Offset from', offsetFromRaw, setOffsetFromRaw, 'number', false],
+                  ['Offset to', offsetToRaw, setOffsetToRaw, 'number', true],
+                ] as Array<[string, string, React.Dispatch<React.SetStateAction<string>>, string, boolean]>).map(([label, val, setter, type, disabledByFollow]) => {
+                  const disabled = disabledByFollow && followLive && streamMode !== 'json'
+                  return (
+                    <Input
+                      key={label}
+                      label={label}
+                      mono={type === 'number'}
                       type={type}
                       disabled={disabled}
-                      title={disabled ? 'Disabled while following live — bounded ranges are incompatible with follow mode' : undefined}
-                      style={{ ...inputStyle, width: 170, ...(disabled ? disabledInputStyle : null) }}
+                      title={disabled ? 'Disabled while following live — bounded ranges are incompatible with follow mode.' : undefined}
                       value={val}
                       onChange={e => setter(e.target.value)}
                     />
-                  </div>
-                )
-              })}
-            </div>
-
-            {/* Streaming controls */}
-            {streamMode !== 'json' && (
-              <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
-                {!isStreamActive(streamStatus) ? (
-                  <button style={primaryBtnStyle} onClick={startStream}>Start Streaming</button>
-                ) : (
-                  <button style={{ ...primaryBtnStyle, background: '#e53e3e' }} onClick={stopStream}>Stop</button>
-                )}
-                {streamedRecords.length > 0 && !isStreamActive(streamStatus) && (
-                  <button style={secondaryBtnStyle} onClick={clearStream}>Clear</button>
-                )}
-                <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 13, color: '#4a5568', cursor: isStreamActive(streamStatus) ? 'not-allowed' : 'pointer' }}>
-                  <input
-                    type="checkbox"
-                    checked={followLive}
-                    onChange={e => setFollowLive(e.target.checked)}
-                    disabled={isStreamActive(streamStatus)}
-                  />
-                  Follow live
-                </label>
-                <StreamStatusBadge
-                  status={streamStatus}
-                  count={streamedRecords.length}
-                  errorMessage={streamError}
-                />
+                  )
+                })}
               </div>
-            )}
 
-            {streamMode === 'json' && recordsQuery.isLoading && <LoadingSpinner />}
-            {streamMode === 'json' && recordsQuery.error && <ErrorMessage message={(recordsQuery.error as Error).message} />}
-            {(streamMode !== 'json' || !recordsQuery.isLoading) && (
-              <>
-                <table style={tableStyle}>
-                  <thead>
-                    {table.getHeaderGroups().map(hg => (
-                      <tr key={hg.id}>
-                        {hg.headers.map(h => <th key={h.id} style={thStyle}>{flexRender(h.column.columnDef.header, h.getContext())}</th>)}
-                      </tr>
-                    ))}
-                  </thead>
-                  <tbody>
-                    {table.getRowModel().rows.map(row => (
-                      <tr key={row.id}>
-                        {row.getVisibleCells().map(cell => <td key={cell.id} style={tdStyle}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                {streamMode === 'json' && (
-                  <div style={{ display: 'flex', gap: 8, marginTop: '0.75rem', alignItems: 'center' }}>
-                    <button style={secondaryBtnStyle} disabled={cursors.length === 0} onClick={prevPage}>← Prev</button>
-                    <button style={secondaryBtnStyle} disabled={!recordsQuery.data?.hasMore} onClick={nextPage}>Next →</button>
-                    <span style={{ fontSize: 13, color: '#718096' }}>{recordsQuery.data?.data.length ?? 0} records</span>
+              {/* Status area — first-class real estate */}
+              {streamMode !== 'json' && (
+                <div style={{
+                  display: 'flex',
+                  gap: 20,
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  padding: '16px 0 20px',
+                  borderTop: '1px solid var(--rule)',
+                  borderBottom: '1px solid var(--rule)',
+                  marginBottom: 24,
+                }}>
+                  {!isStreamActive(streamStatus) ? (
+                    <Button variant="primary" onClick={startStream}>Start streaming</Button>
+                  ) : (
+                    <Button variant="danger" onClick={stopStream}>Stop</Button>
+                  )}
+                  {streamedRecords.length > 0 && !isStreamActive(streamStatus) && (
+                    <Button variant="ghost" size="sm" onClick={clearStream}>Clear</Button>
+                  )}
+                  <label style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    fontSize: 'var(--type-caption-size)',
+                    color: 'var(--ink-secondary)',
+                    cursor: isStreamActive(streamStatus) ? 'not-allowed' : 'pointer',
+                    userSelect: 'none',
+                  }}>
+                    <input
+                      type="checkbox"
+                      checked={followLive}
+                      onChange={e => setFollowLive(e.target.checked)}
+                      disabled={isStreamActive(streamStatus)}
+                      style={{ accentColor: 'var(--accent)' }}
+                    />
+                    Follow live
+                  </label>
+                  <div style={{ flex: 1, minWidth: 200 }}>
+                    <StreamStatusBadge
+                      status={streamStatus}
+                      count={streamedRecords.length}
+                      errorMessage={streamError}
+                    />
                   </div>
-                )}
-              </>
-            )}
-          </div>
+                </div>
+              )}
+
+              {streamMode === 'json' && recordsQuery.isLoading && <LoadingSpinner />}
+              {streamMode === 'json' && recordsQuery.error && <ErrorMessage message={(recordsQuery.error as Error).message} />}
+              {(streamMode !== 'json' || !recordsQuery.isLoading) && (
+                <>
+                  {tableData.length === 0 ? (
+                    <EmptyBlock
+                      headline={streamMode === 'json' ? 'The tape is quiet here' : 'Not yet streaming'}
+                      body={
+                        streamMode === 'json'
+                          ? 'No records match this filter. Loosen the time window or the offset range, or wait for more data to arrive.'
+                          : 'Press Start to open the stream. Enable Follow live to tail new records as they arrive.'
+                      }
+                    />
+                  ) : (
+                    <>
+                      <RuledTable table={table} density="dense" />
+                      {streamMode === 'json' && (
+                        <div style={{
+                          display: 'flex',
+                          gap: 12,
+                          marginTop: 20,
+                          alignItems: 'center',
+                        }}>
+                          <Button size="sm" variant="ghost" disabled={cursors.length === 0} onClick={prevPage}>← Previous</Button>
+                          <Button size="sm" variant="ghost" disabled={!recordsQuery.data?.hasMore} onClick={nextPage}>Next →</Button>
+                          <span style={{ marginLeft: 'auto', color: 'var(--ink-tertiary)', fontSize: 'var(--type-caption-size)' }}>
+                            <Tabular size="xs" muted>{(recordsQuery.data?.data.length ?? 0).toLocaleString()}</Tabular> records on this page
+                          </span>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </>
+              )}
+            </section>
           )}
-        </>
+        </div>
       )}
       {showTruncateDialog && (
         <TruncateDialog
@@ -717,61 +890,254 @@ function TopicDetailPage() {
   )
 }
 
-const labelStyle: React.CSSProperties = { display: 'block', marginBottom: 4, fontSize: 13, fontWeight: 600, color: '#4a5568' }
-const inputStyle: React.CSSProperties = { padding: '0.4rem 0.6rem', border: '1px solid #cbd5e0', borderRadius: 4, fontSize: 14 }
-const disabledInputStyle: React.CSSProperties = { background: '#f7fafc', color: '#a0aec0', cursor: 'not-allowed' }
-const inputStyleFull: React.CSSProperties = { width: '100%', padding: '0.4rem 0.6rem', border: '1px solid #cbd5e0', borderRadius: 4, fontSize: 14, boxSizing: 'border-box' }
-const primaryBtnStyle: React.CSSProperties = { padding: '0.45rem 1rem', background: '#3182ce', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 14 }
-const cancelBtnStyle: React.CSSProperties = { padding: '0.45rem 1rem', background: '#fff', color: '#4a5568', border: '1px solid #cbd5e0', borderRadius: 4, cursor: 'pointer', fontSize: 14 }
-const secondaryBtnStyle: React.CSSProperties = { padding: '0.35rem 0.8rem', background: '#fff', color: '#4a5568', border: '1px solid #cbd5e0', borderRadius: 4, cursor: 'pointer', fontSize: 13 }
-const dangerBtnSmall: React.CSSProperties = { padding: '0.2rem 0.6rem', background: '#e53e3e', color: '#fff', border: 'none', borderRadius: 3, cursor: 'pointer', fontSize: 12 }
-const tableStyle: React.CSSProperties = { width: '100%', borderCollapse: 'collapse', background: '#fff', fontSize: 13 }
-const thStyle: React.CSSProperties = { textAlign: 'left', padding: '0.5rem 0.6rem', background: '#edf2f7', fontWeight: 600, color: '#4a5568', borderBottom: '1px solid #e2e8f0' }
-const tdStyle: React.CSSProperties = { padding: '0.45rem 0.6rem', borderBottom: '1px solid #e2e8f0' }
-const overlayStyle: React.CSSProperties = { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }
-const modalStyle: React.CSSProperties = { background: '#fff', borderRadius: 8, padding: '1.5rem 2rem', minWidth: 380, boxShadow: '0 10px 30px rgba(0,0,0,0.2)' }
-const fieldWrap: React.CSSProperties = { marginBottom: '0.75rem' }
+// ── Section helpers ─────────────────────────────────────────────────────────
 
-// ── @visual-json/react theme — mapped to site design tokens ───────────────────
-// --vj-bg           : tree background   → foam (light) / foam (dark) via CSS var
-// --vj-text         : default text      → sea-ink
-// --vj-text-muted   : muted text        → sea-ink-soft
-// --vj-bg-hover     : row hover         → light tint of lagoon
-// --vj-bg-selected  : selected row      → lagoon-deep
-// --vj-accent       : drag/focus accent → lagoon
-// --vj-string       : string values     → palm (earthy green)
-// --vj-number       : number values     → lagoon-deep
+const sectionStyle: CSSProperties = {
+  padding: '28px 0 4px',
+}
+
+function SectionTitle({ kicker, title, compact = false }: { kicker: string; title: string; compact?: boolean }) {
+  return (
+    <div style={{ marginBottom: compact ? 4 : 18 }}>
+      <div
+        style={{
+          fontFamily: 'var(--font-body)',
+          fontSize: 'var(--type-micro-size)',
+          letterSpacing: 'var(--type-micro-tracking)',
+          textTransform: 'uppercase',
+          fontWeight: 'var(--type-micro-weight)',
+          color: 'var(--ink-tertiary)',
+          marginBottom: 4,
+        }}
+      >
+        {kicker}
+      </div>
+      <h2 className="type-h2" style={{ margin: 0, color: 'var(--ink-primary)' }}>{title}</h2>
+    </div>
+  )
+}
+
+function EmptyBlock({ headline, body }: { headline: string; body: string }) {
+  return (
+    <div
+      style={{
+        padding: '40px 0 16px',
+        maxWidth: 520,
+      }}
+    >
+      <h3
+        className="type-h2"
+        style={{
+          margin: '0 0 12px',
+          color: 'var(--ink-primary)',
+          fontStyle: 'italic',
+          fontWeight: 380,
+        }}
+      >
+        {headline}
+      </h3>
+      <p style={{ margin: 0, color: 'var(--ink-secondary)', lineHeight: 1.6 }}>
+        {body}
+      </p>
+    </div>
+  )
+}
+
+function SegmentedControl<T extends string>({
+  value,
+  onChange,
+  options,
+}: {
+  value: T
+  onChange: (v: T) => void
+  options: Array<{ value: T; label: string }>
+}) {
+  return (
+    <div
+      role="tablist"
+      style={{
+        display: 'inline-flex',
+        gap: 0,
+        position: 'relative',
+      }}
+    >
+      {options.map(opt => {
+        const active = opt.value === value
+        return (
+          <button
+            key={opt.value}
+            role="tab"
+            aria-selected={active}
+            type="button"
+            onClick={() => onChange(opt.value)}
+            style={{
+              padding: '8px 16px 10px',
+              background: 'none',
+              border: 0,
+              borderBottom: active ? '1px solid transparent' : '1px solid var(--rule)',
+              cursor: 'pointer',
+              fontFamily: 'var(--font-body)',
+              fontSize: '0.8125rem',
+              fontWeight: active ? 600 : 480,
+              letterSpacing: '0.01em',
+              color: active ? 'var(--ink-primary)' : 'var(--ink-tertiary)',
+              position: 'relative',
+              transition: 'color var(--duration-quick) var(--ease-out-soft)',
+            }}
+          >
+            {opt.label}
+            <span
+              aria-hidden
+              style={{
+                position: 'absolute',
+                left: 8,
+                right: 8,
+                bottom: -1,
+                height: 2,
+                background: 'var(--accent)',
+                transform: active ? 'scaleX(1)' : 'scaleX(0)',
+                transformOrigin: 'center',
+                transition: 'transform var(--duration-default) var(--ease-out-soft)',
+              }}
+            />
+          </button>
+        )
+      })}
+    </div>
+  )
+}
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+function RuledTable({ table, density = 'regular' }: { table: any; density?: 'regular' | 'dense' }) {
+  const pad = density === 'dense' ? '10px 12px' : '14px 14px'
+  return (
+    <div style={{ overflowX: 'auto' }}>
+      <table
+        style={{
+          width: '100%',
+          borderCollapse: 'collapse',
+          fontSize: 'var(--type-body-size)',
+          fontFamily: 'var(--font-body)',
+          color: 'var(--ink-primary)',
+        }}
+      >
+        <thead>
+          {table.getHeaderGroups().map((hg: any) => (
+            <tr key={hg.id} style={{ borderBottom: '1px solid var(--rule-strong)' }}>
+              {hg.headers.map((h: any) => (
+                <th
+                  key={h.id}
+                  style={{
+                    textAlign: 'left',
+                    padding: pad,
+                    fontFamily: 'var(--font-body)',
+                    fontSize: 'var(--type-micro-size)',
+                    letterSpacing: 'var(--type-micro-tracking)',
+                    textTransform: 'uppercase',
+                    fontWeight: 'var(--type-micro-weight)',
+                    color: 'var(--ink-tertiary)',
+                  }}
+                >
+                  {flexRender(h.column.columnDef.header, h.getContext())}
+                </th>
+              ))}
+            </tr>
+          ))}
+        </thead>
+        <tbody>
+          {table.getRowModel().rows.map((row: any) => (
+            <tr
+              key={row.id}
+              style={{
+                borderBottom: '1px solid var(--rule)',
+              }}
+            >
+              {row.getVisibleCells().map((cell: any) => (
+                <td
+                  key={cell.id}
+                  style={{
+                    padding: pad,
+                    verticalAlign: 'top',
+                  }}
+                >
+                  {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
+// ── Modal styles ────────────────────────────────────────────────────────────
+
+const overlayStyle: CSSProperties = {
+  position: 'fixed',
+  inset: 0,
+  background: 'color-mix(in oklab, var(--surface-sunken) 40%, rgba(10, 8, 6, 0.5))',
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  zIndex: 1000,
+  backdropFilter: 'blur(2px)',
+  animation: 'jx-overlay-in var(--duration-quick) var(--ease-out-soft)',
+}
+
+const modalStyle: CSSProperties = {
+  background: 'var(--surface-raised)',
+  border: '1px solid var(--rule-strong)',
+  borderRadius: 'var(--radius-md)',
+  padding: '32px 32px 28px',
+  minWidth: 420,
+  maxWidth: 520,
+  boxShadow: '0 30px 80px rgba(10, 8, 6, 0.22)',
+}
+
+if (typeof document !== 'undefined' && !document.getElementById('jx-overlay-anim')) {
+  const el = document.createElement('style')
+  el.id = 'jx-overlay-anim'
+  el.textContent = `@keyframes jx-overlay-in { from { opacity: 0 } to { opacity: 1 } }`
+  document.head.appendChild(el)
+}
+
+// ── Unused imports suppression ──────────────────────────────────────────────
+// Keep StatusDot exported from primitives barrel in case future inline usage
+// in this file grows. Reference it here so the import doesn't tree-shake out
+// of the module graph during TS strict checks.
+void StatusDot
+
+// ── @visual-json/react theme — mapped to Joxette design tokens ──────────────
 const vjTheme: React.CSSProperties = {
-  marginTop: 4,
-  borderRadius: 6,
+  marginTop: 10,
+  borderRadius: 'var(--radius-sm)',
   overflow: 'hidden',
-  border: '1px solid #cbd5e0',
-  // Base colours
-  ['--vj-bg' as string]: '#f7fafc',
-  ['--vj-text' as string]: '#1a202c',
-  ['--vj-text-muted' as string]: '#4a5568',
-  // Selected row: light blue + dark text
-  ['--vj-text-selected' as string]: '#1a202c',
-  ['--vj-bg-hover' as string]: '#ebf8ff',
-  ['--vj-bg-selected' as string]: '#bee3f8',
-  ['--vj-bg-selected-muted' as string]: '#e6f6ff',
-  // Search/match highlights
-  ['--vj-bg-match' as string]: '#fefcbf',
-  ['--vj-bg-match-active' as string]: '#f6e05e',
-  // Inline button bar (copy/expand)
-  ['--vj-btn-bg' as string]: '#ffffff',
-  ['--vj-btn-text' as string]: '#2d3748',
-  ['--vj-btn-bg-hover' as string]: '#edf2f7',
-  // Popup / context menu
-  ['--vj-menu-bg' as string]: '#ffffff',
-  ['--vj-menu-text' as string]: '#1a202c',
-  ['--vj-menu-bg-hover' as string]: '#edf2f7',
-  ['--vj-menu-text-hover' as string]: '#1a202c',
-  ['--vj-menu-border' as string]: '#e2e8f0',
-  ['--vj-menu-shadow' as string]: '0 4px 16px rgba(0,0,0,0.12)',
-  // Accent & value colours
-  ['--vj-accent' as string]: '#3182ce',
-  ['--vj-string' as string]: '#276749',
-  ['--vj-number' as string]: '#2b6cb0',
-  ['--vj-font' as string]: '"Manrope", ui-sans-serif, system-ui, sans-serif',
+  border: '1px solid var(--rule-strong)',
+  background: 'var(--surface-sunken)',
+  padding: 4,
+
+  ['--vj-bg' as string]: 'var(--surface-sunken)',
+  ['--vj-text' as string]: 'var(--ink-primary)',
+  ['--vj-text-muted' as string]: 'var(--ink-secondary)',
+  ['--vj-text-selected' as string]: 'var(--ink-primary)',
+  ['--vj-bg-hover' as string]: 'var(--surface-raised)',
+  ['--vj-bg-selected' as string]: 'var(--accent-wash)',
+  ['--vj-bg-selected-muted' as string]: 'var(--accent-wash)',
+  ['--vj-bg-match' as string]: 'color-mix(in oklab, var(--signal-warn) 30%, transparent)',
+  ['--vj-bg-match-active' as string]: 'color-mix(in oklab, var(--signal-warn) 55%, transparent)',
+  ['--vj-btn-bg' as string]: 'var(--surface-raised)',
+  ['--vj-btn-text' as string]: 'var(--ink-primary)',
+  ['--vj-btn-bg-hover' as string]: 'var(--surface-paper)',
+  ['--vj-menu-bg' as string]: 'var(--surface-raised)',
+  ['--vj-menu-text' as string]: 'var(--ink-primary)',
+  ['--vj-menu-bg-hover' as string]: 'var(--surface-paper)',
+  ['--vj-menu-text-hover' as string]: 'var(--ink-primary)',
+  ['--vj-menu-border' as string]: 'var(--rule-strong)',
+  ['--vj-menu-shadow' as string]: '0 14px 32px rgba(10, 8, 6, 0.18)',
+  ['--vj-accent' as string]: 'var(--accent)',
+  ['--vj-string' as string]: 'var(--signal-live)',
+  ['--vj-number' as string]: 'var(--accent)',
+  ['--vj-font' as string]: 'var(--font-mono)',
 }
