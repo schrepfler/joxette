@@ -112,7 +112,25 @@ public class TopicReplayService implements CassetteSource {
             String cursor
     ) throws SQLException {
         return query(topic, from, to, partition, offsetFrom, offsetTo, limit, cursor,
-                     TransformPipeline.IDENTITY, "");
+                     TransformPipeline.IDENTITY, "", Order.ASC);
+    }
+
+    /**
+     * Pipeline-aware overload preserved for callers that do not supply an order.
+     * Defaults to {@link Order#ASC} to keep the pre-order-param API behaviour.
+     */
+    public PagedResponse<CassetteRecord> query(
+            String topic,
+            Instant from, Instant to,
+            Integer partition,
+            Long offsetFrom, Long offsetTo,
+            int limit,
+            String cursor,
+            TransformPipeline pipeline,
+            String replayId
+    ) throws SQLException {
+        return query(topic, from, to, partition, offsetFrom, offsetTo, limit, cursor,
+                     pipeline, replayId, Order.ASC);
     }
 
     /**
@@ -136,7 +154,8 @@ public class TopicReplayService implements CassetteSource {
             int limit,
             String cursor,
             TransformPipeline pipeline,
-            String replayId
+            String replayId,
+            Order order
     ) throws SQLException {
         // Push eligible filter_drop steps down to SQL before materialising rows.
         SqlPushdownAnalyzer.PushdownResult pushdown =
@@ -153,16 +172,24 @@ public class TopicReplayService implements CassetteSource {
         if (offsetFrom != null) cond = cond.and(F_OFFSET.ge(offsetFrom));
         if (offsetTo != null)   cond = cond.and(F_OFFSET.le(offsetTo));
 
+        boolean desc = order == Order.DESC;
         var selectBase = dsl
                 .select(F_PARTITION, F_OFFSET, F_TIMESTAMP, F_RECORDED_AT, F_KEY, F_VALUE, F_HEADERS, F_MESSAGE_TYPE)
                 .from(table)
                 .where(cond)
                 .qualify(QUALIFY_DEDUP)
-                .orderBy(F_TIMESTAMP.asc(), F_PARTITION.asc(), F_OFFSET.asc());
+                .orderBy(desc ? F_TIMESTAMP.desc() : F_TIMESTAMP.asc(),
+                         desc ? F_PARTITION.desc() : F_PARTITION.asc(),
+                         desc ? F_OFFSET.desc()    : F_OFFSET.asc());
 
         final String topicFinal = topic;
         List<CassetteRecord> records;
         if (decoded != null) {
+            // jOOQ's seekAfter is direction-aware: it inspects the ORDER BY
+            // clause and generates `WHERE (cols) > (vals)` for ASC or
+            // `WHERE (cols) < (vals)` for DESC.  So a single code path
+            // serves both directions correctly as long as the ORDER BY
+            // matches.
             records = selectBase
                     .seekAfter(decoded.timestamp().atOffset(ZoneOffset.UTC),
                                decoded.partition(),
@@ -204,7 +231,7 @@ public class TopicReplayService implements CassetteSource {
             Consumer<CassetteRecord> sink
     ) throws SQLException {
         streamAll(topic, from, to, partition, offsetFrom, offsetTo, sink,
-                  TransformPipeline.IDENTITY, "");
+                  TransformPipeline.IDENTITY, "", Order.ASC);
     }
 
     /**
@@ -233,7 +260,48 @@ public class TopicReplayService implements CassetteSource {
             String replayId
     ) throws SQLException {
         streamAll(topic, from, to, partition, offsetFrom, offsetTo, sink, pipeline, replayId,
-                  null, null);
+                  Order.ASC, null, null);
+    }
+
+    /**
+     * ASC-compatible overload used by follow-mode callers that predate the
+     * {@link Order} parameter.  New call-sites should pass {@link Order}
+     * explicitly via the direction-aware overload below.
+     */
+    public void streamAll(
+            String topic,
+            Instant from, Instant to,
+            Integer partition,
+            Long offsetFrom, Long offsetTo,
+            Consumer<CassetteRecord> sink,
+            TransformPipeline pipeline,
+            String replayId,
+            FollowSubscription<CassetteRecord, TopicCursor> follow,
+            FollowHooks<CassetteRecord> hooks
+    ) throws SQLException {
+        streamAll(topic, from, to, partition, offsetFrom, offsetTo, sink, pipeline, replayId,
+                  Order.ASC, follow, hooks);
+    }
+
+    /**
+     * Direction-aware overload.  ASC paginates oldest→newest via
+     * {@code seekAfter}; DESC paginates newest→oldest via {@code seekBefore}.
+     * Live-tail records (when {@code follow} is non-null) are emitted after the
+     * historical drain in arrival order — the client is responsible for
+     * positioning them at the head of its list when {@code order==DESC}.
+     */
+    public void streamAll(
+            String topic,
+            Instant from, Instant to,
+            Integer partition,
+            Long offsetFrom, Long offsetTo,
+            Consumer<CassetteRecord> sink,
+            TransformPipeline pipeline,
+            String replayId,
+            Order order
+    ) throws SQLException {
+        streamAll(topic, from, to, partition, offsetFrom, offsetTo, sink, pipeline, replayId,
+                  order, null, null);
     }
 
     /**
@@ -264,6 +332,7 @@ public class TopicReplayService implements CassetteSource {
             Consumer<CassetteRecord> sink,
             TransformPipeline pipeline,
             String replayId,
+            Order order,
             FollowSubscription<CassetteRecord, TopicCursor> follow,
             FollowHooks<CassetteRecord> hooks
     ) throws SQLException {
@@ -277,7 +346,8 @@ public class TopicReplayService implements CassetteSource {
             do {
                 PagedResponse<CassetteRecord> page =
                         query(topic, from, to, partition, offsetFrom, offsetTo,
-                              STREAM_PAGE_SIZE, pageCursor);
+                              STREAM_PAGE_SIZE, pageCursor,
+                              TransformPipeline.IDENTITY, "", order);
                 page.data().forEach(tracked);
                 pageCursor = page.nextCursor();
                 if (!page.hasMore()) break;
@@ -289,7 +359,8 @@ public class TopicReplayService implements CassetteSource {
             do {
                 PagedResponse<CassetteRecord> rawPage =
                         query(topic, from, to, partition, offsetFrom, offsetTo,
-                              STREAM_PAGE_SIZE, pageCursor);
+                              STREAM_PAGE_SIZE, pageCursor,
+                              TransformPipeline.IDENTITY, "", order);
                 for (CassetteRecord r : rawPage.data()) {
                     Optional<ReplayMessage> result =
                             pipeline.apply(new ReplayMessage(r), replayId, ctx);

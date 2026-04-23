@@ -8,7 +8,7 @@ import {
 } from '@tanstack/react-table'
 import { useState, useRef, useEffect } from 'react'
 import { VisualJson, TreeView, type JsonValue } from '@visual-json/react'
-import { cassettesApi, streamEntityRecords, type EntityRecord, type StreamMode, type EntityStreamParams } from '../../../api/client'
+import { cassettesApi, streamEntityRecords, type EntityRecord, type Order, type StreamMode, type EntityStreamParams } from '../../../api/client'
 import { Layout } from '../../../components/Layout'
 import { LoadingSpinner } from '../../../components/LoadingSpinner'
 import { ErrorMessage } from '../../../components/ErrorMessage'
@@ -20,8 +20,17 @@ import { useToast } from '../../../components/Toast'
 import { useDebounce } from '../../../hooks/useDebounce'
 import type { FragmentDefinition } from '../../../transforms/types'
 
+interface EntitySearch {
+  /** Sort direction for entity event replay. UI default: 'desc' (latest first). */
+  order?: Order
+}
+
 export const Route = createFileRoute('/entities/$entityType/$entityId')({
   component: EntityInstancePage,
+  validateSearch: (raw: Record<string, unknown>): EntitySearch => {
+    const o = raw.order
+    return { order: o === 'asc' || o === 'desc' ? o : undefined }
+  },
 })
 
 // ── JSON viewer (same as topics page) ─────────────────────────────────────────
@@ -93,9 +102,17 @@ function isStreamActive(s: StreamStatus): boolean {
 
 function EntityInstancePage() {
   const { entityType, entityId } = Route.useParams()
+  const search = Route.useSearch()
   const navigate = useNavigate()
+  const routeNavigate = useNavigate({ from: Route.fullPath })
   const qc = useQueryClient()
   const { addToast } = useToast()
+
+  const order: Order = search.order ?? 'desc'
+  function setOrder(next: Order) {
+    if (next === order) return
+    void routeNavigate({ search: (prev: EntitySearch) => ({ ...prev, order: next }) })
+  }
   const [fromRaw, setFromRaw] = useState('')
   const [toRaw, setToRaw] = useState('')
   const from = useDebounce(fromRaw, 300)
@@ -124,12 +141,13 @@ function EntityInstancePage() {
   })
 
   const recordsQuery = useQuery({
-    queryKey: ['cassettes', 'entities', entityType, entityId, 'records', { from, to, cursor }],
+    queryKey: ['cassettes', 'entities', entityType, entityId, 'records', { from, to, cursor, order }],
     queryFn: () => cassettesApi.getEntityRecords(entityType, entityId, {
       from: from || undefined,
       to: to || undefined,
       cursor,
       limit: 50,
+      order,
     }),
   })
 
@@ -179,9 +197,17 @@ function EntityInstancePage() {
       // also greyed out in the UI. Guard both paths.
       to: isFollowing ? undefined : (to || undefined),
       follow: isFollowing || undefined,
+      order,
     }
+    const shouldPrependLive = isFollowing && order === 'desc'
     abortRef.current = streamEntityRecords(entityType, entityId, streamMode, params, {
-      onRecord: (r) => { streamBufferRef.current.push(r) },
+      onRecord: (r) => {
+        if (shouldPrependLive && followActiveRef.current) {
+          streamBufferRef.current.unshift(r)
+        } else {
+          streamBufferRef.current.push(r)
+        }
+      },
       onStatus: (event) => {
         if (event === 'follow') {
           followActiveRef.current = true
@@ -213,7 +239,7 @@ function EntityInstancePage() {
     if (flushIntervalRef.current) clearInterval(flushIntervalRef.current)
   }, [])
 
-  // Stop stream when filters change so data doesn't go stale
+  // Stop stream when filters or sort change so data doesn't go stale
   useEffect(() => {
     abortRef.current?.abort()
     abortRef.current = null
@@ -221,7 +247,14 @@ function EntityInstancePage() {
     followActiveRef.current = false
     setStreamStatus(s => (s === 'streaming' || s === 'draining' || s === 'tailing') ? 'idle' : s)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [from, to])
+  }, [from, to, order])
+
+  // Reset paged cursor state when the sort direction changes.
+  useEffect(() => {
+    setCursor(undefined)
+    setCursors([])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [order])
 
   const columns = [
     colHelper.accessor('timestamp', {
@@ -390,6 +423,33 @@ function EntityInstancePage() {
                 }}
               >
                 {m === 'json' ? 'Paged' : m.toUpperCase()}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div style={{ display: 'flex', gap: 12, alignItems: 'center', marginBottom: '0.75rem', flexWrap: 'wrap' }}>
+          <label style={{ fontSize: 13, fontWeight: 600, color: '#4a5568', marginRight: 4 }}>Order</label>
+          <div style={{ display: 'flex', border: '1px solid #cbd5e0', borderRadius: 4, overflow: 'hidden' }}>
+            {([
+              ['desc', 'Latest first'],
+              ['asc',  'Oldest first'],
+            ] as Array<[Order, string]>).map(([val, label], i) => (
+              <button
+                key={val}
+                onClick={() => setOrder(val)}
+                style={{
+                  padding: '0.3rem 0.75rem',
+                  background: order === val ? '#3182ce' : '#fff',
+                  color: order === val ? '#fff' : '#4a5568',
+                  border: 'none',
+                  borderRight: i < 1 ? '1px solid #cbd5e0' : 'none',
+                  cursor: 'pointer',
+                  fontSize: 12,
+                  fontWeight: order === val ? 600 : 400,
+                }}
+              >
+                {label}
               </button>
             ))}
           </div>

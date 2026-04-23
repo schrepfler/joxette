@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from '@tanstack/react-router'
+import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
   useReactTable,
@@ -15,6 +15,7 @@ import {
   cassettesApi,
   streamTopicRecords,
   type CassetteRecord,
+  type Order,
   type StreamMode,
   type TopicStreamParams,
   type TopicMatcherConfig,
@@ -113,8 +114,17 @@ function ValueCell({ raw }: { raw: string | null }) {
   )
 }
 
+interface TopicSearch {
+  /** Sort direction for cassette replay. UI default: 'desc' (latest first). */
+  order?: Order
+}
+
 export const Route = createFileRoute('/topics/$topic')({
   component: TopicDetailPage,
+  validateSearch: (raw: Record<string, unknown>): TopicSearch => {
+    const o = raw.order
+    return { order: o === 'asc' || o === 'desc' ? o : undefined }
+  },
 })
 
 const colHelper = createColumnHelper<CassetteRecord>()
@@ -206,8 +216,18 @@ function formatBytes(b: number) {
 
 function TopicDetailPage() {
   const { topic } = Route.useParams()
+  const search = Route.useSearch()
+  const navigate = useNavigate({ from: Route.fullPath })
   const qc = useQueryClient()
   const { addToast } = useToast()
+
+  // UI default is latest-first; backend default is oldest-first. The URL is
+  // only updated when the user flips the toggle.
+  const order: Order = search.order ?? 'desc'
+  function setOrder(next: Order) {
+    if (next === order) return
+    void navigate({ search: (prev: TopicSearch) => ({ ...prev, order: next }) })
+  }
 
   // Filter state (raw)
   const [fromRaw, setFromRaw] = useState('')
@@ -263,7 +283,7 @@ function TopicDetailPage() {
   })
 
   const recordsQuery = useQuery({
-    queryKey: ['cassettes', 'topics', topic, 'records', { from, to, partition, offsetFrom, offsetTo, cursor }],
+    queryKey: ['cassettes', 'topics', topic, 'records', { from, to, partition, offsetFrom, offsetTo, cursor, order }],
     queryFn: () =>
       cassettesApi.getTopicRecords(topic, {
         from: from || undefined,
@@ -273,6 +293,7 @@ function TopicDetailPage() {
         offset_to: offsetTo ? Number(offsetTo) : undefined,
         cursor,
         limit: 50,
+        order,
       }),
   })
 
@@ -349,9 +370,23 @@ function TopicDetailPage() {
       offset_from: offsetFrom ? Number(offsetFrom) : undefined,
       offset_to: isFollowing ? undefined : (offsetTo ? Number(offsetTo) : undefined),
       follow: isFollowing || undefined,
+      order,
     }
+    // When order=desc + follow is on, post-preamble live records must land at
+    // the top of the list (latest-first) rather than the tail. During the
+    // historical drain records still arrive newest→oldest from the backend
+    // and are appended in arrival order, which is already the correct visual
+    // order. So: push-append during drain; prepend once the `follow` preamble
+    // flips `followActiveRef`.
+    const shouldPrependLive = isFollowing && order === 'desc'
     abortRef.current = streamTopicRecords(topic, streamMode, params, {
-      onRecord: (r) => { streamBufferRef.current.push(r) },
+      onRecord: (r) => {
+        if (shouldPrependLive && followActiveRef.current) {
+          streamBufferRef.current.unshift(r)
+        } else {
+          streamBufferRef.current.push(r)
+        }
+      },
       onStatus: (event) => {
         if (event === 'follow') {
           followActiveRef.current = true
@@ -389,7 +424,15 @@ function TopicDetailPage() {
     followActiveRef.current = false
     setStreamStatus(s => (s === 'streaming' || s === 'draining' || s === 'tailing') ? 'idle' : s)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [from, to, partition, offsetFrom, offsetTo])
+  }, [from, to, partition, offsetFrom, offsetTo, order])
+
+  // When the sort flips, also reset paged cursor state so the paged tab
+  // doesn't merge records from the previous direction with the new one.
+  useEffect(() => {
+    setCursor(undefined)
+    setCursors([])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [order])
 
   const matcherColumns = [
     matcherColHelper.accessor('messageType', {
@@ -756,6 +799,33 @@ function TopicDetailPage() {
                     { value: 'json', label: 'Paged' },
                     { value: 'sse', label: 'SSE' },
                     { value: 'ndjson', label: 'NDJSON' },
+                  ]}
+                />
+              </div>
+
+              {/* Sort direction — above the filter strip so it's first in reading order */}
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 16,
+                marginBottom: 20,
+              }}>
+                <span style={{
+                  fontFamily: 'var(--font-body)',
+                  fontSize: 'var(--type-micro-size)',
+                  letterSpacing: 'var(--type-micro-tracking)',
+                  textTransform: 'uppercase',
+                  fontWeight: 'var(--type-micro-weight)',
+                  color: 'var(--ink-tertiary)',
+                }}>
+                  Order
+                </span>
+                <SegmentedControl<Order>
+                  value={order}
+                  onChange={setOrder}
+                  options={[
+                    { value: 'desc', label: 'Latest first' },
+                    { value: 'asc',  label: 'Oldest first' },
                   ]}
                 />
               </div>

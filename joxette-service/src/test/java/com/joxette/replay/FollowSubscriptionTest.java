@@ -212,6 +212,64 @@ class FollowSubscriptionTest {
     }
 
     // -----------------------------------------------------------------------
+    // Direction-aware boundary filter
+    // -----------------------------------------------------------------------
+
+    /**
+     * With {@link Order#DESC}, the drain reads newest→oldest; the boundary
+     * high-water mark is pinned by the first (newest) drain emission, so only
+     * bus records strictly newer than that pinned cursor are forwarded.
+     * The remaining older records arriving on the bus were already observed
+     * by the drain and are suppressed.
+     */
+    @Test
+    void desc_topicBoundary_emitsOnlyRecordsNewerThanDrainHighWaterMark() {
+        CassetteRecordingBus.TopicSubscription topicSub = bus.subscribeTopic("t");
+        FollowSubscription<CassetteRecord, TopicCursor> sub =
+                FollowSubscription.forTopic(topicSub, Order.DESC);
+
+        // DESC drain emitted newest→oldest. First (newest) emission sets the
+        // pinned high-water mark at (T0+10s, 0, 100). Subsequent older
+        // emissions do not move the mark.
+        sub.onEmitted(cassette(T0.plusSeconds(10), 0, 100L));
+        sub.onEmitted(cassette(T0.plusSeconds(5), 0, 100L));
+
+        // Within drain window → already emitted → skip
+        topicSub.queue().offer(cassette(T0.plusSeconds(7), 0, 0L));
+        // Equal to high-water mark → duplicate → skip
+        topicSub.queue().offer(cassette(T0.plusSeconds(10), 0, 100L));
+        // Strictly newer → genuinely live → forward
+        topicSub.queue().offer(cassette(T0.plusSeconds(15), 0, 50L));
+
+        List<CassetteRecord> emitted = new ArrayList<>();
+        sub.drainBuffered(emitted::add);
+
+        assertThat(emitted).hasSize(1);
+        assertThat(emitted.get(0).timestamp()).isEqualTo(T0.plusSeconds(15));
+    }
+
+    @Test
+    void desc_entityBoundary_emitsOnlyRecordsNewerThanDrainHighWaterMark() {
+        CassetteRecordingBus.EntitySubscription entitySub =
+                bus.subscribeEntity("order", "order-1");
+        FollowSubscription<EntityRecord, EntityCursor> sub =
+                FollowSubscription.forEntity(entitySub, Order.DESC);
+
+        sub.onEmitted(entity(T0.plusSeconds(10), T0.plusSeconds(10), "src", 1, 100L));
+        sub.onEmitted(entity(T0.plusSeconds(5), T0.plusSeconds(5), "src", 1, 100L));
+
+        entitySub.queue().offer(entity(T0.plusSeconds(7), T0.plusSeconds(7), "src", 1, 0L));
+        entitySub.queue().offer(entity(T0.plusSeconds(10), T0.plusSeconds(10), "src", 1, 100L));
+        entitySub.queue().offer(entity(T0.plusSeconds(15), T0.plusSeconds(15), "src", 1, 50L));
+
+        List<EntityRecord> emitted = new ArrayList<>();
+        sub.drainBuffered(emitted::add);
+
+        assertThat(emitted).hasSize(1);
+        assertThat(emitted.get(0).timestamp()).isEqualTo(T0.plusSeconds(15));
+    }
+
+    // -----------------------------------------------------------------------
     // Fixtures
     // -----------------------------------------------------------------------
 

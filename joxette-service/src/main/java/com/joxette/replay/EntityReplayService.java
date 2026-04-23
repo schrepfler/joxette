@@ -116,7 +116,24 @@ public class EntityReplayService implements EntityCassetteSource {
             String cursor
     ) throws SQLException {
         return queryEntityEvents(entityType, entityId, from, to, limit, cursor,
-                                 TransformPipeline.IDENTITY, "");
+                                 TransformPipeline.IDENTITY, "", Order.ASC);
+    }
+
+    /**
+     * Pipeline-aware overload preserved for callers that do not supply an order.
+     * Defaults to {@link Order#ASC} to keep the pre-order-param API behaviour.
+     */
+    public PagedResponse<EntityRecord> queryEntityEvents(
+            String entityType,
+            String entityId,
+            Instant from, Instant to,
+            int limit,
+            String cursor,
+            TransformPipeline pipeline,
+            String replayId
+    ) throws SQLException {
+        return queryEntityEvents(entityType, entityId, from, to, limit, cursor,
+                                 pipeline, replayId, Order.ASC);
     }
 
     /**
@@ -135,7 +152,8 @@ public class EntityReplayService implements EntityCassetteSource {
             int limit,
             String cursor,
             TransformPipeline pipeline,
-            String replayId
+            String replayId,
+            Order order
     ) throws SQLException {
         validateEntityType(entityType);
 
@@ -152,17 +170,24 @@ public class EntityReplayService implements EntityCassetteSource {
         if (from != null) cond = cond.and(F_TIMESTAMP.ge(from.atOffset(ZoneOffset.UTC)));
         if (to != null)   cond = cond.and(F_TIMESTAMP.le(to.atOffset(ZoneOffset.UTC)));
 
+        boolean desc = order == Order.DESC;
         var selectBase = dsl
                 .select(F_ENTITY_ID, F_MESSAGE_TYPE, F_TOPIC, F_PARTITION, F_OFFSET,
                         F_TIMESTAMP, F_RECORDED_AT, F_KEY, F_VALUE, F_HEADERS)
                 .from(entityTable)
                 .where(cond)
                 .qualify(QUALIFY_DEDUP)
-                .orderBy(F_TIMESTAMP.asc(), F_RECORDED_AT.asc(), F_TOPIC.asc(),
-                         F_PARTITION.asc(), F_OFFSET.asc());
+                .orderBy(desc ? F_TIMESTAMP.desc()   : F_TIMESTAMP.asc(),
+                         desc ? F_RECORDED_AT.desc() : F_RECORDED_AT.asc(),
+                         desc ? F_TOPIC.desc()       : F_TOPIC.asc(),
+                         desc ? F_PARTITION.desc()   : F_PARTITION.asc(),
+                         desc ? F_OFFSET.desc()      : F_OFFSET.asc());
 
         List<EntityRecord> records;
         if (decoded != null) {
+            // seekAfter is direction-aware in jOOQ: it inspects the ORDER BY
+            // and emits the correct comparison for ASC / DESC. The cursor is
+            // the same tuple; only the query direction changes.
             records = selectBase
                     .seekAfter(decoded.timestamp().atOffset(ZoneOffset.UTC),
                                decoded.recordedAt().atOffset(ZoneOffset.UTC),
@@ -204,7 +229,7 @@ public class EntityReplayService implements EntityCassetteSource {
             Consumer<EntityRecord> sink
     ) throws SQLException {
         streamEntityEvents(entityType, entityId, from, to, sink,
-                           TransformPipeline.IDENTITY, "");
+                           TransformPipeline.IDENTITY, "", Order.ASC);
     }
 
     /**
@@ -229,7 +254,37 @@ public class EntityReplayService implements EntityCassetteSource {
             String replayId
     ) throws SQLException {
         streamEntityEvents(entityType, entityId, from, to, sink, pipeline, replayId,
-                           null, null);
+                           Order.ASC, null, null);
+    }
+
+    /**
+     * ASC-compatible overload for follow-mode callers that predate the
+     * {@link Order} parameter.
+     */
+    public void streamEntityEvents(
+            String entityType, String entityId,
+            Instant from, Instant to,
+            Consumer<EntityRecord> sink,
+            TransformPipeline pipeline,
+            String replayId,
+            FollowSubscription<EntityRecord, EntityCursor> follow,
+            FollowHooks<EntityRecord> hooks
+    ) throws SQLException {
+        streamEntityEvents(entityType, entityId, from, to, sink, pipeline, replayId,
+                           Order.ASC, follow, hooks);
+    }
+
+    /** Direction-aware overload without follow support. */
+    public void streamEntityEvents(
+            String entityType, String entityId,
+            Instant from, Instant to,
+            Consumer<EntityRecord> sink,
+            TransformPipeline pipeline,
+            String replayId,
+            Order order
+    ) throws SQLException {
+        streamEntityEvents(entityType, entityId, from, to, sink, pipeline, replayId,
+                           order, null, null);
     }
 
     /**
@@ -246,6 +301,7 @@ public class EntityReplayService implements EntityCassetteSource {
             Consumer<EntityRecord> sink,
             TransformPipeline pipeline,
             String replayId,
+            Order order,
             FollowSubscription<EntityRecord, EntityCursor> follow,
             FollowHooks<EntityRecord> hooks
     ) throws SQLException {
@@ -259,7 +315,8 @@ public class EntityReplayService implements EntityCassetteSource {
             do {
                 PagedResponse<EntityRecord> page =
                         queryEntityEvents(entityType, entityId, from, to,
-                                          STREAM_PAGE_SIZE, pageCursor);
+                                          STREAM_PAGE_SIZE, pageCursor,
+                                          TransformPipeline.IDENTITY, "", order);
                 page.data().forEach(tracked);
                 pageCursor = page.nextCursor();
                 if (!page.hasMore()) break;
@@ -271,7 +328,8 @@ public class EntityReplayService implements EntityCassetteSource {
             do {
                 PagedResponse<EntityRecord> rawPage =
                         queryEntityEvents(entityType, entityId, from, to,
-                                          STREAM_PAGE_SIZE, pageCursor);
+                                          STREAM_PAGE_SIZE, pageCursor,
+                                          TransformPipeline.IDENTITY, "", order);
                 for (EntityRecord r : rawPage.data()) {
                     Optional<ReplayMessage> result =
                             pipeline.apply(new ReplayMessage(r), replayId, ctx);

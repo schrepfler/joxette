@@ -1,5 +1,6 @@
 package com.joxette.replay;
 
+import com.joxette.replay.transform.TransformPipeline;
 import com.joxette.support.DuckDBTestSupport;
 import org.jooq.DSLContext;
 import org.jooq.SQLDialect;
@@ -7,12 +8,15 @@ import org.jooq.impl.DSL;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
 
@@ -304,6 +308,71 @@ class EntityReplayServiceTest {
 
         assertThat(stats1.messageCount()).isEqualTo(1);
         assertThat(stats2.messageCount()).isEqualTo(1);
+    }
+
+    // -------------------------------------------------------------------------
+    // order=asc|desc — parameterized ordering and cursor round-trip
+    // -------------------------------------------------------------------------
+
+    @ParameterizedTest
+    @EnumSource(Order.class)
+    void queryEntityEvents_returnsEventsInRequestedOrder(Order order) throws Exception {
+        Instant base = Instant.parse("2026-01-01T00:00:00Z");
+        int total = 5;
+        for (int i = 0; i < total; i++) {
+            insertEntityRow("ORD-O", 7, "orders.events", 0, i, base.plusSeconds(i), b("v" + i));
+        }
+
+        PagedResponse<EntityRecord> page = service.queryEntityEvents(
+                ENTITY_TYPE, "ORD-O", null, null, 50, null,
+                TransformPipeline.IDENTITY, "", order);
+
+        assertThat(page.data()).hasSize(total);
+        List<Long> offsets = page.data().stream().map(EntityRecord::offset).toList();
+        if (order == Order.ASC) {
+            assertThat(offsets).containsExactly(0L, 1L, 2L, 3L, 4L);
+        } else {
+            assertThat(offsets).containsExactly(4L, 3L, 2L, 1L, 0L);
+        }
+    }
+
+    @ParameterizedTest
+    @EnumSource(Order.class)
+    void queryEntityEvents_paginatesWithCursor_inRequestedOrder(Order order) throws Exception {
+        Instant base = Instant.parse("2026-02-01T00:00:00Z");
+        int total = 6;
+        for (int i = 0; i < total; i++) {
+            insertEntityRow("ORD-P2", 4, "orders.events", 0, i, base.plusSeconds(i), b("v" + i));
+        }
+
+        List<Long> collected = new ArrayList<>();
+        String cursor = null;
+        do {
+            PagedResponse<EntityRecord> page = service.queryEntityEvents(
+                    ENTITY_TYPE, "ORD-P2", null, null, 2, cursor,
+                    TransformPipeline.IDENTITY, "", order);
+            page.data().forEach(r -> collected.add(r.offset()));
+            cursor = page.nextCursor();
+            if (!page.hasMore()) break;
+        } while (cursor != null);
+
+        assertThat(collected).hasSize(total);
+        if (order == Order.ASC) {
+            assertThat(collected).containsExactly(0L, 1L, 2L, 3L, 4L, 5L);
+        } else {
+            assertThat(collected).containsExactly(5L, 4L, 3L, 2L, 1L, 0L);
+        }
+    }
+
+    @ParameterizedTest
+    @EnumSource(Order.class)
+    void queryEntityEvents_emptyResult_inRequestedOrder(Order order) throws Exception {
+        PagedResponse<EntityRecord> page = service.queryEntityEvents(
+                ENTITY_TYPE, "ORD-NONE", null, null, 50, null,
+                TransformPipeline.IDENTITY, "", order);
+        assertThat(page.data()).isEmpty();
+        assertThat(page.hasMore()).isFalse();
+        assertThat(page.nextCursor()).isNull();
     }
 
     // -------------------------------------------------------------------------

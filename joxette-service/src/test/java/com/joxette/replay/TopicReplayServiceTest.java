@@ -1,5 +1,6 @@
 package com.joxette.replay;
 
+import com.joxette.replay.transform.TransformPipeline;
 import com.joxette.support.DuckDBTestSupport;
 import org.jooq.DSLContext;
 import org.jooq.SQLDialect;
@@ -7,11 +8,15 @@ import org.jooq.impl.DSL;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import java.sql.Connection;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -248,6 +253,104 @@ class TopicReplayServiceTest {
         assertThat(collected).hasSize(total);
         for (int i = 0; i < total; i++) {
             assertThat(collected.get(i).offset()).isEqualTo(i);
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // order=asc|desc — parameterized ordering and cursor round-trip
+    // -------------------------------------------------------------------------
+
+    /**
+     * For {@link Order#ASC} and {@link Order#DESC}, produce 5 records with
+     * distinct timestamps and assert the returned data is in the requested
+     * direction.
+     */
+    @ParameterizedTest
+    @EnumSource(Order.class)
+    void query_returnsRecordsInRequestedOrder(Order order) throws Exception {
+        Instant base = Instant.parse("2026-01-01T00:00:00Z");
+        for (int i = 0; i < 5; i++) {
+            DuckDBTestSupport.insertCassetteRow(duckDB, TOPIC, 0, i,
+                    base.plusSeconds(i), Instant.now(), "k" + i, b("v" + i));
+        }
+
+        PagedResponse<CassetteRecord> page = service.query(
+                TOPIC, null, null, null, null, null,
+                50, null, TransformPipeline.IDENTITY, "", order);
+
+        assertThat(page.data()).hasSize(5);
+        List<Long> offsets = page.data().stream().map(CassetteRecord::offset).toList();
+        if (order == Order.ASC) {
+            assertThat(offsets).containsExactly(0L, 1L, 2L, 3L, 4L);
+        } else {
+            assertThat(offsets).containsExactly(4L, 3L, 2L, 1L, 0L);
+        }
+    }
+
+    /**
+     * Cursor round-trip: first page → cursor → second page; records strictly
+     * continue in the requested direction with no overlap and no gap.
+     */
+    @ParameterizedTest
+    @EnumSource(Order.class)
+    void query_paginatesWithCursor_inRequestedOrder(Order order) throws Exception {
+        Instant base = Instant.parse("2026-02-01T00:00:00Z");
+        int total = 6;
+        for (int i = 0; i < total; i++) {
+            DuckDBTestSupport.insertCassetteRow(duckDB, TOPIC, 0, i,
+                    base.plusSeconds(i), Instant.now(), "k" + i, b("v" + i));
+        }
+
+        List<Long> collected = new ArrayList<>();
+        String cursor = null;
+        do {
+            PagedResponse<CassetteRecord> page = service.query(
+                    TOPIC, null, null, null, null, null,
+                    2, cursor, TransformPipeline.IDENTITY, "", order);
+            page.data().forEach(r -> collected.add(r.offset()));
+            cursor = page.nextCursor();
+            if (!page.hasMore()) break;
+        } while (cursor != null);
+
+        assertThat(collected).hasSize(total);
+        if (order == Order.ASC) {
+            assertThat(collected).containsExactly(0L, 1L, 2L, 3L, 4L, 5L);
+        } else {
+            assertThat(collected).containsExactly(5L, 4L, 3L, 2L, 1L, 0L);
+        }
+    }
+
+    /** Empty range returns an empty page with no cursor, regardless of direction. */
+    @ParameterizedTest
+    @EnumSource(Order.class)
+    void query_emptyResult_inRequestedOrder(Order order) throws Exception {
+        PagedResponse<CassetteRecord> page = service.query(
+                TOPIC, null, null, null, null, null,
+                50, null, TransformPipeline.IDENTITY, "", order);
+        assertThat(page.data()).isEmpty();
+        assertThat(page.hasMore()).isFalse();
+        assertThat(page.nextCursor()).isNull();
+    }
+
+    /** {@code streamAll} should honour the direction end-to-end. */
+    @ParameterizedTest
+    @EnumSource(Order.class)
+    void streamAll_deliversAllRecordsInRequestedOrder(Order order) throws Exception {
+        Instant base = Instant.parse("2026-03-01T00:00:00Z");
+        int total = 7;
+        for (int i = 0; i < total; i++) {
+            DuckDBTestSupport.insertCassetteRow(duckDB, TOPIC, 0, i,
+                    base.plusSeconds(i), Instant.now(), "k" + i, null);
+        }
+
+        List<Long> offsets = new ArrayList<>();
+        service.streamAll(TOPIC, null, null, null, null, null,
+                r -> offsets.add(r.offset()), TransformPipeline.IDENTITY, "", order);
+
+        if (order == Order.ASC) {
+            assertThat(offsets).containsExactly(0L, 1L, 2L, 3L, 4L, 5L, 6L);
+        } else {
+            assertThat(offsets).containsExactly(6L, 5L, 4L, 3L, 2L, 1L, 0L);
         }
     }
 

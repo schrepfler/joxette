@@ -330,6 +330,9 @@ export const entitiesApi = {
 
 // ---- Cassettes ----
 
+/** Sort direction for paged and streaming cassette replay. Default 'asc' on the backend. */
+export type Order = 'asc' | 'desc'
+
 export type CassetteTopicParams = QueryParams & {
   from?: string
   to?: string
@@ -338,6 +341,7 @@ export type CassetteTopicParams = QueryParams & {
   offset_to?: number
   limit?: number
   cursor?: string
+  order?: Order
 }
 
 export type EntityListParams = QueryParams & {
@@ -356,6 +360,7 @@ export type EntityRecordsParams = QueryParams & {
   to?: string
   limit?: number
   cursor?: string
+  order?: Order
 }
 
 export const cassettesApi = {
@@ -476,11 +481,13 @@ export type TopicStreamParams = {
   partition?: number
   offset_from?: number
   offset_to?: number
+  order?: Order
 }
 
 export type EntityStreamParams = {
   from?: string
   to?: string
+  order?: Order
 }
 
 export async function streamLines(
