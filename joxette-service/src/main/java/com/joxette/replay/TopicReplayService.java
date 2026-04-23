@@ -232,6 +232,45 @@ public class TopicReplayService implements CassetteSource {
             TransformPipeline pipeline,
             String replayId
     ) throws SQLException {
+        streamAll(topic, from, to, partition, offsetFrom, offsetTo, sink, pipeline, replayId,
+                  null, null);
+    }
+
+    /**
+     * Streams historical records then, if {@code follow} is non-null, enters a
+     * live loop fed by {@code follow}.
+     *
+     * <p>Each emitted record advances {@code follow.lastEmittedCursor} so the
+     * post-drain {@link FollowSubscription#drainBuffered(Consumer)} call can
+     * skip any buffered duplicates captured while the drain was still running.
+     *
+     * @param follow           subscription created before the drain started, or
+     *                         {@code null} for the legacy non-follow behavior
+     * @param onHistoricalEnd  optional callback invoked exactly once, between
+     *                         the last historical record and the first live
+     *                         record.  Used by the handler to emit a
+     *                         {@code follow} preamble event.  Ignored when
+     *                         {@code follow} is {@code null}.
+     * @param heartbeat        optional callback invoked when the live loop
+     *                         times out waiting for the next record.  Used by
+     *                         the handler to emit a heartbeat event.  Ignored
+     *                         when {@code follow} is {@code null}.
+     */
+    public void streamAll(
+            String topic,
+            Instant from, Instant to,
+            Integer partition,
+            Long offsetFrom, Long offsetTo,
+            Consumer<CassetteRecord> sink,
+            TransformPipeline pipeline,
+            String replayId,
+            FollowSubscription<CassetteRecord, TopicCursor> follow,
+            FollowHooks<CassetteRecord> hooks
+    ) throws SQLException {
+        Consumer<CassetteRecord> tracked = follow == null
+                ? sink
+                : r -> { sink.accept(r); follow.onEmitted(r); };
+
         if (pipeline.isIdentity()) {
             // Fast path: no per-record overhead, no context needed
             String pageCursor = null;
@@ -239,29 +278,51 @@ public class TopicReplayService implements CassetteSource {
                 PagedResponse<CassetteRecord> page =
                         query(topic, from, to, partition, offsetFrom, offsetTo,
                               STREAM_PAGE_SIZE, pageCursor);
-                page.data().forEach(sink);
+                page.data().forEach(tracked);
                 pageCursor = page.nextCursor();
                 if (!page.hasMore()) break;
             } while (true);
-            return;
+        } else {
+            // Per-record path: shared context for stateful steps (e.g. time_compress)
+            TransformContext ctx = new TransformContext();
+            String pageCursor = null;
+            do {
+                PagedResponse<CassetteRecord> rawPage =
+                        query(topic, from, to, partition, offsetFrom, offsetTo,
+                              STREAM_PAGE_SIZE, pageCursor);
+                for (CassetteRecord r : rawPage.data()) {
+                    Optional<ReplayMessage> result =
+                            pipeline.apply(new ReplayMessage(r), replayId, ctx);
+                    sleepPending(ctx);
+                    result.map(ReplayMessage::toCassetteRecord).ifPresent(tracked);
+                }
+                pageCursor = rawPage.nextCursor();
+                if (!rawPage.hasMore()) break;
+            } while (true);
         }
 
-        // Per-record path: shared context for stateful steps (e.g. time_compress)
-        TransformContext ctx = new TransformContext();
-        String pageCursor = null;
-        do {
-            PagedResponse<CassetteRecord> rawPage =
-                    query(topic, from, to, partition, offsetFrom, offsetTo,
-                          STREAM_PAGE_SIZE, pageCursor);
-            for (CassetteRecord r : rawPage.data()) {
-                Optional<ReplayMessage> result =
-                        pipeline.apply(new ReplayMessage(r), replayId, ctx);
-                sleepPending(ctx);
-                result.map(ReplayMessage::toCassetteRecord).ifPresent(sink);
+        if (follow == null) return;
+
+        if (hooks != null) hooks.onHistoricalEnd();
+
+        follow.drainBuffered(sink);
+
+        Duration heartbeat = hooks != null ? hooks.heartbeatInterval() : Duration.ofSeconds(15);
+        while (!follow.isOverflowed()) {
+            CassetteRecord next;
+            try {
+                next = follow.awaitNext(heartbeat);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
             }
-            pageCursor = rawPage.nextCursor();
-            if (!rawPage.hasMore()) break;
-        } while (true);
+            if (next == null) {
+                if (hooks != null) hooks.onHeartbeat();
+            } else {
+                sink.accept(next);
+            }
+        }
+        if (hooks != null) hooks.onOverflow();
     }
 
     /**

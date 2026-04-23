@@ -228,6 +228,31 @@ public class EntityReplayService implements EntityCassetteSource {
             TransformPipeline pipeline,
             String replayId
     ) throws SQLException {
+        streamEntityEvents(entityType, entityId, from, to, sink, pipeline, replayId,
+                           null, null);
+    }
+
+    /**
+     * Streams historical events then, if {@code follow} is non-null, enters a
+     * live loop fed by {@code follow}.  Each emitted record advances
+     * {@code follow.lastEmittedCursor}; once the drain completes, buffered
+     * live records are flushed with duplicate-suppression, then the live loop
+     * emits records or heartbeats until the emitter closes or the bus
+     * subscription overflows.
+     */
+    public void streamEntityEvents(
+            String entityType, String entityId,
+            Instant from, Instant to,
+            Consumer<EntityRecord> sink,
+            TransformPipeline pipeline,
+            String replayId,
+            FollowSubscription<EntityRecord, EntityCursor> follow,
+            FollowHooks<EntityRecord> hooks
+    ) throws SQLException {
+        Consumer<EntityRecord> tracked = follow == null
+                ? sink
+                : r -> { sink.accept(r); follow.onEmitted(r); };
+
         if (pipeline.isIdentity()) {
             // Fast path: no per-record overhead, no context needed
             String pageCursor = null;
@@ -235,29 +260,51 @@ public class EntityReplayService implements EntityCassetteSource {
                 PagedResponse<EntityRecord> page =
                         queryEntityEvents(entityType, entityId, from, to,
                                           STREAM_PAGE_SIZE, pageCursor);
-                page.data().forEach(sink);
+                page.data().forEach(tracked);
                 pageCursor = page.nextCursor();
                 if (!page.hasMore()) break;
             } while (true);
-            return;
+        } else {
+            // Per-record path: shared context for stateful steps (e.g. time_compress)
+            TransformContext ctx = new TransformContext();
+            String pageCursor = null;
+            do {
+                PagedResponse<EntityRecord> rawPage =
+                        queryEntityEvents(entityType, entityId, from, to,
+                                          STREAM_PAGE_SIZE, pageCursor);
+                for (EntityRecord r : rawPage.data()) {
+                    Optional<ReplayMessage> result =
+                            pipeline.apply(new ReplayMessage(r), replayId, ctx);
+                    sleepPending(ctx);
+                    result.map(ReplayMessage::toEntityRecord).ifPresent(tracked);
+                }
+                pageCursor = rawPage.nextCursor();
+                if (!rawPage.hasMore()) break;
+            } while (true);
         }
 
-        // Per-record path: shared context for stateful steps (e.g. time_compress)
-        TransformContext ctx = new TransformContext();
-        String pageCursor = null;
-        do {
-            PagedResponse<EntityRecord> rawPage =
-                    queryEntityEvents(entityType, entityId, from, to,
-                                      STREAM_PAGE_SIZE, pageCursor);
-            for (EntityRecord r : rawPage.data()) {
-                Optional<ReplayMessage> result =
-                        pipeline.apply(new ReplayMessage(r), replayId, ctx);
-                sleepPending(ctx);
-                result.map(ReplayMessage::toEntityRecord).ifPresent(sink);
+        if (follow == null) return;
+
+        if (hooks != null) hooks.onHistoricalEnd();
+
+        follow.drainBuffered(sink);
+
+        Duration heartbeat = hooks != null ? hooks.heartbeatInterval() : Duration.ofSeconds(15);
+        while (!follow.isOverflowed()) {
+            EntityRecord next;
+            try {
+                next = follow.awaitNext(heartbeat);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
             }
-            pageCursor = rawPage.nextCursor();
-            if (!rawPage.hasMore()) break;
-        } while (true);
+            if (next == null) {
+                if (hooks != null) hooks.onHeartbeat();
+            } else {
+                sink.accept(next);
+            }
+        }
+        if (hooks != null) hooks.onOverflow();
     }
 
     /**

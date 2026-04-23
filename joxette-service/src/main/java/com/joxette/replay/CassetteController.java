@@ -19,6 +19,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
 import com.joxette.config.JoxetteProperties;
+import com.joxette.recording.CassetteRecordingBus;
 import com.joxette.replay.sink.RecordSink;
 import com.joxette.replay.sink.kafka.KafkaRecordSinkFactory;
 import com.joxette.replay.transform.ReplayMetadataInjector;
@@ -29,6 +30,7 @@ import com.joxette.replay.transform.TransformStep;
 import com.joxette.replay.transform.steps.FilterDropStep;
 
 import java.sql.SQLException;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -94,6 +96,7 @@ public class CassetteController {
     private final ObjectMapper              objectMapper;
     private final SequenceMatchService      sequenceMatchService;
     private final FieldSuggestionsService   fieldSuggestionsService;
+    private final CassetteRecordingBus      recordingBus;
 
     public CassetteController(
             TopicReplayService topicService,
@@ -107,7 +110,8 @@ public class CassetteController {
             JoxetteProperties properties,
             ObjectMapper objectMapper,
             SequenceMatchService sequenceMatchService,
-            FieldSuggestionsService fieldSuggestionsService) {
+            FieldSuggestionsService fieldSuggestionsService,
+            CassetteRecordingBus recordingBus) {
         this.topicService             = topicService;
         this.entityService            = entityService;
         this.sseHandler               = sseHandler;
@@ -120,6 +124,52 @@ public class CassetteController {
         this.objectMapper             = objectMapper;
         this.sequenceMatchService     = sequenceMatchService;
         this.fieldSuggestionsService  = fieldSuggestionsService;
+        this.recordingBus             = recordingBus;
+    }
+
+    /**
+     * Signals that the service is at {@code max-subscriptions} capacity.
+     * Mapped to HTTP 503 by {@link #handleFollowCapacityExceeded}.
+     */
+    static final class FollowCapacityExceededException extends RuntimeException {
+        FollowCapacityExceededException(String msg) { super(msg); }
+    }
+
+    /**
+     * Subscribes to the given topic for follow mode, enforcing the
+     * {@code joxette.replay.follow.max-subscriptions} cap.  Called before the
+     * historical drain begins so writes committing between subscribe and
+     * drain-end are captured on the bus queue for later replay.
+     */
+    private FollowSubscription<CassetteRecord, TopicCursor> openTopicFollow(String topic) {
+        int cap = properties.getReplay().getFollow().getMaxSubscriptions();
+        if (recordingBus.activeSubscriptionCount() >= cap) {
+            throw new FollowCapacityExceededException(
+                    "Max follow subscriptions reached (" + cap + ")");
+        }
+        return FollowSubscription.forTopic(recordingBus.subscribeTopic(topic));
+    }
+
+    private FollowSubscription<EntityRecord, EntityCursor> openEntityFollow(
+            String entityType, String entityId) {
+        int cap = properties.getReplay().getFollow().getMaxSubscriptions();
+        if (recordingBus.activeSubscriptionCount() >= cap) {
+            throw new FollowCapacityExceededException(
+                    "Max follow subscriptions reached (" + cap + ")");
+        }
+        return FollowSubscription.forEntity(
+                recordingBus.subscribeEntity(entityType, entityId));
+    }
+
+    private Duration followHeartbeat() {
+        return Duration.ofSeconds(properties.getReplay().getFollow().getHeartbeatSeconds());
+    }
+
+    private static void rejectFollowWithUpperBound(boolean follow, Instant to, Long offsetTo) {
+        if (follow && (to != null || offsetTo != null)) {
+            throw new IllegalArgumentException(
+                    "follow=true is incompatible with an upper bound (to / offset_to)");
+        }
     }
 
     /**
@@ -278,8 +328,12 @@ public class CassetteController {
             @Parameter(description = "ISO-8601 absolute timestamp at which streaming begins (mutually exclusive with start_delay_ms)", name = "start_at")
             @RequestParam(name = "start_at", required = false) Instant startAt,
             @Parameter(description = "Relative delay in milliseconds before streaming begins (mutually exclusive with start_at)", name = "start_delay_ms")
-            @RequestParam(name = "start_delay_ms", required = false) Long startDelayMs
+            @RequestParam(name = "start_delay_ms", required = false) Long startDelayMs,
+            @Parameter(description = "When true, stream stays open after the historical drain and delivers " +
+                                     "live records as they are recorded. Incompatible with `to` / `offset_to`.")
+            @RequestParam(name = "follow", defaultValue = "false") boolean follow
     ) {
+        rejectFollowWithUpperBound(follow, to, offsetTo);
         Instant scheduledAt = resolveScheduledAt(startAt, startDelayMs);
         if (scheduledAt != null) {
             String id = scheduledReplayService.registerTopicReplay(
@@ -290,6 +344,19 @@ public class CassetteController {
         String replayId = newReplayId();
         List<TransformStep> userSteps = resolveTransformSteps(transform, transformPreset);
         TransformPipeline pipeline = new TransformPipeline(userSteps, metadataInjector);
+
+        if (follow) {
+            // Subscribe BEFORE starting the historical drain so any batch that
+            // commits while the drain is running is captured for the live tail.
+            FollowSubscription<CassetteRecord, TopicCursor> sub = openTopicFollow(topic);
+            return sseHandler.<CassetteRecord>streamSseFollow(
+                    followHeartbeat(),
+                    sub::close,
+                    (sink, hooks) -> topicService.streamAll(
+                            topic, from, null, partition, offsetFrom, null,
+                            sink, pipeline, replayId, sub, hooks));
+        }
+
         String preambleName = userSteps.isEmpty() ? null : "transform";
         String preambleData = userSteps.isEmpty() ? null : buildTransformEventJson(userSteps, transformPreset);
         return sseHandler.<CassetteRecord>streamSse(preambleName, preambleData,
@@ -345,8 +412,12 @@ public class CassetteController {
             @Parameter(description = "ISO-8601 absolute timestamp at which streaming begins (mutually exclusive with start_delay_ms)", name = "start_at")
             @RequestParam(name = "start_at", required = false) Instant startAt,
             @Parameter(description = "Relative delay in milliseconds before streaming begins (mutually exclusive with start_at)", name = "start_delay_ms")
-            @RequestParam(name = "start_delay_ms", required = false) Long startDelayMs
+            @RequestParam(name = "start_delay_ms", required = false) Long startDelayMs,
+            @Parameter(description = "When true, stream stays open after the historical drain and delivers " +
+                                     "live records as they are recorded. Incompatible with `to` / `offset_to`.")
+            @RequestParam(name = "follow", defaultValue = "false") boolean follow
     ) {
+        rejectFollowWithUpperBound(follow, to, offsetTo);
         Instant scheduledAt = resolveScheduledAt(startAt, startDelayMs);
         StreamingResponseBody body;
         if (scheduledAt != null) {
@@ -354,6 +425,17 @@ public class CassetteController {
                     topic, scheduledAt, from, to, partition, offsetFrom, offsetTo);
             body = sseHandler.<CassetteRecord>streamNdjsonScheduled(id, scheduledAt, scheduledReplayService,
                     sink -> topicService.streamAll(topic, from, to, partition, offsetFrom, offsetTo, sink));
+        } else if (follow) {
+            String replayId = newReplayId();
+            List<TransformStep> userSteps = resolveTransformSteps(transform, transformPreset);
+            TransformPipeline pipeline = new TransformPipeline(userSteps, metadataInjector);
+            FollowSubscription<CassetteRecord, TopicCursor> sub = openTopicFollow(topic);
+            body = sseHandler.<CassetteRecord>streamNdjsonFollow(
+                    followHeartbeat(),
+                    sub::close,
+                    (sink, hooks) -> topicService.streamAll(
+                            topic, from, null, partition, offsetFrom, null,
+                            sink, pipeline, replayId, sub, hooks));
         } else {
             String replayId = newReplayId();
             List<TransformStep> userSteps = resolveTransformSteps(transform, transformPreset);
@@ -586,8 +668,12 @@ public class CassetteController {
             @Parameter(description = "ISO-8601 absolute timestamp at which streaming begins (mutually exclusive with start_delay_ms)", name = "start_at")
             @RequestParam(name = "start_at", required = false) Instant startAt,
             @Parameter(description = "Relative delay in milliseconds before streaming begins (mutually exclusive with start_at)", name = "start_delay_ms")
-            @RequestParam(name = "start_delay_ms", required = false) Long startDelayMs
+            @RequestParam(name = "start_delay_ms", required = false) Long startDelayMs,
+            @Parameter(description = "When true, stream stays open after the historical drain and delivers " +
+                                     "live records as they are recorded. Incompatible with `to`.")
+            @RequestParam(name = "follow", defaultValue = "false") boolean follow
     ) {
+        rejectFollowWithUpperBound(follow, to, null);
         Instant scheduledAt = resolveScheduledAt(startAt, startDelayMs);
         if (scheduledAt != null) {
             String id = scheduledReplayService.registerEntityReplay(
@@ -598,6 +684,17 @@ public class CassetteController {
         String replayId = newReplayId();
         List<TransformStep> userSteps = resolveTransformSteps(transform, transformPreset);
         TransformPipeline pipeline = new TransformPipeline(userSteps, metadataInjector);
+
+        if (follow) {
+            FollowSubscription<EntityRecord, EntityCursor> sub = openEntityFollow(entityType, entityId);
+            return sseHandler.<EntityRecord>streamSseFollow(
+                    followHeartbeat(),
+                    sub::close,
+                    (sink, hooks) -> entityService.streamEntityEvents(
+                            entityType, entityId, from, null,
+                            sink, pipeline, replayId, sub, hooks));
+        }
+
         String preambleName = userSteps.isEmpty() ? null : "transform";
         String preambleData = userSteps.isEmpty() ? null : buildTransformEventJson(userSteps, transformPreset);
         return sseHandler.<EntityRecord>streamSse(preambleName, preambleData,
@@ -650,8 +747,12 @@ public class CassetteController {
             @Parameter(description = "ISO-8601 absolute timestamp at which streaming begins (mutually exclusive with start_delay_ms)", name = "start_at")
             @RequestParam(name = "start_at", required = false) Instant startAt,
             @Parameter(description = "Relative delay in milliseconds before streaming begins (mutually exclusive with start_at)", name = "start_delay_ms")
-            @RequestParam(name = "start_delay_ms", required = false) Long startDelayMs
+            @RequestParam(name = "start_delay_ms", required = false) Long startDelayMs,
+            @Parameter(description = "When true, stream stays open after the historical drain and delivers " +
+                                     "live records as they are recorded. Incompatible with `to`.")
+            @RequestParam(name = "follow", defaultValue = "false") boolean follow
     ) {
+        rejectFollowWithUpperBound(follow, to, null);
         Instant scheduledAt = resolveScheduledAt(startAt, startDelayMs);
         StreamingResponseBody body;
         if (scheduledAt != null) {
@@ -659,6 +760,17 @@ public class CassetteController {
                     entityType, entityId, scheduledAt, from, to);
             body = sseHandler.<EntityRecord>streamNdjsonScheduled(id, scheduledAt, scheduledReplayService,
                     sink -> entityService.streamEntityEvents(entityType, entityId, from, to, sink));
+        } else if (follow) {
+            String replayId = newReplayId();
+            List<TransformStep> userSteps = resolveTransformSteps(transform, transformPreset);
+            TransformPipeline pipeline = new TransformPipeline(userSteps, metadataInjector);
+            FollowSubscription<EntityRecord, EntityCursor> sub = openEntityFollow(entityType, entityId);
+            body = sseHandler.<EntityRecord>streamNdjsonFollow(
+                    followHeartbeat(),
+                    sub::close,
+                    (sink, hooks) -> entityService.streamEntityEvents(
+                            entityType, entityId, from, null,
+                            sink, pipeline, replayId, sub, hooks));
         } else {
             String replayId = newReplayId();
             List<TransformStep> userSteps = resolveTransformSteps(transform, transformPreset);
@@ -1808,6 +1920,11 @@ public class CassetteController {
     @ExceptionHandler(IllegalArgumentException.class)
     public ResponseEntity<String> handleBadRequest(IllegalArgumentException ex) {
         return ResponseEntity.badRequest().body(ex.getMessage());
+    }
+
+    @ExceptionHandler(FollowCapacityExceededException.class)
+    public ResponseEntity<String> handleFollowCapacityExceeded(FollowCapacityExceededException ex) {
+        return ResponseEntity.status(503).body(ex.getMessage());
     }
 
     @ExceptionHandler(IllegalStateException.class)

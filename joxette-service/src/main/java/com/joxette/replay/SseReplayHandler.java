@@ -11,6 +11,7 @@ import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Map;
 import java.util.function.Consumer;
@@ -139,6 +140,172 @@ public class SseReplayHandler {
                 throw new IOException(e);
             }
         };
+    }
+
+    /**
+     * SSE streaming variant for {@code follow=true} replays.
+     *
+     * <p>Invokes {@code streamer} with a sink and a {@link FollowHooks}; the
+     * streamer first drains history through the sink, then (via the hooks)
+     * emits a {@code follow} preamble event, then enters the live tail loop.
+     * During the live loop, idle periods emit a {@code :heartbeat} SSE comment
+     * every {@code heartbeat} so intermediaries keep the connection open.
+     *
+     * <p>On emitter completion / error / timeout the follow subscription is
+     * closed via {@code onClose}, mirroring the cancellation pattern used by
+     * {@link #streamSseScheduled}.
+     *
+     * @param heartbeat       heartbeat cadence (SSE comments while idle)
+     * @param onClose         called exactly once when the emitter completes,
+     *                        errors, or times out — typically
+     *                        {@code FollowSubscription::close}
+     * @param streamer        invoked with sink + hooks on a virtual thread
+     */
+    public <T> SseEmitter streamSseFollow(
+            Duration heartbeat,
+            Runnable onClose,
+            FollowRecordStreamer<T> streamer) {
+        SseEmitter emitter = new SseEmitter(0L);
+        java.util.concurrent.atomic.AtomicBoolean cleanedUp =
+                new java.util.concurrent.atomic.AtomicBoolean();
+        Runnable cleanup = () -> {
+            if (cleanedUp.compareAndSet(false, true)) {
+                try { onClose.run(); } catch (Exception ignored) {}
+            }
+        };
+        emitter.onCompletion(cleanup);
+        emitter.onError(t -> cleanup.run());
+        emitter.onTimeout(cleanup);
+
+        Thread.ofVirtual().start(() -> {
+            try {
+                FollowHooks<T> hooks = new FollowHooks<>() {
+                    @Override public Duration heartbeatInterval() { return heartbeat; }
+                    @Override public void onHistoricalEnd() {
+                        try {
+                            emitter.send(SseEmitter.event()
+                                    .name("follow")
+                                    .data("{}")
+                                    .build());
+                        } catch (IOException e) {
+                            throw new java.io.UncheckedIOException(e);
+                        }
+                    }
+                    @Override public void onHeartbeat() {
+                        try {
+                            emitter.send(SseEmitter.event().comment("heartbeat").build());
+                        } catch (IOException e) {
+                            throw new java.io.UncheckedIOException(e);
+                        }
+                    }
+                    @Override public void onOverflow() {
+                        try {
+                            emitter.send(SseEmitter.event()
+                                    .name("overflow")
+                                    .data("{\"reason\":\"buffer overflow\"}")
+                                    .build());
+                        } catch (IOException e) {
+                            throw new java.io.UncheckedIOException(e);
+                        }
+                    }
+                };
+                streamer.stream(record -> {
+                    try {
+                        emitter.send(SseEmitter.event()
+                                .data(objectMapper.writeValueAsString(record))
+                                .build());
+                    } catch (IOException e) {
+                        throw new java.io.UncheckedIOException(e);
+                    }
+                }, hooks);
+                emitter.complete();
+            } catch (java.io.UncheckedIOException e) {
+                emitter.completeWithError(e.getCause());
+            } catch (Exception e) {
+                emitter.completeWithError(e);
+            } finally {
+                cleanup.run();
+            }
+        });
+        return emitter;
+    }
+
+    /**
+     * NDJSON streaming variant for {@code follow=true} replays.
+     *
+     * <p>First streams history as NDJSON lines, then (via hooks) writes a
+     * {@code {"event":"follow"}} preamble line and enters the live tail loop.
+     * Idle periods emit a {@code {"event":"heartbeat","ts":"..."}} line every
+     * {@code heartbeat}.  On overflow a terminal
+     * {@code {"event":"overflow",...}} line is written and the stream ends.
+     */
+    public <T> StreamingResponseBody streamNdjsonFollow(
+            Duration heartbeat,
+            Runnable onClose,
+            FollowRecordStreamer<T> streamer) {
+        return outputStream -> {
+            var writer = new BufferedWriter(
+                    new OutputStreamWriter(outputStream, StandardCharsets.UTF_8));
+            java.util.concurrent.atomic.AtomicBoolean cleanedUp =
+                    new java.util.concurrent.atomic.AtomicBoolean();
+            Runnable cleanup = () -> {
+                if (cleanedUp.compareAndSet(false, true)) {
+                    try { onClose.run(); } catch (Exception ignored) {}
+                }
+            };
+            try {
+                FollowHooks<T> hooks = new FollowHooks<>() {
+                    @Override public Duration heartbeatInterval() { return heartbeat; }
+                    @Override public void onHistoricalEnd() {
+                        writeLine(writer, "{\"event\":\"follow\"}");
+                    }
+                    @Override public void onHeartbeat() {
+                        writeLine(writer, "{\"event\":\"heartbeat\",\"ts\":\""
+                                + Instant.now() + "\"}");
+                    }
+                    @Override public void onOverflow() {
+                        writeLine(writer, "{\"event\":\"overflow\",\"reason\":\"buffer overflow\"}");
+                    }
+                };
+                streamer.stream(record -> {
+                    try {
+                        writer.write(objectMapper.writeValueAsString(record));
+                        writer.newLine();
+                        writer.flush();
+                    } catch (JsonProcessingException e) {
+                        throw new java.io.UncheckedIOException(new IOException(e));
+                    } catch (IOException e) {
+                        throw new java.io.UncheckedIOException(e);
+                    }
+                }, hooks);
+            } catch (java.io.UncheckedIOException e) {
+                throw e.getCause();
+            } catch (SQLException e) {
+                throw new IOException(e);
+            } finally {
+                cleanup.run();
+            }
+        };
+    }
+
+    private static void writeLine(BufferedWriter writer, String line) {
+        try {
+            writer.write(line);
+            writer.newLine();
+            writer.flush();
+        } catch (IOException e) {
+            throw new java.io.UncheckedIOException(e);
+        }
+    }
+
+    /**
+     * Streamer signature for follow-mode replays: the replay service is invoked
+     * with both a record sink and a {@link FollowHooks} callback surface so it
+     * can signal historical-end, heartbeat, and overflow transitions.
+     */
+    @FunctionalInterface
+    public interface FollowRecordStreamer<T> {
+        void stream(Consumer<T> sink, FollowHooks<T> hooks) throws SQLException;
     }
 
     /**

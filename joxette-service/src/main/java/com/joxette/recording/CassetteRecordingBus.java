@@ -169,6 +169,22 @@ public class CassetteRecordingBus {
         return sub;
     }
 
+    /**
+     * Total number of active subscriptions (topic + entity) across the bus.
+     * Used by the controller to enforce
+     * {@code joxette.replay.follow.max-subscriptions}.
+     */
+    public int activeSubscriptionCount() {
+        int count = 0;
+        for (CopyOnWriteArrayList<TopicSubscription> list : topicSubs.values()) {
+            count += list.size();
+        }
+        for (CopyOnWriteArrayList<EntitySubscription> list : entitySubs.values()) {
+            count += list.size();
+        }
+        return count;
+    }
+
     // -----------------------------------------------------------------------
     // Publish — called by DuckLakeWriteChannel on the drain VT
     // -----------------------------------------------------------------------

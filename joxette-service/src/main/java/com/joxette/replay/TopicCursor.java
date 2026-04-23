@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.time.Instant;
 import java.util.Base64;
+import java.util.Comparator;
 
 /**
  * Opaque pagination cursor for {@code lake.cassette}.
@@ -11,8 +12,22 @@ import java.util.Base64;
  * <p>Encodes {@code (timestamp, partition, offset)} — the three columns that
  * define the natural sort order after deduplication — as URL-safe base64(JSON).
  * Clients treat the value as opaque; only the service layer decodes it.
+ *
+ * <p>Natural ordering matches the {@code ORDER BY} clause of the replay query:
+ * {@code (timestamp, partition, offset)} ascending.
  */
-public record TopicCursor(Instant timestamp, int partition, long offset) {
+public record TopicCursor(Instant timestamp, int partition, long offset)
+        implements Comparable<TopicCursor> {
+
+    private static final Comparator<TopicCursor> NATURAL =
+            Comparator.comparing(TopicCursor::timestamp)
+                    .thenComparingInt(TopicCursor::partition)
+                    .thenComparingLong(TopicCursor::offset);
+
+    @Override
+    public int compareTo(TopicCursor other) {
+        return NATURAL.compare(this, other);
+    }
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
 
