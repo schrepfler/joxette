@@ -2,6 +2,12 @@ package com.joxette.replay;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.joxette.api.error.ErrorCodes;
+import com.joxette.api.error.ErrorTypes;
+import com.joxette.api.error.JoxetteException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
@@ -13,6 +19,7 @@ import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.function.Consumer;
 
@@ -23,9 +30,41 @@ import java.util.function.Consumer;
  * <p>Both formats share the same {@link RecordStreamer} abstraction: callers
  * provide a lambda that feeds records to a {@link Consumer} sink; this class
  * wraps the sink with format-specific serialisation.
+ *
+ * <h2>Error semantics</h2>
+ *
+ * <p>Errors raised <em>before</em> streaming begins (invalid query params,
+ * malformed cursors, unknown resources) are thrown by the controller and
+ * rendered as {@code application/problem+json} (RFC 7807) by
+ * {@link com.joxette.api.error.GlobalExceptionHandler}. Streaming-format
+ * handlers here are only invoked after pre-stream validation has succeeded.
+ *
+ * <p>Errors that surface <em>mid-stream</em> (e.g. DuckLake query failure
+ * after records have already been written) cannot change the HTTP status —
+ * the response has been committed. To give clients a structured, machine-
+ * readable signal, this handler emits a terminal frame that mirrors the
+ * ProblemDetail fields emitted by the global exception handler:
+ *
+ * <dl>
+ *   <dt>SSE</dt>
+ *   <dd>A final event of the form
+ *       {@code event: error\ndata: {"type":"…","title":"…","status":500,"detail":"…","errorCode":"…"}\n\n}
+ *       followed by {@code emitter.complete()}.</dd>
+ *   <dt>NDJSON</dt>
+ *   <dd>A final line of the form
+ *       {@code {"_error":{"type":"…","title":"…","status":500,"detail":"…","errorCode":"…"}}}
+ *       followed by a normal end-of-stream.</dd>
+ * </dl>
+ *
+ * <p>Clients distinguish a normal end-of-stream from an error termination by
+ * the presence of the {@code error} SSE event or the {@code _error} NDJSON
+ * key. The underlying exception is always logged at {@code ERROR} level with
+ * the full stack trace.
  */
 @Component
 public class SseReplayHandler {
+
+    private static final Logger log = LoggerFactory.getLogger(SseReplayHandler.class);
 
     /**
      * Checked streaming callback: implementations call {@code sink.accept(record)}
@@ -66,31 +105,39 @@ public class SseReplayHandler {
     public <T> SseEmitter streamSse(
             String preambleEventName, String preambleData, RecordStreamer<T> streamer) {
         SseEmitter emitter = new SseEmitter(0L); // no timeout
-        Thread.ofVirtual().start(() -> {
-            try {
-                if (preambleEventName != null && preambleData != null) {
-                    emitter.send(SseEmitter.event()
-                            .name(preambleEventName)
-                            .data(preambleData)
-                            .build());
-                }
-                streamer.stream(record -> {
-                    try {
-                        emitter.send(SseEmitter.event()
-                                .data(objectMapper.writeValueAsString(record))
-                                .build());
-                    } catch (IOException e) {
-                        throw new java.io.UncheckedIOException(e);
-                    }
-                });
-                emitter.complete();
-            } catch (java.io.UncheckedIOException e) {
-                emitter.completeWithError(e.getCause());
-            } catch (Exception e) {
-                emitter.completeWithError(e);
-            }
-        });
+        Thread.ofVirtual().start(() -> runStreamSse(emitter, preambleEventName, preambleData, streamer));
         return emitter;
+    }
+
+    /**
+     * Shared body for {@link #streamSse}. Exposed package-private so tests can run the
+     * streaming loop synchronously against a captured emitter without having to wait
+     * for a virtual thread to finish.
+     */
+    <T> void runStreamSse(SseEmitter emitter, String preambleEventName, String preambleData,
+                          RecordStreamer<T> streamer) {
+        try {
+            if (preambleEventName != null && preambleData != null) {
+                emitter.send(SseEmitter.event()
+                        .name(preambleEventName)
+                        .data(preambleData)
+                        .build());
+            }
+            streamer.stream(record -> {
+                try {
+                    emitter.send(SseEmitter.event()
+                            .data(objectMapper.writeValueAsString(record))
+                            .build());
+                } catch (IOException e) {
+                    throw new java.io.UncheckedIOException(e);
+                }
+            });
+            emitter.complete();
+        } catch (java.io.UncheckedIOException e) {
+            sendSseError(emitter, e.getCause());
+        } catch (Exception e) {
+            sendSseError(emitter, e);
+        }
     }
 
     /**
@@ -135,9 +182,9 @@ public class SseReplayHandler {
                     }
                 });
             } catch (java.io.UncheckedIOException e) {
-                throw e.getCause();
-            } catch (SQLException e) {
-                throw new IOException(e);
+                writeNdjsonError(writer, e.getCause());
+            } catch (SQLException | RuntimeException e) {
+                writeNdjsonError(writer, e);
             }
         };
     }
@@ -220,9 +267,9 @@ public class SseReplayHandler {
                 }, hooks);
                 emitter.complete();
             } catch (java.io.UncheckedIOException e) {
-                emitter.completeWithError(e.getCause());
+                sendSseError(emitter, e.getCause());
             } catch (Exception e) {
-                emitter.completeWithError(e);
+                sendSseError(emitter, e);
             } finally {
                 cleanup.run();
             }
@@ -279,9 +326,9 @@ public class SseReplayHandler {
                     }
                 }, hooks);
             } catch (java.io.UncheckedIOException e) {
-                throw e.getCause();
-            } catch (SQLException e) {
-                throw new IOException(e);
+                writeNdjsonError(writer, e.getCause());
+            } catch (SQLException | RuntimeException e) {
+                writeNdjsonError(writer, e);
             } finally {
                 cleanup.run();
             }
@@ -357,14 +404,14 @@ public class SseReplayHandler {
                 emitter.complete();
             } catch (java.io.UncheckedIOException e) {
                 schedService.markFailed(id);
-                emitter.completeWithError(e.getCause());
+                sendSseError(emitter, e.getCause());
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 schedService.markFailed(id);
-                emitter.completeWithError(e);
+                sendSseError(emitter, e);
             } catch (Exception e) {
                 schedService.markFailed(id);
-                emitter.completeWithError(e);
+                sendSseError(emitter, e);
             }
         });
         return emitter;
@@ -417,15 +464,81 @@ public class SseReplayHandler {
                 schedService.markCompleted(id);
             } catch (java.io.UncheckedIOException e) {
                 schedService.markFailed(id);
-                throw e.getCause();
+                writeNdjsonError(writer, e.getCause());
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 schedService.markFailed(id);
-                throw new IOException("Interrupted while awaiting scheduled replay start", e);
-            } catch (SQLException e) {
+                writeNdjsonError(writer, e);
+            } catch (SQLException | RuntimeException e) {
                 schedService.markFailed(id);
-                throw new IOException(e);
+                writeNdjsonError(writer, e);
             }
         };
+    }
+
+    // =========================================================================
+    // Mid-stream error helpers — see class-level Javadoc for the contract.
+    // =========================================================================
+
+    /**
+     * Maps any throwable to the RFC 7807 ProblemDetail fields shared with
+     * {@link com.joxette.api.error.GlobalExceptionHandler}. {@link JoxetteException}
+     * instances surface their typed status/type/title/errorCode; everything else
+     * is reported as a 500 Internal Server Error with a generic message so we
+     * don't leak stack traces or driver internals to clients.
+     */
+    static Map<String, Object> problemPayload(Throwable t) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        if (t instanceof JoxetteException je) {
+            payload.put("type", je.type().toString());
+            payload.put("title", je.title());
+            payload.put("status", je.status().value());
+            payload.put("detail", je.detail());
+            payload.put("errorCode", je.errorCode());
+        } else {
+            payload.put("type", ErrorTypes.INTERNAL.toString());
+            payload.put("title", "Internal Server Error");
+            payload.put("status", HttpStatus.INTERNAL_SERVER_ERROR.value());
+            payload.put("detail", "Stream terminated abnormally. See server logs for details.");
+            payload.put("errorCode", ErrorCodes.INTERNAL);
+        }
+        payload.put("timestamp", Instant.now().toString());
+        return payload;
+    }
+
+    /**
+     * Emits a terminal {@code event: error} SSE frame carrying a ProblemDetail-shaped
+     * payload, then completes the emitter normally. The underlying cause is logged
+     * at ERROR. Swallows any {@link IOException} from the emitter (the client may
+     * have already disconnected).
+     */
+    private void sendSseError(SseEmitter emitter, Throwable cause) {
+        log.error("Mid-stream SSE replay failure", cause);
+        try {
+            String payload = objectMapper.writeValueAsString(problemPayload(cause));
+            emitter.send(SseEmitter.event().name("error").data(payload).build());
+        } catch (Exception ignored) {
+            // Client may have disconnected; nothing we can do.
+        }
+        try { emitter.complete(); } catch (Exception ignored) {}
+    }
+
+    /**
+     * Writes a terminal {@code {"_error":{…}}} NDJSON line carrying a
+     * ProblemDetail-shaped payload, flushes, and returns. Logs the underlying
+     * cause at ERROR. Swallows any write failure (the client may have
+     * disconnected mid-stream).
+     */
+    private void writeNdjsonError(BufferedWriter writer, Throwable cause) {
+        log.error("Mid-stream NDJSON replay failure", cause);
+        try {
+            Map<String, Object> wrapper = new LinkedHashMap<>();
+            wrapper.put("_error", problemPayload(cause));
+            writer.write(objectMapper.writeValueAsString(wrapper));
+            writer.newLine();
+            writer.flush();
+        } catch (Exception ignored) {
+            // Client may have disconnected; nothing we can do.
+        }
     }
 }
