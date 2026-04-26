@@ -1,5 +1,6 @@
 package com.joxette.management;
 
+import com.joxette.api.error.ResourceNotFoundException;
 import com.joxette.recording.RecordingCoordinator;
 import com.joxette.replay.MessageRouter;
 import org.junit.jupiter.api.Test;
@@ -14,6 +15,7 @@ import java.util.Optional;
 import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.*;
 
 /**
@@ -54,10 +56,10 @@ class TopicControllerTest {
     void updateTopic_topicNotFound_doesNotCallReload() throws Exception {
         when(config.findTopic("missing")).thenReturn(Optional.empty());
 
-        ResponseEntity<TopicConfig> response =
-                controller.updateTopic("missing", new TopicController.UpdateTopicRequest("both", null));
+        assertThatThrownBy(() ->
+                controller.updateTopic("missing", new TopicController.UpdateTopicRequest("both", null)))
+                .isInstanceOf(ResourceNotFoundException.class);
 
-        assertThat(response.getStatusCode().value()).isEqualTo(404);
         verify(router, never()).reload();
     }
 
@@ -95,9 +97,9 @@ class TopicControllerTest {
     void deleteTopic_notFound_doesNotCallReload() throws Exception {
         when(config.deleteTopic("missing")).thenReturn(false);
 
-        ResponseEntity<Void> response = controller.deleteTopic("missing");
+        assertThatThrownBy(() -> controller.deleteTopic("missing"))
+                .isInstanceOf(ResourceNotFoundException.class);
 
-        assertThat(response.getStatusCode().value()).isEqualTo(404);
         verify(router, never()).reload();
     }
 

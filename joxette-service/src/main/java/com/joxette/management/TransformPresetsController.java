@@ -1,6 +1,7 @@
 package com.joxette.management;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.joxette.api.error.ResourceNotFoundException;
 import com.joxette.replay.transform.TransformPreset;
 import com.joxette.replay.transform.TransformPresetRepository;
 import com.joxette.replay.transform.TransformStep;
@@ -12,12 +13,13 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
-import java.util.NoSuchElementException;
 
 /**
  * CRUD endpoints for named transform pipeline presets.
@@ -77,13 +79,16 @@ public class TransformPresetsController {
     @Operation(
         operationId = "createTransformPreset",
         summary     = "Create a transform preset",
-        description = "Saves a new named transform pipeline. Returns HTTP 400 if the name is already taken.")
+        description = "Saves a new named transform pipeline. Returns HTTP 409 if the name is already taken.")
     @ApiResponses({
         @ApiResponse(responseCode = "201", description = "Preset created",
             content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
                 schema = @Schema(implementation = TransformPreset.class))),
         @ApiResponse(responseCode = "400",
-            description = "Preset name already exists, steps are invalid, or request is malformed",
+            description = "Invalid steps or request body",
+            content = @Content(schema = @Schema(type = "string"))),
+        @ApiResponse(responseCode = "409",
+            description = "Preset name already exists",
             content = @Content(schema = @Schema(type = "string")))
     })
     @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE,
@@ -101,17 +106,11 @@ public class TransformPresetsController {
                             {"type": "redirect_topic", "topic": "orders-staging"}
                           ]
                         }""")))
-            @RequestBody CreatePresetRequest req) {
-        try {
-            TransformPreset created = repository.create(
-                    req.name(), req.description(),
-                    req.steps() != null ? req.steps() : List.of());
-            return ResponseEntity.status(201).body(created);
-        } catch (IllegalArgumentException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new IllegalArgumentException("Failed to save preset: " + e.getMessage());
-        }
+            @Valid @RequestBody CreatePresetRequest req) {
+        TransformPreset created = repository.create(
+                req.name(), req.description(),
+                req.steps() != null ? req.steps() : List.of());
+        return ResponseEntity.status(201).body(created);
     }
 
     @Operation(
@@ -130,7 +129,7 @@ public class TransformPresetsController {
             @Parameter(description = "Preset name", required = true, example = "staging-sanitize")
             @PathVariable String name) {
         return repository.findByName(name)
-                .orElseThrow(() -> new NoSuchElementException("Transform preset not found: " + name));
+                .orElseThrow(() -> ResourceNotFoundException.transformPreset(name));
     }
 
     @Operation(
@@ -156,16 +155,10 @@ public class TransformPresetsController {
             @io.swagger.v3.oas.annotations.parameters.RequestBody(
                 description = "Updated description and pipeline steps",
                 content = @Content(schema = @Schema(implementation = UpdatePresetRequest.class)))
-            @RequestBody UpdatePresetRequest req) {
-        try {
-            return repository.update(
-                    name, req.description(),
-                    req.steps() != null ? req.steps() : List.of());
-        } catch (NoSuchElementException e) {
-            throw e;
-        } catch (Exception e) {
-            throw new IllegalArgumentException("Failed to update preset: " + e.getMessage());
-        }
+            @Valid @RequestBody UpdatePresetRequest req) {
+        return repository.update(
+                name, req.description(),
+                req.steps() != null ? req.steps() : List.of());
     }
 
     @Operation(
@@ -183,23 +176,9 @@ public class TransformPresetsController {
             @Parameter(description = "Preset name", required = true, example = "staging-sanitize")
             @PathVariable String name) {
         if (!repository.delete(name)) {
-            throw new NoSuchElementException("Transform preset not found: " + name);
+            throw ResourceNotFoundException.transformPreset(name);
         }
         return ResponseEntity.noContent().build();
-    }
-
-    // =========================================================================
-    // Error handling
-    // =========================================================================
-
-    @ExceptionHandler(IllegalArgumentException.class)
-    public ResponseEntity<String> handleBadRequest(IllegalArgumentException ex) {
-        return ResponseEntity.badRequest().body(ex.getMessage());
-    }
-
-    @ExceptionHandler(NoSuchElementException.class)
-    public ResponseEntity<String> handleNotFound(NoSuchElementException ex) {
-        return ResponseEntity.notFound().build();
     }
 
     // =========================================================================
@@ -210,7 +189,7 @@ public class TransformPresetsController {
     @JsonInclude(JsonInclude.Include.NON_NULL)
     public record CreatePresetRequest(
             @Schema(description = "Unique preset name", example = "staging-sanitize")
-            String name,
+            @NotBlank String name,
             @Schema(description = "Optional human-readable description",
                     example = "Redact PII and redirect to staging")
             String description,

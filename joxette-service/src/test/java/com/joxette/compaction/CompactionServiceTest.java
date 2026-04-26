@@ -96,7 +96,7 @@ class CompactionServiceTest {
         service.beginRun("first", null);
 
         assertThatThrownBy(() -> service.beginRun("second", null))
-                .isInstanceOf(IllegalStateException.class)
+                .isInstanceOf(com.joxette.api.error.ConflictException.class)
                 .hasMessageContaining("already in progress");
     }
 

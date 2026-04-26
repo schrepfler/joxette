@@ -20,6 +20,7 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 import org.springframework.web.servlet.resource.NoResourceFoundException;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 
+import java.sql.SQLException;
 import java.time.Instant;
 import java.util.stream.Collectors;
 
@@ -49,6 +50,18 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
             log.debug("Joxette client error [{}]: {}", ex.errorCode(), ex.detail());
         }
         return ResponseEntity.status(ex.status()).body(body);
+    }
+
+    @ExceptionHandler(SQLException.class)
+    public ResponseEntity<ProblemDetail> handleSqlException(SQLException ex, HttpServletRequest request) {
+        log.error("Unhandled SQL error", ex);
+        ProblemDetail body = ProblemDetail.forStatusAndDetail(
+                HttpStatus.SERVICE_UNAVAILABLE,
+                "Database error: " + ex.getMessage());
+        body.setType(ErrorTypes.UPSTREAM_UNAVAILABLE);
+        body.setTitle("Upstream Unavailable");
+        decorate(body, ErrorCodes.UPSTREAM_UNAVAILABLE, request.getRequestURI());
+        return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(body);
     }
 
     @ExceptionHandler(Exception.class)

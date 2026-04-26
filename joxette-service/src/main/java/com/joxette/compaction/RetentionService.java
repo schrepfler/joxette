@@ -15,7 +15,6 @@ import java.sql.*;
 import java.time.*;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.NoSuchElementException;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -90,11 +89,11 @@ public class RetentionService {
      * Atomically marks a new run as started and inserts a {@code "running"} row
      * in {@code retention_history}.
      *
-     * @throws IllegalStateException if a retention run is already in progress
+     * @throws com.joxette.api.error.ConflictException if a retention run is already in progress
      */
     public RetentionRun beginRun(String triggeredBy) throws SQLException {
         if (!running.compareAndSet(false, true)) {
-            throw new IllegalStateException("Retention run already in progress");
+            throw com.joxette.api.error.ConflictException.retentionAlreadyRunning();
         }
         long id = insertRunRecord(triggeredBy);
         return getRunById(id);
@@ -158,7 +157,7 @@ public class RetentionService {
                 ps.setLong(1, id);
                 try (ResultSet rs = ps.executeQuery()) {
                     if (rs.next()) return mapRun(rs);
-                    throw new NoSuchElementException("No retention run with id " + id);
+                    throw com.joxette.api.error.ResourceNotFoundException.retentionRun(id);
                 }
             }
         }

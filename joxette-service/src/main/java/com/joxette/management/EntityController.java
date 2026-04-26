@@ -1,7 +1,11 @@
 package com.joxette.management;
 
+import com.joxette.api.error.ConflictException;
+import com.joxette.api.error.ResourceNotFoundException;
 import com.joxette.db.SchemaManager;
 import com.joxette.replay.MessageRouter;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
@@ -39,14 +43,15 @@ public class EntityController {
     private final SchemaManager schemaManager;
     private final MessageRouter messageRouter;
 
-    record CreateEntityRequest(String type, int buckets) {}
-    record UpdateEntityRequest(int buckets) {}
-    record AddSourceRequest(
-            String topic,
+    public record CreateEntityRequest(@NotBlank String type, int buckets) {}
+    public record UpdateEntityRequest(int buckets) {}
+    public record AddSourceRequest(
+            @NotBlank String topic,
             String mode,
             List<EntitySourceConfig.MatcherConfig> matchers
     ) {}
-    record SetRetentionRequest(Integer days) {}
+    public record SetRetentionRequest(Integer days) {}
+    public record AddMatcherRequest(@NotBlank String messageType, String idSource, String idExpression) {}
 
     public EntityController(ConfigRepository config, SchemaManager schemaManager,
                             MessageRouter messageRouter) {
@@ -54,10 +59,6 @@ public class EntityController {
         this.schemaManager = schemaManager;
         this.messageRouter = messageRouter;
     }
-
-    // -------------------------------------------------------------------------
-    // Helper — reload router after any mutation and swallow non-fatal errors
-    // -------------------------------------------------------------------------
 
     private void reloadRouter() {
         try {
@@ -75,14 +76,10 @@ public class EntityController {
     @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE,
                  produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<EntityTypeConfig> createEntityType(
-            @RequestBody CreateEntityRequest body) throws SQLException {
-        if (body.type() == null || body.type().isBlank()) {
-            return ResponseEntity.badRequest().build();
-        }
-        // Validate the type name before touching the DB.
+            @Valid @RequestBody CreateEntityRequest body) throws SQLException {
         SchemaManager.validateEntityType(body.type());
         if (config.findEntityType(body.type()).isPresent()) {
-            return ResponseEntity.status(409).build();
+            throw ConflictException.entityTypeAlreadyExists(body.type());
         }
         int buckets = body.buckets() > 0 ? body.buckets() : 256;
         schemaManager.createEntityTable(body.type());
@@ -92,47 +89,42 @@ public class EntityController {
     }
 
     @GetMapping(value = "/{type}", produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<EntityTypeConfig> getEntityType(@PathVariable String type)
-            throws SQLException {
+    public EntityTypeConfig getEntityType(@PathVariable String type) throws SQLException {
         return config.findEntityType(type)
-                .map(ResponseEntity::ok)
-                .orElse(ResponseEntity.notFound().build());
+                .orElseThrow(() -> ResourceNotFoundException.entityType(type));
     }
 
     @PutMapping(value = "/{type}",
                 consumes = MediaType.APPLICATION_JSON_VALUE,
                 produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<EntityTypeConfig> updateEntityType(
+    public EntityTypeConfig updateEntityType(
             @PathVariable String type,
-            @RequestBody UpdateEntityRequest body) throws SQLException {
-        if (config.findEntityType(type).isEmpty()) {
-            return ResponseEntity.notFound().build();
-        }
+            @Valid @RequestBody UpdateEntityRequest body) throws SQLException {
+        config.findEntityType(type).orElseThrow(() -> ResourceNotFoundException.entityType(type));
         EntityTypeConfig updated = config.upsertEntityType(type, body.buckets());
         reloadRouter();
-        return ResponseEntity.ok(updated);
+        return updated;
     }
 
     @PutMapping(value = "/{type}/retention",
                 consumes = MediaType.APPLICATION_JSON_VALUE,
                 produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<EntityTypeConfig> setRetention(
+    public EntityTypeConfig setRetention(
             @PathVariable String type,
-            @RequestBody SetRetentionRequest body) throws SQLException {
-        if (config.findEntityType(type).isEmpty()) {
-            return ResponseEntity.notFound().build();
-        }
-        return ResponseEntity.ok(config.setEntityRetentionDays(type, body.days()));
+            @Valid @RequestBody SetRetentionRequest body) throws SQLException {
+        config.findEntityType(type).orElseThrow(() -> ResourceNotFoundException.entityType(type));
+        return config.setEntityRetentionDays(type, body.days());
     }
 
     @DeleteMapping("/{type}")
     public ResponseEntity<Void> deleteEntityType(@PathVariable String type) throws SQLException {
         boolean deleted = config.deleteEntityType(type);
-        if (deleted) {
-            schemaManager.dropEntityTable(type);
-            reloadRouter();
+        if (!deleted) {
+            throw ResourceNotFoundException.entityType(type);
         }
-        return deleted ? ResponseEntity.noContent().build() : ResponseEntity.notFound().build();
+        schemaManager.dropEntityTable(type);
+        reloadRouter();
+        return ResponseEntity.noContent().build();
     }
 
     // -------------------------------------------------------------------------
@@ -140,12 +132,9 @@ public class EntityController {
     // -------------------------------------------------------------------------
 
     @GetMapping(value = "/{type}/sources", produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<List<EntitySourceConfig>> listSources(@PathVariable String type)
-            throws SQLException {
-        if (config.findEntityType(type).isEmpty()) {
-            return ResponseEntity.notFound().build();
-        }
-        return ResponseEntity.ok(config.listSources(type));
+    public List<EntitySourceConfig> listSources(@PathVariable String type) throws SQLException {
+        config.findEntityType(type).orElseThrow(() -> ResourceNotFoundException.entityType(type));
+        return config.listSources(type);
     }
 
     @PostMapping(value = "/{type}/sources",
@@ -153,13 +142,8 @@ public class EntityController {
                  produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<EntitySourceConfig> addSource(
             @PathVariable String type,
-            @RequestBody AddSourceRequest body) throws SQLException {
-        if (config.findEntityType(type).isEmpty()) {
-            return ResponseEntity.notFound().build();
-        }
-        if (body.topic() == null || body.topic().isBlank()) {
-            return ResponseEntity.badRequest().build();
-        }
+            @Valid @RequestBody AddSourceRequest body) throws SQLException {
+        config.findEntityType(type).orElseThrow(() -> ResourceNotFoundException.entityType(type));
         EntitySourceConfig src = config.upsertSource(type, body.topic(), body.mode(), body.matchers());
         reloadRouter();
         return ResponseEntity.status(201).body(src);
@@ -170,17 +154,16 @@ public class EntityController {
             @PathVariable String type,
             @PathVariable String topic) throws SQLException {
         boolean deleted = config.deleteSource(type, topic);
-        if (deleted) {
-            reloadRouter();
+        if (!deleted) {
+            throw ResourceNotFoundException.entitySource(type, topic);
         }
-        return deleted ? ResponseEntity.noContent().build() : ResponseEntity.notFound().build();
+        reloadRouter();
+        return ResponseEntity.noContent().build();
     }
 
     // -------------------------------------------------------------------------
     // Per-matcher management  (POST/DELETE …/sources/{topic}/matchers)
     // -------------------------------------------------------------------------
-
-    record AddMatcherRequest(String messageType, String idSource, String idExpression) {}
 
     @PostMapping(value = "/{type}/sources/{topic}/matchers",
                  consumes = MediaType.APPLICATION_JSON_VALUE,
@@ -188,13 +171,8 @@ public class EntityController {
     public ResponseEntity<EntitySourceConfig.MatcherConfig> addMatcher(
             @PathVariable String type,
             @PathVariable String topic,
-            @RequestBody AddMatcherRequest body) throws SQLException {
-        if (config.findEntityType(type).isEmpty()) {
-            return ResponseEntity.notFound().build();
-        }
-        if (body.messageType() == null || body.messageType().isBlank()) {
-            return ResponseEntity.badRequest().build();
-        }
+            @Valid @RequestBody AddMatcherRequest body) throws SQLException {
+        config.findEntityType(type).orElseThrow(() -> ResourceNotFoundException.entityType(type));
         EntitySourceConfig.MatcherConfig matcher = config.addEntityMatcher(
                 type, topic,
                 new EntitySourceConfig.MatcherConfig(body.messageType(), body.idSource(), body.idExpression()));
@@ -208,23 +186,10 @@ public class EntityController {
             @PathVariable String topic,
             @PathVariable String messageType) throws SQLException {
         boolean deleted = config.deleteEntityMatcher(type, topic, messageType);
-        if (deleted) {
-            reloadRouter();
+        if (!deleted) {
+            throw ResourceNotFoundException.entityMatcher(type, topic, messageType);
         }
-        return deleted ? ResponseEntity.noContent().build() : ResponseEntity.notFound().build();
-    }
-
-    // -------------------------------------------------------------------------
-    // Error handling
-    // -------------------------------------------------------------------------
-
-    @ExceptionHandler(IllegalArgumentException.class)
-    public ResponseEntity<String> handleBadRequest(IllegalArgumentException ex) {
-        return ResponseEntity.badRequest().body(ex.getMessage());
-    }
-
-    @ExceptionHandler(SQLException.class)
-    public ResponseEntity<String> handleSqlError(SQLException ex) {
-        return ResponseEntity.internalServerError().body("Database error: " + ex.getMessage());
+        reloadRouter();
+        return ResponseEntity.noContent().build();
     }
 }

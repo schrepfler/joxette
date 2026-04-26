@@ -349,10 +349,11 @@ class FollowModeIntegrationTest {
     // =========================================================================
 
     @Test
-    void maxSubscriptionsExceeded_returns503() throws Exception {
+    void maxSubscriptionsExceeded_returnsConflict() throws Exception {
         // max-subscriptions is set to 2 via @SpringBootTest properties.
         // Pre-occupy both slots with bus subscriptions, then request another
-        // follow stream — the controller's capacity guard should reject with 503.
+        // follow stream — the controller's capacity guard should reject with 409
+        // (ConflictException.followCapacityReached).
         CassetteRecordingBus.TopicSubscription a = bus.subscribeTopic("slot-a");
         CassetteRecordingBus.TopicSubscription b = bus.subscribeTopic("slot-b");
 
@@ -360,7 +361,7 @@ class FollowModeIntegrationTest {
             int status = rawGetStatus(
                     "/cassettes/topics/" + TOPIC + "?follow=true",
                     "text/event-stream");
-            assertThat(status).isEqualTo(503);
+            assertThat(status).isEqualTo(409);
         } finally {
             a.close();
             b.close();

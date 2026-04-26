@@ -9,6 +9,7 @@ import io.swagger.v3.oas.annotations.media.Schema;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -18,8 +19,6 @@ import org.springframework.web.bind.annotation.*;
 import java.sql.SQLException;
 import java.time.Instant;
 import java.util.List;
-import java.util.Map;
-import java.util.NoSuchElementException;
 
 /**
  * REST API for compaction management.
@@ -129,9 +128,16 @@ public class CompactionController {
                       "errorMessage": null
                     }"""))),
         @ApiResponse(responseCode = "409", description = "A compaction run is already in progress",
-            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+            content = @Content(mediaType = "application/problem+json",
                 schema = @Schema(type = "object"),
-                examples = @ExampleObject(value = "{\"error\": \"Compaction already running\"}"))),
+                examples = @ExampleObject(value = """
+                    {
+                      "type": "https://joxette.dev/problems/conflict",
+                      "title": "Conflict",
+                      "status": 409,
+                      "detail": "Compaction already in progress",
+                      "errorCode": "ERR_CONFLICT"
+                    }"""))),
         @ApiResponse(responseCode = "500", description = "Database error",
             content = @Content(schema = @Schema(type = "string")))
     })
@@ -143,7 +149,7 @@ public class CompactionController {
                 content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
                     schema = @Schema(implementation = TriggerRequest.class),
                     examples = @ExampleObject(value = "{\"targets\": [\"order\", \"payment\"]}")))
-            @RequestBody(required = false) TriggerRequest body) throws SQLException {
+            @Valid @RequestBody(required = false) TriggerRequest body) throws SQLException {
         List<String> targets = (body != null) ? body.targets() : null;
         CompactionRun run = compactionService.beginRun("manual", targets);
         compactionTaskScheduler.schedule(
@@ -261,28 +267,4 @@ public class CompactionController {
                     example = "[\"order\", \"payment\"]")
             List<String> targets) {}
 
-    // =========================================================================
-    // Error handlers
-    // =========================================================================
-
-    @ExceptionHandler(IllegalStateException.class)
-    public ResponseEntity<Map<String, String>> handleConflict(IllegalStateException ex) {
-        return ResponseEntity.status(409).body(Map.of("error", ex.getMessage()));
-    }
-
-    @ExceptionHandler(IllegalArgumentException.class)
-    public ResponseEntity<String> handleBadRequest(IllegalArgumentException ex) {
-        return ResponseEntity.badRequest().body(ex.getMessage());
-    }
-
-    @ExceptionHandler(NoSuchElementException.class)
-    public ResponseEntity<Void> handleNotFound(NoSuchElementException ex) {
-        return ResponseEntity.notFound().build();
-    }
-
-    @ExceptionHandler(SQLException.class)
-    public ResponseEntity<String> handleSqlError(SQLException ex) {
-        return ResponseEntity.internalServerError()
-                .body("Database error: " + ex.getMessage());
-    }
 }

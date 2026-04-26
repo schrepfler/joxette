@@ -1,8 +1,12 @@
 package com.joxette.management;
 
+import com.joxette.api.error.ConflictException;
+import com.joxette.api.error.ResourceNotFoundException;
 import com.joxette.recording.RecorderStatus;
 import com.joxette.recording.RecordingCoordinator;
 import com.joxette.replay.MessageRouter;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Lazy;
@@ -13,7 +17,6 @@ import org.springframework.web.bind.annotation.*;
 import java.sql.SQLException;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 
 /**
@@ -39,10 +42,10 @@ public class TopicController {
     private final RecordingCoordinator coordinator;
     private final MessageRouter router;
 
-    record CreateTopicRequest(String topic, String mode, String startFrom, String brokerId) {}
-    record UpdateTopicRequest(String mode, String brokerId) {}
-    record SetRetentionRequest(Integer days) {}
-    record AddMatcherRequest(String messageType, String idSource, String idExpression) {}
+    public record CreateTopicRequest(@NotBlank String topic, String mode, String startFrom, String brokerId) {}
+    public record UpdateTopicRequest(String mode, String brokerId) {}
+    public record SetRetentionRequest(Integer days) {}
+    public record AddMatcherRequest(@NotBlank String messageType, String idSource, String idExpression) {}
 
     public TopicController(ConfigRepository config, @Lazy RecordingCoordinator coordinator,
                            MessageRouter router) {
@@ -70,13 +73,10 @@ public class TopicController {
 
     @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE,
                  produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<TopicConfig> createTopic(@RequestBody CreateTopicRequest body)
+    public ResponseEntity<TopicConfig> createTopic(@Valid @RequestBody CreateTopicRequest body)
             throws SQLException {
-        if (body.topic() == null || body.topic().isBlank()) {
-            return ResponseEntity.badRequest().build();
-        }
         if (config.findTopic(body.topic()).isPresent()) {
-            return ResponseEntity.status(409).build();
+            throw ConflictException.topicAlreadyExists(body.topic());
         }
         String mode = body.mode() != null ? body.mode() : "general";
         String startFrom = body.startFrom() != null ? body.startFrom() : "latest";
@@ -89,10 +89,9 @@ public class TopicController {
     }
 
     @GetMapping(value = "/{topic}", produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<TopicConfig> getTopic(@PathVariable String topic) throws SQLException {
+    public TopicConfig getTopic(@PathVariable String topic) throws SQLException {
         return config.findTopic(topic)
-                .map(ResponseEntity::ok)
-                .orElse(ResponseEntity.notFound().build());
+                .orElseThrow(() -> ResourceNotFoundException.topic(topic));
     }
 
     @PutMapping(value = "/{topic}",
@@ -100,13 +99,10 @@ public class TopicController {
                 produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<TopicConfig> updateTopic(
             @PathVariable String topic,
-            @RequestBody UpdateTopicRequest body) throws SQLException {
-        if (config.findTopic(topic).isEmpty()) {
-            return ResponseEntity.notFound().build();
-        }
-        // Preserve current paused state
-        boolean paused = config.findTopic(topic).map(TopicConfig::paused).orElse(false);
-        TopicConfig tc = config.upsertTopic(topic, body.mode(), paused, "latest", body.brokerId());
+            @Valid @RequestBody UpdateTopicRequest body) throws SQLException {
+        TopicConfig existing = config.findTopic(topic)
+                .orElseThrow(() -> ResourceNotFoundException.topic(topic));
+        TopicConfig tc = config.upsertTopic(topic, body.mode(), existing.paused(), "latest", body.brokerId());
         reloadRouter();
         return ResponseEntity.ok(tc);
     }
@@ -115,51 +111,42 @@ public class TopicController {
     public ResponseEntity<Void> deleteTopic(@PathVariable String topic) throws SQLException {
         coordinator.stopTopic(topic);
         boolean deleted = config.deleteTopic(topic);
-        if (deleted) {
-            reloadRouter();
+        if (!deleted) {
+            throw ResourceNotFoundException.topic(topic);
         }
-        return deleted ? ResponseEntity.noContent().build() : ResponseEntity.notFound().build();
+        reloadRouter();
+        return ResponseEntity.noContent().build();
     }
 
     @PostMapping("/{topic}/pause")
-    public ResponseEntity<TopicConfig> pauseTopic(@PathVariable String topic) throws SQLException {
-        if (config.findTopic(topic).isEmpty()) {
-            return ResponseEntity.notFound().build();
-        }
+    public TopicConfig pauseTopic(@PathVariable String topic) throws SQLException {
+        config.findTopic(topic).orElseThrow(() -> ResourceNotFoundException.topic(topic));
         coordinator.stopTopic(topic);
         config.setPaused(topic, true);
-        return config.findTopic(topic).map(ResponseEntity::ok)
-                .orElse(ResponseEntity.notFound().build());
+        return config.findTopic(topic).orElseThrow(() -> ResourceNotFoundException.topic(topic));
     }
 
     @PutMapping(value = "/{topic}/retention",
                 consumes = MediaType.APPLICATION_JSON_VALUE,
                 produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<TopicConfig> setRetention(
+    public TopicConfig setRetention(
             @PathVariable String topic,
-            @RequestBody SetRetentionRequest body) throws SQLException {
-        if (config.findTopic(topic).isEmpty()) {
-            return ResponseEntity.notFound().build();
-        }
-        return ResponseEntity.ok(config.setTopicRetentionDays(topic, body.days()));
+            @Valid @RequestBody SetRetentionRequest body) throws SQLException {
+        config.findTopic(topic).orElseThrow(() -> ResourceNotFoundException.topic(topic));
+        return config.setTopicRetentionDays(topic, body.days());
     }
 
     @PostMapping("/{topic}/resume")
-    public ResponseEntity<TopicConfig> resumeTopic(@PathVariable String topic) throws SQLException {
-        if (config.findTopic(topic).isEmpty()) {
-            return ResponseEntity.notFound().build();
-        }
+    public TopicConfig resumeTopic(@PathVariable String topic) throws SQLException {
+        config.findTopic(topic).orElseThrow(() -> ResourceNotFoundException.topic(topic));
         config.setPaused(topic, false);
         config.findTopic(topic).ifPresent(tc -> coordinator.startTopic(topic, tc.startFrom()));
-        return config.findTopic(topic).map(ResponseEntity::ok)
-                .orElse(ResponseEntity.notFound().build());
+        return config.findTopic(topic).orElseThrow(() -> ResourceNotFoundException.topic(topic));
     }
 
     @PostMapping("/{topic}/restart")
     public ResponseEntity<RecorderStatus> restartTopic(@PathVariable String topic) throws SQLException {
-        if (config.findTopic(topic).isEmpty()) {
-            return ResponseEntity.notFound().build();
-        }
+        config.findTopic(topic).orElseThrow(() -> ResourceNotFoundException.topic(topic));
         coordinator.restartTopic(topic);
         RecorderStatus status = coordinator.listRunning().get(topic);
         return status != null ? ResponseEntity.ok(status) : ResponseEntity.accepted().build();
@@ -175,12 +162,9 @@ public class TopicController {
     // -------------------------------------------------------------------------
 
     @GetMapping(value = "/{topic}/matchers", produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<List<TopicMatcherConfig>> listMatchers(
-            @PathVariable String topic) throws SQLException {
-        if (config.findTopic(topic).isEmpty()) {
-            return ResponseEntity.notFound().build();
-        }
-        return ResponseEntity.ok(config.listTopicMatchers(topic));
+    public List<TopicMatcherConfig> listMatchers(@PathVariable String topic) throws SQLException {
+        config.findTopic(topic).orElseThrow(() -> ResourceNotFoundException.topic(topic));
+        return config.listTopicMatchers(topic);
     }
 
     @PostMapping(value = "/{topic}/matchers",
@@ -188,13 +172,8 @@ public class TopicController {
                  produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<TopicMatcherConfig> addMatcher(
             @PathVariable String topic,
-            @RequestBody AddMatcherRequest body) throws SQLException {
-        if (config.findTopic(topic).isEmpty()) {
-            return ResponseEntity.notFound().build();
-        }
-        if (body.messageType() == null || body.messageType().isBlank()) {
-            return ResponseEntity.badRequest().build();
-        }
+            @Valid @RequestBody AddMatcherRequest body) throws SQLException {
+        config.findTopic(topic).orElseThrow(() -> ResourceNotFoundException.topic(topic));
         TopicMatcherConfig m = config.upsertTopicMatcher(
                 topic, body.messageType(), body.idSource(), body.idExpression());
         reloadRouter();
@@ -206,19 +185,10 @@ public class TopicController {
             @PathVariable String topic,
             @PathVariable String messageType) throws SQLException {
         boolean deleted = config.deleteTopicMatcher(topic, messageType);
-        if (deleted) {
-            reloadRouter();
+        if (!deleted) {
+            throw ResourceNotFoundException.topicMatcher(topic, messageType);
         }
-        return deleted ? ResponseEntity.noContent().build() : ResponseEntity.notFound().build();
-    }
-
-    @ExceptionHandler(IllegalArgumentException.class)
-    public ResponseEntity<String> handleBadRequest(IllegalArgumentException ex) {
-        return ResponseEntity.badRequest().body(ex.getMessage());
-    }
-
-    @ExceptionHandler(SQLException.class)
-    public ResponseEntity<String> handleSqlError(SQLException ex) {
-        return ResponseEntity.internalServerError().body("Database error: " + ex.getMessage());
+        reloadRouter();
+        return ResponseEntity.noContent().build();
     }
 }

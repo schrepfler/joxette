@@ -54,7 +54,8 @@ public record TopicCursor(Instant timestamp, int partition, long offset)
                     node.get("o").asLong()
             );
         } catch (Exception e) {
-            throw new IllegalArgumentException("Invalid TopicCursor: " + encoded, e);
+            throw new com.joxette.api.error.InvalidCursorException(
+                    "Invalid topic cursor: " + encoded, e);
         }
     }
 }

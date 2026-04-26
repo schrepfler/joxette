@@ -66,7 +66,8 @@ public record EntityCursor(
                     node.get("o").asLong()
             );
         } catch (Exception e) {
-            throw new IllegalArgumentException("Invalid EntityCursor: " + encoded, e);
+            throw new com.joxette.api.error.InvalidCursorException(
+                    "Invalid entity cursor: " + encoded, e);
         }
     }
 }

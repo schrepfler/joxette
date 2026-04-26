@@ -8,7 +8,6 @@ import org.springframework.stereotype.Component;
 import java.time.Instant;
 import java.util.Comparator;
 import java.util.List;
-import java.util.NoSuchElementException;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
@@ -115,8 +114,7 @@ public class ScheduledReplayService {
                 .count();
         if (active >= maxScheduled) {
             log.warn("Scheduled replay capacity reached: {} active out of max {}", active, maxScheduled);
-            throw new IllegalStateException(
-                    "Maximum number of concurrent scheduled replays (" + maxScheduled + ") reached");
+            throw com.joxette.api.error.ConflictException.scheduledReplayCapacityReached(maxScheduled);
         }
     }
 
@@ -146,9 +144,9 @@ public class ScheduledReplayService {
      */
     public void cancel(String id) {
         ReplayEntry entry = entries.get(id);
-        if (entry == null) throw new NoSuchElementException("Scheduled replay not found: " + id);
+        if (entry == null) throw com.joxette.api.error.ResourceNotFoundException.scheduledReplay(id);
         if (!"pending".equals(entry.status) && !"streaming".equals(entry.status)) {
-            throw new IllegalStateException("Cannot cancel replay in status: " + entry.status);
+            throw com.joxette.api.error.ConflictException.scheduledReplayCannotCancel(entry.status);
         }
         entry.status = "cancelled";
         entry.cancelLatch.countDown();
@@ -211,7 +209,7 @@ public class ScheduledReplayService {
      */
     public ScheduledReplay get(String id) {
         ReplayEntry entry = entries.get(id);
-        if (entry == null) throw new NoSuchElementException("Scheduled replay not found: " + id);
+        if (entry == null) throw com.joxette.api.error.ResourceNotFoundException.scheduledReplay(id);
         return entry.snapshot();
     }
 }

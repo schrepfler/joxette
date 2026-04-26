@@ -85,11 +85,11 @@ public class CompactionService {
      * <p>The caller is responsible for submitting {@link #executeRun} to a
      * background thread after this method returns.
      *
-     * @throws IllegalStateException if a compaction is already in progress
+     * @throws com.joxette.api.error.ConflictException if a compaction is already in progress
      */
     public CompactionRun beginRun(String triggeredBy, List<String> targets) throws SQLException {
         if (!running.compareAndSet(false, true)) {
-            throw new IllegalStateException("Compaction already in progress");
+            throw com.joxette.api.error.ConflictException.compactionAlreadyRunning();
         }
         long id = insertRunRecord(triggeredBy, targets);
         return getRunById(id);
@@ -192,7 +192,7 @@ public class CompactionService {
                 ps.setLong(1, id);
                 try (ResultSet rs = ps.executeQuery()) {
                     if (rs.next()) return mapRun(rs);
-                    throw new NoSuchElementException("No compaction run with id " + id);
+                    throw com.joxette.api.error.ResourceNotFoundException.compactionRun(id);
                 }
             }
         }

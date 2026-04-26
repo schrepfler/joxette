@@ -4,6 +4,10 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jayway.jsonpath.InvalidPathException;
 import com.jayway.jsonpath.JsonPath;
+import com.joxette.api.error.ConflictException;
+import com.joxette.api.error.ResourceNotFoundException;
+import com.joxette.api.error.ValidationException;
+import jakarta.validation.Valid;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Content;
@@ -35,7 +39,6 @@ import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.NoSuchElementException;
 import java.util.UUID;
 
 /**
@@ -128,14 +131,6 @@ public class CassetteController {
     }
 
     /**
-     * Signals that the service is at {@code max-subscriptions} capacity.
-     * Mapped to HTTP 503 by {@link #handleFollowCapacityExceeded}.
-     */
-    static final class FollowCapacityExceededException extends RuntimeException {
-        FollowCapacityExceededException(String msg) { super(msg); }
-    }
-
-    /**
      * Subscribes to the given topic for follow mode, enforcing the
      * {@code joxette.replay.follow.max-subscriptions} cap.  Called before the
      * historical drain begins so writes committing between subscribe and
@@ -145,8 +140,7 @@ public class CassetteController {
             String topic, Order order) {
         int cap = properties.getReplay().getFollow().getMaxSubscriptions();
         if (recordingBus.activeSubscriptionCount() >= cap) {
-            throw new FollowCapacityExceededException(
-                    "Max follow subscriptions reached (" + cap + ")");
+            throw ConflictException.followCapacityReached(cap);
         }
         return FollowSubscription.forTopic(recordingBus.subscribeTopic(topic), order);
     }
@@ -155,8 +149,7 @@ public class CassetteController {
             String entityType, String entityId, Order order) {
         int cap = properties.getReplay().getFollow().getMaxSubscriptions();
         if (recordingBus.activeSubscriptionCount() >= cap) {
-            throw new FollowCapacityExceededException(
-                    "Max follow subscriptions reached (" + cap + ")");
+            throw ConflictException.followCapacityReached(cap);
         }
         return FollowSubscription.forEntity(
                 recordingBus.subscribeEntity(entityType, entityId), order);
@@ -168,7 +161,7 @@ public class CassetteController {
 
     private static void rejectFollowWithUpperBound(boolean follow, Instant to, Long offsetTo) {
         if (follow && (to != null || offsetTo != null)) {
-            throw new IllegalArgumentException(
+            throw new ValidationException(
                     "follow=true is incompatible with an upper bound (to / offset_to)");
         }
     }
@@ -1317,10 +1310,10 @@ public class CassetteController {
             @io.swagger.v3.oas.annotations.parameters.RequestBody(
                 description = "Target topic and optional filters",
                 content = @Content(schema = @Schema(implementation = ReplayToTopicRequest.class)))
-            @RequestBody ReplayToTopicRequest req
+            @Valid @RequestBody ReplayToTopicRequest req
     ) throws SQLException {
         if (speed <= 0) {
-            throw new IllegalArgumentException("speed must be greater than 0");
+            throw ValidationException.field("speed", "must be greater than 0");
         }
         ReplayProgress[] result = {null};
         engineFor(null).replayTopic(topic, req, speed, p -> result[0] = p);
@@ -1361,10 +1354,10 @@ public class CassetteController {
             @io.swagger.v3.oas.annotations.parameters.RequestBody(
                 description = "Target topic and optional filters",
                 content = @Content(schema = @Schema(implementation = ReplayToTopicRequest.class)))
-            @RequestBody ReplayToTopicRequest req
+            @Valid @RequestBody ReplayToTopicRequest req
     ) {
         if (speed <= 0) {
-            throw new IllegalArgumentException("speed must be greater than 0");
+            throw ValidationException.field("speed", "must be greater than 0");
         }
         return sseHandler.<ReplayProgress>streamSse(
                 sink -> engineFor(null).replayTopic(topic, req, speed, sink));
@@ -1414,10 +1407,10 @@ public class CassetteController {
             @io.swagger.v3.oas.annotations.parameters.RequestBody(
                 description = "Target topic and optional timestamp filters",
                 content = @Content(schema = @Schema(implementation = ReplayToTopicRequest.class)))
-            @RequestBody ReplayToTopicRequest req
+            @Valid @RequestBody ReplayToTopicRequest req
     ) throws SQLException {
         if (speed <= 0) {
-            throw new IllegalArgumentException("speed must be greater than 0");
+            throw ValidationException.field("speed", "must be greater than 0");
         }
         ReplayProgress[] result = {null};
         engineFor(null).replayEntity(entityType, entityId, req, speed, p -> result[0] = p);
@@ -1462,10 +1455,10 @@ public class CassetteController {
             @io.swagger.v3.oas.annotations.parameters.RequestBody(
                 description = "Target topic and optional timestamp filters",
                 content = @Content(schema = @Schema(implementation = ReplayToTopicRequest.class)))
-            @RequestBody ReplayToTopicRequest req
+            @Valid @RequestBody ReplayToTopicRequest req
     ) {
         if (speed <= 0) {
-            throw new IllegalArgumentException("speed must be greater than 0");
+            throw ValidationException.field("speed", "must be greater than 0");
         }
         return sseHandler.<ReplayProgress>streamSse(
                 sink -> engineFor(null).replayEntity(entityType, entityId, req, speed, sink));
@@ -1500,7 +1493,7 @@ public class CassetteController {
             @io.swagger.v3.oas.annotations.parameters.RequestBody(
                 description = "Filter params, optional transform pipeline, and optional scheduling",
                 content = @Content(schema = @Schema(implementation = TopicReplayBody.class)))
-            @RequestBody TopicReplayBody body
+            @Valid @RequestBody TopicReplayBody body
     ) throws SQLException {
         Instant scheduledAt = resolveScheduledAt(body.startAt(), body.startDelayMs());
         if (scheduledAt != null) {
@@ -1539,7 +1532,7 @@ public class CassetteController {
             @io.swagger.v3.oas.annotations.parameters.RequestBody(
                 description = "Filter params and transform pipeline",
                 content = @Content(schema = @Schema(implementation = TopicReplayBody.class)))
-            @RequestBody TopicReplayBody body
+            @Valid @RequestBody TopicReplayBody body
     ) {
         String replayId = newReplayId();
         List<TransformStep> userSteps = resolveTransformStepsFromBody(body.transform(), body.transformPreset());
@@ -1574,7 +1567,7 @@ public class CassetteController {
             @io.swagger.v3.oas.annotations.parameters.RequestBody(
                 description = "Filter params and transform pipeline",
                 content = @Content(schema = @Schema(implementation = TopicReplayBody.class)))
-            @RequestBody TopicReplayBody body
+            @Valid @RequestBody TopicReplayBody body
     ) {
         String replayId = newReplayId();
         List<TransformStep> userSteps = resolveTransformStepsFromBody(body.transform(), body.transformPreset());
@@ -1616,7 +1609,7 @@ public class CassetteController {
             @io.swagger.v3.oas.annotations.parameters.RequestBody(
                 description = "Filter params, optional transform pipeline, and optional scheduling",
                 content = @Content(schema = @Schema(implementation = EntityReplayBody.class)))
-            @RequestBody EntityReplayBody body
+            @Valid @RequestBody EntityReplayBody body
     ) throws SQLException {
         Instant scheduledAt = resolveScheduledAt(body.startAt(), body.startDelayMs());
         if (scheduledAt != null) {
@@ -1655,7 +1648,7 @@ public class CassetteController {
             @io.swagger.v3.oas.annotations.parameters.RequestBody(
                 description = "Filter params and transform pipeline",
                 content = @Content(schema = @Schema(implementation = EntityReplayBody.class)))
-            @RequestBody EntityReplayBody body
+            @Valid @RequestBody EntityReplayBody body
     ) {
         String replayId = newReplayId();
         List<TransformStep> userSteps = resolveTransformStepsFromBody(body.transform(), body.transformPreset());
@@ -1691,7 +1684,7 @@ public class CassetteController {
             @io.swagger.v3.oas.annotations.parameters.RequestBody(
                 description = "Filter params and transform pipeline",
                 content = @Content(schema = @Schema(implementation = EntityReplayBody.class)))
-            @RequestBody EntityReplayBody body
+            @Valid @RequestBody EntityReplayBody body
     ) {
         String replayId = newReplayId();
         List<TransformStep> userSteps = resolveTransformStepsFromBody(body.transform(), body.transformPreset());
@@ -1733,7 +1726,7 @@ public class CassetteController {
     public SequenceMatchService.SequenceMatchResponse matchTopicSequences(
             @Parameter(description = "Kafka topic name", required = true, example = "orders")
             @PathVariable String topic,
-            @RequestBody SequenceMatchService.SequenceMatchRequest req
+            @Valid @RequestBody SequenceMatchService.SequenceMatchRequest req
     ) throws SQLException {
         return sequenceMatchService.matchTopic(topicService, topic, req);
     }
@@ -1762,7 +1755,7 @@ public class CassetteController {
             @PathVariable String entityType,
             @Parameter(description = "Entity identifier", required = true, example = "order-42")
             @RequestParam String entityId,
-            @RequestBody SequenceMatchService.SequenceMatchRequest req
+            @Valid @RequestBody SequenceMatchService.SequenceMatchRequest req
     ) throws SQLException {
         return sequenceMatchService.matchEntity(entityService, entityType, entityId, req);
     }
@@ -1780,17 +1773,16 @@ public class CassetteController {
      * Resolves {@code start_at} / {@code start_delay_ms} to an absolute {@link Instant}.
      *
      * @return the resolved start time, or {@code null} if neither parameter was supplied
-     * @throws IllegalArgumentException if both params are supplied, or {@code start_delay_ms < 0}
      */
     private Instant resolveScheduledAt(Instant startAt, Long startDelayMs) {
         if (startAt != null && startDelayMs != null) {
-            throw new IllegalArgumentException(
+            throw new ValidationException(
                     "Specify at most one of start_at and start_delay_ms");
         }
         if (startAt != null) return startAt;
         if (startDelayMs != null) {
             if (startDelayMs < 0) {
-                throw new IllegalArgumentException("start_delay_ms must be non-negative");
+                throw ValidationException.field("start_delay_ms", "must be non-negative");
             }
             return Instant.now().plusMillis(startDelayMs);
         }
@@ -1804,21 +1796,15 @@ public class CassetteController {
      *
      * <p>At most one of {@code transformJson} and {@code transformPreset} may be non-null.
      * Both null means no user steps (metadata-only pipeline).
-     *
-     * @throws IllegalArgumentException if both params are set, the JSON is malformed, an
-     *                                  unknown step type is referenced, the cap is exceeded,
-     *                                  or a JSONPath expression is syntactically invalid
-     * @throws NoSuchElementException   if a preset name is given but not found
      */
     private List<TransformStep> resolveTransformSteps(String transformJson, String transformPreset) {
         if (transformJson != null && transformPreset != null) {
-            throw new IllegalArgumentException(
+            throw new ValidationException(
                     "Specify at most one of transform and transform_preset");
         }
         if (transformPreset != null) {
             TransformPreset preset = presetRepository.findByName(transformPreset)
-                    .orElseThrow(() -> new NoSuchElementException(
-                            "Transform preset not found: " + transformPreset));
+                    .orElseThrow(() -> ResourceNotFoundException.transformPreset(transformPreset));
             return validated(preset.steps());
         }
         if (transformJson != null && !transformJson.isBlank()) {
@@ -1834,13 +1820,12 @@ public class CassetteController {
     private List<TransformStep> resolveTransformStepsFromBody(
             List<TransformStep> inlineSteps, String transformPreset) {
         if (inlineSteps != null && !inlineSteps.isEmpty() && transformPreset != null) {
-            throw new IllegalArgumentException(
+            throw new ValidationException(
                     "Specify at most one of transform and transform_preset");
         }
         if (transformPreset != null) {
             TransformPreset preset = presetRepository.findByName(transformPreset)
-                    .orElseThrow(() -> new NoSuchElementException(
-                            "Transform preset not found: " + transformPreset));
+                    .orElseThrow(() -> ResourceNotFoundException.transformPreset(transformPreset));
             return validated(preset.steps());
         }
         if (inlineSteps != null && !inlineSteps.isEmpty()) {
@@ -1849,31 +1834,25 @@ public class CassetteController {
         return List.of();
     }
 
-    /**
-     * Deserialises a JSON array string into a {@code List<TransformStep>} using Jackson.
-     * Returns 400 on any parse error (unknown step type, malformed JSON, etc.).
-     */
+    /** Deserialises a JSON array string into a {@code List<TransformStep>} using Jackson. */
     private List<TransformStep> parseTransformJson(String json) {
         try {
             return objectMapper.readValue(json,
                     objectMapper.getTypeFactory()
                             .constructCollectionType(List.class, TransformStep.class));
         } catch (JsonProcessingException e) {
-            throw new IllegalArgumentException(
-                    "Invalid transform steps: " + e.getOriginalMessage());
+            throw new ValidationException("Invalid transform steps: " + e.getOriginalMessage());
         }
     }
 
     /**
      * Validates a step list: enforces the max-step cap and pre-compiles any JSONPath
      * expressions found in {@link FilterDropStep}s that reference {@code $.value.*} paths.
-     *
-     * @throws IllegalArgumentException if the list exceeds the cap or a JSONPath is invalid
      */
     private List<TransformStep> validated(List<TransformStep> steps) {
         int max = properties.getReplay().getMaxTransformSteps();
         if (steps.size() > max) {
-            throw new IllegalArgumentException(
+            throw new ValidationException(
                     "Transform pipeline exceeds the maximum of " + max + " steps");
         }
         for (TransformStep step : steps) {
@@ -1885,7 +1864,7 @@ public class CassetteController {
                     try {
                         JsonPath.compile(jsonPath);
                     } catch (InvalidPathException e) {
-                        throw new IllegalArgumentException(
+                        throw new ValidationException(
                                 "Invalid JSONPath in filter_drop field '" + field + "': "
                                         + e.getMessage());
                     }
@@ -1926,33 +1905,4 @@ public class CassetteController {
         }
     }
 
-    // =========================================================================
-    // Error handling
-    // =========================================================================
-
-    @ExceptionHandler(IllegalArgumentException.class)
-    public ResponseEntity<String> handleBadRequest(IllegalArgumentException ex) {
-        return ResponseEntity.badRequest().body(ex.getMessage());
-    }
-
-    @ExceptionHandler(FollowCapacityExceededException.class)
-    public ResponseEntity<String> handleFollowCapacityExceeded(FollowCapacityExceededException ex) {
-        return ResponseEntity.status(503).body(ex.getMessage());
-    }
-
-    @ExceptionHandler(IllegalStateException.class)
-    public ResponseEntity<String> handleConflict(IllegalStateException ex) {
-        return ResponseEntity.status(429).body(ex.getMessage());
-    }
-
-    @ExceptionHandler(NoSuchElementException.class)
-    public ResponseEntity<String> handleNotFound(NoSuchElementException ex) {
-        return ResponseEntity.notFound().build();
-    }
-
-    @ExceptionHandler(SQLException.class)
-    public ResponseEntity<String> handleSqlError(SQLException ex) {
-        return ResponseEntity.internalServerError()
-                .body("Database error: " + ex.getMessage());
-    }
 }

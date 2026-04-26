@@ -552,8 +552,8 @@ public class EntityReplayService implements EntityCassetteSource {
 
     static void validateEntityType(String type) {
         if (type == null || !SAFE_IDENTIFIER.matcher(type).matches()) {
-            throw new IllegalArgumentException(
-                    "Invalid entity type '%s': must match [a-z][a-z0-9_]*".formatted(type));
+            throw com.joxette.api.error.ValidationException.field("entityType",
+                    "must match [a-z][a-z0-9_]* (got '%s')".formatted(type));
         }
     }
 }

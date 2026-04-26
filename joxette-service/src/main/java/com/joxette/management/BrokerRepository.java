@@ -167,8 +167,8 @@ public class BrokerRepository {
     /**
      * Deletes a broker configuration.
      *
-     * @throws IllegalStateException if any topic in {@code topic_configs} still
-     *         references {@code brokerId} via the {@code broker_id} column.
+     * @throws com.joxette.api.error.ConflictException if any topic in
+     *         {@code topic_configs} still references {@code brokerId}.
      */
     public boolean deleteBroker(String brokerId) throws SQLException {
         synchronized (duckDB) {
@@ -177,8 +177,7 @@ public class BrokerRepository {
                 ps.setString(1, brokerId);
                 try (ResultSet rs = ps.executeQuery()) {
                     if (rs.next() && rs.getInt(1) > 0) {
-                        throw new IllegalStateException(
-                                "Cannot delete broker '" + brokerId + "': referenced by topics");
+                        throw com.joxette.api.error.ConflictException.brokerInUse(brokerId);
                     }
                 }
             }

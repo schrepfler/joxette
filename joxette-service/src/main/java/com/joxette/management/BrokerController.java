@@ -1,12 +1,19 @@
 package com.joxette.management;
 
+import com.joxette.api.error.ConflictException;
+import com.joxette.api.error.ResourceNotFoundException;
+import com.joxette.api.error.UpstreamUnavailableException;
+import com.joxette.api.error.ValidationException;
 import com.joxette.config.BrokerConnectionFactory;
 import com.softwaremill.jox.kafka.ConsumerSettings;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.ListTopicsOptions;
 import org.apache.kafka.clients.admin.TopicDescription;
 import org.apache.kafka.clients.consumer.ConsumerRecords;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.PartitionInfo;
 import org.apache.kafka.common.TopicPartition;
 import org.springframework.http.MediaType;
@@ -49,21 +56,21 @@ public class BrokerController {
     private final BrokerConnectionFactory connectionFactory;
     private final ConfigRepository configRepository;
 
-    record CreateBrokerRequest(
-            String brokerId, String bootstrapServers, String securityProtocol,
+    public record CreateBrokerRequest(
+            @NotBlank String brokerId, String bootstrapServers, String securityProtocol,
             String saslMechanism, String saslUsername, String saslPassword,
             String sslTruststorePath, String sslTruststorePassword,
             String sslKeystorePath, String sslKeystorePassword
     ) {}
 
-    record UpdateBrokerRequest(
+    public record UpdateBrokerRequest(
             String bootstrapServers, String securityProtocol,
             String saslMechanism, String saslUsername, String saslPassword,
             String sslTruststorePath, String sslTruststorePassword,
             String sslKeystorePath, String sslKeystorePassword
     ) {}
 
-    record BrokerConfigResponse(
+    public record BrokerConfigResponse(
             String brokerId, String bootstrapServers, String securityProtocol,
             String saslMechanism, String saslUsername, String saslPassword,
             String sslTruststorePath, String sslTruststorePassword,
@@ -102,10 +109,10 @@ public class BrokerController {
 
     @PostMapping(consumes = MediaType.APPLICATION_JSON_VALUE,
                  produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<BrokerConfigResponse> createBroker(@RequestBody CreateBrokerRequest body)
+    public ResponseEntity<BrokerConfigResponse> createBroker(@Valid @RequestBody CreateBrokerRequest body)
             throws SQLException {
         if (brokerRepository.findBroker(body.brokerId()).isPresent()) {
-            return ResponseEntity.status(409).build();
+            throw ConflictException.brokerAlreadyExists(body.brokerId());
         }
         BrokerConfig cfg = new BrokerConfig(
                 body.brokerId(), body.bootstrapServers(), body.securityProtocol(),
@@ -117,48 +124,44 @@ public class BrokerController {
     }
 
     @GetMapping(value = "/{brokerId}", produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<BrokerConfigResponse> getBroker(@PathVariable String brokerId)
-            throws SQLException {
+    public BrokerConfigResponse getBroker(@PathVariable String brokerId) throws SQLException {
         return brokerRepository.findBroker(brokerId)
                 .map(BrokerConfigResponse::fromBrokerConfig)
-                .map(ResponseEntity::ok)
-                .orElse(ResponseEntity.notFound().build());
+                .orElseThrow(() -> ResourceNotFoundException.broker(brokerId));
     }
 
     @PutMapping(value = "/{brokerId}",
                 consumes = MediaType.APPLICATION_JSON_VALUE,
                 produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<BrokerConfigResponse> upsertBroker(
+    public BrokerConfigResponse upsertBroker(
             @PathVariable String brokerId,
-            @RequestBody UpdateBrokerRequest body) throws SQLException {
+            @Valid @RequestBody UpdateBrokerRequest body) throws SQLException {
         BrokerConfig cfg = new BrokerConfig(
                 brokerId, body.bootstrapServers(), body.securityProtocol(),
                 body.saslMechanism(), body.saslUsername(), body.saslPassword(),
                 body.sslTruststorePath(), body.sslTruststorePassword(),
                 body.sslKeystorePath(), body.sslKeystorePassword());
         BrokerConfig saved = brokerRepository.upsertBroker(cfg);
-        return ResponseEntity.ok(BrokerConfigResponse.fromBrokerConfig(saved));
+        return BrokerConfigResponse.fromBrokerConfig(saved);
     }
 
     @DeleteMapping("/{brokerId}")
     public ResponseEntity<Void> deleteBroker(@PathVariable String brokerId) throws SQLException {
         boolean deleted = brokerRepository.deleteBroker(brokerId);
-        return deleted ? ResponseEntity.noContent().build() : ResponseEntity.notFound().build();
+        if (!deleted) {
+            throw ResourceNotFoundException.broker(brokerId);
+        }
+        return ResponseEntity.noContent().build();
     }
 
     @GetMapping(value = "/{brokerId}/topics", produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<?> listBrokerTopics(
+    public List<BrokerTopicInfo> listBrokerTopics(
             @PathVariable String brokerId,
             @RequestParam(defaultValue = "false") boolean includeInternal,
-            @RequestParam(required = false) String filter) {
+            @RequestParam(required = false) String filter) throws SQLException {
 
-        Map<String, TopicConfig> recordedTopics;
-        try {
-            recordedTopics = configRepository.listTopics().stream()
-                    .collect(Collectors.toMap(TopicConfig::topic, t -> t));
-        } catch (SQLException e) {
-            return ResponseEntity.internalServerError().body("Database error: " + e.getMessage());
-        }
+        Map<String, TopicConfig> recordedTopics = configRepository.listTopics().stream()
+                .collect(Collectors.toMap(TopicConfig::topic, t -> t));
 
         try (AdminClient adminClient = connectionFactory.adminClient(brokerId)) {
             Map<String, ?> listings = adminClient
@@ -187,25 +190,25 @@ public class BrokerController {
                         cfg != null,
                         cfg != null ? cfg.mode() : null));
             }
-            return ResponseEntity.ok(result);
+            return result;
         } catch (ExecutionException e) {
-            return ResponseEntity.status(503).body("Broker error: " + e.getCause().getMessage());
+            throw UpstreamUnavailableException.broker(brokerId, e.getCause());
         } catch (TimeoutException e) {
-            return ResponseEntity.status(503).body("Broker did not respond within 5s");
+            throw UpstreamUnavailableException.brokerTimeout(brokerId);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            return ResponseEntity.status(503).body("Request interrupted");
+            throw UpstreamUnavailableException.broker(brokerId, e);
         }
     }
 
     @GetMapping(value = "/{brokerId}/topics/{topic}/peek",
                 produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<List<PeekMessage>> peekTopic(
+    public List<PeekMessage> peekTopic(
             @PathVariable String brokerId,
             @PathVariable String topic,
             @RequestParam(defaultValue = "20") int limit) {
         if (limit < 1 || limit > 100) {
-            return ResponseEntity.badRequest().build();
+            throw ValidationException.field("limit", "must be between 1 and 100");
         }
         // Build a one-off consumer for the peek: derive from base settings, override group.id
         ConsumerSettings<String, byte[]> base = connectionFactory.consumerSettings(brokerId);
@@ -214,44 +217,51 @@ public class BrokerController {
                 .autoOffsetReset(ConsumerSettings.AutoOffsetReset.LATEST);
 
         try (KafkaConsumer<String, byte[]> consumer = peekSettings.toConsumer()) {
-            List<PartitionInfo> parts = consumer.partitionsFor(topic);
-            if (parts == null || parts.isEmpty()) {
-                return ResponseEntity.ok(List.of());
-            }
-            List<TopicPartition> tps = parts.stream()
-                    .map(p -> new TopicPartition(topic, p.partition()))
-                    .toList();
-            consumer.assign(tps);
-            consumer.seekToEnd(tps);
-            Map<TopicPartition, Long> ends = consumer.endOffsets(tps);
-            for (TopicPartition tp : tps) {
-                long end = ends.get(tp);
-                long start = Math.max(0, end - (long) Math.ceil((double) limit / tps.size()));
-                consumer.seek(tp, start);
-            }
-            ConsumerRecords<String, byte[]> records = consumer.poll(Duration.ofSeconds(3));
-            List<PeekMessage> messages = new ArrayList<>();
-            records.forEach(r -> {
-                if (messages.size() >= limit) return;
-                byte[] rawValue = r.value();
-                String encoding = rawValue != null ? detectEncoding(rawValue) : "utf8";
-                String value = rawValue != null ? encodeValue(rawValue, encoding) : null;
-                List<PeekMessage.HeaderEntry> headers = new ArrayList<>();
-                r.headers().forEach(h -> headers.add(
-                        new PeekMessage.HeaderEntry(h.key(),
-                                h.value() != null ? new String(h.value(), StandardCharsets.UTF_8) : null)));
-                messages.add(new PeekMessage(
-                        r.partition(),
-                        r.offset(),
-                        Instant.ofEpochMilli(r.timestamp()).toString(),
-                        r.key(),
-                        value,
-                        encoding,
-                        headers));
-            });
-            messages.sort((a, b) -> a.timestamp().compareTo(b.timestamp()));
-            return ResponseEntity.ok(messages);
+            return peekMessages(consumer, topic, limit);
+        } catch (KafkaException e) {
+            throw UpstreamUnavailableException.broker(brokerId, e);
         }
+    }
+
+    private static List<PeekMessage> peekMessages(KafkaConsumer<String, byte[]> consumer,
+                                                  String topic, int limit) {
+        List<PartitionInfo> parts = consumer.partitionsFor(topic);
+        if (parts == null || parts.isEmpty()) {
+            return List.of();
+        }
+        List<TopicPartition> tps = parts.stream()
+                .map(p -> new TopicPartition(topic, p.partition()))
+                .toList();
+        consumer.assign(tps);
+        consumer.seekToEnd(tps);
+        Map<TopicPartition, Long> ends = consumer.endOffsets(tps);
+        for (TopicPartition tp : tps) {
+            long end = ends.get(tp);
+            long start = Math.max(0, end - (long) Math.ceil((double) limit / tps.size()));
+            consumer.seek(tp, start);
+        }
+        ConsumerRecords<String, byte[]> records = consumer.poll(Duration.ofSeconds(3));
+        List<PeekMessage> messages = new ArrayList<>();
+        records.forEach(r -> {
+            if (messages.size() >= limit) return;
+            byte[] rawValue = r.value();
+            String encoding = rawValue != null ? detectEncoding(rawValue) : "utf8";
+            String value = rawValue != null ? encodeValue(rawValue, encoding) : null;
+            List<PeekMessage.HeaderEntry> headers = new ArrayList<>();
+            r.headers().forEach(h -> headers.add(
+                    new PeekMessage.HeaderEntry(h.key(),
+                            h.value() != null ? new String(h.value(), StandardCharsets.UTF_8) : null)));
+            messages.add(new PeekMessage(
+                    r.partition(),
+                    r.offset(),
+                    Instant.ofEpochMilli(r.timestamp()).toString(),
+                    r.key(),
+                    value,
+                    encoding,
+                    headers));
+        });
+        messages.sort((a, b) -> a.timestamp().compareTo(b.timestamp()));
+        return messages;
     }
 
     private static String detectEncoding(byte[] bytes) {
@@ -270,20 +280,5 @@ public class BrokerController {
             return Base64.getEncoder().encodeToString(bytes);
         }
         return new String(bytes, StandardCharsets.UTF_8);
-    }
-
-    @ExceptionHandler(IllegalArgumentException.class)
-    public ResponseEntity<String> handleBadRequest(IllegalArgumentException ex) {
-        return ResponseEntity.badRequest().body(ex.getMessage());
-    }
-
-    @ExceptionHandler(IllegalStateException.class)
-    public ResponseEntity<String> handleConflict(IllegalStateException ex) {
-        return ResponseEntity.status(409).body(ex.getMessage());
-    }
-
-    @ExceptionHandler(SQLException.class)
-    public ResponseEntity<String> handleSqlError(SQLException ex) {
-        return ResponseEntity.internalServerError().body("Database error: " + ex.getMessage());
     }
 }

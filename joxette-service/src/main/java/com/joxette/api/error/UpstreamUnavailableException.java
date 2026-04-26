@@ -18,7 +18,20 @@ public class UpstreamUnavailableException extends JoxetteException {
         return new UpstreamUnavailableException("Broker unavailable: " + brokerId, cause);
     }
 
+    public static UpstreamUnavailableException brokerTimeout(String brokerId) {
+        return new UpstreamUnavailableException("Broker did not respond in time: " + brokerId);
+    }
+
     public static UpstreamUnavailableException objectStore(String detail, Throwable cause) {
         return new UpstreamUnavailableException("Object store unavailable: " + detail, cause);
+    }
+
+    public static UpstreamUnavailableException objectStoreNotConfigured() {
+        return new UpstreamUnavailableException(
+                "Object store not configured — set joxette.object-store.bucket to enable exports");
+    }
+
+    public static UpstreamUnavailableException database(String detail, Throwable cause) {
+        return new UpstreamUnavailableException("Database unavailable: " + detail, cause);
     }
 }

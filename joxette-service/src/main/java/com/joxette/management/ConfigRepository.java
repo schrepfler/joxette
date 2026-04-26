@@ -591,8 +591,8 @@ public class ConfigRepository {
 
     private static void validateMode(String mode) {
         if (!VALID_MODES.contains(mode)) {
-            throw new IllegalArgumentException(
-                    "Invalid mode '%s': must be one of %s".formatted(mode, VALID_MODES));
+            throw com.joxette.api.error.ValidationException.field("mode",
+                    "must be one of %s (got '%s')".formatted(VALID_MODES, mode));
         }
     }
 
@@ -600,8 +600,8 @@ public class ConfigRepository {
 
     private static void validateMatcherSource(String idSource) {
         if (!VALID_ID_SOURCES.contains(idSource)) {
-            throw new IllegalArgumentException(
-                    "Invalid id_source '%s': must be one of %s".formatted(idSource, VALID_ID_SOURCES));
+            throw com.joxette.api.error.ValidationException.field("id_source",
+                    "must be one of %s (got '%s')".formatted(VALID_ID_SOURCES, idSource));
         }
     }
 }

@@ -19,7 +19,6 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.NoSuchElementException;
 import java.util.Optional;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
@@ -266,12 +265,13 @@ public class CassetteLifecycleService {
         validateSnapshotName(name);
         Path snapshotDir = snapshotsBase.resolve(name);
         if (Files.exists(snapshotDir)) {
-            throw new IllegalArgumentException("Snapshot '" + name + "' already exists");
+            throw com.joxette.api.error.ConflictException.snapshotAlreadyExists(name);
         }
         try {
             Files.createDirectories(snapshotsBase);
         } catch (IOException e) {
-            throw new RuntimeException("Cannot create snapshots directory: " + snapshotsBase, e);
+            throw com.joxette.api.error.UpstreamUnavailableException.objectStore(
+                    "Cannot create snapshots directory: " + snapshotsBase, e);
         }
         log.info("Creating snapshot '{}' at {}", name, snapshotDir);
         synchronized (duckDB) {
@@ -321,7 +321,7 @@ public class CassetteLifecycleService {
         validateSnapshotName(name);
         Path snapshotDir = snapshotsBase.resolve(name);
         if (!Files.exists(snapshotDir)) {
-            throw new NoSuchElementException("Snapshot not found: " + name);
+            throw com.joxette.api.error.ResourceNotFoundException.snapshot(name);
         }
         log.warn("Restoring snapshot '{}' from {} — all existing tables will be replaced", name, snapshotDir);
         synchronized (duckDB) {
@@ -345,8 +345,7 @@ public class CassetteLifecycleService {
      */
     public ObjectStoreSnapshotInfo exportSnapshotToObjectStore(String name) throws SQLException {
         if (s3Client == null) {
-            throw new IllegalStateException(
-                    "Object store not configured — set joxette.object-store.bucket to enable exports");
+            throw com.joxette.api.error.UpstreamUnavailableException.objectStoreNotConfigured();
         }
         // Create the local snapshot first (validates name, runs EXPORT DATABASE, inserts metadata row).
         SnapshotInfo snapshot = createSnapshot(name);
@@ -361,7 +360,8 @@ public class CassetteLifecycleService {
         try (Stream<Path> walk = Files.walk(snapshotDir)) {
             files = walk.filter(Files::isRegularFile).toList();
         } catch (IOException e) {
-            throw new RuntimeException("Cannot read snapshot directory: " + snapshotDir, e);
+            throw com.joxette.api.error.UpstreamUnavailableException.objectStore(
+                    "Cannot read snapshot directory: " + snapshotDir, e);
         }
 
         log.info("Uploading snapshot '{}' to s3://{}/{} ({} files)", name, os.getBucket(), keyPrefix, files.size());
@@ -710,8 +710,8 @@ public class CassetteLifecycleService {
 
     private static void validateSnapshotName(String name) {
         if (name == null || !SNAPSHOT_NAME.matcher(name).matches()) {
-            throw new IllegalArgumentException(
-                    "Invalid snapshot name '%s': must match [a-zA-Z0-9_-]+".formatted(name));
+            throw com.joxette.api.error.ValidationException.field("name",
+                    "must match [a-zA-Z0-9_-]+ (got '%s')".formatted(name));
         }
     }
 

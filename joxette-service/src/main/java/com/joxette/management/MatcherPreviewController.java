@@ -1,8 +1,10 @@
 package com.joxette.management;
 
+import com.joxette.api.error.ValidationException;
 import com.joxette.replay.EntityIdExtractor;
 import com.joxette.replay.KafkaMessage;
-import org.springframework.http.ResponseEntity;
+import jakarta.validation.Valid;
+import jakarta.validation.constraints.NotBlank;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -11,10 +13,13 @@ import org.springframework.web.bind.annotation.RestController;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 @RestController
 @RequestMapping("/matchers")
 public class MatcherPreviewController {
+
+    private static final Set<String> VALID_ID_SOURCES = Set.of("key", "value", "header");
 
     private final EntityIdExtractor extractor;
 
@@ -28,35 +33,31 @@ public class MatcherPreviewController {
         String key,
         String value,
         List<HeaderDto> headers,
-        String idSource,
-        String idExpression
+        @NotBlank String idSource,
+        @NotBlank String idExpression
     ) {}
 
-    record PreviewResponse(boolean matched, String entityId, String error) {}
+    record PreviewResponse(boolean matched, String entityId) {}
 
     @PostMapping("/preview")
-    public ResponseEntity<PreviewResponse> preview(@RequestBody PreviewRequest req) {
-        if (!List.of("key", "value", "header").contains(req.idSource())) {
-            return ResponseEntity.ok(new PreviewResponse(false, null,
-                "Invalid idSource: must be key, value, or header"));
+    public PreviewResponse preview(@Valid @RequestBody PreviewRequest req) {
+        if (!VALID_ID_SOURCES.contains(req.idSource())) {
+            throw ValidationException.field("idSource",
+                    "must be one of %s (got '%s')".formatted(VALID_ID_SOURCES, req.idSource()));
         }
-        try {
-            byte[] valueBytes = req.value() != null
-                ? req.value().getBytes(StandardCharsets.UTF_8)
-                : null;
-            List<KafkaMessage.Header> headers = req.headers() == null ? List.of() :
-                req.headers().stream()
-                    .map(h -> new KafkaMessage.Header(h.key(),
-                        h.value() != null ? h.value().getBytes(StandardCharsets.UTF_8) : new byte[0]))
-                    .toList();
-            KafkaMessage msg = new KafkaMessage(
-                "preview", 0, 0, System.currentTimeMillis(),
-                req.key(), valueBytes, headers
-            );
-            Optional<String> result = extractor.extract(msg, req.idSource(), req.idExpression());
-            return ResponseEntity.ok(new PreviewResponse(result.isPresent(), result.orElse(null), null));
-        } catch (Exception e) {
-            return ResponseEntity.ok(new PreviewResponse(false, null, e.getMessage()));
-        }
+        byte[] valueBytes = req.value() != null
+            ? req.value().getBytes(StandardCharsets.UTF_8)
+            : null;
+        List<KafkaMessage.Header> headers = req.headers() == null ? List.of() :
+            req.headers().stream()
+                .map(h -> new KafkaMessage.Header(h.key(),
+                    h.value() != null ? h.value().getBytes(StandardCharsets.UTF_8) : new byte[0]))
+                .toList();
+        KafkaMessage msg = new KafkaMessage(
+            "preview", 0, 0, System.currentTimeMillis(),
+            req.key(), valueBytes, headers
+        );
+        Optional<String> result = extractor.extract(msg, req.idSource(), req.idExpression());
+        return new PreviewResponse(result.isPresent(), result.orElse(null));
     }
 }

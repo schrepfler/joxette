@@ -275,11 +275,11 @@ class EntityReplayServiceTest {
     @Test
     void validateEntityType_rejectsInvalidPattern() {
         assertThatThrownBy(() -> EntityReplayService.validateEntityType("UPPER"))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(com.joxette.api.error.ValidationException.class);
         assertThatThrownBy(() -> EntityReplayService.validateEntityType("1bad"))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(com.joxette.api.error.ValidationException.class);
         assertThatThrownBy(() -> EntityReplayService.validateEntityType(null))
-                .isInstanceOf(IllegalArgumentException.class);
+                .isInstanceOf(com.joxette.api.error.ValidationException.class);
     }
 
     @Test

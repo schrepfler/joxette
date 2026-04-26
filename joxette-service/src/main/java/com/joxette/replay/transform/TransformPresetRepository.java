@@ -2,6 +2,9 @@ package com.joxette.replay.transform;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.joxette.api.error.ConflictException;
+import com.joxette.api.error.ResourceNotFoundException;
+import com.joxette.api.error.ValidationException;
 import com.joxette.replay.transform.gap.FragmentDefinition;
 import org.jooq.DSLContext;
 import org.jooq.Field;
@@ -14,7 +17,6 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
-import java.util.NoSuchElementException;
 import java.util.Optional;
 
 /**
@@ -64,15 +66,14 @@ public class TransformPresetRepository {
     /**
      * Creates a new preset.
      *
-     * @throws IllegalArgumentException if a preset with this name already exists
-     * @throws JsonProcessingException  if {@code steps} cannot be serialised
+     * @throws ConflictException   if a preset with this name already exists
+     * @throws ValidationException if {@code steps} cannot be serialised
      */
-    public TransformPreset create(String name, String description, List<TransformStep> steps)
-            throws JsonProcessingException {
+    public TransformPreset create(String name, String description, List<TransformStep> steps) {
         if (findByName(name).isPresent()) {
-            throw new IllegalArgumentException("Transform preset already exists: " + name);
+            throw new ConflictException("Transform preset already exists: " + name);
         }
-        String stepsJson = objectMapper.writeValueAsString(steps);
+        String stepsJson = serializeSteps(steps);
         OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
         dsl.insertInto(TBL)
                 .columns(F_NAME, F_DESC, F_STEPS, F_CREATED, F_UPDATED)
@@ -84,15 +85,14 @@ public class TransformPresetRepository {
     /**
      * Updates an existing preset's description and steps.
      *
-     * @throws NoSuchElementException  if no preset with this name exists
-     * @throws JsonProcessingException if {@code steps} cannot be serialised
+     * @throws ResourceNotFoundException if no preset with this name exists
+     * @throws ValidationException       if {@code steps} cannot be serialised
      */
-    public TransformPreset update(String name, String description, List<TransformStep> steps)
-            throws JsonProcessingException {
+    public TransformPreset update(String name, String description, List<TransformStep> steps) {
         if (findByName(name).isEmpty()) {
-            throw new NoSuchElementException("Transform preset not found: " + name);
+            throw ResourceNotFoundException.transformPreset(name);
         }
-        String stepsJson = objectMapper.writeValueAsString(steps);
+        String stepsJson = serializeSteps(steps);
         OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
         dsl.update(TBL)
                 .set(F_DESC,    description)
@@ -101,6 +101,14 @@ public class TransformPresetRepository {
                 .where(F_NAME.eq(name))
                 .execute();
         return findByName(name).orElseThrow();
+    }
+
+    private String serializeSteps(List<TransformStep> steps) {
+        try {
+            return objectMapper.writeValueAsString(steps);
+        } catch (JsonProcessingException e) {
+            throw new ValidationException("Transform steps could not be serialised: " + e.getOriginalMessage());
+        }
     }
 
     /**

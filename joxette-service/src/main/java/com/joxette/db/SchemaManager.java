@@ -496,8 +496,8 @@ public class SchemaManager {
      */
     public static void validateEntityType(String type) {
         if (type == null || !type.matches("[a-z][a-z0-9_]*")) {
-            throw new IllegalArgumentException(
-                "Invalid entity type name '%s': must match [a-z][a-z0-9_]*".formatted(type));
+            throw com.joxette.api.error.ValidationException.field("entityType",
+                "must match [a-z][a-z0-9_]* (got '%s')".formatted(type));
         }
     }
 
