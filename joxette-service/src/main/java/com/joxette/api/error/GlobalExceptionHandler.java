@@ -22,6 +22,8 @@ import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExcep
 
 import java.sql.SQLException;
 import java.time.Instant;
+import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
@@ -79,14 +81,25 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     @Override
     protected ResponseEntity<Object> handleMethodArgumentNotValid(
             MethodArgumentNotValidException ex, HttpHeaders headers, HttpStatusCode status, WebRequest request) {
-        String detail = ex.getBindingResult().getFieldErrors().stream()
-                .map(fe -> fe.getField() + ": " + (fe.getDefaultMessage() == null ? "invalid" : fe.getDefaultMessage()))
+        List<Map<String, String>> fieldErrors = ex.getBindingResult().getFieldErrors().stream()
+                .map(fe -> Map.of(
+                        "field", fe.getField(),
+                        "message", fe.getDefaultMessage() == null ? "invalid" : fe.getDefaultMessage()))
+                .toList();
+        String detail = fieldErrors.stream()
+                .map(m -> m.get("field") + ": " + m.get("message"))
                 .collect(Collectors.joining("; "));
         if (detail.isEmpty()) {
             detail = "Request body failed validation";
         }
-        return buildFrameworkProblem(HttpStatus.BAD_REQUEST, ErrorTypes.VALIDATION, "Validation Failed",
-                detail, ErrorCodes.VALIDATION, request);
+        ProblemDetail body = ProblemDetail.forStatusAndDetail(HttpStatus.BAD_REQUEST, detail);
+        body.setType(ErrorTypes.VALIDATION);
+        body.setTitle("Validation Failed");
+        decorate(body, ErrorCodes.VALIDATION, pathOf(request));
+        if (!fieldErrors.isEmpty()) {
+            body.setProperty("errors", fieldErrors);
+        }
+        return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(body);
     }
 
     @Override

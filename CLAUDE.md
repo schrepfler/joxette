@@ -503,6 +503,28 @@ Headers with binary values are base64-encoded in JSON responses.
 
 ---
 
+## Error Handling
+
+All REST endpoints return errors as **RFC 7807 `application/problem+json`**
+bodies with a stable set of extension fields (`errorCode`, `timestamp`,
+`path`, and optional `traceId`). Validation failures also carry a per-field
+`errors` extension. Streaming responses (SSE, NDJSON) that fail mid-stream
+emit a terminal error frame mirroring the same payload shape — an SSE
+`event: error` or an NDJSON `{"_error":{…}}` line.
+
+Domain code throws typed subclasses of
+`com.joxette.api.error.JoxetteException` (e.g. `ResourceNotFoundException`,
+`ConflictException`, `UpstreamUnavailableException`,
+`InvalidCursorException`). `com.joxette.api.error.GlobalExceptionHandler`
+renders them into ProblemDetail bodies, so controllers never catch and
+translate.
+
+For the full contract, the error code catalog, the streaming error format,
+and instructions for adding a new typed exception, see
+[`docs/error-handling.md`](docs/error-handling.md).
+
+---
+
 ## Service Architecture
 
 ```
