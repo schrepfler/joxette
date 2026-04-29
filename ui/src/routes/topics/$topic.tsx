@@ -8,7 +8,7 @@ import {
 } from '@tanstack/react-table'
 import { useForm } from '@tanstack/react-form'
 import { useState, useRef, useEffect, type CSSProperties } from 'react'
-import { VisualJson, TreeView, type JsonValue } from '@visual-json/react'
+import ReactJson from '@microlink/react-json-view'
 import {
   topicsApi,
   brokersApi,
@@ -44,7 +44,7 @@ function tryDecodeBase64(s: string): string | null {
   }
 }
 
-function tryParseValue(s: string | null): { parsed: JsonValue; raw: string } | null {
+function tryParseValue(s: string | null): { parsed: unknown; raw: string } | null {
   if (!s) return null
   try { return { parsed: JSON.parse(s) as JsonValue, raw: s } } catch { /* continue */ }
   const decoded = tryDecodeBase64(s)
@@ -104,10 +104,17 @@ function ValueCell({ raw }: { raw: string | null }) {
         {open ? (result.raw !== raw ? 'JSON — base64 decoded' : 'JSON') : decodedPreview}
       </button>
       {open && (
-        <div style={vjTheme}>
-          <VisualJson value={result.parsed}>
-            <TreeView showValues showCounts />
-          </VisualJson>
+        <div style={rjvWrap}>
+          <ReactJson
+            src={result.parsed as object}
+            name={null}
+            collapsed={2}
+            displayDataTypes={false}
+            displayObjectSize={false}
+            enableClipboard={false}
+            style={rjvStyle}
+            theme="flat"
+          />
         </div>
       )}
     </div>
@@ -1179,35 +1186,17 @@ if (typeof document !== 'undefined' && !document.getElementById('jx-overlay-anim
 // of the module graph during TS strict checks.
 void StatusDot
 
-// ── @visual-json/react theme — mapped to Joxette design tokens ──────────────
-const vjTheme: React.CSSProperties = {
+// ── @microlink/react-json-view wrapper ───────────────────────────────────────
+const rjvWrap: React.CSSProperties = {
   marginTop: 10,
   borderRadius: 'var(--radius-sm)',
   overflow: 'hidden',
   border: '1px solid var(--rule-strong)',
-  background: 'var(--surface-sunken)',
-  padding: 4,
+}
 
-  ['--vj-bg' as string]: 'var(--surface-sunken)',
-  ['--vj-text' as string]: 'var(--ink-primary)',
-  ['--vj-text-muted' as string]: 'var(--ink-secondary)',
-  ['--vj-text-selected' as string]: 'var(--ink-primary)',
-  ['--vj-bg-hover' as string]: 'var(--surface-raised)',
-  ['--vj-bg-selected' as string]: 'var(--accent-wash)',
-  ['--vj-bg-selected-muted' as string]: 'var(--accent-wash)',
-  ['--vj-bg-match' as string]: 'color-mix(in oklab, var(--signal-warn) 30%, transparent)',
-  ['--vj-bg-match-active' as string]: 'color-mix(in oklab, var(--signal-warn) 55%, transparent)',
-  ['--vj-btn-bg' as string]: 'var(--surface-raised)',
-  ['--vj-btn-text' as string]: 'var(--ink-primary)',
-  ['--vj-btn-bg-hover' as string]: 'var(--surface-paper)',
-  ['--vj-menu-bg' as string]: 'var(--surface-raised)',
-  ['--vj-menu-text' as string]: 'var(--ink-primary)',
-  ['--vj-menu-bg-hover' as string]: 'var(--surface-paper)',
-  ['--vj-menu-text-hover' as string]: 'var(--ink-primary)',
-  ['--vj-menu-border' as string]: 'var(--rule-strong)',
-  ['--vj-menu-shadow' as string]: '0 14px 32px rgba(10, 8, 6, 0.18)',
-  ['--vj-accent' as string]: 'var(--accent)',
-  ['--vj-string' as string]: 'var(--signal-live)',
-  ['--vj-number' as string]: 'var(--accent)',
-  ['--vj-font' as string]: 'var(--font-mono)',
+const rjvStyle: React.CSSProperties = {
+  fontFamily: 'var(--font-mono)',
+  fontSize: 'var(--type-mono-size)',
+  padding: '8px 12px',
+  background: 'var(--surface-sunken)',
 }

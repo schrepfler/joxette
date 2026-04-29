@@ -24,7 +24,7 @@ import {
   useMemo,
   type ReactNode,
 } from 'react'
-import { VisualJson, TreeView, useStudio, type JsonValue } from '@visual-json/react'
+import ReactJson from '@microlink/react-json-view'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -76,12 +76,12 @@ function tryDecodeBase64(s: string): string | null {
   }
 }
 
-function tryParseJson(s: string | null): { parsed: JsonValue; raw: string } | null {
+function tryParseJson(s: string | null): { parsed: unknown; raw: string } | null {
   if (!s) return null
-  try { return { parsed: JSON.parse(s) as JsonValue, raw: s } } catch { /* */ }
+  try { return { parsed: JSON.parse(s) as unknown, raw: s } } catch { /* */ }
   const decoded = tryDecodeBase64(s)
   if (decoded) {
-    try { return { parsed: JSON.parse(decoded) as JsonValue, raw: decoded } } catch { /* */ }
+    try { return { parsed: JSON.parse(decoded) as unknown, raw: decoded } } catch { /* */ }
   }
   return null
 }
@@ -626,13 +626,6 @@ function TimelineCanvas({ records, selectedIdx, colorKeys, onSelect, fitKey }: T
   )
 }
 
-// ─── ExpandAll helper (must be rendered inside VisualJson context) ─────────────
-
-function ExpandAll() {
-  const { actions } = useStudio()
-  useEffect(() => { actions.expandAll() }, [actions])
-  return null
-}
 
 // ─── JSON Detail Panel ────────────────────────────────────────────────────────
 
@@ -661,11 +654,17 @@ function DetailPanel({ record }: { record: TimelineRecord | null }) {
 
       {/* Value */}
       {parsed ? (
-        <div style={VJ_THEME}>
-          <VisualJson value={parsed.parsed}>
-            <ExpandAll />
-            <TreeView showValues showCounts />
-          </VisualJson>
+        <div style={rjvWrap}>
+          <ReactJson
+            src={parsed.parsed as object}
+            name={null}
+            collapsed={false}
+            displayDataTypes={false}
+            displayObjectSize={false}
+            enableClipboard={false}
+            style={rjvStyle}
+            theme="flat"
+          />
         </div>
       ) : record.value ? (
         <pre style={{
@@ -928,30 +927,15 @@ const selectStyle: React.CSSProperties = {
   cursor: 'pointer',
 }
 
-const VJ_THEME: React.CSSProperties = {
-  borderRadius: 6,
+const rjvWrap: React.CSSProperties = {
+  borderRadius: 'var(--radius-sm)',
   overflow: 'hidden',
-  border: '1px solid #cbd5e0',
-  ['--vj-bg' as string]: '#f7fafc',
-  ['--vj-text' as string]: '#1a202c',
-  ['--vj-text-muted' as string]: '#4a5568',
-  ['--vj-text-selected' as string]: '#1a202c',
-  ['--vj-bg-hover' as string]: '#ebf8ff',
-  ['--vj-bg-selected' as string]: '#bee3f8',
-  ['--vj-bg-selected-muted' as string]: '#e6f6ff',
-  ['--vj-bg-match' as string]: '#fefcbf',
-  ['--vj-bg-match-active' as string]: '#f6e05e',
-  ['--vj-btn-bg' as string]: '#ffffff',
-  ['--vj-btn-text' as string]: '#2d3748',
-  ['--vj-btn-bg-hover' as string]: '#edf2f7',
-  ['--vj-menu-bg' as string]: '#ffffff',
-  ['--vj-menu-text' as string]: '#1a202c',
-  ['--vj-menu-bg-hover' as string]: '#edf2f7',
-  ['--vj-menu-text-hover' as string]: '#1a202c',
-  ['--vj-menu-border' as string]: '#e2e8f0',
-  ['--vj-menu-shadow' as string]: '0 4px 16px rgba(0,0,0,0.12)',
-  ['--vj-accent' as string]: '#3182ce',
-  ['--vj-string' as string]: '#276749',
-  ['--vj-number' as string]: '#2b6cb0',
-  ['--vj-font' as string]: '"Manrope", ui-sans-serif, system-ui, sans-serif',
+  border: '1px solid var(--rule-strong)',
+}
+
+const rjvStyle: React.CSSProperties = {
+  fontFamily: 'var(--font-mono)',
+  fontSize: 'var(--type-mono-size)',
+  padding: '8px 12px',
+  background: 'var(--surface-sunken)',
 }

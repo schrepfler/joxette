@@ -7,7 +7,7 @@ import {
   createColumnHelper,
 } from '@tanstack/react-table'
 import { useState, useRef, useEffect } from 'react'
-import { VisualJson, TreeView, type JsonValue } from '@visual-json/react'
+import ReactJson from '@microlink/react-json-view'
 import { cassettesApi, streamEntityRecords, type EntityRecord, type Order, type StreamMode, type EntityStreamParams } from '../../../api/client'
 import { Layout } from '../../../components/Layout'
 import { LoadingSpinner } from '../../../components/LoadingSpinner'
@@ -43,7 +43,7 @@ function tryDecodeBase64(s: string): string | null {
   }
 }
 
-function tryParseValue(s: string | null): { parsed: JsonValue; raw: string } | null {
+function tryParseValue(s: string | null): { parsed: unknown; raw: string } | null {
   if (!s) return null
   try { return { parsed: JSON.parse(s) as JsonValue, raw: s } } catch { /* continue */ }
   const decoded = tryDecodeBase64(s)
@@ -81,10 +81,17 @@ function ValueCell({ raw }: { raw: string | null }) {
         {open ? (result.raw !== raw ? 'JSON (base64-decoded)' : 'JSON') : decodedPreview}
       </span>
       {open && (
-        <div style={vjTheme}>
-          <VisualJson value={result.parsed}>
-            <TreeView showValues showCounts />
-          </VisualJson>
+        <div style={rjvWrap}>
+          <ReactJson
+            src={result.parsed as object}
+            name={null}
+            collapsed={2}
+            displayDataTypes={false}
+            displayObjectSize={false}
+            enableClipboard={false}
+            style={rjvStyle}
+            theme="flat"
+          />
         </div>
       )}
     </div>
@@ -567,38 +574,17 @@ const tableStyle: React.CSSProperties = { width: '100%', borderCollapse: 'collap
 const thStyle: React.CSSProperties = { textAlign: 'left', padding: '0.5rem 0.6rem', background: '#edf2f7', fontWeight: 600, color: '#4a5568', borderBottom: '1px solid #e2e8f0' }
 const tdStyle: React.CSSProperties = { padding: '0.45rem 0.6rem', borderBottom: '1px solid #e2e8f0' }
 
-// ── @visual-json/react theme ───────────────────────────────────────────────────
-const vjTheme: React.CSSProperties = {
+// ── @microlink/react-json-view wrapper ───────────────────────────────────────
+const rjvWrap: React.CSSProperties = {
   marginTop: 4,
-  borderRadius: 6,
+  borderRadius: 'var(--radius-sm)',
   overflow: 'hidden',
-  border: '1px solid #cbd5e0',
-  // Base colours
-  ['--vj-bg' as string]: '#f7fafc',
-  ['--vj-text' as string]: '#1a202c',
-  ['--vj-text-muted' as string]: '#4a5568',
-  // Selected row: light blue + dark text
-  ['--vj-text-selected' as string]: '#1a202c',
-  ['--vj-bg-hover' as string]: '#ebf8ff',
-  ['--vj-bg-selected' as string]: '#bee3f8',
-  ['--vj-bg-selected-muted' as string]: '#e6f6ff',
-  // Search/match highlights
-  ['--vj-bg-match' as string]: '#fefcbf',
-  ['--vj-bg-match-active' as string]: '#f6e05e',
-  // Inline button bar (copy/expand)
-  ['--vj-btn-bg' as string]: '#ffffff',
-  ['--vj-btn-text' as string]: '#2d3748',
-  ['--vj-btn-bg-hover' as string]: '#edf2f7',
-  // Popup / context menu
-  ['--vj-menu-bg' as string]: '#ffffff',
-  ['--vj-menu-text' as string]: '#1a202c',
-  ['--vj-menu-bg-hover' as string]: '#edf2f7',
-  ['--vj-menu-text-hover' as string]: '#1a202c',
-  ['--vj-menu-border' as string]: '#e2e8f0',
-  ['--vj-menu-shadow' as string]: '0 4px 16px rgba(0,0,0,0.12)',
-  // Accent & value colours
-  ['--vj-accent' as string]: '#3182ce',
-  ['--vj-string' as string]: '#276749',
-  ['--vj-number' as string]: '#2b6cb0',
-  ['--vj-font' as string]: '"Manrope", ui-sans-serif, system-ui, sans-serif',
+  border: '1px solid var(--rule-strong)',
+}
+
+const rjvStyle: React.CSSProperties = {
+  fontFamily: 'var(--font-mono)',
+  fontSize: 'var(--type-mono-size)',
+  padding: '8px 12px',
+  background: 'var(--surface-sunken)',
 }

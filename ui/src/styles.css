@@ -59,11 +59,6 @@
   --hero-b:          color-mix(in oklab, var(--ink-primary) 4%, transparent);
 }
 
-:root {
-  --vj-bg-panel: var(--surface-raised);
-  --vj-border:   var(--rule-strong);
-  --vj-text:     var(--ink-primary);
-}
 
 * {
   box-sizing: border-box;
