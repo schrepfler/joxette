@@ -6,12 +6,14 @@ export function ErrorMessage({ message }: ErrorMessageProps) {
   return (
     <div
       style={{
-        background: '#fff5f5',
-        border: '1px solid #fc8181',
-        borderRadius: 6,
-        padding: '0.75rem 1rem',
-        color: '#c53030',
-        marginBottom: '1rem',
+        background: '#fee2e2',
+        border: '1px solid var(--signal-error)',
+        borderRadius: 'var(--radius-sm)',
+        padding: '10px 14px',
+        color: 'var(--signal-error-ink)',
+        marginBottom: 16,
+        fontFamily: 'var(--font-body)',
+        fontSize: 'var(--type-body-sm-size)',
       }}
     >
       <strong>Error:</strong> {message}

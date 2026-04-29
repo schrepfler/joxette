@@ -1,123 +1,131 @@
 /* ─────────────────────────────────────────────────────────────────────────
    Joxette design tokens.
 
-   Calm, deliberate, unshowy. Paper-toned base, deep oxblood accent, one
-   confident voice. Every surface, every weight, every duration is a
-   considered choice — not a default.
+   Light-first. Navy for structure, CTA blue for action, white for content.
+   Every surface, weight, and duration is a considered choice.
 
    Consumption:
      - CSS: use var(--token-name) directly.
-     - Tailwind v4: tokens are mirrored into `@theme` in styles.css and
-       exposed as bg-surface-paper, text-ink-primary, font-display etc.
-
-   Shape and motion tokens are *semantic*, not cosmetic. Prefer semantic
-   tokens (ink-primary, surface-raised, accent) over literal values.
-   Literals live only in this file.
+     - Tailwind v4: tokens are mirrored into `@theme` in styles.css.
    ───────────────────────────────────────────────────────────────────────── */
 
-@import "@fontsource-variable/fraunces/index.css";
-@import "@fontsource-variable/figtree/index.css";
-@import "@fontsource-variable/jetbrains-mono/index.css";
+@import "@fontsource-variable/montserrat/index.css";
+@import "@fontsource-variable/dm-sans/index.css";
+@import "@fontsource/dm-mono/index.css";
 
 :root {
   /* ── type families ─────────────────────────────────────────────────── */
-  --font-display: "Fraunces Variable", "Fraunces", Georgia, "Times New Roman", serif;
-  --font-body:    "Figtree Variable", "Figtree", ui-sans-serif, -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
-  --font-mono:    "JetBrains Mono Variable", "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --font-display: "Montserrat Variable", "Montserrat", ui-sans-serif, sans-serif;
+  --font-body:    "DM Sans Variable", "DM Sans", ui-sans-serif, -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+  --font-mono:    "DM Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 
-  /* ── type scale ────────────────────────────────────────────────────────
-     Each step carries its own tracking and leading. Sizes use clamp()
-     where responsiveness matters. No hierarchy relies on weight alone. */
-  --type-display-size:    clamp(2.25rem, 1.3rem + 2.8vw, 3.5rem);
-  --type-display-leading: 1.04;
-  --type-display-tracking: -0.022em;
-  --type-display-weight:   420;
+  /* ── type scale ──────────────────────────────────────────────────────── */
+  --type-display-size:    clamp(2.5rem, 1.5rem + 3vw, 3.75rem);
+  --type-display-leading: 1.2;
+  --type-display-tracking: 0.08em;
+  --type-display-weight:   800;
 
-  --type-h1-size:     clamp(1.625rem, 1.1rem + 1.6vw, 2.125rem);
-  --type-h1-leading:  1.14;
-  --type-h1-tracking: -0.012em;
-  --type-h1-weight:   500;
+  --type-h1-size:     clamp(1.75rem, 1.2rem + 1.8vw, 3rem);
+  --type-h1-leading:  1.2;
+  --type-h1-tracking: -0.02em;
+  --type-h1-weight:   600;
 
-  --type-h2-size:     1.375rem;
-  --type-h2-leading:  1.22;
-  --type-h2-tracking: -0.008em;
-  --type-h2-weight:   520;
+  --type-h2-size:     2.25rem;
+  --type-h2-leading:  1.2;
+  --type-h2-tracking: -0.02em;
+  --type-h2-weight:   600;
 
-  --type-h3-size:     1.0625rem;
+  --type-h3-size:     1.5rem;
   --type-h3-leading:  1.35;
-  --type-h3-tracking: 0em;
-  --type-h3-weight:   620;
+  --type-h3-tracking: -0.02em;
+  --type-h3-weight:   600;
 
-  --type-body-lg-size:     1.0625rem;
-  --type-body-lg-leading:  1.58;
+  --type-h4-size:     1.125rem;
+  --type-h4-leading:  1.35;
+  --type-h4-tracking: 0em;
+  --type-h4-weight:   600;
+
+  --type-body-lg-size:     1.125rem;
+  --type-body-lg-leading:  1.65;
   --type-body-lg-tracking: 0em;
-  --type-body-lg-weight:   420;
+  --type-body-lg-weight:   400;
 
-  --type-body-size:     0.9375rem;
-  --type-body-leading:  1.58;
-  --type-body-tracking: 0.002em;
-  --type-body-weight:   420;
+  --type-body-size:     1rem;
+  --type-body-leading:  1.65;
+  --type-body-tracking: 0em;
+  --type-body-weight:   400;
 
-  --type-caption-size:     0.8125rem;
+  --type-body-sm-size:     0.875rem;
+  --type-body-sm-leading:  1.5;
+  --type-body-sm-tracking: 0em;
+  --type-body-sm-weight:   400;
+
+  --type-caption-size:     0.75rem;
   --type-caption-leading:  1.5;
-  --type-caption-tracking: 0.008em;
-  --type-caption-weight:   500;
+  --type-caption-tracking: 0.04em;
+  --type-caption-weight:   400;
 
-  --type-micro-size:     0.6875rem;
-  --type-micro-leading:  1.4;
-  --type-micro-tracking: 0.14em;
-  --type-micro-weight:   640;
+  --type-micro-size:     0.75rem;
+  --type-micro-leading:  1.5;
+  --type-micro-tracking: 0.08em;
+  --type-micro-weight:   600;
 
-  --type-mono-size:     0.8125rem;
-  --type-mono-leading:  1.5;
+  --type-mono-size:     0.875rem;
+  --type-mono-leading:  1.65;
   --type-mono-tracking: 0em;
-  --type-mono-weight:   440;
+  --type-mono-weight:   400;
 
-  /* ── colour — LIGHT (warm paper) ───────────────────────────────────────
-     The page is cream, not white. Ink is warm charcoal, not black. The
-     accent is oxblood — single voice, load-bearing. Signal colours are
-     distinct enough to read at a glance but never exceed their remit. */
-  --surface-paper:   #F5EFE4;
-  --surface-sunken:  #ECE4D4;
-  --surface-raised:  #FBF7EE;
+  /* ── colour — LIGHT ──────────────────────────────────────────────────
+     Page is white. Content on neutral-gray. Navy anchors structure.
+     CTA blue is the sole interactive signal.                          */
+  --surface-paper:   #ffffff;
+  --surface-sunken:  #f3f4f6;
+  --surface-raised:  #f9fafb;
 
-  --ink-primary:     #1E1A14;
-  --ink-secondary:   #5A5249;
-  --ink-tertiary:    #8A8074;
+  --ink-primary:     #030712;
+  --ink-secondary:   #4b5563;
+  --ink-tertiary:    #9ca3af;
 
-  --accent:          #6E1C1C;
-  --accent-muted:    #9B3232;
-  --accent-ink:      #FBF7EE;
+  --accent:          #166DF8;
+  --accent-muted:    #1d4ed8;
+  --accent-ink:      #ffffff;
 
-  --rule:            rgba(30, 26, 20, 0.09);
-  --rule-strong:     rgba(30, 26, 20, 0.18);
+  --rule:            #e5e7eb;
+  --rule-strong:     #d1d5db;
 
-  --signal-live:     #3E6A44;
-  --signal-live-ink: #213824;
-  --signal-warn:     #A26612;
-  --signal-warn-ink: #5A3808;
-  --signal-error:    #8B2121;
-  --signal-error-ink:#4B1111;
+  --signal-live:     #16a34a;
+  --signal-live-ink: #14532d;
+  --signal-warn:     #f59e0b;
+  --signal-warn-ink: #92400e;
+  --signal-error:    #dc2626;
+  --signal-error-ink:#991b1b;
 
   --focus-ring:      color-mix(in oklab, var(--accent) 55%, transparent);
 
-  /* Composite shades used for ink-on-accent, hover tints, etc. */
-  --accent-wash:     color-mix(in oklab, var(--accent) 10%, var(--surface-paper));
+  --accent-wash:     color-mix(in oklab, var(--accent) 8%, var(--surface-paper));
   --ink-wash:        color-mix(in oklab, var(--ink-primary) 5%, var(--surface-paper));
 
-  /* ── motion ────────────────────────────────────────────────────────────
-     Slow and deliberate. Motion is punctuation, not decoration. */
+  /* ── nav — always navy, regardless of light/dark theme ──────────────
+     The sidebar is a structural element, not a content surface.      */
+  --nav-bg:          #0C1D42;
+  --nav-text:        #ffffff;
+  --nav-text-muted:  rgba(255, 255, 255, 0.65);
+  --nav-item-active: rgba(255, 255, 255, 0.12);
+  --nav-border:      rgba(255, 255, 255, 0.08);
+  --nav-accent:      #166DF8;
+
+  /* ── motion ──────────────────────────────────────────────────────────
+     150ms ease throughout per design spec.                           */
   --ease-out-soft:   cubic-bezier(0.22, 1, 0.36, 1);
   --ease-in-out-soft:cubic-bezier(0.65, 0.05, 0.35, 1);
   --ease-entrance:   cubic-bezier(0.16, 1, 0.3, 1);
 
-  --duration-instant: 120ms;
-  --duration-quick:   240ms;
-  --duration-default: 420ms;
-  --duration-slow:    680ms;
+  --duration-instant: 100ms;
+  --duration-quick:   150ms;
+  --duration-default: 250ms;
+  --duration-slow:    400ms;
 
-  /* ── spacing & metric ──────────────────────────────────────────────────
-     An 8px rhythm with a 4px half-step. Layout breathes on multiples. */
+  /* ── spacing — 8px grid ──────────────────────────────────────────── */
   --space-1:  4px;
   --space-2:  8px;
   --space-3:  12px;
@@ -130,79 +138,82 @@
 
   --hairline: 1px;
 
-  /* Keep a few narrow radii — this system is ruled, not rounded. */
-  --radius-xs: 2px;
-  --radius-sm: 3px;
-  --radius-md: 4px;
+  /* ── radii ───────────────────────────────────────────────────────── */
+  --radius-xs:   4px;      /* tags, code snippets, small chips */
+  --radius-sm:   6px;      /* buttons, form inputs (md in spec) */
+  --radius-md:   8px;      /* cards, panels (lg in spec) */
+  --radius-lg:   12px;     /* feature cards, modals (xl in spec) */
+  --radius-xl:   16px;     /* large stat panels (2xl in spec) */
+  --radius-full: 9999px;   /* pills, badges */
+
+  /* ── shadows ─────────────────────────────────────────────────────── */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.08);
+  --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.08);
+  --shadow-xl: 0 20px 25px rgba(0, 0, 0, 0.08);
 }
 
-/* ── colour — DARK (warm charcoal, not jet) ────────────────────────────────
-   Not an inversion. The dark palette is its own object: warmer blacks,
-   softer ink, accent saturation dialled down so it doesn't shout against
-   a dim background. */
+/* ── colour — DARK ───────────────────────────────────────────────────────── */
 :root[data-theme="dark"],
 :root.dark {
-  --surface-paper:   #1A1713;
-  --surface-sunken:  #14110E;
-  --surface-raised:  #221E18;
+  --surface-paper:   #111827;
+  --surface-sunken:  #0d1117;
+  --surface-raised:  #1f2937;
 
-  --ink-primary:     #ECE4D1;
-  --ink-secondary:   #B3A894;
-  --ink-tertiary:    #7A7160;
+  --ink-primary:     #f9fafb;
+  --ink-secondary:   #d1d5db;
+  --ink-tertiary:    #9ca3af;
 
-  --accent:          #C5585A;
-  --accent-muted:    #7E2A2C;
-  --accent-ink:      #1A1713;
+  --accent:          #60a5fa;
+  --accent-muted:    #3b82f6;
+  --accent-ink:      #030712;
 
-  --rule:            rgba(236, 228, 209, 0.10);
-  --rule-strong:     rgba(236, 228, 209, 0.20);
+  --rule:            rgba(255, 255, 255, 0.08);
+  --rule-strong:     rgba(255, 255, 255, 0.16);
 
-  --signal-live:     #7FB684;
-  --signal-live-ink: #B6D9B9;
-  --signal-warn:     #D59F4C;
-  --signal-warn-ink: #E8CA97;
-  --signal-error:    #E07070;
-  --signal-error-ink:#F2B9B9;
+  --signal-live:     #4ade80;
+  --signal-live-ink: #bbf7d0;
+  --signal-warn:     #fbbf24;
+  --signal-warn-ink: #fef3c7;
+  --signal-error:    #f87171;
+  --signal-error-ink:#fee2e2;
 
   --focus-ring:      color-mix(in oklab, var(--accent) 60%, transparent);
-
-  --accent-wash:     color-mix(in oklab, var(--accent) 14%, var(--surface-paper));
-  --ink-wash:        color-mix(in oklab, var(--ink-primary) 4%, var(--surface-paper));
+  --accent-wash:     color-mix(in oklab, var(--accent) 12%, var(--surface-paper));
+  --ink-wash:        color-mix(in oklab, var(--ink-primary) 6%, var(--surface-paper));
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]):not(.light) {
-    --surface-paper:   #1A1713;
-    --surface-sunken:  #14110E;
-    --surface-raised:  #221E18;
+    --surface-paper:   #111827;
+    --surface-sunken:  #0d1117;
+    --surface-raised:  #1f2937;
 
-    --ink-primary:     #ECE4D1;
-    --ink-secondary:   #B3A894;
-    --ink-tertiary:    #7A7160;
+    --ink-primary:     #f9fafb;
+    --ink-secondary:   #d1d5db;
+    --ink-tertiary:    #9ca3af;
 
-    --accent:          #C5585A;
-    --accent-muted:    #7E2A2C;
-    --accent-ink:      #1A1713;
+    --accent:          #60a5fa;
+    --accent-muted:    #3b82f6;
+    --accent-ink:      #030712;
 
-    --rule:            rgba(236, 228, 209, 0.10);
-    --rule-strong:     rgba(236, 228, 209, 0.20);
+    --rule:            rgba(255, 255, 255, 0.08);
+    --rule-strong:     rgba(255, 255, 255, 0.16);
 
-    --signal-live:     #7FB684;
-    --signal-live-ink: #B6D9B9;
-    --signal-warn:     #D59F4C;
-    --signal-warn-ink: #E8CA97;
-    --signal-error:    #E07070;
-    --signal-error-ink:#F2B9B9;
+    --signal-live:     #4ade80;
+    --signal-live-ink: #bbf7d0;
+    --signal-warn:     #fbbf24;
+    --signal-warn-ink: #fef3c7;
+    --signal-error:    #f87171;
+    --signal-error-ink:#fee2e2;
 
     --focus-ring:      color-mix(in oklab, var(--accent) 60%, transparent);
-
-    --accent-wash:     color-mix(in oklab, var(--accent) 14%, var(--surface-paper));
-    --ink-wash:        color-mix(in oklab, var(--ink-primary) 4%, var(--surface-paper));
+    --accent-wash:     color-mix(in oklab, var(--accent) 12%, var(--surface-paper));
+    --ink-wash:        color-mix(in oklab, var(--ink-primary) 6%, var(--surface-paper));
   }
 }
 
-/* ── reduced motion — collapse every duration to 'instant'. Never strip
-   transitions entirely; a 120ms fade still communicates state change. */
 @media (prefers-reduced-motion: reduce) {
   :root {
     --duration-quick:   var(--duration-instant);
@@ -211,20 +222,14 @@
   }
 }
 
-/* ── type utility classes ─────────────────────────────────────────────────
-   For places Tailwind utilities aren't clean. Keep these thin — do not
-   add visual properties here; visuals belong in component styles. */
-.type-display  { font-family: var(--font-display); font-weight: var(--type-display-weight); font-size: var(--type-display-size); line-height: var(--type-display-leading); letter-spacing: var(--type-display-tracking); }
-.type-h1       { font-family: var(--font-display); font-weight: var(--type-h1-weight);      font-size: var(--type-h1-size);      line-height: var(--type-h1-leading);      letter-spacing: var(--type-h1-tracking); }
-.type-h2       { font-family: var(--font-display); font-weight: var(--type-h2-weight);      font-size: var(--type-h2-size);      line-height: var(--type-h2-leading);      letter-spacing: var(--type-h2-tracking); }
+/* ── type utility classes ─────────────────────────────────────────────────── */
+.type-display  { font-family: var(--font-display); font-weight: var(--type-display-weight); font-size: var(--type-display-size); line-height: var(--type-display-leading); letter-spacing: var(--type-display-tracking); text-transform: uppercase; }
+.type-h1       { font-family: var(--font-body);    font-weight: var(--type-h1-weight);      font-size: var(--type-h1-size);      line-height: var(--type-h1-leading);      letter-spacing: var(--type-h1-tracking); }
+.type-h2       { font-family: var(--font-body);    font-weight: var(--type-h2-weight);      font-size: var(--type-h2-size);      line-height: var(--type-h2-leading);      letter-spacing: var(--type-h2-tracking); }
 .type-h3       { font-family: var(--font-body);    font-weight: var(--type-h3-weight);      font-size: var(--type-h3-size);      line-height: var(--type-h3-leading);      letter-spacing: var(--type-h3-tracking); }
 .type-body-lg  { font-family: var(--font-body);    font-weight: var(--type-body-lg-weight); font-size: var(--type-body-lg-size); line-height: var(--type-body-lg-leading); letter-spacing: var(--type-body-lg-tracking); }
 .type-body     { font-family: var(--font-body);    font-weight: var(--type-body-weight);    font-size: var(--type-body-size);    line-height: var(--type-body-leading);    letter-spacing: var(--type-body-tracking); }
+.type-body-sm  { font-family: var(--font-body);    font-weight: var(--type-body-sm-weight); font-size: var(--type-body-sm-size); line-height: var(--type-body-sm-leading); letter-spacing: var(--type-body-sm-tracking); }
 .type-caption  { font-family: var(--font-body);    font-weight: var(--type-caption-weight); font-size: var(--type-caption-size); line-height: var(--type-caption-leading); letter-spacing: var(--type-caption-tracking); }
 .type-micro    { font-family: var(--font-body);    font-weight: var(--type-micro-weight);   font-size: var(--type-micro-size);   line-height: var(--type-micro-leading);   letter-spacing: var(--type-micro-tracking); text-transform: uppercase; }
 .type-mono     { font-family: var(--font-mono);    font-weight: var(--type-mono-weight);    font-size: var(--type-mono-size);    line-height: var(--type-mono-leading);    letter-spacing: var(--type-mono-tracking); font-variant-numeric: tabular-nums; }
-
-/* Fraunces renders softer with optical sizing explicitly set. */
-.type-display, .type-h1, .type-h2 {
-  font-variation-settings: "opsz" 144, "SOFT" 50;
-}

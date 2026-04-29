@@ -14,6 +14,10 @@ import { ErrorMessage } from '../../components/ErrorMessage'
 import { ConfirmDialog } from '../../components/ConfirmDialog'
 import { useToast } from '../../components/Toast'
 import { AddTopicModal } from '../../components/AddTopicModal'
+import {
+  pageTitle, primaryBtnStyle, primaryBtnSmall, warnBtnSmall, dangerBtnSmall,
+  tableStyle, thStyle, tdStyle,
+} from '../../styles/shared'
 
 export const Route = createFileRoute('/topics/')({
   component: TopicsPage,
@@ -53,18 +57,25 @@ function TopicsPage() {
 
   const columns = [
     colHelper.accessor('topic', { header: 'Topic' }),
-    colHelper.accessor('mode', { header: 'Mode' }),
+    colHelper.accessor('mode', {
+      header: 'Mode',
+      cell: info => <span className={`jx-badge jx-badge-brand`}>{info.getValue()}</span>,
+    }),
     colHelper.accessor('paused', {
-      header: 'Paused',
-      cell: info => info.getValue() ? 'Yes' : 'No',
+      header: 'Status',
+      cell: info => info.getValue()
+        ? <span className="jx-badge jx-badge-warn">Paused</span>
+        : <span className="jx-badge jx-badge-success">Recording</span>,
     }),
     colHelper.accessor('active', {
       header: 'Active',
-      cell: info => info.getValue() ? 'Yes' : 'No',
+      cell: info => info.getValue()
+        ? <span className="jx-badge jx-badge-success">Yes</span>
+        : <span className="jx-badge jx-badge-default">No</span>,
     }),
     colHelper.accessor('consumerGroup', {
       header: 'Consumer Group',
-      cell: info => info.getValue() ?? '—',
+      cell: info => <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--type-mono-size)' }}>{info.getValue() ?? '—'}</span>,
     }),
     colHelper.accessor('brokerId', {
       header: 'Broker',
@@ -95,48 +106,50 @@ function TopicsPage() {
     }),
   ]
 
-  const table = useReactTable({
-    data: data ?? [],
-    columns,
-    getCoreRowModel: getCoreRowModel(),
-  })
+  const table = useReactTable({ data: data ?? [], columns, getCoreRowModel: getCoreRowModel() })
 
   return (
     <Layout>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
         <h1 style={pageTitle}>Topics</h1>
         <button style={primaryBtnStyle} onClick={() => setShowAdd(true)}>+ Add Topic</button>
       </div>
+
       {isLoading && <LoadingSpinner />}
       {error && <ErrorMessage message={(error as Error).message} />}
+
       {!isLoading && !error && (
-        <table style={tableStyle}>
-          <thead>
-            {table.getHeaderGroups().map(hg => (
-              <tr key={hg.id}>
-                {hg.headers.map(h => (
-                  <th key={h.id} style={thStyle}>{flexRender(h.column.columnDef.header, h.getContext())}</th>
-                ))}
-              </tr>
-            ))}
-          </thead>
-          <tbody>
-            {table.getRowModel().rows.map(row => (
-              <tr
-                key={row.id}
-                style={{ cursor: 'pointer' }}
-                onClick={() => void navigate({ to: '/topics/$topic', params: { topic: row.original.topic } })}
-                onMouseEnter={e => (e.currentTarget.style.background = '#ebf8ff')}
-                onMouseLeave={e => (e.currentTarget.style.background = '')}
-              >
-                {row.getVisibleCells().map(cell => (
-                  <td key={cell.id} style={tdStyle}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div style={tableStyle}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              {table.getHeaderGroups().map(hg => (
+                <tr key={hg.id}>
+                  {hg.headers.map(h => (
+                    <th key={h.id} style={thStyle}>{flexRender(h.column.columnDef.header, h.getContext())}</th>
+                  ))}
+                </tr>
+              ))}
+            </thead>
+            <tbody>
+              {table.getRowModel().rows.map(row => (
+                <tr
+                  key={row.id}
+                  className="jx-clickable"
+                  onClick={() => void navigate({ to: '/topics/$topic', params: { topic: row.original.topic } })}
+                  onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface-raised)')}
+                  onMouseLeave={e => (e.currentTarget.style.background = '')}
+                  style={{ cursor: 'pointer' }}
+                >
+                  {row.getVisibleCells().map(cell => (
+                    <td key={cell.id} style={tdStyle}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
+
       {showAdd && <AddTopicModal onClose={() => setShowAdd(false)} />}
       {confirmDelete && (
         <ConfirmDialog
@@ -148,13 +161,3 @@ function TopicsPage() {
     </Layout>
   )
 }
-
-// Shared styles
-const primaryBtnStyle: React.CSSProperties = { padding: '0.45rem 1rem', background: '#3182ce', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 14 }
-const primaryBtnSmall: React.CSSProperties = { padding: '0.2rem 0.6rem', background: '#3182ce', color: '#fff', border: 'none', borderRadius: 3, cursor: 'pointer', fontSize: 12 }
-const warnBtnSmall: React.CSSProperties = { padding: '0.2rem 0.6rem', background: '#dd6b20', color: '#fff', border: 'none', borderRadius: 3, cursor: 'pointer', fontSize: 12 }
-const dangerBtnSmall: React.CSSProperties = { padding: '0.2rem 0.6rem', background: '#e53e3e', color: '#fff', border: 'none', borderRadius: 3, cursor: 'pointer', fontSize: 12 }
-const tableStyle: React.CSSProperties = { width: '100%', borderCollapse: 'collapse', background: '#fff', borderRadius: 8, overflow: 'hidden', boxShadow: '0 1px 4px rgba(0,0,0,0.1)' }
-const thStyle: React.CSSProperties = { textAlign: 'left', padding: '0.6rem 0.75rem', background: '#edf2f7', fontSize: 13, fontWeight: 600, color: '#4a5568', borderBottom: '1px solid #e2e8f0' }
-const tdStyle: React.CSSProperties = { padding: '0.55rem 0.75rem', borderBottom: '1px solid #e2e8f0', fontSize: 14 }
-const pageTitle: React.CSSProperties = { margin: 0, fontSize: 22, fontWeight: 700 }

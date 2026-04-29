@@ -14,6 +14,10 @@ import { LoadingSpinner } from '../../components/LoadingSpinner'
 import { ErrorMessage } from '../../components/ErrorMessage'
 import { ConfirmDialog } from '../../components/ConfirmDialog'
 import { useToast } from '../../components/Toast'
+import {
+  pageTitle, primaryBtnStyle, dangerBtnSmall, cancelBtnStyle, labelStyle,
+  modalH2, tableStyle, thStyle, tdStyle,
+} from '../../styles/shared'
 
 export const Route = createFileRoute('/entities/')({
   component: EntitiesPage,
@@ -41,15 +45,15 @@ function AddEntityModal({ onClose }: { onClose: () => void }) {
   })
 
   return (
-    <div style={overlayStyle} onClick={onClose}>
-      <div style={modalStyle} onClick={e => e.stopPropagation()}>
-        <h2 style={{ margin: '0 0 1.25rem', fontSize: 18 }}>Add Entity Type</h2>
+    <div className="jx-overlay" onClick={onClose}>
+      <div className="jx-modal" style={{ minWidth: 380 }} onClick={e => e.stopPropagation()}>
+        <h2 style={modalH2}>Add Entity Type</h2>
         <form onSubmit={(e) => { e.preventDefault(); void form.handleSubmit() }}>
           <form.Field name="type">
             {(f) => (
               <div style={fieldWrap}>
                 <label style={labelStyle}>Type *</label>
-                <input style={inputStyleFull} value={f.state.value} onChange={e => f.handleChange(e.target.value)} required />
+                <input className="jx-input-box" value={f.state.value} onChange={e => f.handleChange(e.target.value)} required />
               </div>
             )}
           </form.Field>
@@ -57,21 +61,23 @@ function AddEntityModal({ onClose }: { onClose: () => void }) {
             {(f) => (
               <div style={fieldWrap}>
                 <label style={labelStyle}>Buckets</label>
-                <input type="number" style={inputStyleFull} value={f.state.value} onChange={e => f.handleChange(e.target.value)} />
+                <input type="number" className="jx-input-box" value={f.state.value} onChange={e => f.handleChange(e.target.value)} />
               </div>
             )}
           </form.Field>
           <form.Field name="retentionDays">
             {(f) => (
-              <div style={fieldWrap}>
+              <div style={{ ...fieldWrap, marginBottom: 20 }}>
                 <label style={labelStyle}>Retention Days</label>
-                <input type="number" style={inputStyleFull} value={f.state.value} onChange={e => f.handleChange(e.target.value)} />
+                <input type="number" className="jx-input-box" value={f.state.value} onChange={e => f.handleChange(e.target.value)} />
               </div>
             )}
           </form.Field>
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: '0.5rem' }}>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
             <button type="button" onClick={onClose} style={cancelBtnStyle}>Cancel</button>
-            <button type="submit" disabled={mutation.isPending} style={primaryBtnStyle}>{mutation.isPending ? 'Creating…' : 'Create'}</button>
+            <button type="submit" disabled={mutation.isPending} style={primaryBtnStyle}>
+              {mutation.isPending ? 'Creating…' : 'Create'}
+            </button>
           </div>
         </form>
       </div>
@@ -123,53 +129,64 @@ function EntitiesPage() {
 
   return (
     <Layout>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 24 }}>
         <h1 style={pageTitle}>Entities</h1>
         <div style={{ display: 'flex', gap: 8 }}>
           <button
-            style={{ ...primaryBtnStyle, background: '#dd6b20' }}
+            style={{ ...primaryBtnStyle, background: 'var(--signal-warn-ink)', borderColor: 'var(--signal-warn-ink)' }}
             onClick={() => setConfirmRebuild(true)}
             disabled={rebuildMutation.isPending}
             title="Rebuild known_entities registry from cassette data on object storage"
           >
-            {rebuildMutation.isPending ? 'Rebuilding…' : '⟳ Rebuild Known Entities'}
+            {rebuildMutation.isPending ? 'Rebuilding…' : 'Rebuild Known Entities'}
           </button>
           <button style={primaryBtnStyle} onClick={() => setShowAdd(true)}>+ Add Entity Type</button>
         </div>
       </div>
+
       {rebuildMutation.isPending && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10, background: '#fffaf0', border: '1px solid #fbd38d', borderRadius: 6, padding: '0.6rem 1rem', marginBottom: '1rem' }}>
-          <div style={{ width: 16, height: 16, border: '2px solid #fbd38d', borderTop: '2px solid #dd6b20', borderRadius: '50%', animation: 'spin 0.8s linear infinite', flexShrink: 0 }} />
-          <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-          <span style={{ fontSize: 14, color: '#c05621', fontWeight: 500 }}>Rebuilding known entities registry — scanning all cassette tables, this may take a while…</span>
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10,
+          background: '#fef9c3', border: '1px solid var(--signal-warn)',
+          borderRadius: 'var(--radius-sm)', padding: '10px 14px', marginBottom: 16,
+        }}>
+          <span className="jx-spin" style={{ display: 'inline-block', width: 16, height: 16, border: '2px solid var(--signal-warn)', borderTopColor: 'var(--signal-warn-ink)', borderRadius: '50%', flexShrink: 0 }} />
+          <span style={{ fontSize: 'var(--type-body-sm-size)', color: 'var(--signal-warn-ink)', fontWeight: 500 }}>
+            Rebuilding known entities registry — scanning all cassette tables, this may take a while…
+          </span>
         </div>
       )}
+
       {isLoading && <LoadingSpinner />}
       {error && <ErrorMessage message={(error as Error).message} />}
+
       {!isLoading && !error && (
-        <table style={tableStyle}>
-          <thead>
-            {table.getHeaderGroups().map(hg => (
-              <tr key={hg.id}>
-                {hg.headers.map(h => <th key={h.id} style={thStyle}>{flexRender(h.column.columnDef.header, h.getContext())}</th>)}
-              </tr>
-            ))}
-          </thead>
-          <tbody>
-            {table.getRowModel().rows.map(row => (
-              <tr
-                key={row.id}
-                style={{ cursor: 'pointer' }}
-                onClick={() => void navigate({ to: '/entities/$entityType', params: { entityType: row.original.entityType } })}
-                onMouseEnter={e => (e.currentTarget.style.background = '#ebf8ff')}
-                onMouseLeave={e => (e.currentTarget.style.background = '')}
-              >
-                {row.getVisibleCells().map(cell => <td key={cell.id} style={tdStyle}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <div style={tableStyle}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              {table.getHeaderGroups().map(hg => (
+                <tr key={hg.id}>
+                  {hg.headers.map(h => <th key={h.id} style={thStyle}>{flexRender(h.column.columnDef.header, h.getContext())}</th>)}
+                </tr>
+              ))}
+            </thead>
+            <tbody>
+              {table.getRowModel().rows.map(row => (
+                <tr
+                  key={row.id}
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => void navigate({ to: '/entities/$entityType', params: { entityType: row.original.entityType } })}
+                  onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface-raised)')}
+                  onMouseLeave={e => (e.currentTarget.style.background = '')}
+                >
+                  {row.getVisibleCells().map(cell => <td key={cell.id} style={tdStyle}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
+
       {showAdd && <AddEntityModal onClose={() => setShowAdd(false)} />}
       {confirmRebuild && (
         <ConfirmDialog
@@ -189,15 +206,4 @@ function EntitiesPage() {
   )
 }
 
-const overlayStyle: React.CSSProperties = { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }
-const modalStyle: React.CSSProperties = { background: '#fff', borderRadius: 8, padding: '1.5rem 2rem', minWidth: 380, boxShadow: '0 10px 30px rgba(0,0,0,0.2)' }
-const fieldWrap: React.CSSProperties = { marginBottom: '0.75rem' }
-const labelStyle: React.CSSProperties = { display: 'block', marginBottom: 4, fontSize: 13, fontWeight: 600, color: '#4a5568' }
-const inputStyleFull: React.CSSProperties = { width: '100%', padding: '0.4rem 0.6rem', border: '1px solid #cbd5e0', borderRadius: 4, fontSize: 14, boxSizing: 'border-box' }
-const primaryBtnStyle: React.CSSProperties = { padding: '0.45rem 1rem', background: '#3182ce', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 14 }
-const cancelBtnStyle: React.CSSProperties = { padding: '0.45rem 1rem', background: '#fff', color: '#4a5568', border: '1px solid #cbd5e0', borderRadius: 4, cursor: 'pointer', fontSize: 14 }
-const dangerBtnSmall: React.CSSProperties = { padding: '0.2rem 0.6rem', background: '#e53e3e', color: '#fff', border: 'none', borderRadius: 3, cursor: 'pointer', fontSize: 12 }
-const tableStyle: React.CSSProperties = { width: '100%', borderCollapse: 'collapse', background: '#fff', borderRadius: 8, overflow: 'hidden', boxShadow: '0 1px 4px rgba(0,0,0,0.1)' }
-const thStyle: React.CSSProperties = { textAlign: 'left', padding: '0.6rem 0.75rem', background: '#edf2f7', fontSize: 13, fontWeight: 600, color: '#4a5568', borderBottom: '1px solid #e2e8f0' }
-const tdStyle: React.CSSProperties = { padding: '0.55rem 0.75rem', borderBottom: '1px solid #e2e8f0', fontSize: 14 }
-const pageTitle: React.CSSProperties = { margin: 0, fontSize: 22, fontWeight: 700 }
+const fieldWrap: React.CSSProperties = { marginBottom: 12 }

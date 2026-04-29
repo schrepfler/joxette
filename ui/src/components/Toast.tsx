@@ -18,6 +18,27 @@ const ToastContext = createContext<ToastContextValue>({
 
 let nextId = 0
 
+const toastStyles: Record<ToastItem['type'], React.CSSProperties> = {
+  success: {
+    background: 'var(--surface-paper)',
+    color: 'var(--signal-live-ink)',
+    border: '1px solid var(--signal-live)',
+    borderLeft: '3px solid var(--signal-live)',
+  },
+  error: {
+    background: 'var(--surface-paper)',
+    color: 'var(--signal-error-ink)',
+    border: '1px solid var(--signal-error)',
+    borderLeft: '3px solid var(--signal-error)',
+  },
+  info: {
+    background: 'var(--surface-paper)',
+    color: 'var(--ink-primary)',
+    border: '1px solid var(--rule-strong)',
+    borderLeft: '3px solid var(--accent)',
+  },
+}
+
 export function ToastProvider({ children }: { children: React.ReactNode }) {
   const [toasts, setToasts] = useState<ToastItem[]>([])
 
@@ -28,12 +49,6 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
       setToasts((prev) => prev.filter((t) => t.id !== id))
     }, 3500)
   }, [])
-
-  const colors: Record<ToastItem['type'], string> = {
-    success: '#38a169',
-    error: '#e53e3e',
-    info: '#3182ce',
-  }
 
   return (
     <ToastContext.Provider value={{ toasts, addToast }}>
@@ -53,12 +68,13 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
           <div
             key={t.id}
             style={{
-              background: colors[t.type],
-              color: '#fff',
-              padding: '0.6rem 1.2rem',
-              borderRadius: 6,
-              boxShadow: '0 4px 12px rgba(0,0,0,0.15)',
-              fontSize: 14,
+              ...toastStyles[t.type],
+              padding: '10px 16px',
+              borderRadius: 'var(--radius-sm)',
+              boxShadow: 'var(--shadow-xl)',
+              fontFamily: 'var(--font-body)',
+              fontSize: 'var(--type-body-sm-size)',
+              fontWeight: 500,
               maxWidth: 360,
             }}
           >

@@ -2,9 +2,7 @@
 @import "tailwindcss";
 @plugin "@tailwindcss/typography";
 
-/* ── Tailwind theme: bridge Joxette tokens into the utility layer.
-   Colours and fonts declared here become available as utilities
-   (bg-surface-paper, text-ink-primary, font-display, duration-slow, etc.). */
+/* ── Tailwind theme: bridge Joxette tokens into the utility layer. ── */
 @theme {
   --font-sans:    var(--font-body);
   --font-display: var(--font-display);
@@ -29,6 +27,8 @@
   --color-signal-warn:  var(--signal-warn);
   --color-signal-error: var(--signal-error);
 
+  --color-nav-bg: var(--nav-bg);
+
   --ease-out-soft:    var(--ease-out-soft);
   --ease-in-out-soft: var(--ease-in-out-soft);
   --ease-entrance:    var(--ease-entrance);
@@ -36,31 +36,29 @@
   --default-transition-duration: var(--duration-quick);
 }
 
-/* ── Legacy tokens — kept so un-migrated routes continue to render.
-   These are gradually retired as pages migrate to the new system. */
+/* ── Legacy aliases — kept while un-migrated components still reference them. */
 :root {
-  --sea-ink: var(--ink-primary);
-  --sea-ink-soft: var(--ink-secondary);
-  --lagoon: var(--accent);
-  --lagoon-deep: var(--accent-muted);
-  --palm: var(--signal-live);
-  --sand: var(--surface-sunken);
-  --foam: var(--surface-raised);
-  --surface: color-mix(in oklab, var(--surface-raised) 90%, transparent);
-  --surface-strong: var(--surface-raised);
-  --line: var(--rule);
-  --inset-glint: color-mix(in oklab, var(--surface-raised) 85%, white 15%);
-  --kicker: var(--ink-tertiary);
-  --bg-base: var(--surface-paper);
-  --header-bg: color-mix(in oklab, var(--surface-raised) 94%, transparent);
-  --chip-bg: color-mix(in oklab, var(--surface-raised) 92%, transparent);
-  --chip-line: var(--rule-strong);
-  --link-bg-hover: var(--surface-raised);
-  --hero-a: color-mix(in oklab, var(--accent) 8%, transparent);
-  --hero-b: color-mix(in oklab, var(--ink-primary) 4%, transparent);
+  --sea-ink:         var(--ink-primary);
+  --sea-ink-soft:    var(--ink-secondary);
+  --lagoon:          var(--accent);
+  --lagoon-deep:     var(--accent-muted);
+  --palm:            var(--signal-live);
+  --sand:            var(--surface-sunken);
+  --foam:            var(--surface-raised);
+  --surface:         var(--surface-raised);
+  --surface-strong:  var(--surface-raised);
+  --line:            var(--rule);
+  --inset-glint:     var(--surface-raised);
+  --kicker:          var(--ink-tertiary);
+  --bg-base:         var(--surface-paper);
+  --header-bg:       var(--surface-raised);
+  --chip-bg:         var(--surface-raised);
+  --chip-line:       var(--rule-strong);
+  --link-bg-hover:   var(--surface-sunken);
+  --hero-a:          color-mix(in oklab, var(--accent) 8%, transparent);
+  --hero-b:          color-mix(in oklab, var(--ink-primary) 4%, transparent);
 }
 
-/* ── visual-json popup overrides. */
 :root {
   --vj-bg-panel: var(--surface-raised);
   --vj-border:   var(--rule-strong);
@@ -85,21 +83,16 @@ body {
   line-height: var(--type-body-leading);
   letter-spacing: var(--type-body-tracking);
   background-color: var(--surface-paper);
-  background:
-    radial-gradient(1100px 620px at -8% -10%, color-mix(in oklab, var(--accent) 7%, transparent), transparent 58%),
-    radial-gradient(1050px 620px at 112% -12%, color-mix(in oklab, var(--ink-primary) 4%, transparent), transparent 62%),
-    linear-gradient(180deg, var(--surface-raised) 0%, var(--surface-paper) 100%);
   overflow-x: hidden;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
-  font-feature-settings: "kern", "liga", "calt", "ss01";
+  font-feature-settings: "kern", "liga", "calt";
 }
 
-/* Tabular numerals any time numbers appear in-line (times, offsets, sizes). */
 .tabular, [data-tabular="true"] {
   font-variant-numeric: tabular-nums;
-  font-feature-settings: "tnum", "zero", "ss01";
+  font-feature-settings: "tnum", "zero";
 }
 
 a {
@@ -132,62 +125,109 @@ pre code {
 }
 
 ::selection {
-  background: color-mix(in oklab, var(--accent) 22%, transparent);
+  background: color-mix(in oklab, var(--accent) 20%, transparent);
   color: var(--ink-primary);
 }
 
-/* Keyboard focus is a ruled outline the accent colour — not an OS default. */
 *:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
   border-radius: var(--radius-xs);
 }
 
-/* Legacy helpers kept for un-migrated routes. */
+/* ── Layout helpers ─────────────────────────────────────────────────── */
 .page-wrap {
-  width: min(1080px, calc(100% - 2rem));
+  width: min(1200px, calc(100% - 2rem));
   margin-inline: auto;
 }
 
-.display-title {
-  font-family: var(--font-display);
-  font-weight: var(--type-h1-weight);
+/* ── Shared table base ─────────────────────────────────────────────── */
+.jx-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface-paper);
+  font-size: var(--type-body-sm-size);
 }
 
-.island-shell {
-  border: var(--hairline) solid var(--rule);
+.jx-table th {
+  text-align: left;
+  padding: 10px 12px;
   background: var(--surface-raised);
-  box-shadow: none;
-}
-
-.feature-card {
-  background: var(--surface-raised);
-  box-shadow: none;
-}
-
-.feature-card:hover {
-  transform: none;
-  border-color: var(--rule-strong);
-}
-
-button,
-.island-shell,
-a {
-  transition: background-color var(--duration-quick) var(--ease-out-soft),
-              color var(--duration-quick) var(--ease-out-soft),
-              border-color var(--duration-quick) var(--ease-out-soft),
-              transform var(--duration-quick) var(--ease-out-soft);
-}
-
-.island-kicker {
-  font-family: var(--font-body);
+  font-size: var(--type-micro-size);
+  font-weight: var(--type-micro-weight);
   letter-spacing: var(--type-micro-tracking);
   text-transform: uppercase;
-  font-weight: var(--type-micro-weight);
+  color: var(--ink-tertiary);
+  border-bottom: 1px solid var(--rule);
+}
+
+.jx-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--rule);
+  color: var(--ink-primary);
+}
+
+.jx-table tbody tr {
+  transition: background var(--duration-quick) var(--ease-out-soft);
+}
+
+.jx-table tbody tr:hover {
+  background: var(--surface-raised);
+}
+
+.jx-table tbody tr.jx-clickable {
+  cursor: pointer;
+}
+
+/* ── Card ────────────────────────────────────────────────────────────── */
+.jx-card {
+  background: var(--surface-paper);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+  padding: 16px 20px;
+  box-shadow: var(--shadow-sm);
+}
+
+/* ── Overline / section label ───────────────────────────────────────── */
+.jx-overline {
+  font-family: var(--font-body);
   font-size: var(--type-micro-size);
+  font-weight: var(--type-micro-weight);
+  letter-spacing: var(--type-micro-tracking);
+  text-transform: uppercase;
   color: var(--ink-tertiary);
 }
 
+/* ── Modal overlay ──────────────────────────────────────────────────── */
+.jx-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(3, 7, 18, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  backdrop-filter: blur(2px);
+}
+
+.jx-modal {
+  background: var(--surface-paper);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+  padding: 24px 32px;
+  box-shadow: var(--shadow-lg);
+}
+
+/* ── Inline loading spinner ─────────────────────────────────────────── */
+.jx-spin {
+  animation: jx-rotate 0.75s linear infinite;
+}
+
+@keyframes jx-rotate {
+  to { transform: rotate(360deg); }
+}
+
+/* ── Nav link underline ─────────────────────────────────────────────── */
 .nav-link {
   position: relative;
   display: inline-flex;
@@ -219,16 +259,114 @@ a {
   transform: scaleX(1);
 }
 
-.site-footer {
-  border-top: var(--hairline) solid var(--rule);
-  background: var(--surface-raised);
+/* ── Transition on interactive elements ────────────────────────────── */
+button, a {
+  transition:
+    background-color var(--duration-quick) var(--ease-out-soft),
+    color var(--duration-quick) var(--ease-out-soft),
+    border-color var(--duration-quick) var(--ease-out-soft);
 }
 
+/* ── Rise-in page entrance ──────────────────────────────────────────── */
 .rise-in {
   animation: rise-in var(--duration-slow) var(--ease-entrance) both;
 }
 
 @keyframes rise-in {
-  from { opacity: 0; transform: translateY(10px); }
+  from { opacity: 0; transform: translateY(8px); }
   to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Badge tones ────────────────────────────────────────────────────── */
+.jx-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  border-radius: var(--radius-full);
+  font-family: var(--font-body);
+  font-size: var(--type-caption-size);
+  font-weight: 500;
+  line-height: 1.5;
+  letter-spacing: var(--type-caption-tracking);
+  white-space: nowrap;
+}
+
+.jx-badge-default  { background: var(--surface-sunken); color: var(--ink-secondary); }
+.jx-badge-brand    { background: #DDE3F0; color: #1E3566; }
+.jx-badge-success  { background: #dcfce7; color: var(--signal-live-ink); }
+.jx-badge-warn     { background: #fef9c3; color: var(--signal-warn-ink); }
+.jx-badge-error    { background: #fee2e2; color: var(--signal-error-ink); }
+.jx-badge-accent   { background: var(--accent-wash); color: var(--accent-muted); }
+
+/* ── Status dot animations ──────────────────────────────────────────── */
+@keyframes jx-dot-spin  { to { transform: rotate(360deg) } }
+@keyframes jx-dot-pulse { 0%,100% { transform: scale(1); opacity: .4 } 50% { transform: scale(1.7); opacity: 0 } }
+.jx-dot-ring  { animation: jx-dot-spin 1.1s linear infinite; }
+.jx-dot-pulse { animation: jx-dot-pulse 1.8s var(--ease-in-out-soft) infinite; }
+
+@media (prefers-reduced-motion: reduce) {
+  .jx-dot-ring, .jx-dot-pulse { animation: none; }
+}
+
+/* ── Shared form field styles ───────────────────────────────────────── */
+.jx-label {
+  display: block;
+  margin-bottom: 4px;
+  font-family: var(--font-body);
+  font-size: var(--type-micro-size);
+  font-weight: var(--type-micro-weight);
+  letter-spacing: var(--type-micro-tracking);
+  text-transform: uppercase;
+  color: var(--ink-secondary);
+}
+
+.jx-input-box {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--rule-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface-paper);
+  color: var(--ink-primary);
+  font-family: var(--font-body);
+  font-size: var(--type-body-sm-size);
+  line-height: 1.4;
+  box-sizing: border-box;
+  outline: none;
+  transition: border-color var(--duration-quick) var(--ease-out-soft);
+}
+
+.jx-input-box:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
+
+.jx-input-box:disabled {
+  color: var(--ink-tertiary);
+  background: var(--surface-raised);
+  cursor: not-allowed;
+}
+
+.jx-input-box::placeholder {
+  color: var(--ink-tertiary);
+}
+
+/* Legacy helpers kept for un-migrated routes. */
+.island-shell {
+  border: var(--hairline) solid var(--rule);
+  background: var(--surface-raised);
+}
+
+.island-kicker {
+  font-family: var(--font-body);
+  letter-spacing: var(--type-micro-tracking);
+  text-transform: uppercase;
+  font-weight: var(--type-micro-weight);
+  font-size: var(--type-micro-size);
+  color: var(--ink-tertiary);
+}
+
+.site-footer {
+  border-top: var(--hairline) solid var(--rule);
+  background: var(--surface-raised);
 }

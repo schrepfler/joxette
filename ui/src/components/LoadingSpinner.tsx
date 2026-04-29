@@ -1,17 +1,17 @@
 export function LoadingSpinner() {
   return (
-    <div style={{ display: 'flex', justifyContent: 'center', padding: '2rem' }}>
-      <div
+    <div style={{ display: 'flex', justifyContent: 'center', padding: '48px 0' }}>
+      <span
+        className="jx-spin"
         style={{
-          width: 32,
-          height: 32,
-          border: '3px solid #e2e8f0',
-          borderTop: '3px solid #4299e1',
+          display: 'inline-block',
+          width: 24,
+          height: 24,
+          border: '2px solid var(--rule-strong)',
+          borderTopColor: 'var(--accent)',
           borderRadius: '50%',
-          animation: 'spin 0.8s linear infinite',
         }}
       />
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   )
 }

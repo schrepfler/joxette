@@ -2,14 +2,14 @@ import { Link, useNavigate } from '@tanstack/react-router'
 import { useHotkeySequences } from '@tanstack/react-hotkeys'
 
 const NAV_LINKS = [
-  { to: '/topics', label: 'Topics', shortcut: 'g t' },
-  { to: '/entities', label: 'Entities', shortcut: 'g e' },
-  { to: '/brokers', label: 'Brokers', shortcut: 'g b' },
+  { to: '/topics',     label: 'Topics',     shortcut: 'g t' },
+  { to: '/entities',   label: 'Entities',   shortcut: 'g e' },
+  { to: '/brokers',    label: 'Brokers',    shortcut: 'g b' },
   { to: '/compaction', label: 'Compaction', shortcut: 'g c' },
-  { to: '/health', label: 'Health', shortcut: 'g h' },
-  { to: '/snapshots', label: 'Snapshots', shortcut: 'g s' },
-  { to: '/settings', label: 'Settings', shortcut: 'g n' },
-  { to: '/about', label: 'About', shortcut: 'g a' },
+  { to: '/health',     label: 'Health',     shortcut: 'g h' },
+  { to: '/snapshots',  label: 'Snapshots',  shortcut: 'g s' },
+  { to: '/settings',   label: 'Settings',   shortcut: 'g n' },
+  { to: '/about',      label: 'About',      shortcut: 'g a' },
 ]
 
 interface LayoutProps {
@@ -31,30 +31,55 @@ export function Layout({ children }: LayoutProps) {
   ])
 
   return (
-    <div style={{ display: 'flex', minHeight: '100vh', fontFamily: 'system-ui, sans-serif' }}>
-      {/* Sidebar */}
+    <div style={{ display: 'flex', minHeight: '100vh' }}>
+      {/* Sidebar — always navy, regardless of theme */}
       <nav
         style={{
-          width: 200,
-          background: '#1a202c',
-          color: '#fff',
+          width: 216,
+          flexShrink: 0,
+          background: 'var(--nav-bg)',
+          color: 'var(--nav-text)',
           display: 'flex',
           flexDirection: 'column',
-          flexShrink: 0,
+          position: 'sticky',
+          top: 0,
+          height: '100vh',
+          overflowY: 'auto',
         }}
       >
-        <div
+        {/* Wordmark */}
+        <Link
+          to="/"
           style={{
-            padding: '1.25rem 1rem',
-            borderBottom: '1px solid rgba(255,255,255,0.1)',
-            fontWeight: 700,
-            fontSize: 18,
-            letterSpacing: 0.5,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10,
+            padding: '18px 20px',
+            borderBottom: '1px solid var(--nav-border)',
+            textDecoration: 'none',
           }}
         >
-          Joxette
-        </div>
-        <ul style={{ listStyle: 'none', margin: 0, padding: '0.5rem 0' }}>
+          <img
+            src="/joxette logo.png"
+            alt="Joxette"
+            style={{ width: 28, height: 28, objectFit: 'contain', filter: 'brightness(0) invert(1)' }}
+          />
+          <span
+            style={{
+              fontFamily: 'var(--font-display)',
+              fontWeight: 800,
+              fontSize: '1rem',
+              letterSpacing: '0.06em',
+              textTransform: 'uppercase',
+              color: 'var(--nav-text)',
+            }}
+          >
+            Joxette
+          </span>
+        </Link>
+
+        {/* Navigation links */}
+        <ul style={{ listStyle: 'none', margin: 0, padding: '8px 0', flex: 1 }}>
           {NAV_LINKS.map(({ to, label, shortcut }) => (
             <li key={to}>
               <Link
@@ -63,22 +88,42 @@ export function Layout({ children }: LayoutProps) {
                   display: 'flex',
                   alignItems: 'center',
                   justifyContent: 'space-between',
-                  padding: '0.6rem 1rem',
-                  color: '#a0aec0',
+                  padding: '8px 20px',
+                  color: 'var(--nav-text-muted)',
                   textDecoration: 'none',
-                  fontSize: 14,
-                  transition: 'background 0.15s',
+                  fontFamily: 'var(--font-body)',
+                  fontSize: 'var(--type-body-sm-size)',
+                  fontWeight: 400,
+                  borderLeft: '2px solid transparent',
+                  transition: 'background var(--duration-quick), color var(--duration-quick), border-color var(--duration-quick)',
                 }}
-                activeProps={{ style: { color: '#fff', background: 'rgba(255,255,255,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.6rem 1rem', textDecoration: 'none', fontSize: 14 } }}
+                activeProps={{
+                  style: {
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    padding: '8px 20px',
+                    color: 'var(--nav-text)',
+                    textDecoration: 'none',
+                    fontFamily: 'var(--font-body)',
+                    fontSize: 'var(--type-body-sm-size)',
+                    fontWeight: 500,
+                    background: 'var(--nav-item-active)',
+                    borderLeft: '2px solid var(--nav-accent)',
+                    transition: 'background var(--duration-quick), color var(--duration-quick), border-color var(--duration-quick)',
+                  },
+                }}
               >
                 <span>{label}</span>
                 <kbd
                   style={{
-                    fontSize: 10,
-                    background: 'rgba(255,255,255,0.1)',
-                    padding: '1px 4px',
-                    borderRadius: 3,
-                    color: '#718096',
+                    fontFamily: 'var(--font-mono)',
+                    fontSize: '0.625rem',
+                    background: 'var(--nav-border)',
+                    padding: '1px 5px',
+                    borderRadius: 'var(--radius-xs)',
+                    color: 'var(--nav-text-muted)',
+                    letterSpacing: '0.02em',
                   }}
                 >
                   {shortcut}
@@ -89,8 +134,17 @@ export function Layout({ children }: LayoutProps) {
         </ul>
       </nav>
 
-      {/* Main content */}
-      <main style={{ flex: 1, padding: '1.5rem', overflowX: 'auto', background: '#f7fafc' }}>
+      {/* Main content area */}
+      <main
+        style={{
+          flex: 1,
+          minWidth: 0,
+          padding: '32px',
+          background: 'var(--surface-paper)',
+          color: 'var(--ink-primary)',
+          overflowX: 'auto',
+        }}
+      >
         {children}
       </main>
     </div>

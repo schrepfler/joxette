@@ -10,6 +10,7 @@ import { healthApi, type TopicLag } from '../../api/client'
 import { Layout } from '../../components/Layout'
 import { LoadingSpinner } from '../../components/LoadingSpinner'
 import { ErrorMessage } from '../../components/ErrorMessage'
+import { pageTitle, cardStyle } from '../../styles/shared'
 
 export const Route = createFileRoute('/health/')({
   component: HealthPage,
@@ -24,23 +25,10 @@ interface HealthSample {
   inlinedDataSizeBytes: number
 }
 
-// Lag thresholds: green=0, yellow=1–1000, red=>1000
-function lagFill(lag: number): string {
-  if (lag === 0) return '#48bb78'
-  if (lag <= 1000) return '#ecc94b'
-  return '#f56565'
-}
-
-function lagBadgeBg(lag: number): string {
-  if (lag === 0) return '#c6f6d5'
-  if (lag <= 1000) return '#fefcbf'
-  return '#fed7d7'
-}
-
-function lagBadgeText(lag: number): string {
-  if (lag === 0) return '#276749'
-  if (lag <= 1000) return '#744210'
-  return '#9b2c2c'
+function lagTone(lag: number): { fill: string; bg: string; text: string } {
+  if (lag === 0) return { fill: 'var(--signal-live)', bg: '#dcfce7', text: 'var(--signal-live-ink)' }
+  if (lag <= 1000) return { fill: 'var(--signal-warn)', bg: '#fef9c3', text: 'var(--signal-warn-ink)' }
+  return { fill: 'var(--signal-error)', bg: '#fee2e2', text: 'var(--signal-error-ink)' }
 }
 
 function getTrend(history: HealthSample[], topic: string): 'up' | 'down' | 'stable' {
@@ -85,18 +73,16 @@ function HealthPage() {
 
   return (
     <Layout>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: '1.5rem' }}>
-        <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>Health</h1>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 24 }}>
+        <h1 style={pageTitle}>Health</h1>
         {data && (
-          <span style={{
-            background: statusOk ? '#c6f6d5' : '#fed7d7',
-            color: statusOk ? '#276749' : '#9b2c2c',
-            padding: '3px 12px', borderRadius: 12, fontSize: 13, fontWeight: 600,
-          }}>
+          <span className={`jx-badge ${statusOk ? 'jx-badge-success' : 'jx-badge-error'}`}>
             {data.status}
           </span>
         )}
-        <span style={{ fontSize: 12, color: '#a0aec0' }}>auto-refresh every 10s</span>
+        <span style={{ fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)' }}>
+          auto-refresh every 10 s
+        </span>
       </div>
 
       {isLoading && <LoadingSpinner />}
@@ -104,67 +90,59 @@ function HealthPage() {
 
       {data && (
         <>
-          {/* Storage metrics */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16, marginBottom: '1.5rem' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 16, marginBottom: 24 }}>
             <StorageMetric
-              icon={<Database size={18} color="#718096" />}
+              icon={<Database size={16} color="var(--ink-tertiary)" />}
               label="Catalog Size"
               value={formatBytes(data.catalogSizeBytes)}
               raw={data.catalogSizeBytes}
-              accentColor="#667eea"
             />
             <StorageMetric
-              icon={<Layers size={18} color="#718096" />}
+              icon={<Layers size={16} color="var(--ink-tertiary)" />}
               label="Inlined Data"
               value={formatBytes(data.inlinedDataSizeBytes)}
               raw={data.inlinedDataSizeBytes}
               total={data.catalogSizeBytes > 0 ? data.catalogSizeBytes : undefined}
-              accentColor="#38b2ac"
               subtitle={
                 data.catalogSizeBytes > 0 && data.inlinedDataSizeBytes >= 0
                   ? `${((data.inlinedDataSizeBytes / data.catalogSizeBytes) * 100).toFixed(1)}% of catalog`
                   : undefined
               }
             />
-            <div style={card}>
-              <div style={cardLabel}>Catalog Path</div>
-              <div style={{ marginTop: 8, fontSize: 13, fontWeight: 500, color: '#2d3748', wordBreak: 'break-all' }}>
+            <div style={cardStyle}>
+              <div style={overline}>Catalog Path</div>
+              <div style={{ marginTop: 8, fontFamily: 'var(--font-mono)', fontSize: 'var(--type-mono-size)', color: 'var(--ink-primary)', wordBreak: 'break-all' }}>
                 {data.catalogPath}
               </div>
             </div>
           </div>
 
-          {/* Active recorders */}
-          <div style={{ ...card, marginBottom: '1.5rem' }}>
-            <h3 style={{ margin: '0 0 0.75rem', fontSize: 15 }}>Active Recorders</h3>
+          <div style={{ ...cardStyle, marginBottom: 24 }}>
+            <h3 style={{ margin: '0 0 12px', fontSize: 'var(--type-h4-size)', fontWeight: 600 }}>Active Recorders</h3>
             {data.activeRecorders.length === 0 ? (
-              <p style={{ margin: 0, color: '#718096', fontSize: 14 }}>No active recorders</p>
+              <p style={{ margin: 0, color: 'var(--ink-tertiary)', fontSize: 'var(--type-body-sm-size)' }}>No active recorders</p>
             ) : (
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 {data.activeRecorders.map(r => (
-                  <span key={r} style={{ background: '#c6f6d5', color: '#276749', padding: '3px 10px', borderRadius: 12, fontSize: 13 }}>{r}</span>
+                  <span key={r} className="jx-badge jx-badge-success">{r}</span>
                 ))}
               </div>
             )}
           </div>
 
-          {/* Consumer lag per topic */}
-          <div style={card}>
-            <h3 style={{ margin: '0 0 0.25rem', fontSize: 15 }}>Consumer Lag</h3>
+          <div style={cardStyle}>
+            <h3 style={{ margin: '0 0 4px', fontSize: 'var(--type-h4-size)', fontWeight: 600 }}>Consumer Lag</h3>
             {history.length > 0 && (
-              <p style={{ margin: '0 0 1rem', fontSize: 11, color: '#a0aec0' }}>{history.length} sample{history.length !== 1 ? 's' : ''} collected</p>
+              <p style={{ margin: '0 0 16px', fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)' }}>
+                {history.length} sample{history.length !== 1 ? 's' : ''} collected
+              </p>
             )}
             {data.consumerLag.length === 0 ? (
-              <p style={{ margin: 0, color: '#718096', fontSize: 14 }}>No consumer lag data</p>
+              <p style={{ margin: 0, color: 'var(--ink-tertiary)', fontSize: 'var(--type-body-sm-size)' }}>No consumer lag data</p>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column' }}>
                 {data.consumerLag.map((topicLag, i) => (
-                  <TopicLagCard
-                    key={topicLag.topic}
-                    topicLag={topicLag}
-                    history={history}
-                    isFirst={i === 0}
-                  />
+                  <TopicLagCard key={topicLag.topic} topicLag={topicLag} history={history} isFirst={i === 0} />
                 ))}
               </div>
             )}
@@ -175,35 +153,32 @@ function HealthPage() {
   )
 }
 
-function StorageMetric({
-  icon, label, value, raw, total, accentColor, subtitle,
-}: {
+function StorageMetric({ icon, label, value, raw, total, subtitle }: {
   icon: React.ReactNode
   label: string
   value: string
   raw: number
   total?: number
-  accentColor: string
   subtitle?: string
 }) {
   const pct = raw >= 0 && total && total > 0 ? Math.min(100, (raw / total) * 100) : raw >= 0 ? 100 : 0
-  const barVisible = raw >= 0
-
   return (
-    <div style={card}>
+    <div style={cardStyle}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
         {icon}
-        <span style={cardLabel}>{label}</span>
+        <span style={overline}>{label}</span>
       </div>
-      <div style={{ fontSize: 24, fontWeight: 700, color: '#2d3748', marginBottom: 4 }}>{value}</div>
-      {subtitle && <div style={{ fontSize: 11, color: '#718096', marginBottom: 8 }}>{subtitle}</div>}
-      {barVisible && (
-        <div style={{ height: 5, background: '#edf2f7', borderRadius: 3, overflow: 'hidden', marginTop: subtitle ? 0 : 8 }}>
+      <div style={{ fontFamily: 'var(--font-mono)', fontSize: '1.5rem', fontWeight: 700, color: 'var(--ink-primary)', marginBottom: 4, fontVariantNumeric: 'tabular-nums' }}>
+        {value}
+      </div>
+      {subtitle && <div style={{ fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)', marginBottom: 8 }}>{subtitle}</div>}
+      {raw >= 0 && (
+        <div style={{ height: 4, background: 'var(--surface-sunken)', borderRadius: 'var(--radius-full)', overflow: 'hidden', marginTop: subtitle ? 0 : 8 }}>
           <div style={{
             height: '100%',
             width: total ? `${pct}%` : '100%',
-            background: accentColor,
-            borderRadius: 3,
+            background: 'var(--accent)',
+            borderRadius: 'var(--radius-full)',
             transition: 'width 0.5s ease',
           }} />
         </div>
@@ -212,18 +187,16 @@ function StorageMetric({
   )
 }
 
-function TopicLagCard({
-  topicLag, history, isFirst,
-}: {
+function TopicLagCard({ topicLag, history, isFirst }: {
   topicLag: TopicLag
   history: HealthSample[]
   isFirst: boolean
 }) {
   const { topic, totalLag, lagByPartition } = topicLag
-
+  const tone = lagTone(totalLag)
   const trend = getTrend(history, topic)
   const TrendIcon = trend === 'up' ? TrendingUp : trend === 'down' ? TrendingDown : Minus
-  const trendColor = trend === 'up' ? '#f56565' : trend === 'down' ? '#48bb78' : '#a0aec0'
+  const trendColor = trend === 'up' ? 'var(--signal-error)' : trend === 'down' ? 'var(--signal-live)' : 'var(--ink-tertiary)'
 
   const partitionData = Object.entries(lagByPartition)
     .sort(([a], [b]) => Number(a) - Number(b))
@@ -235,40 +208,34 @@ function TopicLagCard({
   }))
 
   return (
-    <div style={{ borderTop: isFirst ? 'none' : '1px solid #e2e8f0', paddingTop: isFirst ? 0 : 20, marginTop: isFirst ? 0 : 20 }}>
-      {/* Header row */}
+    <div style={{ borderTop: isFirst ? 'none' : '1px solid var(--rule)', paddingTop: isFirst ? 0 : 20, marginTop: isFirst ? 0 : 20 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14, flexWrap: 'wrap' }}>
-        <span style={{ fontWeight: 600, fontSize: 15, color: '#2d3748' }}>{topic}</span>
-        <span style={{
-          background: lagBadgeBg(totalLag),
-          color: lagBadgeText(totalLag),
-          padding: '2px 10px', borderRadius: 10, fontSize: 13, fontWeight: 600,
-        }}>
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--type-mono-size)', fontWeight: 600, color: 'var(--ink-primary)' }}>{topic}</span>
+        <span style={{ background: tone.bg, color: tone.text, padding: '2px 10px', borderRadius: 'var(--radius-full)', fontSize: 'var(--type-caption-size)', fontWeight: 600 }}>
           {totalLag < 0 ? 'unavailable' : `${totalLag.toLocaleString()} behind`}
         </span>
-        <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: trendColor, fontSize: 13 }}>
-          <TrendIcon size={16} strokeWidth={2.5} />
+        <span style={{ display: 'flex', alignItems: 'center', gap: 4, color: trendColor, fontSize: 'var(--type-caption-size)' }}>
+          <TrendIcon size={14} strokeWidth={2} />
           {trend !== 'stable' && <span>{trend === 'up' ? 'Growing' : 'Shrinking'}</span>}
         </span>
       </div>
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 16 }}>
-        {/* Partition bar chart */}
         {partitionData.length > 0 && (
           <div>
             <div style={chartLabel}>Lag per Partition</div>
             <ResponsiveContainer width="100%" height={110}>
               <BarChart data={partitionData} margin={{ top: 4, right: 4, left: -8, bottom: 0 }}>
-                <XAxis dataKey="partition" tick={{ fontSize: 11, fill: '#718096' }} axisLine={false} tickLine={false} />
-                <YAxis tick={{ fontSize: 11, fill: '#718096' }} axisLine={false} tickLine={false} width={44} />
+                <XAxis dataKey="partition" tick={{ fontSize: 11, fill: 'var(--ink-tertiary)' }} axisLine={false} tickLine={false} />
+                <YAxis tick={{ fontSize: 11, fill: 'var(--ink-tertiary)' }} axisLine={false} tickLine={false} width={44} />
                 <Tooltip
-                  cursor={{ fill: '#f7fafc' }}
+                  cursor={{ fill: 'var(--surface-raised)' }}
                   formatter={(val: unknown) => [Number(val).toLocaleString(), 'Lag']}
-                  contentStyle={{ fontSize: 12, borderRadius: 6, border: '1px solid #e2e8f0' }}
+                  contentStyle={{ fontSize: 12, borderRadius: 'var(--radius-sm)', border: '1px solid var(--rule)' }}
                 />
-                <Bar dataKey="lag" radius={[3, 3, 0, 0]}>
+                <Bar dataKey="lag" radius={[2, 2, 0, 0]}>
                   {partitionData.map(entry => (
-                    <Cell key={entry.partition} fill={lagFill(entry.lag)} />
+                    <Cell key={entry.partition} fill={lagTone(entry.lag).fill} />
                   ))}
                 </Bar>
               </BarChart>
@@ -276,47 +243,37 @@ function TopicLagCard({
           </div>
         )}
 
-        {/* Trend sparkline */}
         {sparkData.length > 1 && (
           <div>
-            <div style={chartLabel}>Total Lag Trend ({sparkData.length} samples, 10s apart)</div>
+            <div style={chartLabel}>Total Lag Trend ({sparkData.length} samples, 10 s apart)</div>
             <ResponsiveContainer width="100%" height={110}>
               <LineChart data={sparkData} margin={{ top: 4, right: 4, left: -8, bottom: 0 }}>
                 <XAxis dataKey="i" hide />
-                <YAxis tick={{ fontSize: 11, fill: '#718096' }} axisLine={false} tickLine={false} width={44} />
+                <YAxis tick={{ fontSize: 11, fill: 'var(--ink-tertiary)' }} axisLine={false} tickLine={false} width={44} />
                 <Tooltip
                   formatter={(val: unknown) => [Number(val).toLocaleString(), 'Total Lag']}
                   labelFormatter={() => ''}
-                  contentStyle={{ fontSize: 12, borderRadius: 6, border: '1px solid #e2e8f0' }}
+                  contentStyle={{ fontSize: 12, borderRadius: 'var(--radius-sm)', border: '1px solid var(--rule)' }}
                 />
-                <ReferenceLine y={0} stroke="#e2e8f0" />
-                <Line
-                  type="monotone"
-                  dataKey="lag"
-                  stroke="#667eea"
-                  strokeWidth={2}
-                  dot={false}
-                  isAnimationActive={false}
-                />
+                <ReferenceLine y={0} stroke="var(--rule)" />
+                <Line type="monotone" dataKey="lag" stroke="var(--accent)" strokeWidth={2} dot={false} isAnimationActive={false} />
               </LineChart>
             </ResponsiveContainer>
           </div>
         )}
 
-        {/* Individual partition badges (when sparkline not yet available) */}
         {sparkData.length <= 1 && partitionData.length > 0 && (
           <div>
             <div style={chartLabel}>Partition Detail</div>
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 8 }}>
-              {partitionData.map(({ partition, lag }) => (
-                <span key={partition} style={{
-                  background: lagBadgeBg(lag),
-                  color: lagBadgeText(lag),
-                  padding: '3px 8px', borderRadius: 6, fontSize: 12, fontWeight: 500,
-                }}>
-                  {partition}: {lag.toLocaleString()}
-                </span>
-              ))}
+              {partitionData.map(({ partition, lag }) => {
+                const t = lagTone(lag)
+                return (
+                  <span key={partition} style={{ background: t.bg, color: t.text, padding: '3px 8px', borderRadius: 'var(--radius-xs)', fontSize: 'var(--type-caption-size)', fontWeight: 500, fontFamily: 'var(--font-mono)' }}>
+                    {partition}: {lag.toLocaleString()}
+                  </span>
+                )
+              })}
             </div>
           </div>
         )}
@@ -325,23 +282,16 @@ function TopicLagCard({
   )
 }
 
-const card: React.CSSProperties = {
-  background: '#fff',
-  border: '1px solid #e2e8f0',
-  borderRadius: 8,
-  padding: '0.875rem 1.125rem',
-}
-
-const cardLabel: React.CSSProperties = {
-  fontSize: 11,
-  color: '#718096',
+const overline: React.CSSProperties = {
+  fontSize: 'var(--type-micro-size)',
+  fontWeight: 'var(--type-micro-weight)' as unknown as number,
+  letterSpacing: 'var(--type-micro-tracking)',
   textTransform: 'uppercase',
-  letterSpacing: '0.06em',
-  fontWeight: 600,
+  color: 'var(--ink-tertiary)',
 }
 
 const chartLabel: React.CSSProperties = {
-  fontSize: 11,
-  color: '#a0aec0',
+  fontSize: 'var(--type-caption-size)',
+  color: 'var(--ink-tertiary)',
   marginBottom: 4,
 }
