@@ -8,7 +8,7 @@ import {
 } from '@tanstack/react-table'
 import { useForm } from '@tanstack/react-form'
 import { useState, useRef, useEffect, type CSSProperties } from 'react'
-import ReactJson from '@microlink/react-json-view'
+import { JsonView } from '../../components/JsonView'
 import {
   topicsApi,
   brokersApi,
@@ -103,21 +103,7 @@ function ValueCell({ raw }: { raw: string | null }) {
         >▶</span>
         {open ? (result.raw !== raw ? 'JSON — base64 decoded' : 'JSON') : decodedPreview}
       </button>
-      {open && (
-        <div style={rjvWrap}>
-          <ReactJson
-            src={result.parsed as object}
-            name={null}
-            collapsed={2}
-            indentWidth={2}
-            displayDataTypes={false}
-            displayObjectSize={false}
-            enableClipboard
-            style={rjvStyle}
-            theme="flat"
-          />
-        </div>
-      )}
+      {open && <JsonView src={result.parsed as object} />}
     </div>
   )
 }
@@ -1187,20 +1173,3 @@ if (typeof document !== 'undefined' && !document.getElementById('jx-overlay-anim
 // of the module graph during TS strict checks.
 void StatusDot
 
-// ── @microlink/react-json-view wrapper ───────────────────────────────────────
-const rjvWrap: React.CSSProperties = {
-  marginTop: 10,
-  borderRadius: 'var(--radius-sm)',
-  overflow: 'hidden',
-  border: '1px solid var(--rule-strong)',
-}
-
-const rjvStyle: React.CSSProperties = {
-  fontFamily: 'var(--font-mono)',
-  fontSize: 'var(--type-mono-size)',
-  lineHeight: 1.5,
-  letterSpacing: 0,
-  wordSpacing: 0,
-  padding: '8px 12px',
-  background: 'var(--surface-sunken)',
-}

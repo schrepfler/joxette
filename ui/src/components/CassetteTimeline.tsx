@@ -24,7 +24,7 @@ import {
   useMemo,
   type ReactNode,
 } from 'react'
-import ReactJson from '@microlink/react-json-view'
+import { JsonView } from './JsonView'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -654,19 +654,7 @@ function DetailPanel({ record }: { record: TimelineRecord | null }) {
 
       {/* Value */}
       {parsed ? (
-        <div style={rjvWrap}>
-          <ReactJson
-            src={parsed.parsed as object}
-            name={null}
-            collapsed={2}
-            indentWidth={2}
-            displayDataTypes={false}
-            displayObjectSize={false}
-            enableClipboard
-            style={rjvStyle}
-            theme="flat"
-          />
-        </div>
+        <JsonView src={parsed.parsed as object} collapsed={false} />
       ) : record.value ? (
         <pre style={{
           margin: 0, padding: '0.75rem',
@@ -928,18 +916,3 @@ const selectStyle: React.CSSProperties = {
   cursor: 'pointer',
 }
 
-const rjvWrap: React.CSSProperties = {
-  borderRadius: 'var(--radius-sm)',
-  overflow: 'hidden',
-  border: '1px solid var(--rule-strong)',
-}
-
-const rjvStyle: React.CSSProperties = {
-  fontFamily: 'var(--font-mono)',
-  fontSize: 'var(--type-mono-size)',
-  lineHeight: 1.5,
-  letterSpacing: 0,
-  wordSpacing: 0,
-  padding: '8px 12px',
-  background: 'var(--surface-sunken)',
-}

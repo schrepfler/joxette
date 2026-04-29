@@ -7,7 +7,7 @@ import {
   createColumnHelper,
 } from '@tanstack/react-table'
 import { useState, useRef, useEffect } from 'react'
-import ReactJson from '@microlink/react-json-view'
+import { JsonView } from '../../../components/JsonView'
 import { cassettesApi, streamEntityRecords, type EntityRecord, type Order, type StreamMode, type EntityStreamParams } from '../../../api/client'
 import { Layout } from '../../../components/Layout'
 import { LoadingSpinner } from '../../../components/LoadingSpinner'
@@ -80,21 +80,7 @@ function ValueCell({ raw }: { raw: string | null }) {
         <span style={{ marginRight: 4, fontSize: 10, display: 'inline-block', transform: open ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.15s' }}>▶</span>
         {open ? (result.raw !== raw ? 'JSON (base64-decoded)' : 'JSON') : decodedPreview}
       </span>
-      {open && (
-        <div style={rjvWrap}>
-          <ReactJson
-            src={result.parsed as object}
-            name={null}
-            collapsed={2}
-            indentWidth={2}
-            displayDataTypes={false}
-            displayObjectSize={false}
-            enableClipboard
-            style={rjvStyle}
-            theme="flat"
-          />
-        </div>
-      )}
+      {open && <JsonView src={result.parsed as object} />}
     </div>
   )
 }
@@ -575,20 +561,3 @@ const tableStyle: React.CSSProperties = { width: '100%', borderCollapse: 'collap
 const thStyle: React.CSSProperties = { textAlign: 'left', padding: '0.5rem 0.6rem', background: '#edf2f7', fontWeight: 600, color: '#4a5568', borderBottom: '1px solid #e2e8f0' }
 const tdStyle: React.CSSProperties = { padding: '0.45rem 0.6rem', borderBottom: '1px solid #e2e8f0' }
 
-// ── @microlink/react-json-view wrapper ───────────────────────────────────────
-const rjvWrap: React.CSSProperties = {
-  marginTop: 4,
-  borderRadius: 'var(--radius-sm)',
-  overflow: 'hidden',
-  border: '1px solid var(--rule-strong)',
-}
-
-const rjvStyle: React.CSSProperties = {
-  fontFamily: 'var(--font-mono)',
-  fontSize: 'var(--type-mono-size)',
-  lineHeight: 1.5,
-  letterSpacing: 0,
-  wordSpacing: 0,
-  padding: '8px 12px',
-  background: 'var(--surface-sunken)',
-}
