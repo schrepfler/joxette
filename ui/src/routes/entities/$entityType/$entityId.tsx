@@ -86,6 +86,7 @@ function ValueCell({ raw }: { raw: string | null }) {
             src={result.parsed as object}
             name={null}
             collapsed={2}
+            indentWidth={2}
             displayDataTypes={false}
             displayObjectSize={false}
             enableClipboard

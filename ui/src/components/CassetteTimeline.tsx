@@ -658,7 +658,8 @@ function DetailPanel({ record }: { record: TimelineRecord | null }) {
           <ReactJson
             src={parsed.parsed as object}
             name={null}
-            collapsed={false}
+            collapsed={2}
+            indentWidth={2}
             displayDataTypes={false}
             displayObjectSize={false}
             enableClipboard
