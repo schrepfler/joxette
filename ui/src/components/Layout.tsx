@@ -47,14 +47,14 @@ export function Layout({ children }: LayoutProps) {
           overflowY: 'auto',
         }}
       >
-        {/* Wordmark */}
+        {/* Logo */}
         <Link
           to="/"
           style={{
             display: 'flex',
             alignItems: 'center',
-            gap: 10,
-            padding: '18px 20px',
+            justifyContent: 'center',
+            padding: '20px',
             borderBottom: '1px solid var(--nav-border)',
             textDecoration: 'none',
           }}
@@ -62,20 +62,8 @@ export function Layout({ children }: LayoutProps) {
           <img
             src="/joxette logo.png"
             alt="Joxette"
-            style={{ width: 28, height: 28, objectFit: 'contain', filter: 'brightness(0) invert(1)' }}
+            style={{ width: 48, height: 48, objectFit: 'contain', filter: 'brightness(0) invert(1)' }}
           />
-          <span
-            style={{
-              fontFamily: 'var(--font-display)',
-              fontWeight: 800,
-              fontSize: '1rem',
-              letterSpacing: '0.06em',
-              textTransform: 'uppercase',
-              color: 'var(--nav-text)',
-            }}
-          >
-            Joxette
-          </span>
         </Link>
 
         {/* Navigation links */}
