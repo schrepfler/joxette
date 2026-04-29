@@ -54,7 +54,7 @@ export function Layout({ children }: LayoutProps) {
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            height: 56,
+            height: 72,
             padding: '0 16px',
             borderBottom: '1px solid var(--nav-border)',
             textDecoration: 'none',
@@ -63,7 +63,7 @@ export function Layout({ children }: LayoutProps) {
           <img
             src="/joxette logo.png"
             alt="Joxette"
-            style={{ width: 28, height: 28, objectFit: 'contain', filter: 'brightness(0) invert(1)' }}
+            style={{ width: 40, height: 40, objectFit: 'contain', filter: 'brightness(0) invert(1)' }}
           />
         </Link>
 
