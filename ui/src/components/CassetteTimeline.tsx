@@ -661,7 +661,7 @@ function DetailPanel({ record }: { record: TimelineRecord | null }) {
             collapsed={false}
             displayDataTypes={false}
             displayObjectSize={false}
-            enableClipboard={false}
+            enableClipboard
             style={rjvStyle}
             theme="flat"
           />

@@ -88,7 +88,7 @@ function ValueCell({ raw }: { raw: string | null }) {
             collapsed={2}
             displayDataTypes={false}
             displayObjectSize={false}
-            enableClipboard={false}
+            enableClipboard
             style={rjvStyle}
             theme="flat"
           />
