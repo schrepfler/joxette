@@ -1198,6 +1198,9 @@ const rjvWrap: React.CSSProperties = {
 const rjvStyle: React.CSSProperties = {
   fontFamily: 'var(--font-mono)',
   fontSize: 'var(--type-mono-size)',
+  lineHeight: 1.5,
+  letterSpacing: 0,
+  wordSpacing: 0,
   padding: '8px 12px',
   background: 'var(--surface-sunken)',
 }
