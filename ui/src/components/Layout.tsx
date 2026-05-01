@@ -54,7 +54,7 @@ export function Layout({ children }: LayoutProps) {
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            height: 120,
+            height: 88,
             padding: '0 16px',
             borderBottom: '1px solid var(--nav-border)',
             textDecoration: 'none',
