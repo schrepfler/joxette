@@ -599,16 +599,27 @@ function EntityTypeDetailPage() {
 function SunburstPanel({ entityType }: { entityType: string }) {
   const [maxSteps, setMaxSteps] = useState(7)
   const [maxEntities, setMaxEntities] = useState(200)
+  const [solQueryRaw, setSolQueryRaw] = useState('')
+  const [activeSolQuery, setActiveSolQuery] = useState('')
 
   const query = useQuery({
-    queryKey: ['cassettes', 'entities', entityType, 'sunburst', { maxSteps, maxEntities }],
-    queryFn: () => cassettesApi.buildSunburst(entityType, { maxSteps, maxEntities }),
+    queryKey: ['cassettes', 'entities', entityType, 'sunburst', { maxSteps, maxEntities, activeSolQuery }],
+    queryFn: () => cassettesApi.buildSunburst(entityType, {
+      maxSteps,
+      maxEntities,
+      solQuery: activeSolQuery || undefined,
+    }),
     staleTime: 120_000,
   })
 
+  function runQuery() {
+    setActiveSolQuery(solQueryRaw.trim())
+  }
+
   return (
     <div style={{ marginTop: 8 }}>
-      <div style={{ display: 'flex', gap: 16, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
+      {/* Controls row */}
+      <div style={{ display: 'flex', gap: 16, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <label style={{ fontSize: 12, color: '#718096' }}>Max depth</label>
           <select
@@ -630,14 +641,81 @@ function SunburstPanel({ entityType }: { entityType: string }) {
           </select>
         </div>
         {query.isFetching && (
-          <span style={{ fontSize: 12, color: 'var(--ink-tertiary)' }}>Loading…</span>
+          <span style={{ fontSize: 12, color: 'var(--ink-tertiary)' }}>Building…</span>
         )}
       </div>
+
+      {/* SOL pre-filter */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12,
+        padding: '7px 10px',
+        border: '1px solid var(--rule)',
+        borderRadius: 'var(--radius-sm)',
+        background: activeSolQuery ? 'color-mix(in oklab, var(--accent) 8%, transparent)' : 'var(--surface-raised)',
+      }}>
+        <span style={{ fontSize: 'var(--type-body-sm-size)', fontWeight: 600, color: 'var(--ink-secondary)', flexShrink: 0 }}>
+          SOL filter
+        </span>
+        <input
+          value={solQueryRaw}
+          onChange={e => setSolQueryRaw(e.target.value)}
+          placeholder="match A(login) >> * >> B(purchase)  — only matching sequences appear"
+          style={{
+            flex: 1,
+            padding: '4px 8px',
+            border: '1px solid var(--rule)',
+            borderRadius: 'var(--radius-xs)',
+            fontFamily: 'var(--font-mono)',
+            fontSize: 'var(--type-caption-size)',
+            color: 'var(--ink-primary)',
+            background: 'var(--surface-paper)',
+          }}
+          onKeyDown={e => { if (e.key === 'Enter') runQuery() }}
+        />
+        <button
+          style={{
+            padding: '4px 10px',
+            background: activeSolQuery ? 'var(--accent)' : 'transparent',
+            color: activeSolQuery ? 'var(--accent-ink)' : 'var(--ink-secondary)',
+            border: '1px solid var(--rule)',
+            borderRadius: 'var(--radius-sm)', cursor: 'pointer',
+            fontFamily: 'var(--font-body)', fontSize: 'var(--type-body-sm-size)',
+            flexShrink: 0,
+          }}
+          onClick={runQuery}
+          disabled={query.isFetching}
+        >
+          {query.isFetching ? '…' : 'Apply'}
+        </button>
+        {activeSolQuery && (
+          <button
+            style={{
+              padding: '4px 8px',
+              background: 'transparent', color: 'var(--ink-secondary)',
+              border: '1px solid var(--rule)',
+              borderRadius: 'var(--radius-sm)', cursor: 'pointer',
+              fontFamily: 'var(--font-body)', fontSize: 'var(--type-body-sm-size)',
+              flexShrink: 0,
+            }}
+            onClick={() => { setSolQueryRaw(''); setActiveSolQuery('') }}
+          >
+            ✕
+          </button>
+        )}
+      </div>
+
+      {activeSolQuery && query.data && (
+        <div style={{ fontSize: 12, color: 'var(--ink-tertiary)', marginBottom: 8 }}>
+          {query.data.totalSequences} sequence{query.data.totalSequences !== 1 ? 's' : ''} matched filter
+        </div>
+      )}
 
       {query.isLoading && <LoadingSpinner />}
       {query.error && <ErrorMessage message={(query.error as Error).message} />}
       {query.data && query.data.totalSequences === 0 && (
-        <p style={{ fontSize: 13, color: '#a0aec0', margin: 0 }}>No entity sequences available.</p>
+        <p style={{ fontSize: 13, color: '#a0aec0', margin: 0 }}>
+          {activeSolQuery ? 'No sequences matched the SOL filter.' : 'No entity sequences available.'}
+        </p>
       )}
       {query.data && query.data.totalSequences > 0 && (
         <SunburstChart data={query.data} diameter={520} maxSteps={maxSteps} />

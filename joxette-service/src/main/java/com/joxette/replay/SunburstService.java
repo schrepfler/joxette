@@ -1,6 +1,10 @@
 package com.joxette.replay;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.joxette.sol.EntityRecordAdapter;
+import com.sol.engine.SolEngine;
+import com.sol.engine.SolOperation;
+import com.sol.parser.SolParser;
 import org.springframework.stereotype.Service;
 
 import java.sql.SQLException;
@@ -69,6 +73,11 @@ public class SunburstService {
         Instant from = req.from() != null ? Instant.parse(req.from()) : null;
         Instant to   = req.to()   != null ? Instant.parse(req.to())   : null;
 
+        // Parse SOL filter once — null means no filtering
+        List<SolOperation> solOps = (req.solQuery() != null && !req.solQuery().isBlank())
+                ? SolParser.parse(req.solQuery())
+                : null;
+
         // Page through known entities, collecting sequences
         List<Sequence> sequences = new ArrayList<>();
         String cursor = null;
@@ -79,9 +88,13 @@ public class SunburstService {
                 if (sequences.size() >= maxEntities) break outer;
                 List<EntityRecord> records = new ArrayList<>();
                 entityReplayService.streamEntityEvents(entityType, info.entityId(), from, to, records::add);
-                if (!records.isEmpty()) {
-                    sequences.add(toSequence(info.entityId(), records, maxSteps));
+                if (records.isEmpty()) continue;
+                // SOL pre-filter: skip entities whose sequence does not match the query
+                if (solOps != null) {
+                    var seq = EntityRecordAdapter.toSequence(info.entityId(), records);
+                    if (!SolEngine.execute(solOps, seq).matched()) continue;
                 }
+                sequences.add(toSequence(info.entityId(), records, maxSteps));
             }
             cursor = page.hasMore() ? page.nextCursor() : null;
         } while (cursor != null && sequences.size() < maxEntities);
