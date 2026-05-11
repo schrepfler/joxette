@@ -48,7 +48,15 @@ public class BrokerConnectionFactory {
                 .keyDeserializer(new StringDeserializer())
                 .valueDeserializer(new ByteArrayDeserializer())
                 .autoOffsetReset(ConsumerSettings.AutoOffsetReset.LATEST)
-                .property("enable.auto.commit", "false");
+                .property("enable.auto.commit", "false")
+                // Back off slowly when the broker is unreachable — default is 50 ms which
+                // causes thundering-herd reconnects. 1 s initial, 30 s ceiling.
+                .property("reconnect.backoff.ms",     "1000")
+                .property("reconnect.backoff.max.ms", "30000")
+                // Don't wait forever for metadata: fail fast so the Resilience4j retry
+                // in RecordingCoordinator can apply its own backoff.
+                .property("request.timeout.ms",       "10000")
+                .property("default.api.timeout.ms",   "15000");
         settings = applySecurityProps(settings, cfg);
         return settings;
     }

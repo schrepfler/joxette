@@ -8,6 +8,8 @@ import com.joxette.replay.KnownEntitiesRepository;
 import com.joxette.replay.MessageRouter;
 import com.softwaremill.jox.kafka.ConsumerSettings;
 import com.softwaremill.jox.structured.Scopes;
+import io.github.resilience4j.retry.Retry;
+import io.github.resilience4j.retry.RetryConfig;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -15,6 +17,7 @@ import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 
 import java.sql.SQLException;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
@@ -185,23 +188,44 @@ public class RecordingCoordinator {
     }
 
     private void runInSupervisedScope(String topic, TopicRecorder recorder) {
+        JoxetteProperties.Recording cfg = properties.getRecording();
+        RetryConfig retryConfig = RetryConfig.custom()
+                .maxAttempts(Integer.MAX_VALUE)
+                .intervalFunction(io.github.resilience4j.core.IntervalFunction
+                        .ofExponentialRandomBackoff(
+                                Duration.ofMillis(cfg.getRetryInitialIntervalMs()),
+                                cfg.getRetryMultiplier(),
+                                Duration.ofMillis(cfg.getRetryMaxIntervalMs())))
+                // Don't retry if the recorder was stopped deliberately or interrupted
+                .ignoreExceptions(InterruptedException.class)
+                .retryOnException(e -> !recorder.isStopped())
+                .build();
+
+        Retry retry = Retry.of("recorder-" + topic, retryConfig);
+        retry.getEventPublisher()
+                .onRetry(e -> log.warn(
+                        "Recorder for topic '{}' will retry (attempt #{}) after backoff — last error: {}",
+                        topic, e.getNumberOfRetryAttempts(), e.getLastThrowable().getMessage()))
+                .onError(e -> log.error(
+                        "Recorder for topic '{}' exhausted retries", topic, e.getLastThrowable()));
+
         try {
-            Scopes.supervised(scope -> {
-                scope.forkUser(() -> {
-                    recorder.run();
-                    return null;
-                });
-                return null;
-            });
+            Retry.decorateCheckedRunnable(retry, () ->
+                    Scopes.supervised(scope -> {
+                        scope.forkUser(() -> {
+                            recorder.run();
+                            return null;
+                        });
+                        return null;
+                    })
+            ).run();
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            log.info("Recorder for topic '{}' interrupted", topic);
-        } catch (Exception e) {
-            log.error("Recorder for topic '{}' failed; removing from active set", topic, e);
+            log.info("Recorder for topic '{}' interrupted; stopping cleanly", topic);
+        } catch (Throwable e) {
+            log.error("Recorder for topic '{}' failed permanently", topic, e);
             RecorderScope scope = activeScopes.remove(topic);
-            if (scope != null) {
-                scope.recordError(e.getMessage());
-            }
+            if (scope != null) scope.recordError(e.getMessage());
         } finally {
             activeScopes.remove(topic);
         }

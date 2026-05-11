@@ -263,12 +263,27 @@ public class JoxetteProperties {
         private int batchSize = 10_000;
         /** Maximum time (ms) to wait before flushing an incomplete batch. */
         private long batchTimeoutMs = 1_000;
+        /** Initial backoff (ms) before the first recorder restart attempt. */
+        private long retryInitialIntervalMs = 5_000;
+        /** Exponential multiplier applied to the backoff after each failed attempt. */
+        private double retryMultiplier = 2.0;
+        /** Maximum backoff (ms) between recorder restart attempts. */
+        private long retryMaxIntervalMs = 300_000;   // 5 minutes
 
         public int getBatchSize() { return batchSize; }
         public void setBatchSize(int batchSize) { this.batchSize = batchSize; }
 
         public long getBatchTimeoutMs() { return batchTimeoutMs; }
         public void setBatchTimeoutMs(long batchTimeoutMs) { this.batchTimeoutMs = batchTimeoutMs; }
+
+        public long getRetryInitialIntervalMs() { return retryInitialIntervalMs; }
+        public void setRetryInitialIntervalMs(long v) { this.retryInitialIntervalMs = v; }
+
+        public double getRetryMultiplier() { return retryMultiplier; }
+        public void setRetryMultiplier(double v) { this.retryMultiplier = v; }
+
+        public long getRetryMaxIntervalMs() { return retryMaxIntervalMs; }
+        public void setRetryMaxIntervalMs(long v) { this.retryMaxIntervalMs = v; }
     }
 
     // -----------------------------------------------------------------------

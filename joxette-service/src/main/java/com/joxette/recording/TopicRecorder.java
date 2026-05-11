@@ -178,6 +178,8 @@ public class TopicRecorder {
         if (c != null) c.wakeup();
     }
 
+    public boolean isStopped() { return stopped; }
+
     public Instant lastBatchAt() { return lastBatchAt; }
 
     public long consumerLag() { return consumerLag.get(); }
