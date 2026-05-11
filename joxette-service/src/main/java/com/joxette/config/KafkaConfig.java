@@ -2,7 +2,6 @@ package com.joxette.config;
 
 import com.softwaremill.jox.kafka.ConsumerSettings;
 import com.joxette.management.BrokerConfig;
-import org.apache.kafka.clients.admin.AdminClient;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -32,12 +31,4 @@ public class KafkaConfig {
         return f.consumerSettings(BrokerConfig.DEFAULT_BROKER_ID);
     }
 
-    /**
-     * Shared {@link AdminClient} used by the health endpoint to compute
-     * consumer lag. Destroyed automatically by Spring on context close.
-     */
-    @Bean(destroyMethod = "close")
-    public AdminClient kafkaAdminClient(BrokerConnectionFactory f) {
-        return f.adminClient(BrokerConfig.DEFAULT_BROKER_ID);
-    }
 }

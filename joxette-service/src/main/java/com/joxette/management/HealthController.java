@@ -94,11 +94,15 @@ public class HealthController {
 
     private final RecordingCoordinator coordinator;
     private final JoxetteProperties properties;
-    private final AdminClient adminClient;
+    private final com.joxette.config.BrokerConnectionFactory brokerConnectionFactory;
     private final Connection duckDB;
     private final PrometheusMeterRegistry metricsRegistry;
 
-    /** Cached consumer lag result — refreshed at most once every 15 seconds. */
+    /**
+     * Cached consumer lag result — refreshed at most once every 15 seconds
+     * via a short-lived AdminClient that is created, used, and immediately closed.
+     * No persistent AdminClient thread → no reconnect storm when Kafka is down.
+     */
     private final AtomicReference<List<TopicLag>> lagCache = new AtomicReference<>(List.of());
     /** Epoch-ms timestamp of the last successful lag query. */
     private final AtomicLong lagCacheTime = new AtomicLong(0);
@@ -107,14 +111,14 @@ public class HealthController {
     public HealthController(
             @Lazy RecordingCoordinator coordinator,
             JoxetteProperties properties,
-            AdminClient adminClient,
+            com.joxette.config.BrokerConnectionFactory brokerConnectionFactory,
             Connection duckDB,
             PrometheusMeterRegistry metricsRegistry) {
-        this.coordinator     = coordinator;
-        this.properties      = properties;
-        this.adminClient     = adminClient;
-        this.duckDB          = duckDB;
-        this.metricsRegistry = metricsRegistry;
+        this.coordinator              = coordinator;
+        this.properties               = properties;
+        this.brokerConnectionFactory  = brokerConnectionFactory;
+        this.duckDB                   = duckDB;
+        this.metricsRegistry          = metricsRegistry;
     }
 
     @Operation(
@@ -163,12 +167,12 @@ public class HealthController {
     // -------------------------------------------------------------------------
 
     /**
-     * Returns consumer lag for all active topics, using a 15-second cache to
-     * avoid hammering the AdminClient (and therefore the broker) on every health poll.
+     * Returns consumer lag for all active topics.
      *
-     * <p>When Kafka is unreachable the cache serves the last known values; the
-     * AdminClient's own exponential backoff (1 s → 30 s) then governs how often
-     * it retries bootstrap — not the health poll rate.
+     * <p>Uses a 15-second result cache. When the cache is stale, opens a
+     * short-lived {@link AdminClient}, queries all topics, then closes it
+     * immediately. There is no persistent AdminClient background thread — the
+     * source of the reconnect storm when Kafka is down.
      */
     private List<TopicLag> computeConsumerLag(List<String> topics) {
         if (topics.isEmpty()) return List.of();
@@ -177,31 +181,35 @@ public class HealthController {
             return lagCache.get();
         }
         List<TopicLag> result = new ArrayList<>();
-        for (String topic : topics) {
-            result.add(lagForTopic(topic));
+        try (AdminClient client = brokerConnectionFactory.adminClient(
+                com.joxette.management.BrokerConfig.DEFAULT_BROKER_ID)) {
+            for (String topic : topics) {
+                result.add(lagForTopic(client, topic));
+            }
+        } catch (Exception e) {
+            // Kafka unreachable — return cached (possibly empty) values
+            return lagCache.get();
         }
         lagCache.set(List.copyOf(result));
         lagCacheTime.set(now);
         return result;
     }
 
-    private TopicLag lagForTopic(String topic) {
+    private TopicLag lagForTopic(AdminClient client, String topic) {
         String groupId = "joxette-recorder-" + topic;
         try {
-            // Committed offsets for this consumer group.
-            var committed = adminClient
+            var committed = client
                     .listConsumerGroupOffsets(groupId)
                     .partitionsToOffsetAndMetadata()
                     .get(5, TimeUnit.SECONDS);
             if (committed.isEmpty()) {
                 return new TopicLag(topic, -1, Map.of());
             }
-            // End offsets for the same set of topic-partitions.
             Map<TopicPartition, OffsetSpec> offsetRequest = new LinkedHashMap<>();
             for (TopicPartition tp : committed.keySet()) {
                 offsetRequest.put(tp, OffsetSpec.latest());
             }
-            Map<TopicPartition, ListOffsetsResult.ListOffsetsResultInfo> endOffsets = adminClient
+            Map<TopicPartition, ListOffsetsResult.ListOffsetsResultInfo> endOffsets = client
                     .listOffsets(offsetRequest)
                     .all()
                     .get(5, TimeUnit.SECONDS);
