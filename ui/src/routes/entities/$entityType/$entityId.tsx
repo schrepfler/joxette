@@ -14,7 +14,6 @@ import { LoadingSpinner } from '../../../components/LoadingSpinner'
 import { ErrorMessage } from '../../../components/ErrorMessage'
 import { ConfirmDialog } from '../../../components/ConfirmDialog'
 import { ReplayToTopicPanel } from '../../../components/ReplayToTopicPanel'
-import { SequenceQueryPanel } from '../../../components/SequenceQueryPanel'
 import { SolQueryPanel } from '../../../components/SolQueryPanel'
 import { ViewModeBar } from '../../../components/ViewModeBar'
 import { SequenceBarcodeView, BarcodeLegend, type BarcodeRow } from '../../../components/SequenceBarcodeView'
@@ -48,10 +47,10 @@ function tryDecodeBase64(s: string): string | null {
 
 function tryParseValue(s: string | null): { parsed: unknown; raw: string } | null {
   if (!s) return null
-  try { return { parsed: JSON.parse(s) as JsonValue, raw: s } } catch { /* continue */ }
+  try { return { parsed: JSON.parse(s) as unknown, raw: s } } catch { /* continue */ }
   const decoded = tryDecodeBase64(s)
   if (decoded) {
-    try { return { parsed: JSON.parse(decoded) as JsonValue, raw: decoded } } catch { /* continue */ }
+    try { return { parsed: JSON.parse(decoded) as unknown, raw: decoded } } catch { /* continue */ }
   }
   return null
 }
@@ -118,7 +117,7 @@ function EntityInstancePage() {
   const [cursors, setCursors] = useState<string[]>([])
   const [deleteStep, setDeleteStep] = useState<0 | 1 | 2>(0)
   const [activeTab, setActiveTab] = useState<'records' | 'sol' | 'timeline' | 'barcode'>('records')
-  const [_replayPipelineFragments, setReplayPipelineFragments] = useState<FragmentDefinition[]>([])
+  const [_replayPipelineFragments, _setReplayPipelineFragments] = useState<FragmentDefinition[]>([])
 
   // Streaming state
   const [streamMode, setStreamMode] = useState<StreamMode>('json')

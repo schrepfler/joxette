@@ -29,7 +29,7 @@ import {
   historyKeymap,
   indentWithTab,
 } from '@codemirror/commands'
-import { autocompletion, completionKeymap, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete'
+import { completionKeymap, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete'
 import { syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { solLanguage } from './sol-language'

@@ -1,7 +1,6 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useRef, useState } from 'react'
 import * as d3Hierarchy from 'd3-hierarchy'
 import * as d3Shape from 'd3-shape'
-import * as d3Interpolate from 'd3-interpolate'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -96,7 +95,7 @@ export function SunburstChart({
     .sort((a, b) => (b.value ?? 0) - (a.value ?? 0))
 
   // Re-sum using nodeCount directly (not leaf-only)
-  root.each(d => { (d as any).value = d.data.nodeCount })
+  root.each(d => { (d as d3Hierarchy.HierarchyNode<SunburstNode> & { value: number }).value = d.data.nodeCount })
 
   const partition = d3Hierarchy.partition<SunburstNode>()
     .size([2 * Math.PI, maxSteps + 1])
@@ -120,13 +119,8 @@ export function SunburstChart({
 
   // Zoom state
   const [zoomNode, setZoomNode] = useState<d3Hierarchy.HierarchyRectangularNode<SunburstNode>>(partitioned)
-  const [animating, setAnimating] = useState(false)
-
-  // Stash current coordinates for transition interpolation
-  const prevRef = useRef<Map<number, { x0: number; x1: number; y0: number; y1: number }>>(new Map())
 
   function handleDoubleClick(d: d3Hierarchy.HierarchyRectangularNode<SunburstNode>) {
-    if (animating) return
     const target = d.depth > 0 ? d : partitioned  // double-click root = zoom out
     setZoomNode(target)
     setPath(target.ancestors().reverse().map(n => n.data).slice(1))
@@ -228,8 +222,7 @@ export function SunburstChart({
 
             {/* Arc labels for large arcs */}
             {visibleNodes.filter(d => d.depth > 0 && (d.x1 - d.x0) > 0.15).map(d => {
-              const midAngle = (zoomedArc(d).match(/A.*?(\d+\.?\d*),(\d+\.?\d*)/) ?? [])[0]
-              const centroid = arc.centroid(d as any)
+              const centroid = arc.centroid(d as d3Hierarchy.HierarchyRectangularNode<SunburstNode>)
               if (!centroid || isNaN(centroid[0])) return null
               const xScale = (x: number) => ((x - zoomNode.x0) / (zoomNode.x1 - zoomNode.x0)) * 2 * Math.PI
               const cx = (radius * Math.sqrt((d.y0 + d.y1) / 2 / (maxSteps + 1))) *

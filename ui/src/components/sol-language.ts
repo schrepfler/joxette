@@ -19,7 +19,6 @@ import {
 const KEYWORDS   = ['match', 'split', 'filter', 'set', 'replace', 'combine', 'with', 'if', 'and', 'or', 'not', 'null', 'start', 'end']
 const FUNCTIONS  = ['duration', 'length', 'sum', 'min', 'max', 'avg', 'any', 'all', 'unique', 'position', 'concat', 'lower', 'upper', 'strlen', 'coalesce', 'now', 'abs', 'round', 'floor', 'ceiling', 'log', 'date', 'time', 'datetime', 'datepart', 'time_bucket', 'edit_distance', 'regex_count', 'regex_substr', 'regex_replace']
 const IMPLICIT_TAGS = ['MATCHED', 'PREFIX', 'SUFFIX', 'SEQ']
-const OPERATORS  = ['>>', '*', '+', '?', '^', '|']
 
 // ── Stream language (tokeniser) ────────────────────────────────────────────────
 

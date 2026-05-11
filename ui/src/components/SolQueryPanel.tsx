@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { cassettesApi, type EntityRecord, type SolMatchResponse } from '../api/client'
+import { cassettesApi, type EntityRecord } from '../api/client'
 import { JsonView } from './JsonView'
 import { SolEditor } from './SolEditor'
 import { SolSequenceInspector } from './SolSequenceInspector'

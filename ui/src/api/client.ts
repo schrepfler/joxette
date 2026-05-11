@@ -101,6 +101,7 @@ export interface CassetteRecord {
   key: string | null
   value: string | null
   headers: Header[]
+  messageType: string | null
 }
 
 export interface EntityRecord {
@@ -980,7 +981,7 @@ export const brokersApi = {
     request<PeekMessage[]>(
       `/brokers/${encodeURIComponent(brokerId)}/topics/${encodeURIComponent(topic)}/peek${buildQuery({ limit })}`,
     ),
-  listTopics: (brokerId: string, params?: { includeInternal?: boolean; filter?: string }) =>
+  listTopics: (brokerId: string, params?: { includeInternal?: string; filter?: string }) =>
     request<BrokerTopicInfo[]>(
       `/brokers/${encodeURIComponent(brokerId)}/topics${buildQuery(params ?? {})}`,
     ),
