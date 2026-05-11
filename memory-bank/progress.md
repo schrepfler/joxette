@@ -147,6 +147,25 @@
 - [x] `POST /cassettes/topics/{topic}/sol-match` in `CassetteController`
 - [x] `SolMatchIT` — 6 parameterised scenarios (simple match, wildcard, filter, duration constraint); all green
 
+### SOL query UI (`joxette-ui`) — from Motif + Observable analysis
+> Reference docs: `docs/motif-ui-reference.md`, `docs/sunburst-sequence-reference.md`
+- [ ] `SolQueryPanel` — CodeMirror editor with SOL keyword highlighting and event-name autocomplete (vocab from entity stats API)
+- [ ] Recipe library dropdown — SOL snippet templates (funnel, attribution, sessionize, dedup, retention)
+- [ ] Sequence grid tag highlighting — `tagsForIndex()` → coloured left border + tag badge on matched rows
+- [ ] `SolSequenceInspector` — collapsible tag coverage bars (PREFIX / MATCHED / SUFFIX proportions)
+- [ ] Live preview — debounce 500ms → POST sol-match → stream results via SSE
+- [ ] SOL status bar — event count · match status · unexpected null count
+
+### Sunburst sequence chart — from Observable NFL notebook analysis
+> Reference doc: `docs/sunburst-sequence-reference.md`
+- [ ] Backend: `POST /cassettes/entities/{type}/sunburst` — builds prefix-tree hierarchy from all entity sequences, accepts optional `solQuery` for pre-filtering
+- [ ] `buildHierarchy(sequences)` — prefix-tree builder (TypeScript, follows `docs/sunburst-sequence-reference.md` §10.2)
+- [ ] D3 sunburst component — arc geometry with sqrt radii, arcVisible filter, colour by event name (golden-angle hue hash)
+- [ ] Zoom interaction — double-click to zoom in, double-click centre to zoom out (D3 tween)
+- [ ] Breadcrumb trail — pentagon chevrons showing current path, count and % in final crumb
+- [ ] Colour modes — event name (default), SOL tag highlight, outcome probability
+- [ ] Property distribution panel — right-click arc → histogram/bar chart of a chosen event/sequence property
+
 ### Functional gaps
 - [x] `entity_source_matchers.id_source` — verified consistent: `init.sql`, `DuckDBTestSupport`, `ConfigRepository.VALID_ID_SOURCES`, and `EntityIdExtractor` all use `'header'` (singular). `EntityIdExtractorTest` covers the header path. No fix needed.
 
