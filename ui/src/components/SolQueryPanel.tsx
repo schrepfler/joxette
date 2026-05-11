@@ -1,8 +1,8 @@
-import { useState, useRef, useCallback } from 'react'
-import { useMutation } from '@tanstack/react-query'
+import { useState } from 'react'
+import { useMutation, useQuery } from '@tanstack/react-query'
 import { cassettesApi, type EntityRecord, type SolMatchResponse } from '../api/client'
-import { useDebounce } from '../hooks/useDebounce'
 import { JsonView } from './JsonView'
+import { SolEditor } from './SolEditor'
 
 interface Props {
   mode: 'entity' | 'topic'
@@ -87,7 +87,20 @@ export function SolQueryPanel({ mode, entityType, entityId, topic, from, to }: P
     'match A(event_name) >> * >> B(other_event)\nif duration(A, B) < 5min',
   )
   const [recipesOpen, setRecipesOpen] = useState(false)
-  const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  // Fetch event-name vocabulary for autocomplete
+  const fieldsQuery = useQuery({
+    queryKey: ['fields', mode, entityType ?? topic],
+    queryFn: () =>
+      mode === 'entity' && entityType
+        ? cassettesApi.getEntityFields(entityType)
+        : topic
+          ? cassettesApi.getTopicFields(topic)
+          : Promise.resolve([]),
+    staleTime: 300_000,
+    enabled: !!(entityType || topic),
+  })
+  const eventNames = fieldsQuery.data ?? []
 
   const mutation = useMutation({
     mutationFn: () => {
@@ -104,24 +117,6 @@ export function SolQueryPanel({ mode, entityType, entityId, topic, from, to }: P
   function applyRecipe(sol: string) {
     setQuery(sol)
     setRecipesOpen(false)
-    textareaRef.current?.focus()
-  }
-
-  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    // Ctrl/Cmd+Enter → run
-    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-      e.preventDefault()
-      mutation.mutate()
-    }
-    // Tab → insert 2 spaces (don't lose focus)
-    if (e.key === 'Tab') {
-      e.preventDefault()
-      const el = e.currentTarget
-      const { selectionStart: s, selectionEnd: e2 } = el
-      const next = el.value.slice(0, s) + '  ' + el.value.slice(e2)
-      setQuery(next)
-      requestAnimationFrame(() => { el.selectionStart = el.selectionEnd = s + 2 })
-    }
   }
 
   const result = mutation.data
@@ -179,6 +174,11 @@ export function SolQueryPanel({ mode, entityType, entityId, topic, from, to }: P
 
         <div style={{ flex: 1 }} />
 
+        {eventNames.length > 0 && (
+          <span style={{ fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)' }}>
+            {eventNames.length} event types · Ctrl+Space for autocomplete
+          </span>
+        )}
         <span style={{ fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)' }}>
           ⌘↵ to run
         </span>
@@ -192,32 +192,15 @@ export function SolQueryPanel({ mode, entityType, entityId, topic, from, to }: P
       </div>
 
       {/* ── SOL editor textarea ───────────────────────────────────────── */}
-      <div style={{ position: 'relative' }}>
-        <textarea
-          ref={textareaRef}
-          value={query}
-          onChange={e => setQuery(e.target.value)}
-          onKeyDown={handleKeyDown}
-          spellCheck={false}
-          style={{
-            width: '100%', boxSizing: 'border-box',
-            minHeight: 120,
-            padding: '10px 12px',
-            fontFamily: 'var(--font-mono)',
-            fontSize: 'var(--type-mono-size)',
-            lineHeight: 1.6,
-            color: 'var(--ink-primary)',
-            background: 'var(--surface-raised)',
-            border: '1px solid var(--rule)',
-            borderRadius: 'var(--radius-sm)',
-            resize: 'vertical',
-            outline: 'none',
-            tabSize: 2,
-          }}
-          onFocus={e => (e.currentTarget.style.borderColor = 'var(--accent)')}
-          onBlur={e => (e.currentTarget.style.borderColor = 'var(--rule)')}
-        />
-      </div>
+      {/* ── CodeMirror SOL editor ─────────────────────────────────────── */}
+      <SolEditor
+        value={query}
+        onChange={setQuery}
+        onRun={() => mutation.mutate()}
+        eventNames={eventNames}
+        minHeight={120}
+        disabled={mutation.isPending}
+      />
 
       {/* ── Error ─────────────────────────────────────────────────────── */}
       {mutation.error && (
