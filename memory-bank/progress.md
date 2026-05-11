@@ -108,7 +108,16 @@
 - [x] `SequenceBarcodeView` + `BarcodeLegend` — horizontal scrollable barcode chart
 - [x] Entity detail: [Records][SOL][Timeline][Barcode] view modes
 - [x] Topic detail: [Records][SOL][Timeline][Barcode] view modes
-- [x] Entity type detail: Known Entities [List][Barcode] view modes
+- [x] Entity type detail: Known Entities [List][Barcode][Sunburst] view modes
+- [x] `SolEditor` — CodeMirror 6 with SOL syntax highlighting + autocomplete (event vocab, Ctrl+Space, ⌘↵ to run)
+- [x] `SolSequenceInspector` — tag coverage bars (position + width from span indices); clickable rows filter event table; hint strip + clear button
+- [x] `SequenceBarcodeView` — `'numeric'` colour mode (diverging red→white→green); `extractNumeric` dot-path extractor; `NumericLegend`; `buildTagMap` helper; `tagColor` palette
+- [x] `MultiEntityBarcodePanel` — SOL overlay strip (parallel `solMatchEntity`, tag colour mode, legend); "Colour by field" numeric strip
+- [x] `SunburstChart` — D3 partition + sqrt radii; zoom on double-click; breadcrumb trail; `onArcRightClick` + `collectSubtreeSeqIds`; right-click hint in stats line
+- [x] `SunburstDistributionPanel` — fetches ≤20 sequences for arc subtree, extracts numeric field, 10-bucket histogram with min/max/mean
+- [x] `SunburstPanel` — SOL pre-filter bar (server-side filter, match count, clear)
+- [x] Known entities sort controls — A–Z / Last Active / Most Messages; compound keyset cursors (epoch-ms + entity_id); `EntitySortBy` enum
+- [x] `known_entities` enrichment — `message_count`, `source_topics`, `last_message_type` columns; `SchemaManager` migration; `KnownEntitiesRepository` upsert; UI columns in entity list
 
 ### Schema
 - [x] `SchemaManager` creates all tables at startup (idempotent)
@@ -166,22 +175,33 @@
 - [x] Entity detail: [Records][SOL][Timeline][Barcode] view modes
 - [x] Topic detail: [Records][SOL][Timeline][Barcode] view modes
 - [x] Entity type detail: Known Entities [List][Barcode] switcher
-- [ ] `SolQueryPanel` CodeMirror upgrade — syntax highlighting for SOL keywords
-- [ ] Autocomplete from entity `messageType` vocab — `GET /cassettes/entities/{type}/fields`
-- [ ] `SolSequenceInspector` — collapsible tag coverage bars (PREFIX / MATCHED / SUFFIX proportions)
-- [ ] Barcode: colour by numeric field (diverging red→green scale, like EPA in NFL barcode chart)
-- [ ] SOL tag overlay on multi-entity barcode — highlight matched events across all rows
+- [x] `SolQueryPanel` CodeMirror upgrade — syntax highlighting + autocomplete (event vocab, Ctrl+Space, ⌘↵)
+- [x] Autocomplete from entity `messageType` vocab — `GET /cassettes/entities/{type}/fields`
+- [x] `SolSequenceInspector` — tag coverage bars; clickable rows filter event table
+- [x] Barcode: colour by numeric field (diverging red→green, `extractNumeric` dot-path)
+- [x] SOL tag overlay on multi-entity barcode — `buildTagMap`, tag colour mode, legend
 
 ### Sunburst sequence chart — from Observable NFL notebook analysis
 > Reference doc: `docs/sunburst-sequence-reference.md`
-- [ ] Backend: `POST /cassettes/entities/{type}/sunburst` — prefix-tree hierarchy from all entity sequences, optional `solQuery` pre-filter
-- [ ] TypeScript hierarchy builder — prefix-tree construction (§10.2 of sunburst reference)
-- [ ] D3 sunburst component — arc geometry with sqrt radii, arcVisible filter, colour by event name (golden-angle hue hash)
-- [ ] Zoom — double-click to zoom in, double-click centre to zoom out (D3 tween, 750ms)
-- [ ] Breadcrumb trail — pentagon chevrons showing current path, count and % in final crumb
-- [ ] Colour modes — event name (default), SOL tag highlight, outcome probability
-- [ ] Entity type page: add [Sunburst] as 3rd view mode alongside [List][Barcode]
-- [ ] Property distribution panel — right-click arc → histogram of chosen event/sequence property
+- [x] Backend: `POST /cassettes/entities/{type}/sunburst` — prefix-tree hierarchy, optional `solQuery` pre-filter
+- [x] D3 sunburst component — sqrt radii, arcVisible filter, golden-angle hue hash
+- [x] Zoom — double-click to zoom in, double-click centre to zoom out
+- [x] Breadcrumb trail — pentagon chevrons, count + % in stats line
+- [x] Entity type page: [List][Barcode][Sunburst] view modes
+- [x] Property distribution panel — right-click arc → 10-bucket histogram + min/max/mean
+- [x] SOL pre-filter — server-side filter before prefix tree construction
+
+### Stability backlog
+- [ ] **Tests**: `EntityReplayService` sort/cursor unit tests
+- [ ] **Tests**: `SunburstService` SOL pre-filter unit test
+- [ ] **Tests**: `SolEngine` additional edge cases (tag span correctness, combine+replace)
+- [ ] **Error surfacing**: `MultiEntityBarcodePanel` per-row SOL error badge (swallowed by `useQueries`)
+- [ ] **Error surfacing**: `SunburstDistributionPanel` network error state
+- [ ] **TS cleanup**: `client.ts:984` `includeInternal: boolean` incompatible with `QueryParams` index signature
+- [ ] **TS cleanup**: `SunburstChart.tsx` unused vars + implicit `any` D3 params
+- [ ] **TS cleanup**: `$entityId.tsx` / `$topic.tsx` unused imports + `JsonValue` undefined
+- [ ] **Performance**: `extractNumeric` called per-record per-render — wrap in `useMemo` in `MultiEntityBarcodePanel`
+- [ ] **Kafka**: verify short-lived AdminClient fix silences `adminclient-1` reconnect noise in practice
 
 ### Kafka resilience
 - [x] `reconnect.backoff.ms` raised 50ms → 1s, `reconnect.backoff.max.ms` = 30s in `BrokerConnectionFactory`

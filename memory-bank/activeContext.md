@@ -1,75 +1,65 @@
 # Active Context
 
-## Current Work Focus — UI visualisation (view modes, SOL panel, barcode, sunburst)
+## Current Focus — Stability & quality
 
-Adding multi-mode visualisations to every cassette page, informed by the Motif Analytics
-and Observable sequences collection analysis (docs/motif-ui-reference.md,
-docs/sunburst-sequence-reference.md, docs/observable-sequences-reference.md).
+Having shipped all planned visualisation features, the focus shifts to making
+the system robust: test coverage for new code, surfacing errors properly,
+and closing known rough edges.
 
-### Completed this session
+### Recently completed (visualisation sprint)
 
-**Infrastructure**
-- `ViewModeBar<T>` — generic segmented control used across all three pages
-- `SolQueryPanel` — SOL textarea editor + recipe dropdown (10 recipes) + result table with
-  colour-hashed event pills and inline JSON expand; calls `POST .../sol-match`
-- `SequenceBarcodeView` — SVG barcode: one row per entity, rect width ∝ timestamp gap,
-  colour by messageType (golden-angle hash) or SOL tag highlight; hover tooltip
-- `MultiEntityBarcodePanel` — parallel `useQueries` fetcher for ≤20 entities, stacked rows
-- `cassettesApi.solMatchEntity/solMatchTopic` + `SolMatchResponse` type in client.ts
-- `NflDriveSolTest` (17 tests) — real CHI@GB 2019 drive data as SOL unit tests; 42 total green
+**SOL engine & endpoints**
+- `sol` standalone module (zero Joxette deps): model, parser, engine, expression evaluator
+- `joxette-sol` adapter: `EntityRecordAdapter`, `SolResultMapper`
+- `POST .../sol-match` (entity + topic), `SolMatchService`, `SolMatchIT`
 
-**Page updates**
-- Entity detail: 2-tab → 4-mode [Records][SOL][Timeline][Barcode]
-- Topic detail: 2-tab → 4-mode [Records][SOL][Timeline][Barcode]
-- Entity type detail: Known Entities gains [List][Barcode] switcher
+**UI visualisations**
+- `ViewModeBar<T>` — generic segmented control across all pages
+- `SolEditor` — CodeMirror 6 with SOL syntax highlighting + autocomplete (event vocab)
+- `SolQueryPanel` — recipe dropdown, run, status bar, result table; `SolSequenceInspector` tag coverage bars; clickable tag rows filter the event table
+- `SequenceBarcodeView` — time/index modes; colour by type / SOL tag / numeric field (diverging red→green); `buildTagMap`, `extractNumeric`, `NumericLegend`
+- `MultiEntityBarcodePanel` — SOL overlay strip (parallel entity matches, tag colour mode); "Colour by field" numeric strip
+- `SunburstChart` — D3 partition, sqrt radii, zoom, breadcrumb trail, right-click → distribution panel; `onArcRightClick`, `collectSubtreeSeqIds`
+- `SunburstDistributionPanel` — fetches sequences for arc's subtree, extracts numeric field, 10-bucket histogram
+- `SunburstPanel` — SOL pre-filter bar (server-side, skips non-matching sequences in prefix tree)
+- Entity type detail: [List][Barcode][Sunburst] view modes with sort controls (A–Z / Last Active / Most Messages)
+- Entity detail + Topic detail: [Records][SOL][Timeline][Barcode] view modes
 
-**Documentation**
-- `docs/motif-ui-reference.md` — full Motif Analytics UI reverse-engineering (ASCII art,
-  all components, colour system, Joxette mapping)
-- `docs/sunburst-sequence-reference.md` — Observable NFL sunburst + sequence query language
-- `docs/observable-sequences-reference.md` — barcode chart, tennis sunburst, data schemas
-- `docs/sol-specification.md` — SOL language reference from Motif wayback archive
-
-### Next up
-
-1. **Sunburst chart** — D3 prefix-tree chart for entity type pages
-   - Backend `POST /cassettes/entities/{type}/sunburst`
-   - TypeScript hierarchy builder + D3 arc geometry (sqrt radii, arcVisible)
-   - Zoom (double-click), breadcrumb trail, colour modes
-   - Integrate into entity type page as a 3rd view mode [List][Barcode][Sunburst]
-
-2. **SOL panel polish**
-   - CodeMirror syntax highlighting (replace plain textarea)
-   - Autocomplete from entity `messageType` vocab (GET /cassettes/entities/{type}/fields)
-   - Sequence inspector (tag coverage bars below editor)
-
-3. **Barcode enhancements**
-   - Colour by numeric field (diverging red→green, like EPA in NFL chart)
-   - SOL-tag overlay on multi-entity barcode
+**Backend**
+- `SunburstService` — prefix-tree builder, SOL pre-filter wired
+- `EntityReplayService` — `EntitySortBy` enum (id/lastActive/mostMessages), compound keyset cursors
+- `known_entities` enriched: `message_count`, `source_topics`, `last_message_type`
 
 ---
 
-## Previous Focus — SOL engine + match endpoints
+## Stability plan
 
-`sol` module (standalone, zero Joxette deps) + `joxette-sol` adapter +
-`POST .../sol-match` endpoints + `SolMatchIT`. All complete and green.
-See progress.md for full checklist.
+### 1. Test coverage (highest priority)
+- `EntityReplayService` sort + compound cursor logic (unit tests with in-memory jOOQ or SQL assertions)
+- `SunburstService` SOL pre-filter (unit: mock entity records, assert filtered sequences)
+- `SolSequenceInspector` tag-row filtering logic (pure function — easy to unit test)
+- `SolEngine` edge cases from production usage (tag spans, combine, replace)
+- UI: error states in `MultiEntityBarcodePanel` (failed solMatchEntity), `SunburstDistributionPanel` (no values found)
 
-## Previous Focus — Kafka exponential backoff
+### 2. Error surfacing
+- SOL parse errors in `SolQueryPanel` show as inline error (already done for mutation errors; check parse-only path)
+- `MultiEntityBarcodePanel` — individual `solMatchEntity` failures currently swallowed by `useQueries`; surface a per-row error badge
+- `SunburstDistributionPanel` — network errors currently uncaught; add error state
 
-`resilience4j-spring-boot4:2.4.0` added. `BrokerConnectionFactory` raises Kafka
-reconnect backoff from 50ms → 1s (max 30s). `RecordingCoordinator.runInSupervisedScope`
-wraps recorder in Resilience4j `Retry` with exponential-random backoff (5s → ×2 → 5min cap).
+### 3. Known TS pre-existing errors
+- `client.ts:984` — `includeInternal: boolean` incompatible with `QueryParams` index signature
+- `SunburstChart.tsx` — unused `setAnimating`/`prevRef`, implicit `any` params from D3 generics
+- `$entityId.tsx` / `$topic.tsx` — `SequenceQueryPanel` unused import, `JsonValue` undefined
 
-## Previous Focus — UI retention page + scheduled replay
+### 4. Kafka reconnect noise
+- `adminclient-1` still logs aggressive reconnect attempts when broker is down
+- Current fix: short-lived AdminClient per health check (15s cache); verify it's working in practice
+- Fallback: suppress the log level for the specific logger if reconnect noise is still present
 
-Retention page (`/retention`) with status, trigger, history table.
-`ReplayToTopicPanel` gained `startDelayMs` input passed as `start_delay_ms` query param.
-`GET /compaction/retention-history` + `POST /compaction/trigger-retention` added to backend.
-
-## Previous Focus — Maven module split (joxette-core / joxette-kafka / joxette-service / joxette-test-kit)
-
-Four-module layout. See progress.md for full details.
+### 5. Performance / edge cases
+- Sunburst with large entity counts (>500) — `SunburstService` pages all entities; check memory pressure
+- Barcode numeric extraction — `extractNumeric` called per-record per-render (no memo); move to useMemo
+- `buildTagMap` called inside render loops in `MultiEntityBarcodePanel` — already in useMemo via `rowsWithTags`
 
 ---
 
@@ -87,5 +77,6 @@ Non-UTF-8 binary values are base64-encoded on write. Fully queryable via `header
 ### ScheduledReplayService is in-memory only
 Not persisted across restarts. Acceptable for test fixtures.
 
-### Bootstrap YAML still needed for table creation
-`SchemaManager` reads from `JoxetteProperties.getBootstrap()` at startup.
+### `sol` group ID rename deferred
+Keeping `com.sol` package names as-is; group ID rename (`com.joxette → com.sol`) deferred
+until the library is ready to publish independently.
