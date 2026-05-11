@@ -103,6 +103,12 @@ public class BrokerConnectionFactory {
         props.put(AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG, cfg.bootstrapServers());
         props.put(AdminClientConfig.REQUEST_TIMEOUT_MS_CONFIG, 3_000);
         props.put(AdminClientConfig.DEFAULT_API_TIMEOUT_MS_CONFIG, 5_000);
+        // Back off slowly when the broker is unreachable — mirrors consumer settings.
+        // Without these the AdminClient hammers bootstrap at ~50ms intervals.
+        props.put("reconnect.backoff.ms",      "1000");
+        props.put("reconnect.backoff.max.ms",  "30000");
+        // Don't hold idle TCP connections open indefinitely.
+        props.put("connections.max.idle.ms",   "60000");
         applySecurityPropsMap(props, cfg);
         return AdminClient.create(props);
     }

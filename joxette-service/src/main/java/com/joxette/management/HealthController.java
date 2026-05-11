@@ -30,6 +30,8 @@ import java.util.*;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Liveness and observability endpoints.
@@ -96,6 +98,12 @@ public class HealthController {
     private final Connection duckDB;
     private final PrometheusMeterRegistry metricsRegistry;
 
+    /** Cached consumer lag result — refreshed at most once every 15 seconds. */
+    private final AtomicReference<List<TopicLag>> lagCache = new AtomicReference<>(List.of());
+    /** Epoch-ms timestamp of the last successful lag query. */
+    private final AtomicLong lagCacheTime = new AtomicLong(0);
+    private static final long LAG_CACHE_TTL_MS = 15_000;
+
     public HealthController(
             @Lazy RecordingCoordinator coordinator,
             JoxetteProperties properties,
@@ -154,12 +162,26 @@ public class HealthController {
     // Consumer lag
     // -------------------------------------------------------------------------
 
+    /**
+     * Returns consumer lag for all active topics, using a 15-second cache to
+     * avoid hammering the AdminClient (and therefore the broker) on every health poll.
+     *
+     * <p>When Kafka is unreachable the cache serves the last known values; the
+     * AdminClient's own exponential backoff (1 s → 30 s) then governs how often
+     * it retries bootstrap — not the health poll rate.
+     */
     private List<TopicLag> computeConsumerLag(List<String> topics) {
         if (topics.isEmpty()) return List.of();
+        long now = System.currentTimeMillis();
+        if (now - lagCacheTime.get() < LAG_CACHE_TTL_MS) {
+            return lagCache.get();
+        }
         List<TopicLag> result = new ArrayList<>();
         for (String topic : topics) {
             result.add(lagForTopic(topic));
         }
+        lagCache.set(List.copyOf(result));
+        lagCacheTime.set(now);
         return result;
     }
 
