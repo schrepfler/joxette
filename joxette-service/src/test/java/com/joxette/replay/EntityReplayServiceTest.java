@@ -196,7 +196,7 @@ class EntityReplayServiceTest {
         insertKnownEntity("order", "ORD-B", 2, "2024-01-02T00:00:00Z");
         insertKnownEntity("customer", "CUST-1", 3, "2024-01-01T00:00:00Z"); // different type
 
-        PagedResponse<EntityInfo> page = service.listEntities("order", 50, null);
+        PagedResponse<EntityInfo> page = service.listEntities("order", 50, null, EntityReplayService.EntitySortBy.id);
 
         assertThat(page.data()).hasSize(2);
         assertThat(page.data()).extracting(EntityInfo::entityId)
@@ -209,12 +209,12 @@ class EntityReplayServiceTest {
         insertKnownEntity("order", "ORD-2", 2, "2024-01-01T00:00:00Z");
         insertKnownEntity("order", "ORD-3", 3, "2024-01-01T00:00:00Z");
 
-        PagedResponse<EntityInfo> page1 = service.listEntities("order", 2, null);
+        PagedResponse<EntityInfo> page1 = service.listEntities("order", 2, null, EntityReplayService.EntitySortBy.id);
         assertThat(page1.data()).hasSize(2);
         assertThat(page1.hasMore()).isTrue();
         assertThat(page1.data()).extracting(EntityInfo::entityId).containsExactly("ORD-1", "ORD-2");
 
-        PagedResponse<EntityInfo> page2 = service.listEntities("order", 2, page1.nextCursor());
+        PagedResponse<EntityInfo> page2 = service.listEntities("order", 2, page1.nextCursor(), EntityReplayService.EntitySortBy.id);
         assertThat(page2.data()).hasSize(1);
         assertThat(page2.hasMore()).isFalse();
         assertThat(page2.data().get(0).entityId()).isEqualTo("ORD-3");
@@ -226,7 +226,7 @@ class EntityReplayServiceTest {
         insertKnownEntity("order", "ORD-BETA",  2, "2024-01-01T00:00:00Z");
         insertKnownEntity("order", "ORD-GAMMA", 3, "2024-01-01T00:00:00Z");
 
-        PagedResponse<EntityInfo> page = service.searchEntities("order", "alpha", 50, null);
+        PagedResponse<EntityInfo> page = service.searchEntities("order", "alpha", 50, null, EntityReplayService.EntitySortBy.id);
 
         assertThat(page.data()).hasSize(1);
         assertThat(page.data().get(0).entityId()).isEqualTo("ORD-ALPHA");
@@ -236,7 +236,7 @@ class EntityReplayServiceTest {
     void searchEntities_noMatch_returnsEmpty() throws Exception {
         insertKnownEntity("order", "ORD-1", 1, "2024-01-01T00:00:00Z");
 
-        PagedResponse<EntityInfo> page = service.searchEntities("order", "XXXXXX", 50, null);
+        PagedResponse<EntityInfo> page = service.searchEntities("order", "XXXXXX", 50, null, EntityReplayService.EntitySortBy.id);
 
         assertThat(page.data()).isEmpty();
     }
