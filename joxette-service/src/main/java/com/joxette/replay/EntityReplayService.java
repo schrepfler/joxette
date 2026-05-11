@@ -386,58 +386,78 @@ public class EntityReplayService implements EntityCassetteSource {
     // Known-entity list / search
     // -------------------------------------------------------------------------
 
+    /** Sort order for the known-entities list. */
+    public enum EntitySortBy { id, lastActive, mostMessages }
+
     /**
-     * Lists known entities of {@code entityType} from {@code known_entities},
-     * ordered by {@code entity_id} ascending.
+     * Lists known entities of {@code entityType} from {@code known_entities}.
+     *
+     * @param sortBy  one of id (default), lastActive (DESC last_seen, ASC entity_id),
+     *                mostMessages (DESC message_count, ASC entity_id)
      */
     public PagedResponse<EntityInfo> listEntities(
-            String entityType, int limit, String cursor
+            String entityType, int limit, String cursor, EntitySortBy sortBy
     ) throws SQLException {
-        String afterId = cursor != null ? decodePlainCursor(cursor) : null;
-
-        var selectBase = dsl
-                .select(F_ENTITY_TYPE, F_ENTITY_ID, F_FIRST_SEEN, F_LAST_SEEN,
-                        F_MESSAGE_COUNT, F_SOURCE_TOPICS, F_LAST_MESSAGE_TYPE)
-                .from(KNOWN_ENTITIES)
-                .where(F_ENTITY_TYPE.eq(entityType))
-                .orderBy(F_ENTITY_ID.asc());
-
-        List<EntityInfo> entities;
-        if (afterId != null) {
-            entities = selectBase.seekAfter(afterId).limit(limit + 1).fetch(EntityReplayService::mapEntityInfo);
-        } else {
-            entities = selectBase.limit(limit + 1).fetch(EntityReplayService::mapEntityInfo);
-        }
-
-        return TopicReplayService.buildPage(entities, limit,
-                e -> encodePlainCursor(e.entityId()));
+        Condition where = F_ENTITY_TYPE.eq(entityType);
+        return fetchEntityPage(where, limit, cursor, sortBy);
     }
 
     /**
      * Searches known entities whose {@code entity_id} contains {@code q} (case-insensitive).
      */
     public PagedResponse<EntityInfo> searchEntities(
-            String entityType, String q, int limit, String cursor
+            String entityType, String q, int limit, String cursor, EntitySortBy sortBy
     ) throws SQLException {
-        String afterId = cursor != null ? decodePlainCursor(cursor) : null;
+        Condition where = F_ENTITY_TYPE.eq(entityType)
+                .and(F_ENTITY_ID.likeIgnoreCase("%" + escapeLike(q) + "%"));
+        return fetchEntityPage(where, limit, cursor, sortBy);
+    }
 
-        var selectBase = dsl
+    private PagedResponse<EntityInfo> fetchEntityPage(
+            Condition where, int limit, String cursor, EntitySortBy sortBy
+    ) {
+        var select = dsl
                 .select(F_ENTITY_TYPE, F_ENTITY_ID, F_FIRST_SEEN, F_LAST_SEEN,
                         F_MESSAGE_COUNT, F_SOURCE_TOPICS, F_LAST_MESSAGE_TYPE)
                 .from(KNOWN_ENTITIES)
-                .where(F_ENTITY_TYPE.eq(entityType)
-                        .and(F_ENTITY_ID.likeIgnoreCase("%" + escapeLike(q) + "%")))
-                .orderBy(F_ENTITY_ID.asc());
+                .where(where);
 
-        List<EntityInfo> entities;
-        if (afterId != null) {
-            entities = selectBase.seekAfter(afterId).limit(limit + 1).fetch(EntityReplayService::mapEntityInfo);
-        } else {
-            entities = selectBase.limit(limit + 1).fetch(EntityReplayService::mapEntityInfo);
-        }
+        List<EntityInfo> entities = switch (sortBy) {
+            case id -> {
+                String afterId = cursor != null ? decodePlainCursor(cursor) : null;
+                var sorted = select.orderBy(F_ENTITY_ID.asc());
+                List<EntityInfo> rows = afterId != null
+                        ? sorted.seekAfter(afterId).limit(limit + 1).fetch(EntityReplayService::mapEntityInfo)
+                        : sorted.limit(limit + 1).fetch(EntityReplayService::mapEntityInfo);
+                yield rows;
+            }
+            case lastActive -> {
+                String[] parts = cursor != null ? decodeTupleCursor(cursor) : null;
+                var sorted = select.orderBy(F_LAST_SEEN.desc(), F_ENTITY_ID.asc());
+                List<EntityInfo> rows = parts != null
+                        ? sorted.seekAfter(
+                                OffsetDateTime.ofInstant(Instant.ofEpochMilli(Long.parseLong(parts[0])), ZoneOffset.UTC),
+                                parts[1])
+                          .limit(limit + 1).fetch(EntityReplayService::mapEntityInfo)
+                        : sorted.limit(limit + 1).fetch(EntityReplayService::mapEntityInfo);
+                yield rows;
+            }
+            case mostMessages -> {
+                String[] parts = cursor != null ? decodeTupleCursor(cursor) : null;
+                var sorted = select.orderBy(F_MESSAGE_COUNT.desc(), F_ENTITY_ID.asc());
+                List<EntityInfo> rows = parts != null
+                        ? sorted.seekAfter(Long.parseLong(parts[0]), parts[1])
+                          .limit(limit + 1).fetch(EntityReplayService::mapEntityInfo)
+                        : sorted.limit(limit + 1).fetch(EntityReplayService::mapEntityInfo);
+                yield rows;
+            }
+        };
 
-        return TopicReplayService.buildPage(entities, limit,
-                e -> encodePlainCursor(e.entityId()));
+        return TopicReplayService.buildPage(entities, limit, e -> switch (sortBy) {
+            case id           -> encodePlainCursor(e.entityId());
+            case lastActive   -> encodeTupleCursor(String.valueOf(e.lastSeen().toEpochMilli()), e.entityId());
+            case mostMessages -> encodeTupleCursor(String.valueOf(e.messageCount()), e.entityId());
+        });
     }
 
     // -------------------------------------------------------------------------
@@ -555,6 +575,21 @@ public class EntityReplayService implements EntityCassetteSource {
 
     private static String decodePlainCursor(String encoded) {
         return new String(Base64.getUrlDecoder().decode(encoded), StandardCharsets.UTF_8);
+    }
+
+    /** Encodes two values separated by NUL into a URL-safe base64 cursor. */
+    private static String encodeTupleCursor(String first, String second) {
+        String joined = first + '\0' + second;
+        return Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(joined.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /** Decodes a tuple cursor; returns [first, second] or null if blank. */
+    private static String[] decodeTupleCursor(String encoded) {
+        String joined = new String(Base64.getUrlDecoder().decode(encoded), StandardCharsets.UTF_8);
+        int sep = joined.indexOf('\0');
+        if (sep < 0) return null;
+        return new String[]{ joined.substring(0, sep), joined.substring(sep + 1) };
     }
 
     private static String escapeLike(String q) {

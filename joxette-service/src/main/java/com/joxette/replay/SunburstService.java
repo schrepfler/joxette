@@ -74,7 +74,7 @@ public class SunburstService {
         String cursor = null;
         outer:
         do {
-            var page = entityReplayService.listEntities(entityType, 100, cursor);
+            var page = entityReplayService.listEntities(entityType, 100, cursor, EntityReplayService.EntitySortBy.id);
             for (EntityInfo info : page.data()) {
                 if (sequences.size() >= maxEntities) break outer;
                 List<EntityRecord> records = new ArrayList<>();

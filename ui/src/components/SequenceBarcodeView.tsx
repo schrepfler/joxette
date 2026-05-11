@@ -11,10 +11,11 @@ import type { EntityRecord } from '../api/client'
  * Inspired by the Observable NFL Barcode Chart analysis (docs/observable-sequences-reference.md).
  *
  * Colour modes:
- *   'type'    — colour by messageType (stable hash → hue)
- *   'numeric' — diverging red→green based on a numeric field extracted from value JSON
- *   'tag'     — accent for events in taggedIndices, muted grey for the rest
+ *   'type'  — colour by messageType (stable hash → hue)
+ *   'tag'   — colour each segment by its SOL tag name; grey if untagged
  */
+
+import type { SolTagSpan } from '../api/client'
 
 export type BarcodeXMode = 'time' | 'index'
 export type BarcodeColorMode = 'type' | 'tag'
@@ -22,8 +23,45 @@ export type BarcodeColorMode = 'type' | 'tag'
 export interface BarcodeRow {
   entityId: string
   records: EntityRecord[]
-  /** Indices of records that were matched by a SOL query (for 'tag' colour mode) */
-  taggedIndices?: Set<number>
+  /**
+   * Per-index tag name from a SOL match result (for 'tag' colour mode).
+   * Built from SolMatchResponse.tags via buildTagMap().
+   */
+  tagMap?: Map<number, string>
+}
+
+// ── SOL tag colour palette (mirrors SolSequenceInspector) ─────────────────────
+
+const IMPLICIT_PRIORITY = ['SEQ', 'PREFIX', 'MATCHED', 'SUFFIX']
+
+export function tagColor(name: string): string {
+  if (name === 'MATCHED') return 'var(--accent)'
+  if (name === 'PREFIX')  return 'hsl(200, 40%, 65%)'
+  if (name === 'SUFFIX')  return 'hsl(200, 30%, 75%)'
+  if (name === 'SEQ')     return 'hsl(0, 0%, 78%)'
+  const hue = (djb2(name) * 137.508) % 360
+  return `hsl(${hue.toFixed(0)}, 60%, 62%)`
+}
+
+/**
+ * Builds a Map<eventIndex, tagName> from a SolMatchResponse.tags record.
+ * Named tags overwrite implicit ones; among implicit, later in priority wins.
+ */
+export function buildTagMap(tags: Record<string, SolTagSpan>): Map<number, string> {
+  const map = new Map<number, string>()
+  // Sort: implicit first (lowest priority) → named last (highest priority)
+  const sorted = Object.entries(tags).sort(([a], [b]) => {
+    const ai = IMPLICIT_PRIORITY.indexOf(a)
+    const bi = IMPLICIT_PRIORITY.indexOf(b)
+    if (ai >= 0 && bi >= 0) return ai - bi
+    if (ai >= 0) return -1
+    if (bi >= 0) return 1
+    return 0
+  })
+  for (const [name, span] of sorted) {
+    for (let i = span.from; i < span.to; i++) map.set(i, name)
+  }
+  return map
 }
 
 interface Props {
@@ -109,10 +147,9 @@ export function SequenceBarcodeView({
 
   function getFill(row: BarcodeRow, idx: number, record: EntityRecord): string {
     if (colorMode === 'tag') {
-      if (!row.taggedIndices || row.taggedIndices.size === 0) return typeColor(record.messageType)
-      return row.taggedIndices.has(idx)
-        ? 'var(--accent)'
-        : 'hsl(0,0%,88%)'
+      if (!row.tagMap || row.tagMap.size === 0) return 'hsl(0,0%,88%)'
+      const name = row.tagMap.get(idx)
+      return name ? tagColor(name) : 'hsl(0,0%,88%)'
     }
     return typeColor(record.messageType)
   }
@@ -189,8 +226,8 @@ export function SequenceBarcodeView({
                       key={`${rec.partition}-${rec.offset}`}
                       x={x} y={0} width={w} height={cellHeight}
                       fill={fill}
-                      stroke={fill === 'var(--accent)' ? 'var(--accent)' : 'none'}
-                      strokeWidth={1}
+                      stroke="none"
+                      strokeWidth={0}
                       rx={1}
                       style={{ cursor: 'pointer' }}
                       onMouseEnter={e => {

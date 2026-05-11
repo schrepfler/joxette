@@ -230,7 +230,7 @@ export function SolQueryPanel({ mode, entityType, entityId, topic, from, to }: P
           </div>
 
           {/* Sequence inspector — tag coverage bars */}
-          {result.sequenceLength > 0 && Object.keys(result.tags).length > 0 && (
+          {result.tags && result.sequenceLength > 0 && Object.keys(result.tags).length > 0 && (
             <SolSequenceInspector
               tags={result.tags}
               sequenceLength={result.sequenceLength}

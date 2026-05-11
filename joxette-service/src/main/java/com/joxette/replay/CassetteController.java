@@ -498,9 +498,11 @@ public class CassetteController {
             @Parameter(description = "Maximum number of entities to return per page (default 100)", example = "100")
             @RequestParam(defaultValue = "" + DEFAULT_LIMIT) int limit,
             @Parameter(description = "Opaque cursor from a previous response's `nextCursor` field")
-            @RequestParam(required = false) String cursor
+            @RequestParam(required = false) String cursor,
+            @Parameter(description = "Sort order: id (alphabetical, default), lastActive (most recently seen first), mostMessages (highest message count first)")
+            @RequestParam(defaultValue = "id") EntityReplayService.EntitySortBy sortBy
     ) throws SQLException {
-        return entityService.listEntities(entityType, limit, cursor);
+        return entityService.listEntities(entityType, limit, cursor, sortBy);
     }
 
     @Operation(
@@ -538,9 +540,11 @@ public class CassetteController {
             @Parameter(description = "Maximum number of results to return per page (default 100)", example = "100")
             @RequestParam(defaultValue = "" + DEFAULT_LIMIT) int limit,
             @Parameter(description = "Opaque cursor from a previous response's `nextCursor` field")
-            @RequestParam(required = false) String cursor
+            @RequestParam(required = false) String cursor,
+            @Parameter(description = "Sort order: id (alphabetical, default), lastActive (most recently seen first), mostMessages (highest message count first)")
+            @RequestParam(defaultValue = "id") EntityReplayService.EntitySortBy sortBy
     ) throws SQLException {
-        return entityService.searchEntities(entityType, q, limit, cursor);
+        return entityService.searchEntities(entityType, q, limit, cursor, sortBy);
     }
 
     // =========================================================================

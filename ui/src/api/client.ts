@@ -360,15 +360,19 @@ export type CassetteTopicParams = QueryParams & {
   order?: Order
 }
 
+export type EntitySortBy = 'id' | 'lastActive' | 'mostMessages'
+
 export type EntityListParams = QueryParams & {
   limit?: number
   cursor?: string
+  sortBy?: EntitySortBy
 }
 
 export type EntitySearchParams = QueryParams & {
   q?: string
   limit?: number
   cursor?: string
+  sortBy?: EntitySortBy
 }
 
 export type EntityRecordsParams = QueryParams & {

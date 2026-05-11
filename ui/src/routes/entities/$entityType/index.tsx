@@ -14,6 +14,7 @@ import {
   type EntitySourceConfig,
   type MatcherConfig,
   type EntityInfo,
+  type EntitySortBy,
   type AddSourceRequest,
   type AddMatcherRequest,
 } from '../../../api/client'
@@ -26,7 +27,7 @@ import { useToast } from '../../../components/Toast'
 import { useDebounce } from '../../../hooks/useDebounce'
 import { FieldCombobox } from '../../../components/transforms/PredicateBuilder'
 import { ViewModeBar } from '../../../components/ViewModeBar'
-import { SequenceBarcodeView, BarcodeLegend, type BarcodeRow } from '../../../components/SequenceBarcodeView'
+import { SequenceBarcodeView, BarcodeLegend, buildTagMap, tagColor, type BarcodeRow } from '../../../components/SequenceBarcodeView'
 import { SunburstChart } from '../../../components/SunburstChart'
 import { useQueries } from '@tanstack/react-query'
 
@@ -309,6 +310,7 @@ function EntityTypeDetailPage() {
   const [knownEntitiesView, setKnownEntitiesView] = useState<'list' | 'barcode' | 'sunburst'>('list')
   const [searchRaw, setSearchRaw] = useState('')
   const search = useDebounce(searchRaw, 300)
+  const [sortBy, setSortBy] = useState<EntitySortBy>('id')
   const [cursor, setCursor] = useState<string | undefined>()
   const [cursors, setCursors] = useState<string[]>([])
 
@@ -316,11 +318,11 @@ function EntityTypeDetailPage() {
   const sourcesQuery = useQuery({ queryKey: ['entities', entityType, 'sources'], queryFn: () => entitiesApi.getSources(entityType) })
 
   const entitiesQuery = useQuery({
-    queryKey: ['cassettes', 'entities', entityType, 'list', search, cursor],
+    queryKey: ['cassettes', 'entities', entityType, 'list', search, cursor, sortBy],
     queryFn: () =>
       search
-        ? cassettesApi.searchEntities(entityType, { q: search, limit: 50, cursor })
-        : cassettesApi.listEntities(entityType, { limit: 50, cursor }),
+        ? cassettesApi.searchEntities(entityType, { q: search, limit: 50, cursor, sortBy })
+        : cassettesApi.listEntities(entityType, { limit: 50, cursor, sortBy }),
   })
 
   const updateMutation = useMutation({
@@ -498,6 +500,30 @@ function EntityTypeDetailPage() {
                 onChange={setKnownEntitiesView}
               />
             </div>
+            {/* Sort controls — only shown in list view */}
+            {knownEntitiesView === 'list' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: '0.5rem', flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 12, color: 'var(--ink-tertiary)', marginRight: 2 }}>Sort:</span>
+                {([['id', 'A–Z'], ['lastActive', 'Last Active'], ['mostMessages', 'Most Messages']] as [EntitySortBy, string][]).map(([val, label]) => (
+                  <button
+                    key={val}
+                    style={{
+                      padding: '3px 10px',
+                      fontSize: 12,
+                      border: '1px solid var(--rule)',
+                      borderRadius: 'var(--radius-sm)',
+                      cursor: 'pointer',
+                      background: sortBy === val ? 'var(--accent)' : 'transparent',
+                      color: sortBy === val ? 'var(--accent-ink)' : 'var(--ink-secondary)',
+                      fontFamily: 'var(--font-body)',
+                    }}
+                    onClick={() => { setSortBy(val); setCursor(undefined); setCursors([]) }}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            )}
             <input
               style={{ ...inputStyle, width: 280, marginBottom: '0.75rem' }}
               placeholder="Search entity ID…"
@@ -622,31 +648,149 @@ function SunburstPanel({ entityType }: { entityType: string }) {
 
 // ── Multi-entity barcode panel ────────────────────────────────────────────────
 
+const IMPLICIT_TAGS = ['SEQ', 'PREFIX', 'MATCHED', 'SUFFIX']
+
 function MultiEntityBarcodePanel({ entityType, entityIds }: { entityType: string; entityIds: string[] }) {
-  const results = useQueries({
-    queries: entityIds.slice(0, 20).map(id => ({
+  const [solQuery, setSolQuery] = useState('')
+  const [activeQuery, setActiveQuery] = useState('')
+  const [colorMode, setColorMode] = useState<'type' | 'tag'>('type')
+
+  const ids = entityIds.slice(0, 20)
+
+  const recordResults = useQueries({
+    queries: ids.map(id => ({
       queryKey: ['cassettes', 'entities', entityType, id, 'records', { limit: 200 }],
       queryFn: () => cassettesApi.getEntityRecords(entityType, id, { limit: 200, order: 'asc' as const }),
       staleTime: 60_000,
     })),
   })
 
-  const loading = results.some(r => r.isLoading)
-  const rows: BarcodeRow[] = results
-    .map((r, i) => ({ entityId: entityIds[i], records: r.data?.data ?? [] }))
+  const solResults = useQueries({
+    queries: ids.map(id => ({
+      queryKey: ['sol', 'entity', entityType, id, activeQuery],
+      queryFn: () => activeQuery ? cassettesApi.solMatchEntity(entityType, id, activeQuery) : Promise.resolve(null),
+      staleTime: 120_000,
+      enabled: !!activeQuery,
+    })),
+  })
+
+  const loadingRecords = recordResults.some(r => r.isLoading)
+  const loadingSol     = solResults.some(r => r.isLoading)
+
+  const baseRows: BarcodeRow[] = recordResults
+    .map((r, i) => ({ entityId: ids[i], records: r.data?.data ?? [] }))
     .filter(row => row.records.length > 0)
+
+  // Attach tag maps when a SOL query has run
+  const rows: BarcodeRow[] = baseRows.map((row, i) => {
+    const sol = solResults[i]?.data
+    if (!sol || !sol.tags || Object.keys(sol.tags).length === 0) return row
+    return { ...row, tagMap: buildTagMap(sol.tags) }
+  })
 
   const allTypes = [...new Set(rows.flatMap(r => r.records.map(ev => ev.messageType).filter(Boolean) as string[]))]
 
-  if (loading) return <LoadingSpinner />
+  // Collect active tag names for legend
+  const activeTags = activeQuery
+    ? [...new Set(rows.flatMap(r => r.tagMap ? [...r.tagMap.values()] : []))]
+        .sort((a, b) => {
+          const ai = IMPLICIT_TAGS.indexOf(a), bi = IMPLICIT_TAGS.indexOf(b)
+          if (ai >= 0 && bi >= 0) return ai - bi
+          if (ai >= 0) return -1
+          if (bi >= 0) return 1
+          return a.localeCompare(b)
+        })
+    : []
+
+  if (loadingRecords) return <LoadingSpinner />
   if (rows.length === 0) return <p style={{ fontSize: 13, color: '#a0aec0', margin: 0 }}>No event data available.</p>
 
   return (
-    <div style={{ border: '1px solid var(--rule)', borderRadius: 'var(--radius-sm)', overflow: 'hidden', marginTop: 8 }}>
-      <div style={{ padding: '6px 12px', borderBottom: '1px solid var(--rule)' }}>
-        <BarcodeLegend messageTypes={allTypes} />
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 0, border: '1px solid var(--rule)', borderRadius: 'var(--radius-sm)', overflow: 'hidden', marginTop: 8 }}>
+
+      {/* SOL query strip */}
+      <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--rule)', background: 'var(--surface-raised)', display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 'var(--type-body-sm-size)', fontWeight: 600, color: 'var(--ink-secondary)', flexShrink: 0 }}>SOL overlay</span>
+          <textarea
+            value={solQuery}
+            onChange={e => setSolQuery(e.target.value)}
+            rows={1}
+            placeholder="match A(event_a) >> * >> B(event_b)"
+            style={{
+              flex: 1, resize: 'vertical', minHeight: 30, maxHeight: 80,
+              padding: '4px 8px',
+              border: '1px solid var(--rule)',
+              borderRadius: 'var(--radius-xs)',
+              fontFamily: 'var(--font-mono)',
+              fontSize: 'var(--type-caption-size)',
+              color: 'var(--ink-primary)',
+              background: 'var(--surface-paper)',
+            }}
+            onKeyDown={e => {
+              if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+                e.preventDefault()
+                setActiveQuery(solQuery.trim())
+                if (solQuery.trim()) setColorMode('tag')
+              }
+            }}
+          />
+          <button
+            style={{
+              padding: '5px 12px',
+              background: 'var(--accent)', color: 'var(--accent-ink)',
+              border: '1px solid var(--accent)',
+              borderRadius: 'var(--radius-sm)', cursor: 'pointer',
+              fontFamily: 'var(--font-body)', fontSize: 'var(--type-body-sm-size)', fontWeight: 500,
+              flexShrink: 0,
+            }}
+            disabled={loadingSol}
+            onClick={() => { setActiveQuery(solQuery.trim()); if (solQuery.trim()) setColorMode('tag') }}
+          >
+            {loadingSol ? 'Running…' : '▶ Run'}
+          </button>
+          {activeQuery && (
+            <button
+              style={{
+                padding: '5px 10px',
+                background: 'transparent', color: 'var(--ink-secondary)',
+                border: '1px solid var(--rule)',
+                borderRadius: 'var(--radius-sm)', cursor: 'pointer',
+                fontFamily: 'var(--font-body)', fontSize: 'var(--type-body-sm-size)',
+                flexShrink: 0,
+              }}
+              onClick={() => { setActiveQuery(''); setSolQuery(''); setColorMode('type') }}
+            >
+              ✕ Clear
+            </button>
+          )}
+        </div>
+        <span style={{ fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)' }}>
+          {activeQuery ? `Overlay active — ${rows.filter(r => r.tagMap && r.tagMap.size > 0).length}/${rows.length} entities matched` : '⌘↵ to run · segments coloured by SOL tag'}
+        </span>
       </div>
-      <SequenceBarcodeView rows={rows} xMode="time" colorMode="type" cellHeight={16} />
+
+      {/* Legend */}
+      <div style={{ padding: '6px 12px', borderBottom: '1px solid var(--rule)' }}>
+        {colorMode === 'tag' && activeTags.length > 0 ? (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 12px', padding: '4px 0' }}>
+            {activeTags.map(name => (
+              <div key={name} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                <div style={{ width: 12, height: 12, borderRadius: 2, background: tagColor(name), flexShrink: 0 }} />
+                <span style={{ fontSize: 'var(--type-caption-size)', color: 'var(--ink-secondary)', fontFamily: 'var(--font-mono)' }}>{name}</span>
+              </div>
+            ))}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+              <div style={{ width: 12, height: 12, borderRadius: 2, background: 'hsl(0,0%,88%)', flexShrink: 0 }} />
+              <span style={{ fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)', fontFamily: 'var(--font-mono)' }}>untagged</span>
+            </div>
+          </div>
+        ) : (
+          <BarcodeLegend messageTypes={allTypes} />
+        )}
+      </div>
+
+      <SequenceBarcodeView rows={rows} xMode="time" colorMode={colorMode} cellHeight={16} />
     </div>
   )
 }
