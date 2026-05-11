@@ -33,9 +33,13 @@ import com.joxette.replay.transform.TransformPresetRepository;
 import com.joxette.replay.transform.TransformStep;
 import com.joxette.replay.transform.steps.FilterDropStep;
 
+import com.joxette.sol.EntityRecordAdapter;
+import com.joxette.sol.SolResultMapper;
+
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -98,6 +102,7 @@ public class CassetteController {
     private final JoxetteProperties         properties;
     private final ObjectMapper              objectMapper;
     private final SequenceMatchService      sequenceMatchService;
+    private final SolMatchService           solMatchService;
     private final FieldSuggestionsService   fieldSuggestionsService;
     private final CassetteRecordingBus      recordingBus;
 
@@ -113,6 +118,7 @@ public class CassetteController {
             JoxetteProperties properties,
             ObjectMapper objectMapper,
             SequenceMatchService sequenceMatchService,
+            SolMatchService solMatchService,
             FieldSuggestionsService fieldSuggestionsService,
             CassetteRecordingBus recordingBus) {
         this.topicService             = topicService;
@@ -126,6 +132,7 @@ public class CassetteController {
         this.properties               = properties;
         this.objectMapper             = objectMapper;
         this.sequenceMatchService     = sequenceMatchService;
+        this.solMatchService          = solMatchService;
         this.fieldSuggestionsService  = fieldSuggestionsService;
         this.recordingBus             = recordingBus;
     }
@@ -1758,6 +1765,96 @@ public class CassetteController {
             @Valid @RequestBody SequenceMatchService.SequenceMatchRequest req
     ) throws SQLException {
         return sequenceMatchService.matchEntity(entityService, entityType, entityId, req);
+    }
+
+    // =========================================================================
+    // SOL (Sequence Operations Language) matching
+    // =========================================================================
+
+    /** Request body for a SOL query. */
+    public record SolMatchRequest(
+            @io.swagger.v3.oas.annotations.media.Schema(
+                description = "SOL query string",
+                example = "match Login(login) >> * >> Buy(purchase)\nif duration(Login, Buy) < 5min")
+            String query,
+            Instant from,
+            Instant to
+    ) {}
+
+    /** Response for a SOL match query. */
+    public record SolMatchResponse(
+            List<EntityRecord>  records,
+            boolean             matched,
+            List<String>        unexpectedNulls
+    ) {}
+
+    @Operation(
+        operationId = "solMatchEntity",
+        summary     = "Run a SOL query against an entity cassette",
+        description = "Loads the full ordered event sequence for the given entity, executes the " +
+                      "SOL (Sequence Operations Language) query, and returns the events that " +
+                      "survive the pipeline (after MATCH / FILTER / SET / REPLACE / COMBINE). " +
+                      "The `matched` flag is true when the last MATCH found at least one occurrence. " +
+                      "`unexpectedNulls` lists any expressions that were null-cast during evaluation."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "SOL match result"),
+        @ApiResponse(responseCode = "400", description = "SOL parse error or invalid entity type"),
+        @ApiResponse(responseCode = "404", description = "Entity type not found"),
+        @ApiResponse(responseCode = "500", description = "Database error")
+    })
+    @PostMapping(value    = "/entities/{entityType}/{entityId}/sol-match",
+                 consumes = MediaType.APPLICATION_JSON_VALUE,
+                 produces = MediaType.APPLICATION_JSON_VALUE)
+    public SolMatchResponse solMatchEntity(
+            @Parameter(description = "Entity type name (must match `[a-z][a-z0-9_]*`)", required = true, example = "order")
+            @PathVariable String entityType,
+            @Parameter(description = "Entity identifier", required = true, example = "order-42")
+            @PathVariable String entityId,
+            @Valid @RequestBody SolMatchRequest req
+    ) throws SQLException {
+        SolMatchService.SolMatchResult result =
+                solMatchService.match(entityType, entityId, req.query(), req.from(), req.to());
+        return new SolMatchResponse(result.records(), result.matched(), result.unexpectedNulls());
+    }
+
+    @Operation(
+        operationId = "solMatchTopic",
+        summary     = "Run a SOL query against a topic cassette",
+        description = "Loads all messages for the given topic (grouped as a single sequence " +
+                      "ordered by timestamp), executes the SOL query, and returns the surviving events."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "SOL match result"),
+        @ApiResponse(responseCode = "400", description = "SOL parse error"),
+        @ApiResponse(responseCode = "500", description = "Database error")
+    })
+    @PostMapping(value    = "/topics/{topic}/sol-match",
+                 consumes = MediaType.APPLICATION_JSON_VALUE,
+                 produces = MediaType.APPLICATION_JSON_VALUE)
+    public SolMatchResponse solMatchTopic(
+            @Parameter(description = "Kafka topic name", required = true, example = "orders")
+            @PathVariable String topic,
+            @Valid @RequestBody SolMatchRequest req
+    ) throws SQLException {
+        // General cassette: collect as a flat sequence keyed by topic name
+        List<EntityRecord> records = new ArrayList<>();
+        topicService.streamAll(topic, req.from(), req.to(), null, null, null,
+                r -> records.add(cassetteToEntity(r, topic)));
+        com.sol.model.Sequence sequence = EntityRecordAdapter.toSequence(topic, records);
+        com.sol.engine.SolResult result = com.sol.engine.SolEngine.execute(
+                com.sol.parser.SolParser.parse(req.query()), sequence);
+        List<EntityRecord> matched = SolResultMapper.toEntityRecords(result, records);
+        return new SolMatchResponse(
+                matched,
+                result.matched(),
+                result.unexpectedNulls().stream().map(u -> u.location() + ": " + u.reason()).toList());
+    }
+
+    private static EntityRecord cassetteToEntity(CassetteRecord r, String entityId) {
+        return new EntityRecord(entityId, r.messageType(), r.topic(),
+                r.partition(), r.offset(), r.timestamp(), r.recordedAt(),
+                r.key(), r.value(), r.headers());
     }
 
     // =========================================================================

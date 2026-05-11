@@ -125,6 +125,28 @@
 
 ## What's Left / Known Gaps
 
+### `sol` module — standalone library (no Joxette deps)
+- [x] `sol/pom.xml` — slf4j-api + Jackson only; no Spring, no DuckDB, no Kafka
+- [x] `Event`, `Sequence`, `Tag` model classes
+- [x] `SolOperation` sealed interface: `MatchOp`, `MatchSplitOp`, `FilterOp`, `SetOp`, `ReplaceOp`, `CombineOp`
+- [x] `SolParser` — recursive-descent parser; duration tokens, quantifiers, expression precedence
+- [x] `ExpressionEvaluator` — full function library; lazy `broadcast`; short-circuit `if`/`coalesce`
+- [x] `MatchEngine` — greedy/lazy matching with backtracking; all quantifiers
+- [x] `SolEngine` — full pipeline executor
+- [x] `SolResult` + `UnexpectedNull`
+- [x] 25 unit tests: `SolParserTest` (15), `MatchEngineTest` (5), `SolEngineTest` (5)
+
+### `joxette-sol` module — adapter layer (depends on `sol` + `joxette-core`)
+- [x] `EntityRecordAdapter` — `List<EntityRecord>` → `Sequence`
+- [x] `SolResultMapper` — `SolResult` → matched `List<EntityRecord>`
+
+### SOL match endpoint (`joxette-service`)
+- [x] `joxette-sol` added to `joxette-service` pom
+- [x] `SolMatchService` — loads entity sequence, runs `SolEngine`, maps result
+- [x] `POST /cassettes/entities/{type}/{id}/sol-match` in `CassetteController`
+- [x] `POST /cassettes/topics/{topic}/sol-match` in `CassetteController`
+- [x] `SolMatchIT` — 6 parameterised scenarios (simple match, wildcard, filter, duration constraint); all green
+
 ### Functional gaps
 - [ ] `entity_source_matchers.id_source` check constraint uses `'key', 'value', 'headers'` (plural) but `MessageRouter` / `EntityIdExtractor` use `'key', 'value', 'header'` (singular) — potential mismatch to verify and fix
 

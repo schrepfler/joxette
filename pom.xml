@@ -12,8 +12,10 @@
     <description>Kafka Topic Cassette Recorder backed by DuckLake</description>
 
     <modules>
+        <module>sol</module>
         <module>joxette-core</module>
         <module>joxette-kafka</module>
+        <module>joxette-sol</module>
         <module>joxette-service</module>
         <module>joxette-test-kit</module>
     </modules>
@@ -28,7 +30,7 @@
         <jox.channels.version>1.1.2</jox.channels.version>
         <jox.flows.version>0.5.3</jox.flows.version>
         <duckdb.version>1.5.2.0</duckdb.version>
-        <jooq.version>3.21.1</jooq.version>
+        <jooq.version>3.21.2</jooq.version>
         <springdoc-openapi-starter-webmvc-ui.version>3.0.3</springdoc-openapi-starter-webmvc-ui.version>
         <aws.sdk.version>2.42.32</aws.sdk.version>
         <maven-enforcer-plugin.version>3.6.2</maven-enforcer-plugin.version>
@@ -47,7 +49,17 @@
             <!-- Internal modules -->
             <dependency>
                 <groupId>com.joxette</groupId>
+                <artifactId>sol</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.joxette</groupId>
                 <artifactId>joxette-core</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.joxette</groupId>
+                <artifactId>joxette-sol</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

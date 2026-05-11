@@ -1,6 +1,52 @@
 # Active Context
 
-## Current Work Focus — Maven module split (joxette-core / joxette-kafka / joxette-service / joxette-test-kit)
+## Current Work Focus — `joxette-sol` module + match endpoint
+
+Implement a SOL (Sequence Operations Language) engine as a new Maven module `joxette-sol` that can evaluate sequence queries over Joxette entity cassettes, then wire it into a new `POST /cassettes/entities/{type}/{id}/match` endpoint in `joxette-service`.
+
+**SOL specification:** `docs/sol-specification.md` — extracted from Motif Analytics wayback archive.
+
+### Phase 1a — `sol` module (pure Java, zero Joxette deps — future standalone library)
+
+Module lives in `sol/`, depends only on slf4j-api + Jackson. No `joxette-core`, no Spring, no DuckDB, no Kafka. Goal: publishable as an independent library eventually.
+
+Own data model (no coupling to Joxette DTOs):
+- `Event` — name + timestamp + mutable `Map<String, Object>` dimensions
+- `Sequence` — ordered `List<Event>` + sequence-level `Map<String, Object>` dimensions + identity (e.g., entity_id)
+- `Tag` — named label over a contiguous index range `[from, to)` within a `Sequence`
+- `SolQuery` — parsed pipeline (`List<SolOperation>`)
+- `SolParser` — hand-written recursive-descent parser (no ANTLR — keep lean)
+- Operations: `MatchOp`, `MatchSplitOp`, `FilterOp`, `SetOp`, `ReplaceOp`, `CombineOp` (sealed interface `SolOperation`)
+- `ExpressionEvaluator` — boolean/scalar/array expression evaluation against sequence + tag map; null-casts on errors
+- `MatchEngine` — left-to-right greedy/lazy matching with backtracking; quantifiers `+ * ? {n} {n,m}`
+- `SolEngine` — chains operations over a `Sequence`, returns `SolResult`
+- `SolResult` — tagged events, computed dims, `List<UnexpectedNull>` (coordinates + reason)
+- Error model: "show must go on" — null-cast uncomputable expressions, record as `unexpectedNulls`
+- No cross-sequence state — each `Sequence` evaluated independently
+
+### Phase 1b — `joxette-sol` module (thin adapter, depends on `sol` + `joxette-core`)
+
+Module lives in `joxette-sol/`, depends on `sol` + `joxette-core`. No Spring, no DuckDB.
+
+- `EntityRecordAdapter` — converts `List<EntityRecord>` → `Sequence` (maps `kafka_timestamp` → `Event.ts`, `value` JSON fields → event dimensions, `source_topic` → event name by default)
+- `SolResultMapper` — maps `SolResult` back to `List<EntityRecord>` (or enriched `MessageResponse`) preserving tag assignments as extra fields
+
+### Phase 2 — match endpoint in `joxette-service`
+
+New endpoint: `POST /cassettes/entities/{type}/{id}/match`
+
+Request body:
+```json
+{ "query": "match Login(login) >> * >> Buy(purchase)\nif duration(Login, Buy) < 5min" }
+```
+
+Response: same `PagedResponse<MessageResponse>` shape as the existing replay endpoint, filtered/tagged by SOL result. SSE and NDJSON streaming variants too.
+
+Wire-up:
+- `SolMatchService` (service layer) — loads sequence via `EntityReplayService`, runs `SolEngine`, maps result back to `MessageResponse`
+- `CassetteController` — adds the match endpoint alongside existing replay endpoints
+
+## Previous Focus — Maven module split (joxette-core / joxette-kafka / joxette-service / joxette-test-kit)
 Split the single-module project into four Maven modules so the replay engine and its SPIs
 can be consumed outside the Spring Boot service. Core has no Spring / DuckDB / Kafka on its
 classpath; test-kit has no DuckDB.

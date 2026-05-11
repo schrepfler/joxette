@@ -24,6 +24,10 @@
             <groupId>com.joxette</groupId>
             <artifactId>joxette-kafka</artifactId>
         </dependency>
+        <dependency>
+            <groupId>com.joxette</groupId>
+            <artifactId>joxette-sol</artifactId>
+        </dependency>
 
         <!-- Spring Boot Web (REST API) -->
         <dependency>
