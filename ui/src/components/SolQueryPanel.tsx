@@ -88,6 +88,16 @@ export function SolQueryPanel({ mode, entityType, entityId, topic, from, to }: P
     'match A(event_name) >> * >> B(other_event)\nif duration(A, B) < 5min',
   )
   const [recipesOpen, setRecipesOpen] = useState(false)
+  const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set())
+
+  function toggleTag(name: string) {
+    setSelectedTags(prev => {
+      const next = new Set(prev)
+      if (next.has(name)) next.delete(name)
+      else next.add(name)
+      return next
+    })
+  }
 
   // Fetch event-name vocabulary for autocomplete
   const fieldsQuery = useQuery({
@@ -113,6 +123,7 @@ export function SolQueryPanel({ mode, entityType, entityId, topic, from, to }: P
       }
       return Promise.reject(new Error('Missing entity/topic params'))
     },
+    onSuccess: () => setSelectedTags(new Set()),
   })
 
   function applyRecipe(sol: string) {
@@ -122,6 +133,19 @@ export function SolQueryPanel({ mode, entityType, entityId, topic, from, to }: P
 
   const result = mutation.data
   const hasResult = !!result
+
+  // Build an index set of which record positions are covered by selected tags
+  const filteredRecords = (() => {
+    if (!result || selectedTags.size === 0 || !result.tags) return result?.records ?? []
+    const covered = new Set<number>()
+    for (const name of selectedTags) {
+      const span = result.tags[name]
+      if (span) {
+        for (let i = span.from; i < span.to; i++) covered.add(i)
+      }
+    }
+    return result.records.filter((_, i) => covered.has(i))
+  })()
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -220,7 +244,10 @@ export function SolQueryPanel({ mode, entityType, entityId, topic, from, to }: P
               {result.matched ? '✓ Matched' : '○ No match'}
             </span>
             <span style={{ color: 'var(--ink-secondary)' }}>
-              {result.records.length.toLocaleString()} event{result.records.length !== 1 ? 's' : ''}
+              {selectedTags.size > 0
+                ? <>{filteredRecords.length.toLocaleString()} <span style={{ color: 'var(--ink-tertiary)' }}>/ {result.records.length.toLocaleString()}</span> event{result.records.length !== 1 ? 's' : ''}</>
+                : <>{result.records.length.toLocaleString()} event{result.records.length !== 1 ? 's' : ''}</>
+              }
             </span>
             {result.unexpectedNulls.length > 0 && (
               <span title={result.unexpectedNulls.join('\n')} style={{ color: 'var(--signal-warn-ink)', cursor: 'help' }}>
@@ -234,12 +261,14 @@ export function SolQueryPanel({ mode, entityType, entityId, topic, from, to }: P
             <SolSequenceInspector
               tags={result.tags}
               sequenceLength={result.sequenceLength}
+              selectedTags={selectedTags}
+              onTagToggle={toggleTag}
             />
           )}
 
           {/* Matched events table */}
-          {result.records.length > 0 && (
-            <SolResultTable records={result.records} />
+          {filteredRecords.length > 0 && (
+            <SolResultTable records={filteredRecords} />
           )}
         </div>
       )}

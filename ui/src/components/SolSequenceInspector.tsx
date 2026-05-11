@@ -19,6 +19,10 @@ import type { SolTagSpan } from '../api/client'
 interface Props {
   tags: Record<string, SolTagSpan>
   sequenceLength: number
+  /** Currently selected tag names. When non-empty the table is filtered to those spans. */
+  selectedTags?: Set<string>
+  /** Called when the user clicks a tag row to toggle its selection. */
+  onTagToggle?: (name: string) => void
 }
 
 // ── Colour helpers ─────────────────────────────────────────────────────────────
@@ -47,8 +51,10 @@ function tagBg(name: string): string {
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
-export function SolSequenceInspector({ tags, sequenceLength }: Props) {
+export function SolSequenceInspector({ tags, sequenceLength, selectedTags, onTagToggle }: Props) {
   if (sequenceLength === 0 || Object.keys(tags).length === 0) return null
+  const isFilterable = !!onTagToggle
+  const hasSelection = selectedTags && selectedTags.size > 0
 
   // Sort: implicit tags first (SEQ → PREFIX → MATCHED → SUFFIX), then named tags
   const IMPLICIT_ORDER = ['SEQ', 'PREFIX', 'MATCHED', 'SUFFIX']
@@ -93,16 +99,43 @@ export function SolSequenceInspector({ tags, sequenceLength }: Props) {
         <span style={{ textAlign: 'right' }}>%</span>
       </div>
 
+      {/* Filter hint */}
+      {isFilterable && (
+        <div style={{
+          padding: '4px 12px',
+          background: hasSelection ? 'color-mix(in oklab, var(--accent) 8%, transparent)' : 'transparent',
+          borderBottom: '1px solid var(--rule)',
+          fontSize: 'var(--type-caption-size)',
+          color: 'var(--ink-tertiary)',
+          display: 'flex', alignItems: 'center', gap: 8,
+        }}>
+          {hasSelection
+            ? <>
+                <span>Filtering to: {[...selectedTags!].join(', ')}</span>
+                <button
+                  onClick={() => [...selectedTags!].forEach(t => onTagToggle!(t))}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--ink-tertiary)', fontSize: 'var(--type-caption-size)', padding: '0 4px' }}
+                >
+                  ✕ clear
+                </button>
+              </>
+            : <span>Click a tag row to filter the event table</span>
+          }
+        </div>
+      )}
+
       {/* Rows */}
       {sorted.map(([name, span]) => {
         const len   = span.to - span.from
         const pct   = sequenceLength > 0 ? (len / sequenceLength) * 100 : 0
         const isImplicit = IMPLICIT.has(name)
         const colour = tagColour(name)
+        const isSelected = selectedTags?.has(name) ?? false
 
         return (
           <div
             key={name}
+            onClick={() => onTagToggle?.(name)}
             style={{
               display: 'grid',
               gridTemplateColumns: '100px 1fr 60px 50px',
@@ -110,7 +143,12 @@ export function SolSequenceInspector({ tags, sequenceLength }: Props) {
               alignItems: 'center',
               padding: '7px 12px',
               borderBottom: '1px solid var(--rule)',
-              background: tagBg(name),
+              background: isSelected
+                ? 'color-mix(in oklab, var(--accent) 12%, transparent)'
+                : tagBg(name),
+              cursor: isFilterable ? 'pointer' : 'default',
+              outline: isSelected ? `2px solid color-mix(in oklab, var(--accent) 50%, transparent)` : 'none',
+              outlineOffset: '-2px',
             }}
           >
             {/* Tag name badge */}
