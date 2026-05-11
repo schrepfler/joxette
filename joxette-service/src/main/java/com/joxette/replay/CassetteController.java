@@ -1785,7 +1785,13 @@ public class CassetteController {
                 example = "match Login(login) >> * >> Buy(purchase)\nif duration(Login, Buy) < 5min")
             String query,
             Instant from,
-            Instant to
+            Instant to,
+            @io.swagger.v3.oas.annotations.media.Schema(
+                description = "JSON field path (dot-separated) to use as the event name when " +
+                              "message_type is NULL. Useful for topic cassettes that have no " +
+                              "topic_message_type_matchers configured. E.g. \"type\" or \"eventType\".",
+                example = "type")
+            String typeField
     ) {}
 
     /** Response for a SOL match query. */
@@ -1850,7 +1856,7 @@ public class CassetteController {
         // General cassette: collect as a flat sequence keyed by topic name
         List<EntityRecord> records = new ArrayList<>();
         topicService.streamAll(topic, req.from(), req.to(), null, null, null,
-                r -> records.add(cassetteToEntity(r, topic)));
+                r -> records.add(cassetteToEntity(r, topic, req.typeField())));
         com.sol.model.Sequence sequence = EntityRecordAdapter.toSequence(topic, records);
         com.sol.engine.SolResult result = com.sol.engine.SolEngine.execute(
                 com.sol.parser.SolParser.parse(req.query()), sequence);
@@ -1868,9 +1874,34 @@ public class CassetteController {
     }
 
     private static EntityRecord cassetteToEntity(CassetteRecord r, String entityId) {
-        return new EntityRecord(entityId, r.messageType(), r.topic(),
+        return cassetteToEntity(r, entityId, null);
+    }
+
+    private static EntityRecord cassetteToEntity(CassetteRecord r, String entityId, String typeField) {
+        String messageType = r.messageType();
+        // When the general cassette has no message_type matchers configured,
+        // fall back to extracting the event name from the value JSON payload.
+        if (messageType == null && typeField != null && r.value() != null) {
+            messageType = extractTypeFromValue(r.value(), typeField);
+        }
+        return new EntityRecord(entityId, messageType, r.topic(),
                 r.partition(), r.offset(), r.timestamp(), r.recordedAt(),
                 r.key(), r.value(), r.headers());
+    }
+
+    private static String extractTypeFromValue(String base64Value, String fieldPath) {
+        try {
+            byte[] bytes = java.util.Base64.getUrlDecoder().decode(base64Value);
+            com.fasterxml.jackson.databind.JsonNode node =
+                    new com.fasterxml.jackson.databind.ObjectMapper().readTree(bytes);
+            for (String part : fieldPath.split("\\.")) {
+                if (node == null || !node.isObject()) return null;
+                node = node.get(part);
+            }
+            return (node != null && node.isTextual()) ? node.asText() : null;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     // =========================================================================

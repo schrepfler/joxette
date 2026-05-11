@@ -89,6 +89,7 @@ export function SolQueryPanel({ mode, entityType, entityId, topic, from, to }: P
   )
   const [recipesOpen, setRecipesOpen] = useState(false)
   const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set())
+  const [typeField, setTypeField] = useState('')
 
   function toggleTag(name: string) {
     setSelectedTags(prev => {
@@ -119,7 +120,7 @@ export function SolQueryPanel({ mode, entityType, entityId, topic, from, to }: P
         return cassettesApi.solMatchEntity(entityType, entityId, query, from, to)
       }
       if (mode === 'topic' && topic) {
-        return cassettesApi.solMatchTopic(topic, query, from, to)
+        return cassettesApi.solMatchTopic(topic, query, from, to, typeField.trim() || undefined)
       }
       return Promise.reject(new Error('Missing entity/topic params'))
     },
@@ -198,6 +199,31 @@ export function SolQueryPanel({ mode, entityType, entityId, topic, from, to }: P
         </div>
 
         <div style={{ flex: 1 }} />
+
+        {/* Type field — only shown for topic mode where message_type may be null */}
+        {mode === 'topic' && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+            <span style={{ fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)', whiteSpace: 'nowrap' }}>
+              type field
+            </span>
+            <input
+              value={typeField}
+              onChange={e => setTypeField(e.target.value)}
+              placeholder="e.g. type"
+              style={{
+                width: 110,
+                padding: '3px 7px',
+                border: '1px solid var(--rule)',
+                borderRadius: 'var(--radius-xs)',
+                fontFamily: 'var(--font-mono)',
+                fontSize: 'var(--type-caption-size)',
+                color: 'var(--ink-primary)',
+                background: typeField ? 'color-mix(in oklab, var(--accent) 8%, transparent)' : 'var(--surface-paper)',
+              }}
+              title="JSON field path to use as event name when message_type is null (e.g. type, eventType)"
+            />
+          </div>
+        )}
 
         {eventNames.length > 0 && (
           <span style={{ fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)' }}>

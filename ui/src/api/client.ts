@@ -476,10 +476,11 @@ export const cassettesApi = {
     query: string,
     from?: string,
     to?: string,
+    typeField?: string,
   ) =>
     request<SolMatchResponse>(
       `/cassettes/topics/${encodeURIComponent(topic)}/sol-match`,
-      { method: 'POST', body: JSON.stringify({ query, from, to }) },
+      { method: 'POST', body: JSON.stringify({ query, from, to, typeField: typeField || undefined }) },
     ),
 
   /** Dry-run: apply a transform pipeline to the first N records and return before/after pairs. */
