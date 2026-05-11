@@ -103,6 +103,7 @@ public class CassetteController {
     private final ObjectMapper              objectMapper;
     private final SequenceMatchService      sequenceMatchService;
     private final SolMatchService           solMatchService;
+    private final SunburstService           sunburstService;
     private final FieldSuggestionsService   fieldSuggestionsService;
     private final CassetteRecordingBus      recordingBus;
 
@@ -119,6 +120,7 @@ public class CassetteController {
             ObjectMapper objectMapper,
             SequenceMatchService sequenceMatchService,
             SolMatchService solMatchService,
+            SunburstService sunburstService,
             FieldSuggestionsService fieldSuggestionsService,
             CassetteRecordingBus recordingBus) {
         this.topicService             = topicService;
@@ -133,6 +135,7 @@ public class CassetteController {
         this.objectMapper             = objectMapper;
         this.sequenceMatchService     = sequenceMatchService;
         this.solMatchService          = solMatchService;
+        this.sunburstService          = sunburstService;
         this.fieldSuggestionsService  = fieldSuggestionsService;
         this.recordingBus             = recordingBus;
     }
@@ -1855,6 +1858,35 @@ public class CassetteController {
         return new EntityRecord(entityId, r.messageType(), r.topic(),
                 r.partition(), r.offset(), r.timestamp(), r.recordedAt(),
                 r.key(), r.value(), r.headers());
+    }
+
+    // =========================================================================
+    // Sunburst sequence hierarchy
+    // =========================================================================
+
+    @Operation(
+        operationId = "buildEntitySunburst",
+        summary     = "Build sunburst hierarchy for an entity type",
+        description = "Loads event sequences for all known entities of the given type, " +
+                      "builds a prefix-tree hierarchy (root = start, each ring = one event step, " +
+                      "arc angle ∝ sequence count), and returns it for D3 sunburst rendering. " +
+                      "Up to `maxEntities` (default 500) entities are included. " +
+                      "Up to `maxSteps` (default 8) events per sequence are considered."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Sunburst hierarchy"),
+        @ApiResponse(responseCode = "400", description = "Invalid entity type"),
+        @ApiResponse(responseCode = "500", description = "Database error")
+    })
+    @PostMapping(value    = "/entities/{entityType}/sunburst",
+                 consumes = MediaType.APPLICATION_JSON_VALUE,
+                 produces = MediaType.APPLICATION_JSON_VALUE)
+    public SunburstService.SunburstResponse buildSunburst(
+            @Parameter(description = "Entity type name (must match `[a-z][a-z0-9_]*`)", required = true)
+            @PathVariable String entityType,
+            @Valid @RequestBody SunburstService.SunburstRequest req
+    ) throws SQLException {
+        return sunburstService.build(entityType, req);
     }
 
     // =========================================================================

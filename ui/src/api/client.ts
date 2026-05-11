@@ -433,6 +433,16 @@ export const cassettesApi = {
     return Promise.reject(new Error('Invalid mode or missing topic/entityType params'))
   },
 
+  /** Build a sunburst prefix-tree hierarchy for all sequences of an entity type. */
+  buildSunburst: (
+    entityType: string,
+    req: { from?: string; to?: string; maxSteps?: number; minAngleDeg?: number; maxEntities?: number; solQuery?: string },
+  ) =>
+    request<import('../components/SunburstChart').SunburstData>(
+      `/cassettes/entities/${encodeURIComponent(entityType)}/sunburst`,
+      { method: 'POST', body: JSON.stringify(req) },
+    ),
+
   /** Run a SOL query against a single entity's event sequence. */
   solMatchEntity: (
     entityType: string,

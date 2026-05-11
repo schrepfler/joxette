@@ -27,6 +27,7 @@ import { useDebounce } from '../../../hooks/useDebounce'
 import { FieldCombobox } from '../../../components/transforms/PredicateBuilder'
 import { ViewModeBar } from '../../../components/ViewModeBar'
 import { SequenceBarcodeView, BarcodeLegend, type BarcodeRow } from '../../../components/SequenceBarcodeView'
+import { SunburstChart } from '../../../components/SunburstChart'
 import { useQueries } from '@tanstack/react-query'
 
 export const Route = createFileRoute('/entities/$entityType/')({
@@ -305,7 +306,7 @@ function EntityTypeDetailPage() {
   const [showAddSource, setShowAddSource] = useState(false)
   const [confirmDeleteSource, setConfirmDeleteSource] = useState<string | null>(null)
   const [showTruncateDialog, setShowTruncateDialog] = useState(false)
-  const [knownEntitiesView, setKnownEntitiesView] = useState<'list' | 'barcode'>('list')
+  const [knownEntitiesView, setKnownEntitiesView] = useState<'list' | 'barcode' | 'sunburst'>('list')
   const [searchRaw, setSearchRaw] = useState('')
   const search = useDebounce(searchRaw, 300)
   const [cursor, setCursor] = useState<string | undefined>()
@@ -460,8 +461,9 @@ function EntityTypeDetailPage() {
               <h3 style={{ ...cardTitle, margin: 0 }}>Known Entities</h3>
               <ViewModeBar
                 modes={[
-                  { id: 'list',    label: 'List',    icon: '☰' },
-                  { id: 'barcode', label: 'Barcode', icon: '▦' },
+                  { id: 'list',     label: 'List',     icon: '☰' },
+                  { id: 'barcode',  label: 'Barcode',  icon: '▦' },
+                  { id: 'sunburst', label: 'Sunburst', icon: '◎' },
                 ]}
                 active={knownEntitiesView}
                 onChange={setKnownEntitiesView}
@@ -510,6 +512,9 @@ function EntityTypeDetailPage() {
                 entityIds={(entitiesQuery.data?.data ?? []).map(e => e.entityId)}
               />
             )}
+            {knownEntitiesView === 'sunburst' && (
+              <SunburstPanel entityType={entityType} />
+            )}
           </div>
         </>
       )}
@@ -533,6 +538,58 @@ function EntityTypeDetailPage() {
 }
 
 // ---- Styles ----
+
+// ── Sunburst panel ────────────────────────────────────────────────────────────
+
+function SunburstPanel({ entityType }: { entityType: string }) {
+  const [maxSteps, setMaxSteps] = useState(7)
+  const [maxEntities, setMaxEntities] = useState(200)
+
+  const query = useQuery({
+    queryKey: ['cassettes', 'entities', entityType, 'sunburst', { maxSteps, maxEntities }],
+    queryFn: () => cassettesApi.buildSunburst(entityType, { maxSteps, maxEntities }),
+    staleTime: 120_000,
+  })
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div style={{ display: 'flex', gap: 16, alignItems: 'center', marginBottom: 12, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <label style={{ fontSize: 12, color: '#718096' }}>Max depth</label>
+          <select
+            value={maxSteps}
+            onChange={e => setMaxSteps(Number(e.target.value))}
+            style={{ fontSize: 13, padding: '2px 6px', border: '1px solid var(--rule)', borderRadius: 4 }}
+          >
+            {[4, 5, 6, 7, 8, 10].map(n => <option key={n} value={n}>{n}</option>)}
+          </select>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <label style={{ fontSize: 12, color: '#718096' }}>Max entities</label>
+          <select
+            value={maxEntities}
+            onChange={e => setMaxEntities(Number(e.target.value))}
+            style={{ fontSize: 13, padding: '2px 6px', border: '1px solid var(--rule)', borderRadius: 4 }}
+          >
+            {[50, 100, 200, 500].map(n => <option key={n} value={n}>{n}</option>)}
+          </select>
+        </div>
+        {query.isFetching && (
+          <span style={{ fontSize: 12, color: 'var(--ink-tertiary)' }}>Loading…</span>
+        )}
+      </div>
+
+      {query.isLoading && <LoadingSpinner />}
+      {query.error && <ErrorMessage message={(query.error as Error).message} />}
+      {query.data && query.data.totalSequences === 0 && (
+        <p style={{ fontSize: 13, color: '#a0aec0', margin: 0 }}>No entity sequences available.</p>
+      )}
+      {query.data && query.data.totalSequences > 0 && (
+        <SunburstChart data={query.data} diameter={520} maxSteps={maxSteps} />
+      )}
+    </div>
+  )
+}
 
 // ── Multi-entity barcode panel ────────────────────────────────────────────────
 
