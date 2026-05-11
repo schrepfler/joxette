@@ -1,0 +1,262 @@
+import { useMemo, useRef, useState } from 'react'
+import type { EntityRecord } from '../api/client'
+
+/**
+ * SequenceBarcodeView
+ *
+ * Horizontal scrollable barcode chart for one or more entity sequences.
+ * Each row = one entity. Each rectangle = one event, width ∝ time gap
+ * to the next event (or a fixed width in "play number" mode).
+ *
+ * Inspired by the Observable NFL Barcode Chart analysis (docs/observable-sequences-reference.md).
+ *
+ * Colour modes:
+ *   'type'    — colour by messageType (stable hash → hue)
+ *   'numeric' — diverging red→green based on a numeric field extracted from value JSON
+ *   'tag'     — accent for events in taggedIndices, muted grey for the rest
+ */
+
+export type BarcodeXMode = 'time' | 'index'
+export type BarcodeColorMode = 'type' | 'tag'
+
+export interface BarcodeRow {
+  entityId: string
+  records: EntityRecord[]
+  /** Indices of records that were matched by a SOL query (for 'tag' colour mode) */
+  taggedIndices?: Set<number>
+}
+
+interface Props {
+  rows: BarcodeRow[]
+  xMode?: BarcodeXMode
+  colorMode?: BarcodeColorMode
+  /** Cell height per row in px */
+  cellHeight?: number
+  /** Fixed width per event cell in 'index' mode */
+  cellWidth?: number
+  onEventClick?: (rowId: string, record: EntityRecord, index: number) => void
+}
+
+// ── Colour helpers ─────────────────────────────────────────────────────────────
+
+function djb2(s: string): number {
+  let h = 5381
+  for (let i = 0; i < s.length; i++) h = (h * 33) ^ s.charCodeAt(i)
+  return Math.abs(h)
+}
+
+function typeColor(name: string | null): string {
+  if (!name) return 'hsl(0,0%,85%)'
+  const hue = (djb2(name) * 137.508) % 360
+  return `hsl(${hue.toFixed(0)}, 55%, 72%)`
+}
+
+// ── X-axis scale ───────────────────────────────────────────────────────────────
+
+function buildTimeScale(rows: BarcodeRow[], totalWidth: number) {
+  let minTs = Infinity, maxTs = -Infinity
+  for (const row of rows) {
+    for (const r of row.records) {
+      const t = new Date(r.timestamp).getTime()
+      if (t < minTs) minTs = t
+      if (t > maxTs) maxTs = t
+    }
+  }
+  const span = maxTs - minTs || 1
+  return (ts: number) => ((ts - minTs) / span) * totalWidth
+}
+
+// ── Component ──────────────────────────────────────────────────────────────────
+
+const LABEL_WIDTH = 120
+const PADDING = 1
+const MIN_RECT_WIDTH = 4
+const SCROLL_WIDTH = 1200
+
+export function SequenceBarcodeView({
+  rows,
+  xMode = 'time',
+  colorMode = 'type',
+  cellHeight = 20,
+  cellWidth = 14,
+  onEventClick,
+}: Props) {
+  const [tooltip, setTooltip] = useState<{ x: number; y: number; text: string } | null>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
+
+  const timeScale = useMemo(
+    () => xMode === 'time' ? buildTimeScale(rows, SCROLL_WIDTH) : null,
+    [rows, xMode],
+  )
+
+  const totalHeight = rows.length * (cellHeight + PADDING * 2) + 24 // 24 for x-axis
+
+  function getRectX(row: BarcodeRow, idx: number): number {
+    if (xMode === 'index') return idx * cellWidth
+    const ts = new Date(row.records[idx].timestamp).getTime()
+    return timeScale!(ts)
+  }
+
+  function getRectWidth(row: BarcodeRow, idx: number): number {
+    if (xMode === 'index') return cellWidth - 1
+    const ts = new Date(row.records[idx].timestamp).getTime()
+    const nextTs = idx < row.records.length - 1
+      ? new Date(row.records[idx + 1].timestamp).getTime()
+      : ts + 60_000 // default 1 min for last event
+    const w = timeScale!(nextTs) - timeScale!(ts) - 1
+    return Math.max(w, MIN_RECT_WIDTH)
+  }
+
+  function getFill(row: BarcodeRow, idx: number, record: EntityRecord): string {
+    if (colorMode === 'tag') {
+      if (!row.taggedIndices || row.taggedIndices.size === 0) return typeColor(record.messageType)
+      return row.taggedIndices.has(idx)
+        ? 'var(--accent)'
+        : 'hsl(0,0%,88%)'
+    }
+    return typeColor(record.messageType)
+  }
+
+  return (
+    <div style={{ display: 'flex', overflow: 'hidden', position: 'relative', fontFamily: 'var(--font-body)' }}>
+      {/* Fixed y-axis labels */}
+      <div
+        style={{
+          flexShrink: 0, width: LABEL_WIDTH,
+          position: 'sticky', left: 0, zIndex: 2,
+          background: 'var(--surface-paper)',
+          borderRight: '1px solid var(--rule)',
+        }}
+      >
+        {/* spacer for x-axis row */}
+        <div style={{ height: 24 }} />
+        {rows.map(row => (
+          <div
+            key={row.entityId}
+            style={{
+              height: cellHeight + PADDING * 2,
+              display: 'flex', alignItems: 'center',
+              padding: '0 8px',
+              fontSize: 'var(--type-caption-size)',
+              color: 'var(--ink-secondary)',
+              fontFamily: 'var(--font-mono)',
+              overflow: 'hidden', whiteSpace: 'nowrap', textOverflow: 'ellipsis',
+              borderBottom: '1px solid var(--rule)',
+              cursor: 'default',
+            }}
+            title={row.entityId}
+          >
+            {row.entityId.length > 14 ? row.entityId.slice(0, 14) + '…' : row.entityId}
+          </div>
+        ))}
+      </div>
+
+      {/* Scrollable SVG area */}
+      <div ref={scrollRef} style={{ overflowX: 'auto', flex: 1, WebkitOverflowScrolling: 'touch' }}>
+        <svg
+          width={SCROLL_WIDTH}
+          height={totalHeight}
+          style={{ display: 'block' }}
+          onMouseLeave={() => setTooltip(null)}
+        >
+          {/* x-axis tick marks (time mode: time labels; index mode: event numbers) */}
+          <g transform="translate(0,0)">
+            {xMode === 'index' ? (
+              // tick every 10 events
+              Array.from({ length: Math.ceil(SCROLL_WIDTH / (cellWidth * 10)) }, (_, i) => {
+                const x = i * cellWidth * 10
+                return (
+                  <g key={i} transform={`translate(${x},0)`}>
+                    <line x1={0} y1={18} x2={0} y2={24} stroke="var(--rule-strong)" />
+                    <text x={2} y={13} fontSize={9} fill="var(--ink-tertiary)">{i * 10}</text>
+                  </g>
+                )
+              })
+            ) : null}
+          </g>
+
+          {/* Rows */}
+          {rows.map((row, ri) => {
+            const rowY = 24 + ri * (cellHeight + PADDING * 2) + PADDING
+            return (
+              <g key={row.entityId} transform={`translate(0,${rowY})`}>
+                {row.records.map((rec, idx) => {
+                  const x = getRectX(row, idx)
+                  const w = getRectWidth(row, idx)
+                  const fill = getFill(row, idx, rec)
+                  return (
+                    <rect
+                      key={`${rec.partition}-${rec.offset}`}
+                      x={x} y={0} width={w} height={cellHeight}
+                      fill={fill}
+                      stroke={fill === 'var(--accent)' ? 'var(--accent)' : 'none'}
+                      strokeWidth={1}
+                      rx={1}
+                      style={{ cursor: 'pointer' }}
+                      onMouseEnter={e => {
+                        const svgRect = (e.target as SVGElement).closest('svg')!.getBoundingClientRect()
+                        setTooltip({
+                          x: e.clientX - svgRect.left + 8,
+                          y: e.clientY - svgRect.top - 24,
+                          text: [
+                            rec.messageType ?? '(no type)',
+                            rec.timestamp.slice(0, 19).replace('T', ' '),
+                            `offset ${rec.offset}`,
+                          ].join('\n'),
+                        })
+                      }}
+                      onMouseLeave={() => setTooltip(null)}
+                      onClick={() => onEventClick?.(row.entityId, rec, idx)}
+                    />
+                  )
+                })}
+                {/* row border */}
+                <line x1={0} y1={cellHeight + PADDING} x2={SCROLL_WIDTH} y2={cellHeight + PADDING} stroke="var(--rule)" strokeWidth={0.5} />
+              </g>
+            )
+          })}
+        </svg>
+
+        {/* Tooltip */}
+        {tooltip && (
+          <div
+            style={{
+              position: 'absolute',
+              left: tooltip.x + LABEL_WIDTH,
+              top: tooltip.y,
+              background: 'var(--surface-paper)',
+              border: '1px solid var(--rule)',
+              borderRadius: 'var(--radius-xs)',
+              boxShadow: 'var(--shadow-md)',
+              padding: '6px 10px',
+              fontSize: 'var(--type-caption-size)',
+              fontFamily: 'var(--font-mono)',
+              color: 'var(--ink-primary)',
+              pointerEvents: 'none',
+              whiteSpace: 'pre',
+              zIndex: 10,
+            }}
+          >
+            {tooltip.text}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ── Legend ─────────────────────────────────────────────────────────────────────
+
+export function BarcodeLegend({ messageTypes }: { messageTypes: string[] }) {
+  if (messageTypes.length === 0) return null
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 12px', padding: '8px 0' }}>
+      {messageTypes.map(t => (
+        <div key={t} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+          <div style={{ width: 12, height: 12, borderRadius: 2, background: typeColor(t), flexShrink: 0 }} />
+          <span style={{ fontSize: 'var(--type-caption-size)', color: 'var(--ink-secondary)', fontFamily: 'var(--font-mono)' }}>{t}</span>
+        </div>
+      ))}
+    </div>
+  )
+}

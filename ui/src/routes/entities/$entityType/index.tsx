@@ -25,6 +25,9 @@ import { TruncateDialog } from '../../../components/TruncateDialog'
 import { useToast } from '../../../components/Toast'
 import { useDebounce } from '../../../hooks/useDebounce'
 import { FieldCombobox } from '../../../components/transforms/PredicateBuilder'
+import { ViewModeBar } from '../../../components/ViewModeBar'
+import { SequenceBarcodeView, BarcodeLegend, type BarcodeRow } from '../../../components/SequenceBarcodeView'
+import { useQueries } from '@tanstack/react-query'
 
 export const Route = createFileRoute('/entities/$entityType/')({
   component: EntityTypeDetailPage,
@@ -302,6 +305,7 @@ function EntityTypeDetailPage() {
   const [showAddSource, setShowAddSource] = useState(false)
   const [confirmDeleteSource, setConfirmDeleteSource] = useState<string | null>(null)
   const [showTruncateDialog, setShowTruncateDialog] = useState(false)
+  const [knownEntitiesView, setKnownEntitiesView] = useState<'list' | 'barcode'>('list')
   const [searchRaw, setSearchRaw] = useState('')
   const search = useDebounce(searchRaw, 300)
   const [cursor, setCursor] = useState<string | undefined>()
@@ -452,7 +456,17 @@ function EntityTypeDetailPage() {
 
           {/* Known entities */}
           <div style={{ ...cardStyle, marginTop: '1.5rem' }}>
-            <h3 style={{ ...cardTitle, marginBottom: '0.75rem' }}>Known Entities</h3>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem', flexWrap: 'wrap', gap: 8 }}>
+              <h3 style={{ ...cardTitle, margin: 0 }}>Known Entities</h3>
+              <ViewModeBar
+                modes={[
+                  { id: 'list',    label: 'List',    icon: '☰' },
+                  { id: 'barcode', label: 'Barcode', icon: '▦' },
+                ]}
+                active={knownEntitiesView}
+                onChange={setKnownEntitiesView}
+              />
+            </div>
             <input
               style={{ ...inputStyle, width: 280, marginBottom: '0.75rem' }}
               placeholder="Search entity ID…"
@@ -461,7 +475,7 @@ function EntityTypeDetailPage() {
             />
             {entitiesQuery.isLoading && <LoadingSpinner />}
             {entitiesQuery.error && <ErrorMessage message={(entitiesQuery.error as Error).message} />}
-            {!entitiesQuery.isLoading && (
+            {!entitiesQuery.isLoading && knownEntitiesView === 'list' && (
               <>
                 <table style={tableStyle}>
                   <thead>
@@ -490,6 +504,12 @@ function EntityTypeDetailPage() {
                 </div>
               </>
             )}
+            {!entitiesQuery.isLoading && knownEntitiesView === 'barcode' && (
+              <MultiEntityBarcodePanel
+                entityType={entityType}
+                entityIds={(entitiesQuery.data?.data ?? []).map(e => e.entityId)}
+              />
+            )}
           </div>
         </>
       )}
@@ -513,6 +533,39 @@ function EntityTypeDetailPage() {
 }
 
 // ---- Styles ----
+
+// ── Multi-entity barcode panel ────────────────────────────────────────────────
+
+function MultiEntityBarcodePanel({ entityType, entityIds }: { entityType: string; entityIds: string[] }) {
+  const results = useQueries({
+    queries: entityIds.slice(0, 20).map(id => ({
+      queryKey: ['cassettes', 'entities', entityType, id, 'records', { limit: 200 }],
+      queryFn: () => cassettesApi.getEntityRecords(entityType, id, { limit: 200, order: 'asc' as const }),
+      staleTime: 60_000,
+    })),
+  })
+
+  const loading = results.some(r => r.isLoading)
+  const rows: BarcodeRow[] = results
+    .map((r, i) => ({ entityId: entityIds[i], records: r.data?.data ?? [] }))
+    .filter(row => row.records.length > 0)
+
+  const allTypes = [...new Set(rows.flatMap(r => r.records.map(ev => ev.messageType).filter(Boolean) as string[]))]
+
+  if (loading) return <LoadingSpinner />
+  if (rows.length === 0) return <p style={{ fontSize: 13, color: '#a0aec0', margin: 0 }}>No event data available.</p>
+
+  return (
+    <div style={{ border: '1px solid var(--rule)', borderRadius: 'var(--radius-sm)', overflow: 'hidden', marginTop: 8 }}>
+      <div style={{ padding: '6px 12px', borderBottom: '1px solid var(--rule)' }}>
+        <BarcodeLegend messageTypes={allTypes} />
+      </div>
+      <SequenceBarcodeView rows={rows} xMode="time" colorMode="type" cellHeight={16} />
+    </div>
+  )
+}
+
+// ── Styles ────────────────────────────────────────────────────────────────────
 
 function modeBadgeStyle(mode: string): React.CSSProperties {
   return {

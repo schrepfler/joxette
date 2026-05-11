@@ -15,6 +15,9 @@ import { ErrorMessage } from '../../../components/ErrorMessage'
 import { ConfirmDialog } from '../../../components/ConfirmDialog'
 import { ReplayToTopicPanel } from '../../../components/ReplayToTopicPanel'
 import { SequenceQueryPanel } from '../../../components/SequenceQueryPanel'
+import { SolQueryPanel } from '../../../components/SolQueryPanel'
+import { ViewModeBar } from '../../../components/ViewModeBar'
+import { SequenceBarcodeView, BarcodeLegend, type BarcodeRow } from '../../../components/SequenceBarcodeView'
 import { StreamStatusBadge, type StreamStatus } from '../../../components/StreamStatusBadge'
 import { useToast } from '../../../components/Toast'
 import { useDebounce } from '../../../hooks/useDebounce'
@@ -114,7 +117,7 @@ function EntityInstancePage() {
   const [cursor, setCursor] = useState<string | undefined>()
   const [cursors, setCursors] = useState<string[]>([])
   const [deleteStep, setDeleteStep] = useState<0 | 1 | 2>(0)
-  const [activeTab, setActiveTab] = useState<'records' | 'sequence'>('records')
+  const [activeTab, setActiveTab] = useState<'records' | 'sol' | 'timeline' | 'barcode'>('records')
   const [_replayPipelineFragments, setReplayPipelineFragments] = useState<FragmentDefinition[]>([])
 
   // Streaming state
@@ -359,40 +362,69 @@ function EntityInstancePage() {
         totalCount={statsQuery.data?.messageCount}
       />
 
-      {/* Tab bar */}
-      <div style={{ display: 'flex', borderBottom: '1px solid #e2e8f0', marginBottom: '1rem', gap: 0 }}>
-        {(['records', 'sequence'] as const).map(tab => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            style={{
-              padding: '0.5rem 1.25rem',
-              background: 'none',
-              border: 'none',
-              borderBottom: activeTab === tab ? '2px solid #3182ce' : '2px solid transparent',
-              cursor: 'pointer',
-              fontSize: 14,
-              fontWeight: activeTab === tab ? 600 : 400,
-              color: activeTab === tab ? '#3182ce' : '#718096',
-              marginBottom: -1,
-            }}
-          >
-            {tab === 'records' ? 'Records' : 'Sequence'}
-          </button>
-        ))}
+      {/* View mode switcher */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1rem' }}>
+        <ViewModeBar
+          modes={[
+            { id: 'records',  label: 'Records',  icon: '☰' },
+            { id: 'sol',      label: 'SOL',       icon: '⌥' },
+            { id: 'timeline', label: 'Timeline',  icon: '⏱' },
+            { id: 'barcode',  label: 'Barcode',   icon: '▦' },
+          ]}
+          active={activeTab}
+          onChange={setActiveTab}
+        />
       </div>
 
-      {/* Sequence tab */}
-      {activeTab === 'sequence' && (
-        <div style={{ marginBottom: '1.5rem' }}>
-          <SequenceQueryPanel
+      {/* SOL tab */}
+      {activeTab === 'sol' && (
+        <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '1rem 1.25rem', marginBottom: '1.5rem' }}>
+          <SolQueryPanel
             mode="entity"
             entityType={entityType}
             entityId={entityId}
-            onSaveFragment={(frag) => setReplayPipelineFragments(fs => [...fs, frag])}
+            from={from || undefined}
+            to={to || undefined}
           />
         </div>
       )}
+
+      {/* Timeline tab — link out to the existing timeline page */}
+      {activeTab === 'timeline' && (
+        <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '1rem 1.25rem', marginBottom: '1.5rem', textAlign: 'center' }}>
+          <p style={{ margin: '0 0 12px', fontSize: 14, color: '#718096' }}>
+            The full interactive timeline opens in its own page for keyboard navigation and zoom.
+          </p>
+          <Link
+            to="/entities/$entityType/$entityId/timeline"
+            params={{ entityType, entityId }}
+            style={{ padding: '0.45rem 1rem', background: '#3182ce', color: '#fff', borderRadius: 4, fontSize: 14, textDecoration: 'none', fontWeight: 500 }}
+          >
+            Open Timeline ⏱
+          </Link>
+        </div>
+      )}
+
+      {/* Barcode tab */}
+      {activeTab === 'barcode' && (() => {
+        const allRecords = streamMode === 'json' ? (recordsQuery.data?.data ?? []) : streamedRecords
+        const messageTypes = [...new Set(allRecords.map(r => r.messageType).filter(Boolean) as string[])]
+        const barcodeRow: BarcodeRow = { entityId, records: allRecords }
+        return (
+          <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'hidden', marginBottom: '1.5rem' }}>
+            <div style={{ padding: '8px 16px', borderBottom: '1px solid #e2e8f0' }}>
+              <BarcodeLegend messageTypes={messageTypes} />
+            </div>
+            {recordsQuery.isLoading && <div style={{ padding: 16 }}><LoadingSpinner /></div>}
+            {!recordsQuery.isLoading && allRecords.length > 0 && (
+              <SequenceBarcodeView rows={[barcodeRow]} xMode="time" colorMode="type" cellHeight={28} />
+            )}
+            {!recordsQuery.isLoading && allRecords.length === 0 && (
+              <p style={{ padding: 16, color: '#a0aec0', fontSize: 13 }}>No records to display.</p>
+            )}
+          </div>
+        )
+      })()}
 
       {/* Records tab */}
       {activeTab === 'records' && (

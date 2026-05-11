@@ -122,6 +122,12 @@ export interface PagedResponse<T> {
   hasMore: boolean
 }
 
+export interface SolMatchResponse {
+  records: EntityRecord[]
+  matched: boolean
+  unexpectedNulls: string[]
+}
+
 export interface EntityInfo {
   entityType: string
   entityId: string
@@ -426,6 +432,31 @@ export const cassettesApi = {
     }
     return Promise.reject(new Error('Invalid mode or missing topic/entityType params'))
   },
+
+  /** Run a SOL query against a single entity's event sequence. */
+  solMatchEntity: (
+    entityType: string,
+    entityId: string,
+    query: string,
+    from?: string,
+    to?: string,
+  ) =>
+    request<SolMatchResponse>(
+      `/cassettes/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}/sol-match`,
+      { method: 'POST', body: JSON.stringify({ query, from, to }) },
+    ),
+
+  /** Run a SOL query against a topic cassette (flat sequence). */
+  solMatchTopic: (
+    topic: string,
+    query: string,
+    from?: string,
+    to?: string,
+  ) =>
+    request<SolMatchResponse>(
+      `/cassettes/topics/${encodeURIComponent(topic)}/sol-match`,
+      { method: 'POST', body: JSON.stringify({ query, from, to }) },
+    ),
 
   /** Dry-run: apply a transform pipeline to the first N records and return before/after pairs. */
   previewTransforms: (req: PreviewTransformsRequest) => {

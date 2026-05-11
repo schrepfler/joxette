@@ -28,6 +28,9 @@ import { TruncateDialog } from '../../components/TruncateDialog'
 import { ConfirmDialog } from '../../components/ConfirmDialog'
 import { ReplayToTopicPanel } from '../../components/ReplayToTopicPanel'
 import { SequenceQueryPanel } from '../../components/SequenceQueryPanel'
+import { SolQueryPanel } from '../../components/SolQueryPanel'
+import { ViewModeBar } from '../../components/ViewModeBar'
+import { SequenceBarcodeView, BarcodeLegend, type BarcodeRow } from '../../components/SequenceBarcodeView'
 import { StreamStatusBadge, type StreamStatus } from '../../components/StreamStatusBadge'
 import { useToast } from '../../components/Toast'
 import { useDebounce } from '../../hooks/useDebounce'
@@ -234,7 +237,7 @@ function TopicDetailPage() {
   const [showTruncateDialog, setShowTruncateDialog] = useState(false)
   const [showAddMatcher, setShowAddMatcher] = useState(false)
   const [confirmDeleteMatcher, setConfirmDeleteMatcher] = useState<string | null>(null)
-  const [activeTab, setActiveTab] = useState<'records' | 'sequence'>('records')
+  const [activeTab, setActiveTab] = useState<'records' | 'sol' | 'timeline' | 'barcode'>('records')
   const [_replayPipelineFragments, setReplayPipelineFragments] = useState<FragmentDefinition[]>([])
 
   // Streaming state
@@ -727,60 +730,66 @@ function TopicDetailPage() {
             totalCount={statsQuery.data?.rowCount}
           />
 
-          {/* ── Tabs ────────────────────────────────────────────────── */}
-          <div>
-            <div style={{ display: 'inline-flex', gap: 2, position: 'relative' }}>
-              {(['records', 'sequence'] as const).map(tab => {
-                const active = activeTab === tab
-                return (
-                  <button
-                    key={tab}
-                    type="button"
-                    onClick={() => setActiveTab(tab)}
-                    style={{
-                      padding: '10px 18px 12px',
-                      background: 'none',
-                      border: 0,
-                      cursor: 'pointer',
-                      fontFamily: 'var(--font-body)',
-                      fontSize: '0.9375rem',
-                      fontWeight: active ? 600 : 440,
-                      color: active ? 'var(--ink-primary)' : 'var(--ink-tertiary)',
-                      position: 'relative',
-                      transition: 'color var(--duration-quick) var(--ease-out-soft)',
-                    }}
-                  >
-                    {tab === 'records' ? 'Records' : 'Sequence'}
-                    <span
-                      aria-hidden
-                      style={{
-                        position: 'absolute',
-                        left: 18,
-                        right: 18,
-                        bottom: 0,
-                        height: 2,
-                        background: 'var(--accent)',
-                        transform: active ? 'scaleX(1)' : 'scaleX(0)',
-                        transformOrigin: 'left',
-                        transition: 'transform var(--duration-default) var(--ease-out-soft)',
-                      }}
-                    />
-                  </button>
-                )
-              })}
-            </div>
-            <Hairline />
+          {/* ── View mode bar ────────────────────────────────────────── */}
+          <div style={{ marginBottom: 16 }}>
+            <ViewModeBar
+              modes={[
+                { id: 'records',  label: 'Records',  icon: '☰' },
+                { id: 'sol',      label: 'SOL',       icon: '⌥' },
+                { id: 'timeline', label: 'Timeline',  icon: '⏱' },
+                { id: 'barcode',  label: 'Barcode',   icon: '▦' },
+              ]}
+              active={activeTab}
+              onChange={setActiveTab}
+            />
           </div>
 
-          {activeTab === 'sequence' && (
-            <section>
-              <SequenceQueryPanel
+          {activeTab === 'sol' && (
+            <section style={{ marginBottom: 24 }}>
+              <SolQueryPanel
                 mode="topic"
                 topic={topic}
-                onSaveFragment={(frag) => setReplayPipelineFragments(fs => [...fs, frag])}
+                from={from || undefined}
+                to={to || undefined}
               />
             </section>
           )}
+
+          {activeTab === 'timeline' && (
+            <section style={{ marginBottom: 24, textAlign: 'center', padding: '24px 0' }}>
+              <p style={{ margin: '0 0 12px', fontSize: 14, color: 'var(--ink-tertiary)' }}>
+                The full interactive timeline opens in its own page.
+              </p>
+              <a
+                href={`/topics/${encodeURIComponent(topic)}/timeline`}
+                style={{ padding: '0.45rem 1rem', background: 'var(--accent)', color: 'var(--accent-ink)', borderRadius: 4, fontSize: 14, textDecoration: 'none', fontWeight: 500 }}
+              >
+                Open Timeline ⏱
+              </a>
+            </section>
+          )}
+
+          {activeTab === 'barcode' && (() => {
+            const allRecords = streamMode === 'json' ? (recordsQuery.data?.data ?? []) : streamedRecords
+            const messageTypes = [...new Set(allRecords.map(r => r.messageType).filter(Boolean) as string[])]
+            const barcodeRows: BarcodeRow[] = allRecords.length > 0
+              ? [{ entityId: topic, records: allRecords.map(r => ({ ...r, entityId: topic } as import('../../api/client').EntityRecord)) }]
+              : []
+            return (
+              <section style={{ marginBottom: 24, border: '1px solid var(--rule)', borderRadius: 'var(--radius-md)', overflow: 'hidden' }}>
+                <div style={{ padding: '8px 16px', borderBottom: '1px solid var(--rule)' }}>
+                  <BarcodeLegend messageTypes={messageTypes} />
+                </div>
+                {recordsQuery.isLoading && <div style={{ padding: 16 }}><LoadingSpinner /></div>}
+                {!recordsQuery.isLoading && barcodeRows.length > 0 && (
+                  <SequenceBarcodeView rows={barcodeRows} xMode="time" colorMode="type" cellHeight={28} />
+                )}
+                {!recordsQuery.isLoading && barcodeRows.length === 0 && (
+                  <p style={{ padding: 16, color: 'var(--ink-tertiary)', fontSize: 13 }}>No records to display.</p>
+                )}
+              </section>
+            )
+          })()}
 
           {activeTab === 'records' && (
             <section style={sectionStyle}>
