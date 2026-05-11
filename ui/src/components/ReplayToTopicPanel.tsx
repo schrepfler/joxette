@@ -33,6 +33,7 @@ export function ReplayToTopicPanel({ mode, topic, entityType, entityId, from, to
   const [replayState, setReplayState] = useState<ReplayState>('idle')
   const [progress, setProgress] = useState<ReplayProgress | null>(null)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const [startDelayMs, setStartDelayMs] = useState('')
   const abortRef = useRef<AbortController | null>(null)
 
   useEffect(() => () => { abortRef.current?.abort() }, [])
@@ -72,9 +73,10 @@ export function ReplayToTopicPanel({ mode, topic, entityType, entityId, from, to
       onError: (e: Error) => { setErrorMsg(e.message); setReplayState('failed') },
     }
 
+    const delayMs = startDelayMs.trim() ? Number(startDelayMs) : undefined
     abortRef.current = mode === 'topic'
-      ? streamTopicReplay(topic!, speed, body, cbs)
-      : streamEntityReplay(entityType!, entityId!, speed, body, cbs)
+      ? streamTopicReplay(topic!, speed, body, cbs, delayMs)
+      : streamEntityReplay(entityType!, entityId!, speed, body, cbs, delayMs)
   }
 
   function stopReplay() {
@@ -128,6 +130,20 @@ export function ReplayToTopicPanel({ mode, topic, entityType, entityId, from, to
             style={{ ...inputStyle, width: 240 }}
             value={targetTopic}
             onChange={e => setTargetTopic(e.target.value)}
+            disabled={isRunning}
+          />
+        </div>
+
+        {/* Start delay */}
+        <div>
+          <label style={labelStyle}>Start delay (ms)</label>
+          <input
+            type="number"
+            min="0"
+            placeholder="0 = immediate"
+            style={{ ...inputStyle, width: 150 }}
+            value={startDelayMs}
+            onChange={e => setStartDelayMs(e.target.value)}
             disabled={isRunning}
           />
         </div>

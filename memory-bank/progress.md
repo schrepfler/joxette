@@ -148,18 +148,21 @@
 - [x] `SolMatchIT` — 6 parameterised scenarios (simple match, wildcard, filter, duration constraint); all green
 
 ### Functional gaps
-- [ ] `entity_source_matchers.id_source` check constraint uses `'key', 'value', 'headers'` (plural) but `MessageRouter` / `EntityIdExtractor` use `'key', 'value', 'header'` (singular) — potential mismatch to verify and fix
+- [x] `entity_source_matchers.id_source` — verified consistent: `init.sql`, `DuckDBTestSupport`, `ConfigRepository.VALID_ID_SOURCES`, and `EntityIdExtractor` all use `'header'` (singular). `EntityIdExtractorTest` covers the header path. No fix needed.
 
 ### Testing gaps
 - [x] Integration test for `CassetteBatchWriter` headers struct-array write — covered by `TopicRecorderTest.recorder_handlesHeadersAndNullKey`
-- [ ] Integration test for `exportSnapshotToObjectStore`
-- [ ] Integration test for `rebuildKnownEntities` — scenario: write entity events to object store, wipe `known_entities`, call rebuild, verify all entities are restored with correct `first_seen`/`last_seen`
-- [ ] `TopicRecorderTest` does not test the full batch → DuckDB write path
+- [x] Integration test for `exportSnapshotToObjectStore` — `ExportSnapshotToObjectStoreIT` (1 test, green)
+- [x] Integration test for `rebuildKnownEntities` — `RebuildKnownEntitiesIT` exists with full MinIO Testcontainers coverage
+- [x] `TopicRecorderTest` full batch → DuckDB write path — covered by `recorder_writesAllFieldValuesCorrectlyIncludingHeaders` (all 9 columns verified) plus 4 other scenarios; 5/5 green
 
 ### UI gaps
-- [ ] SSE/NDJSON streaming not exposed in UI (only paginated JSON used)
-- [ ] No progress indicator for long-running operations (compaction, rebuild)
-- [ ] Entity detail page sources table: `idSource`/`idExpression` fields from API don't match `AddSourceRequest` (UI sends `idSource`/`idExpression` but backend `EntitySourceConfig.MatcherConfig` uses `idSource`/`idExpression` — verify mapping end-to-end)
+- [x] SSE/NDJSON streaming — both topics and entity pages have full Paged/SSE/NDJSON toggle with follow-live and StreamStatusBadge (already done)
+- [x] Progress indicators — compaction polls every 2s + spinner banner; entities page shows rebuild banner (already done)
+- [x] Entity detail sources `idSource`/`idExpression` — AddSourceModal and SourceCard both use `idSource`/`idExpression`, dropdown includes `header` singular (already done)
+- [x] Replay-to-topic cancel button — Stop button in ReplayToTopicPanel wired to AbortController (already done)
+- [x] Replay-to-topic scheduled replay — `startDelayMs` input added to ReplayToTopicPanel; passed as `start_delay_ms` query param to both `streamTopicReplay` and `streamEntityReplay`
+- [x] Retention UI — `retentionApi` (getStatus, getHistory, trigger) added to client.ts; `/retention` route with status card, trigger button, history table (last 20 runs); nav entry + `g r` hotkey; backend: `GET /compaction/retention-history` and `POST /compaction/trigger-retention` added to CompactionController
 
 ## Evolution of Key Decisions
 

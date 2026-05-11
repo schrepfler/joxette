@@ -225,6 +225,42 @@ public class CompactionController {
         return retentionService.getStatus();
     }
 
+    @Operation(
+        operationId = "getRetentionHistory",
+        summary = "Get retention run history",
+        description = "Returns the most-recent retention enforcement runs in descending chronological order."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Retention run history",
+            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE)),
+        @ApiResponse(responseCode = "500", description = "Database error",
+            content = @Content(schema = @Schema(type = "string")))
+    })
+    @GetMapping(value = "/retention-history", produces = MediaType.APPLICATION_JSON_VALUE)
+    public List<RetentionRun> getRetentionHistory(
+            @RequestParam(defaultValue = "20") int limit) throws SQLException {
+        return retentionService.getHistory(limit);
+    }
+
+    @Operation(
+        operationId = "triggerRetention",
+        summary = "Trigger a retention enforcement run",
+        description = "Starts an immediate retention run asynchronously. Returns 409 if a run is already in progress."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "202", description = "Retention run started",
+            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                schema = @Schema(implementation = RetentionRun.class))),
+        @ApiResponse(responseCode = "409", description = "Retention run already in progress",
+            content = @Content(schema = @Schema(type = "string")))
+    })
+    @PostMapping(value = "/trigger-retention", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<RetentionRun> triggerRetention() throws SQLException {
+        RetentionRun run = retentionService.beginRun("manual");
+        Thread.ofVirtual().name("retention-manual-" + run.id()).start(() -> retentionService.executeRun(run.id()));
+        return ResponseEntity.accepted().body(run);
+    }
+
     // =========================================================================
     // Response / request types
     // =========================================================================

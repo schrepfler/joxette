@@ -14,6 +14,7 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as TopicsIndexRouteImport } from './routes/topics/index'
 import { Route as SnapshotsIndexRouteImport } from './routes/snapshots/index'
 import { Route as SettingsIndexRouteImport } from './routes/settings/index'
+import { Route as RetentionIndexRouteImport } from './routes/retention/index'
 import { Route as HealthIndexRouteImport } from './routes/health/index'
 import { Route as EntitiesIndexRouteImport } from './routes/entities/index'
 import { Route as CompactionIndexRouteImport } from './routes/compaction/index'
@@ -50,6 +51,11 @@ const SnapshotsIndexRoute = SnapshotsIndexRouteImport.update({
 const SettingsIndexRoute = SettingsIndexRouteImport.update({
   id: '/settings/',
   path: '/settings/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const RetentionIndexRoute = RetentionIndexRouteImport.update({
+  id: '/retention/',
+  path: '/retention/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const HealthIndexRoute = HealthIndexRouteImport.update({
@@ -126,6 +132,7 @@ export interface FileRoutesByFullPath {
   '/compaction/': typeof CompactionIndexRoute
   '/entities/': typeof EntitiesIndexRoute
   '/health/': typeof HealthIndexRoute
+  '/retention/': typeof RetentionIndexRoute
   '/settings/': typeof SettingsIndexRoute
   '/snapshots/': typeof SnapshotsIndexRoute
   '/topics/': typeof TopicsIndexRoute
@@ -145,6 +152,7 @@ export interface FileRoutesByTo {
   '/compaction': typeof CompactionIndexRoute
   '/entities': typeof EntitiesIndexRoute
   '/health': typeof HealthIndexRoute
+  '/retention': typeof RetentionIndexRoute
   '/settings': typeof SettingsIndexRoute
   '/snapshots': typeof SnapshotsIndexRoute
   '/topics': typeof TopicsIndexRoute
@@ -165,6 +173,7 @@ export interface FileRoutesById {
   '/compaction/': typeof CompactionIndexRoute
   '/entities/': typeof EntitiesIndexRoute
   '/health/': typeof HealthIndexRoute
+  '/retention/': typeof RetentionIndexRoute
   '/settings/': typeof SettingsIndexRoute
   '/snapshots/': typeof SnapshotsIndexRoute
   '/topics/': typeof TopicsIndexRoute
@@ -186,6 +195,7 @@ export interface FileRouteTypes {
     | '/compaction/'
     | '/entities/'
     | '/health/'
+    | '/retention/'
     | '/settings/'
     | '/snapshots/'
     | '/topics/'
@@ -205,6 +215,7 @@ export interface FileRouteTypes {
     | '/compaction'
     | '/entities'
     | '/health'
+    | '/retention'
     | '/settings'
     | '/snapshots'
     | '/topics'
@@ -224,6 +235,7 @@ export interface FileRouteTypes {
     | '/compaction/'
     | '/entities/'
     | '/health/'
+    | '/retention/'
     | '/settings/'
     | '/snapshots/'
     | '/topics/'
@@ -244,6 +256,7 @@ export interface RootRouteChildren {
   CompactionIndexRoute: typeof CompactionIndexRoute
   EntitiesIndexRoute: typeof EntitiesIndexRoute
   HealthIndexRoute: typeof HealthIndexRoute
+  RetentionIndexRoute: typeof RetentionIndexRoute
   SettingsIndexRoute: typeof SettingsIndexRoute
   SnapshotsIndexRoute: typeof SnapshotsIndexRoute
   TopicsIndexRoute: typeof TopicsIndexRoute
@@ -290,6 +303,13 @@ declare module '@tanstack/react-router' {
       path: '/settings'
       fullPath: '/settings/'
       preLoaderRoute: typeof SettingsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/retention/': {
+      id: '/retention/'
+      path: '/retention'
+      fullPath: '/retention/'
+      preLoaderRoute: typeof RetentionIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/health/': {
@@ -388,6 +408,7 @@ const rootRouteChildren: RootRouteChildren = {
   CompactionIndexRoute: CompactionIndexRoute,
   EntitiesIndexRoute: EntitiesIndexRoute,
   HealthIndexRoute: HealthIndexRoute,
+  RetentionIndexRoute: RetentionIndexRoute,
   SettingsIndexRoute: SettingsIndexRoute,
   SnapshotsIndexRoute: SnapshotsIndexRoute,
   TopicsIndexRoute: TopicsIndexRoute,

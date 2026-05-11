@@ -731,8 +731,11 @@ export function streamTopicReplay(
   speed: ReplaySpeed,
   body: ReplayToTopicRequest,
   callbacks: { onProgress: (p: ReplayProgress) => void; onDone: () => void; onError: (e: Error) => void },
+  startDelayMs?: number,
 ): AbortController {
-  const url = `${API_BASE}/cassettes/topics/${encodeURIComponent(topic)}/replay-to-topic?speed=${speed}`
+  const qs = new URLSearchParams({ speed: String(speed) })
+  if (startDelayMs != null) qs.set('start_delay_ms', String(startDelayMs))
+  const url = `${API_BASE}/cassettes/topics/${encodeURIComponent(topic)}/replay-to-topic?${qs}`
   const ctrl = new AbortController()
   void streamLines(url, 'text/event-stream', (line) => {
     const data = extractData(line, true)
@@ -748,8 +751,11 @@ export function streamEntityReplay(
   speed: ReplaySpeed,
   body: ReplayToTopicRequest,
   callbacks: { onProgress: (p: ReplayProgress) => void; onDone: () => void; onError: (e: Error) => void },
+  startDelayMs?: number,
 ): AbortController {
-  const url = `${API_BASE}/cassettes/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}/replay-to-topic?speed=${speed}`
+  const qs = new URLSearchParams({ speed: String(speed) })
+  if (startDelayMs != null) qs.set('start_delay_ms', String(startDelayMs))
+  const url = `${API_BASE}/cassettes/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}/replay-to-topic?${qs}`
   const ctrl = new AbortController()
   void streamLines(url, 'text/event-stream', (line) => {
     const data = extractData(line, true)
@@ -781,6 +787,34 @@ export const compactionApi = {
     request<CompactionRun>('/compaction/trigger', { method: 'POST', body: JSON.stringify(body ?? {}) }),
   getHistory: (limit?: number) =>
     request<CompactionRun[]>(`/compaction/history${limit != null ? `?limit=${limit}` : ''}`),
+}
+
+// ---- Retention ----
+
+export interface RetentionRun {
+  id: number
+  startedAt: string
+  completedAt: string | null
+  status: 'running' | 'completed' | 'failed'
+  triggeredBy: string
+  entityRowsDeleted: number
+  generalRowsDeleted: number
+  knownEntitiesDeleted: number
+  errorMessage: string | null
+}
+
+export interface RetentionStatus {
+  lastRun: RetentionRun | null
+  nextScheduledRun: string | null
+  running: boolean
+}
+
+export const retentionApi = {
+  getStatus: () => request<RetentionStatus>('/compaction/retention-status'),
+  getHistory: (limit?: number) =>
+    request<RetentionRun[]>(`/compaction/retention-history${limit != null ? `?limit=${limit}` : ''}`),
+  trigger: () =>
+    request<RetentionRun>('/compaction/trigger-retention', { method: 'POST' }),
 }
 
 // ---- Health ----
