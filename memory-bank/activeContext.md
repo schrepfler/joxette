@@ -1,168 +1,91 @@
 # Active Context
 
-## Current Work Focus — `joxette-sol` module + match endpoint
+## Current Work Focus — UI visualisation (view modes, SOL panel, barcode, sunburst)
 
-Implement a SOL (Sequence Operations Language) engine as a new Maven module `joxette-sol` that can evaluate sequence queries over Joxette entity cassettes, then wire it into a new `POST /cassettes/entities/{type}/{id}/match` endpoint in `joxette-service`.
+Adding multi-mode visualisations to every cassette page, informed by the Motif Analytics
+and Observable sequences collection analysis (docs/motif-ui-reference.md,
+docs/sunburst-sequence-reference.md, docs/observable-sequences-reference.md).
 
-**SOL specification:** `docs/sol-specification.md` — extracted from Motif Analytics wayback archive.
+### Completed this session
 
-### Phase 1a — `sol` module (pure Java, zero Joxette deps — future standalone library)
+**Infrastructure**
+- `ViewModeBar<T>` — generic segmented control used across all three pages
+- `SolQueryPanel` — SOL textarea editor + recipe dropdown (10 recipes) + result table with
+  colour-hashed event pills and inline JSON expand; calls `POST .../sol-match`
+- `SequenceBarcodeView` — SVG barcode: one row per entity, rect width ∝ timestamp gap,
+  colour by messageType (golden-angle hash) or SOL tag highlight; hover tooltip
+- `MultiEntityBarcodePanel` — parallel `useQueries` fetcher for ≤20 entities, stacked rows
+- `cassettesApi.solMatchEntity/solMatchTopic` + `SolMatchResponse` type in client.ts
+- `NflDriveSolTest` (17 tests) — real CHI@GB 2019 drive data as SOL unit tests; 42 total green
 
-Module lives in `sol/`, depends only on slf4j-api + Jackson. No `joxette-core`, no Spring, no DuckDB, no Kafka. Goal: publishable as an independent library eventually.
+**Page updates**
+- Entity detail: 2-tab → 4-mode [Records][SOL][Timeline][Barcode]
+- Topic detail: 2-tab → 4-mode [Records][SOL][Timeline][Barcode]
+- Entity type detail: Known Entities gains [List][Barcode] switcher
 
-Own data model (no coupling to Joxette DTOs):
-- `Event` — name + timestamp + mutable `Map<String, Object>` dimensions
-- `Sequence` — ordered `List<Event>` + sequence-level `Map<String, Object>` dimensions + identity (e.g., entity_id)
-- `Tag` — named label over a contiguous index range `[from, to)` within a `Sequence`
-- `SolQuery` — parsed pipeline (`List<SolOperation>`)
-- `SolParser` — hand-written recursive-descent parser (no ANTLR — keep lean)
-- Operations: `MatchOp`, `MatchSplitOp`, `FilterOp`, `SetOp`, `ReplaceOp`, `CombineOp` (sealed interface `SolOperation`)
-- `ExpressionEvaluator` — boolean/scalar/array expression evaluation against sequence + tag map; null-casts on errors
-- `MatchEngine` — left-to-right greedy/lazy matching with backtracking; quantifiers `+ * ? {n} {n,m}`
-- `SolEngine` — chains operations over a `Sequence`, returns `SolResult`
-- `SolResult` — tagged events, computed dims, `List<UnexpectedNull>` (coordinates + reason)
-- Error model: "show must go on" — null-cast uncomputable expressions, record as `unexpectedNulls`
-- No cross-sequence state — each `Sequence` evaluated independently
+**Documentation**
+- `docs/motif-ui-reference.md` — full Motif Analytics UI reverse-engineering (ASCII art,
+  all components, colour system, Joxette mapping)
+- `docs/sunburst-sequence-reference.md` — Observable NFL sunburst + sequence query language
+- `docs/observable-sequences-reference.md` — barcode chart, tennis sunburst, data schemas
+- `docs/sol-specification.md` — SOL language reference from Motif wayback archive
 
-### Phase 1b — `joxette-sol` module (thin adapter, depends on `sol` + `joxette-core`)
+### Next up
 
-Module lives in `joxette-sol/`, depends on `sol` + `joxette-core`. No Spring, no DuckDB.
+1. **Sunburst chart** — D3 prefix-tree chart for entity type pages
+   - Backend `POST /cassettes/entities/{type}/sunburst`
+   - TypeScript hierarchy builder + D3 arc geometry (sqrt radii, arcVisible)
+   - Zoom (double-click), breadcrumb trail, colour modes
+   - Integrate into entity type page as a 3rd view mode [List][Barcode][Sunburst]
 
-- `EntityRecordAdapter` — converts `List<EntityRecord>` → `Sequence` (maps `kafka_timestamp` → `Event.ts`, `value` JSON fields → event dimensions, `source_topic` → event name by default)
-- `SolResultMapper` — maps `SolResult` back to `List<EntityRecord>` (or enriched `MessageResponse`) preserving tag assignments as extra fields
+2. **SOL panel polish**
+   - CodeMirror syntax highlighting (replace plain textarea)
+   - Autocomplete from entity `messageType` vocab (GET /cassettes/entities/{type}/fields)
+   - Sequence inspector (tag coverage bars below editor)
 
-### Phase 2 — match endpoint in `joxette-service`
+3. **Barcode enhancements**
+   - Colour by numeric field (diverging red→green, like EPA in NFL chart)
+   - SOL-tag overlay on multi-entity barcode
 
-New endpoint: `POST /cassettes/entities/{type}/{id}/match`
+---
 
-Request body:
-```json
-{ "query": "match Login(login) >> * >> Buy(purchase)\nif duration(Login, Buy) < 5min" }
-```
+## Previous Focus — SOL engine + match endpoints
 
-Response: same `PagedResponse<MessageResponse>` shape as the existing replay endpoint, filtered/tagged by SOL result. SSE and NDJSON streaming variants too.
+`sol` module (standalone, zero Joxette deps) + `joxette-sol` adapter +
+`POST .../sol-match` endpoints + `SolMatchIT`. All complete and green.
+See progress.md for full checklist.
 
-Wire-up:
-- `SolMatchService` (service layer) — loads sequence via `EntityReplayService`, runs `SolEngine`, maps result back to `MessageResponse`
-- `CassetteController` — adds the match endpoint alongside existing replay endpoints
+## Previous Focus — Kafka exponential backoff
+
+`resilience4j-spring-boot4:2.4.0` added. `BrokerConnectionFactory` raises Kafka
+reconnect backoff from 50ms → 1s (max 30s). `RecordingCoordinator.runInSupervisedScope`
+wraps recorder in Resilience4j `Retry` with exponential-random backoff (5s → ×2 → 5min cap).
+
+## Previous Focus — UI retention page + scheduled replay
+
+Retention page (`/retention`) with status, trigger, history table.
+`ReplayToTopicPanel` gained `startDelayMs` input passed as `start_delay_ms` query param.
+`GET /compaction/retention-history` + `POST /compaction/trigger-retention` added to backend.
 
 ## Previous Focus — Maven module split (joxette-core / joxette-kafka / joxette-service / joxette-test-kit)
-Split the single-module project into four Maven modules so the replay engine and its SPIs
-can be consumed outside the Spring Boot service. Core has no Spring / DuckDB / Kafka on its
-classpath; test-kit has no DuckDB.
 
-**What changed:**
-- Parent `pom.xml` rewritten: `<modules>` declares the four modules, all third-party deps lifted
-  into `dependencyManagement`, plugins into `pluginManagement`. New property
-  `swagger-annotations.version=2.2.43` + explicit dep entry — the Spring Boot BOM ships the old
-  non-jakarta variant, but core DTOs use `@Schema`, so we need the jakarta JAR.
-- **`joxette-core`** — pure Java. Holds the replay engine, DTOs, and SPIs:
-  `CassetteSource`, `EntityCassetteSource`, `sink.RecordSink`, `SinkException`, plus
-  `ReplayEngine`, `MessageTransformer`, `CassetteRecord`, `EntityRecord`, `PagedResponse`,
-  `ReplayProgress`, `ReplayToTopicRequest`, `ReplayTransformConfig`, `FieldSubstitution`.
-  Deps: slf4j-api, jackson-annotations, swagger-annotations-jakarta, json-path, junit (test).
-- **`joxette-kafka`** — `KafkaRecordSink` (impl `RecordSink`). Deps: joxette-core + kafka-clients.
-- **`joxette-service`** — Spring Boot app. `TopicReplayService implements CassetteSource`,
-  `EntityReplayService implements EntityCassetteSource`. `KafkaRecordSinkFactory` lives here
-  (it's the only piece that knows about per-broker routing). jOOQ codegen + PlantUML exec
-  plugin moved here (PlantUML path now `../docs`).
-- **`joxette-test-kit`** — new module. `InMemoryCassetteSource`, `InMemoryEntityCassetteSource`,
-  `CapturingRecordSink`, and a fluent `ReplayEngineBuilder`. `ReplayEngineBuilderTest` proves
-  the kit drives a `ReplayEngine` with zero Joxette-service classes — no DuckDB, no Spring,
-  no Kafka broker; asserts ordering and honoured `speed=2.0` inter-message delay.
-- `ReplayEngine` updated to depend on the core SPIs rather than the concrete DuckLake-backed
-  services. Complex `TransformPipeline` (jOOQ-bound via `SqlPushdownAnalyzer`) stays in
-  service; the simpler `MessageTransformer` used by the engine moves to core cleanly.
-- Diagrams & docs refreshed: `docs/architecture.puml` shows the four module rectangles and
-  the `joxette-test-kit` consumer path.
+Four-module layout. See progress.md for full details.
 
-## Previous Focus — RecordSink SPI extraction
-Extracted a reusable `RecordSink` SPI for the replay-to-topic path so the same replay engine can power the service and a future test-kit without dragging in Spring or Kafka imports.
+---
 
-**What changed:**
-- New package `com.joxette.replay.sink` holds the SPI:
-  - `RecordSink` — blocking `send(targetTopic, CassetteRecord|EntityRecord)` that returns a `SendResult` or throws `SinkException`. Virtual-thread friendly; no `Future`/`CompletableFuture` in the interface.
-  - `SinkException` — unchecked, signals permanent transport failure so the engine aborts the run and reports `status=failed`.
-- Kafka impl lives in `com.joxette.replay.sink.kafka`:
-  - `KafkaRecordSink` — blocks on `producer.send(rec).get()`, owns byte/header/timestamp encoding (UTF-8 keys/headers, base64url value decode, source timestamp on the `ProducerRecord`). Does **not** own the `Producer`.
-  - `KafkaRecordSinkFactory` — `@Component` that caches one `KafkaProducer` per broker id (`null` → `BrokerConfig.DEFAULT_BROKER_ID`) and closes all in `@PreDestroy`.
-- `ReplayToTopicService` renamed to `ReplayEngine` and stripped of Spring. Takes `TopicReplayService`, `EntityReplayService`, and any `RecordSink`. `doSend` no longer plumbs `Future.get()` since the sink blocks. `replayTopicToKafka` / `replayEntityToKafka` → `replayTopic` / `replayEntity`.
-- `KafkaProducerService` deleted; `CassetteController` now builds a per-request `ReplayEngine` via `engineFor(brokerId)` that resolves the broker through `KafkaRecordSinkFactory`.
-- New `ReplayToTopicIT` (Testcontainers) seeds a 3-record cassette, POSTs `/cassettes/topics/{topic}/replay-to-topic?speed=2.0`, and asserts order, keys/values, timestamps, and honoured inter-message delay.
-- PlantUML updated: `docs/replay-pipeline.puml` splits the produce path into `ReplayEngine` + `KafkaRecordSink`; `docs/architecture.puml` shows the new trio (`ReplayEngine`, `KafkaRecordSinkFactory`, `KafkaRecordSink`). Diagrams regenerated.
-
-## Older Focus — `com.softwaremill.jox:kafka:0.5.3` migration
-Migrated from hand-rolled `com.joxette.kafka` shim to the real `com.softwaremill.jox:kafka:0.5.3` module (published to Maven Central 18 Mar 2026).
-
-**What changed:**
-- `pom.xml`: replaced commented-out block + direct `kafka-clients` dep with `com.softwaremill.jox:kafka:0.5.3` (kafka-clients is now transitive)
-- Deleted `src/main/java/com/joxette/kafka/` (4 files: `ConsumerSettings`, `ProducerSettings`, `KafkaSource`, `KafkaSink`)
-- `BrokerConnectionFactory`: now uses jox fluent builder API (`ConsumerSettings.defaults(groupId).bootstrapServers(...).keyDeserializer(...).property(...)`) and `ProducerSettings.defaults().bootstrapServers(...)...`; security props still applied per-broker; `AdminClient` still built from a raw `Map` (no jox wrapper for admin)
-- `KafkaConfig`: import updated to `com.softwaremill.jox.kafka.ConsumerSettings`
-- `TopicRecorder`: `KafkaSource` replaced with inline `Flows.usingEmit` + `settings.toConsumer()` — identical poll/seek/commit logic, no `KafkaFlow` actor (we need `ConsumerRebalanceListener` for seek which jox's `KafkaFlow` does not expose)
-- `RecordingCoordinator`: import updated
-- `KafkaProducerService`: `KafkaSink` replaced with `KafkaProducer` obtained via `producerSettings.toProducer()`
-- `BrokerController`: peek endpoint uses `ConsumerSettings.defaults(...).bootstrapServers(...).groupId(...).toConsumer()` instead of raw Map + `ConsumerSettings.create()`
-- `TopicRecorderTest`: helper methods rewritten to use fluent API; `ConsumerSettings.create()` factory removed
-
-**Note on jox `KafkaFlow`:** Not used for the recording path because it wraps the consumer in an actor (`KafkaConsumerWrapper`) that doesn't expose `ConsumerRebalanceListener` — required for our seek-to-beginning / seek-to-timestamp functionality. We use `Flows.usingEmit` with a raw `KafkaConsumer` directly, which is the same pattern jox uses internally.
-
-## What Was Already Done (previously undocumented)
-
-### Retention enforcement
-`RetentionService` + `RetentionScheduler` + `RetentionRun` / `RetentionStatus` — fully implemented. Deletes rows older than `retention_days` from general cassettes, entity cassettes, and `known_entities`. Cron-driven, guarded by `AtomicBoolean`, logged to `retention_history`.
-
-### Fixed `rebuildKnownEntities` — four bugs resolved after DuckLake catalog loss:
-1. `executeUpdate()` returns 0 for `INSERT…SELECT…ON CONFLICT` with bound `?` in SELECT; replaced with `execute()` + `SELECT COUNT`.
-2. DuckLake catalog reset left `lake.main.entity_*` empty; `resolveEntityDataSource()` falls back to `read_parquet(glob, union_by_name=true)` when catalog table COUNT = 0.
-3. Bound `?` in `SELECT` list of `INSERT…SELECT…GROUP BY` collapses all rows to one group (DuckDB planner bug with table functions); entity_type inlined as string literal.
-4. After catalog-loss recovery, `resolveEntityDataSource()` also re-inserts the orphaned Parquet data back into the DuckLake catalog table so that all downstream replay/stats queries work normally without any code changes.
-
-### Replay-to-Topic
-`ReplayEngine` orchestrates reading from DuckLake and writing to any `RecordSink`. The Kafka implementation (`KafkaRecordSink` + `KafkaRecordSinkFactory`) handles broker routing and producer caching. Both general cassette and entity cassette paths are implemented. Speed multiplier (inter-message delay scaling) and `ReplayProgress` progress events are included. `ReplayToTopicIT` covers the HTTP → engine → Kafka round-trip.
-
-### Scheduled Replay
-`ScheduledReplayService` — in-memory registry for pending/streaming scheduled replays. Supports register, await-start (cancellable latch), cancel, and status queries. Not persisted across restarts.
-
-### Message Transformation Pipeline
-`MessageTransformer` — per-replay-invocation stateful transformer. Supports restamp (shift all `kafka_timestamp` values so first message = now) and field substitution (JSONPath-based replacement with literal or UUID4). `ReplayTransformConfig` + `FieldSubstitution` records. `TransformPresetsController` for saved presets. Full UI pipeline builder.
-
-### TopicController reload
-`TopicController` already calls `reloadRouter()` (via `MessageRouter.reload()`) on every mutating operation: create, update, delete topic, add/delete matcher.
-
-### startFrom wiring
-`RecordingStartupRunner` passes `tc.startFrom()` through to `coordinator.startTopic()`. `TopicRecorder` has `seekToEarliest` and `seekToTimestamp` fields. `TopicController.createTopic()` defaults to `"latest"` but accepts `"earliest"` or an ISO timestamp.
-
-### Timeline UI
-`CassetteTimeline.tsx` — canvas-based two-panel viewer (JSON inspector + horizontal timeline). Features: proportional timestamp spacing, click-to-select, keyboard nav (←/→), pan (drag), zoom (scroll/pinch), fit-to-window, colour coding by partition/topic, progressive page loading. Exposed at `topics/$topic_.timeline.tsx` and `entities/$entityType/$entityId_.timeline.tsx`.
-
-### Settings page
-`ui/src/routes/settings/index.tsx` + `appStore.ts` (Zustand store for UI settings).
-
-## Active Decisions & Considerations
+## Active Decisions
 
 ### known_entities remains plain DuckDB (not DuckLake)
-Intentional: `ON CONFLICT ... DO UPDATE` works correctly in plain DuckDB but not in DuckLake (no PK enforcement). Moving it to DuckLake would require deduplication-on-read which adds complexity. The rebuild operation compensates for the durability gap.
+`ON CONFLICT ... DO UPDATE` requires PK enforcement, which DuckLake doesn't provide.
 
 ### MessageRouter reload is synchronous
-`reload()` is called synchronously in `EntityController` and `TopicController` before returning the HTTP response. This is fine because reload is fast (simple DB queries). If routing tables grow very large, this could be made async.
+Fast enough for current table sizes. Make async if routing tables grow large.
 
 ### Headers stored as VARCHAR (not BLOB)
-Both key and value in the `STRUCT(key VARCHAR, value VARCHAR)[]` are plain strings. Non-UTF-8 binary header values are base64-encoded on write so no data is lost. This makes headers fully queryable via the `headers_get` DuckDB macro and readable in the UI without any cast.
+Non-UTF-8 binary values are base64-encoded on write. Fully queryable via `headers_get` macro.
 
 ### ScheduledReplayService is in-memory only
-Scheduled replays are not persisted to DuckDB. A service restart silently drops all pending/streaming replays. Acceptable for the current use-case (test fixtures); could be persisted if needed.
+Not persisted across restarts. Acceptable for test fixtures.
 
 ### Bootstrap YAML still needed for table creation
-`SchemaManager.createLakeTables()` reads from `JoxetteProperties.getBootstrap()` to create the initial DuckLake tables at startup. Entity types added via REST API are created dynamically by `EntityController.createEntityType()`. The bootstrap config seeds DuckDB config tables; `MessageRouter` reads those tables rather than the YAML directly.
-
-## Next Steps (suggested)
-- [ ] **Verify `entity_source_matchers.id_source` constraint** — check constraint uses `'headers'` (plural) but `EntityIdExtractor` uses `'header'` (singular). Fix the constraint or the extractor to align.
-- [x] **Integration test: `rebuildKnownEntities` from object storage** — `RebuildKnownEntitiesIT` exists with full MinIO Testcontainers coverage.
-- [ ] **Integration test: `exportSnapshotToObjectStore`** — verify EXPORT DATABASE to S3 registers snapshot in local `snapshots` table
-- [ ] **`TopicRecorderTest` full batch→DuckDB path** — current test does not exercise the write path end-to-end
-- [ ] **UI: SSE/NDJSON streaming** — expose streaming replay in the UI (currently only paginated JSON is used)
-- [ ] **UI: progress indicators** — add progress feedback for long-running operations (compaction, rebuild)
-- [ ] **UI: verify entity source mapping** — confirm `idSource`/`idExpression` field names match between frontend `AddSourceRequest` and backend `EntitySourceConfig.MatcherConfig`
-- [ ] **Replay-to-topic UI integration** — wire `ReplayToTopicPanel` to scheduled replay endpoints; add cancel button
-- [ ] **Retention UI** — add retention configuration and history pages (backend API exists, UI not yet built)
+`SchemaManager` reads from `JoxetteProperties.getBootstrap()` at startup.

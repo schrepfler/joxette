@@ -91,6 +91,7 @@
 - [x] Topics list → topic detail with replay records, stats, filter, pagination
 - [x] Entities list (with Rebuild Known Entities button) → entity type detail (sources, known entities) → entity replay
 - [x] Compaction page (status, trigger, history)
+- [x] Retention page (`/retention`) — status, trigger, history table (last 20 runs); `g r` hotkey
 - [x] Snapshots page (list, create local, export to object store, restore)
 - [x] Health page
 - [x] Settings page (`ui/src/routes/settings/index.tsx`, `appStore.ts`)
@@ -98,10 +99,16 @@
 - [x] Dark/light theme toggle
 - [x] Toast notifications for all mutations
 - [x] Confirm dialogs for destructive actions
-- [x] `ReplayToTopicPanel` — UI panel for configuring and triggering replay-to-topic
+- [x] `ReplayToTopicPanel` — configuring, triggering, progress bar; Stop button; start-delay input (passes `start_delay_ms`)
 - [x] Timeline views — `CassetteTimeline.tsx` (canvas-based, pan/zoom/keyboard nav, proportional timestamp spacing, progressive page loading); exposed at `$topic_.timeline.tsx` and `$entityType/$entityId_.timeline.tsx`
 - [x] `TruncateDialog` component
 - [x] `useDebounce` hook
+- [x] `ViewModeBar<T>` — segmented view-mode switcher
+- [x] `SolQueryPanel` — SOL query editor with recipes, run, result table
+- [x] `SequenceBarcodeView` + `BarcodeLegend` — horizontal scrollable barcode chart
+- [x] Entity detail: [Records][SOL][Timeline][Barcode] view modes
+- [x] Topic detail: [Records][SOL][Timeline][Barcode] view modes
+- [x] Entity type detail: Known Entities [List][Barcode] view modes
 
 ### Schema
 - [x] `SchemaManager` creates all tables at startup (idempotent)
@@ -122,6 +129,8 @@
 - [x] `RecordReplayRoundTripIT` — integration test (Testcontainers)
 - [x] `ReplayToTopicIT` — Testcontainers IT: seeds a 3-record general cassette, POSTs replay-to-topic at `speed=2.0`, asserts order, payload fidelity, and inter-message delay
 - [x] `SpringDocIT` — verifies OpenAPI spec loads
+- [x] `SolMatchIT` — 6 parameterised SOL match scenarios (entity cassette end-to-end)
+- [x] `NflDriveSolTest` (sol module, 17 tests) — real CHI@GB 2019 drive data; covers funnel, three-and-out, sack, filter, match split + combine, all-pass, timeout, no-run, field goal; 42 total sol tests green
 
 ## What's Left / Known Gaps
 
@@ -149,22 +158,35 @@
 
 ### SOL query UI (`joxette-ui`) — from Motif + Observable analysis
 > Reference docs: `docs/motif-ui-reference.md`, `docs/sunburst-sequence-reference.md`
-- [ ] `SolQueryPanel` — CodeMirror editor with SOL keyword highlighting and event-name autocomplete (vocab from entity stats API)
-- [ ] Recipe library dropdown — SOL snippet templates (funnel, attribution, sessionize, dedup, retention)
-- [ ] Sequence grid tag highlighting — `tagsForIndex()` → coloured left border + tag badge on matched rows
+- [x] `ViewModeBar<T>` — generic segmented control: [Records][SOL][Timeline][Barcode] on entity/topic pages, [List][Barcode] on entity type page
+- [x] `SolQueryPanel` — SOL textarea, ⌘↵ shortcut, 10-recipe dropdown, run button, status bar (matched/count/nulls), result table with colour-hashed event pills + inline JSON expand
+- [x] `SequenceBarcodeView` — SVG barcode: proportional-width rects (time mode) or fixed-width (index mode), colour by messageType or SOL tag; hover tooltip; `BarcodeLegend`
+- [x] `MultiEntityBarcodePanel` — parallel useQueries for ≤20 entities, stacked barcode rows
+- [x] `cassettesApi.solMatchEntity/solMatchTopic` + `SolMatchResponse` type in `client.ts`
+- [x] Entity detail: [Records][SOL][Timeline][Barcode] view modes
+- [x] Topic detail: [Records][SOL][Timeline][Barcode] view modes
+- [x] Entity type detail: Known Entities [List][Barcode] switcher
+- [ ] `SolQueryPanel` CodeMirror upgrade — syntax highlighting for SOL keywords
+- [ ] Autocomplete from entity `messageType` vocab — `GET /cassettes/entities/{type}/fields`
 - [ ] `SolSequenceInspector` — collapsible tag coverage bars (PREFIX / MATCHED / SUFFIX proportions)
-- [ ] Live preview — debounce 500ms → POST sol-match → stream results via SSE
-- [ ] SOL status bar — event count · match status · unexpected null count
+- [ ] Barcode: colour by numeric field (diverging red→green scale, like EPA in NFL barcode chart)
+- [ ] SOL tag overlay on multi-entity barcode — highlight matched events across all rows
 
 ### Sunburst sequence chart — from Observable NFL notebook analysis
 > Reference doc: `docs/sunburst-sequence-reference.md`
-- [ ] Backend: `POST /cassettes/entities/{type}/sunburst` — builds prefix-tree hierarchy from all entity sequences, accepts optional `solQuery` for pre-filtering
-- [ ] `buildHierarchy(sequences)` — prefix-tree builder (TypeScript, follows `docs/sunburst-sequence-reference.md` §10.2)
+- [ ] Backend: `POST /cassettes/entities/{type}/sunburst` — prefix-tree hierarchy from all entity sequences, optional `solQuery` pre-filter
+- [ ] TypeScript hierarchy builder — prefix-tree construction (§10.2 of sunburst reference)
 - [ ] D3 sunburst component — arc geometry with sqrt radii, arcVisible filter, colour by event name (golden-angle hue hash)
-- [ ] Zoom interaction — double-click to zoom in, double-click centre to zoom out (D3 tween)
+- [ ] Zoom — double-click to zoom in, double-click centre to zoom out (D3 tween, 750ms)
 - [ ] Breadcrumb trail — pentagon chevrons showing current path, count and % in final crumb
 - [ ] Colour modes — event name (default), SOL tag highlight, outcome probability
-- [ ] Property distribution panel — right-click arc → histogram/bar chart of a chosen event/sequence property
+- [ ] Entity type page: add [Sunburst] as 3rd view mode alongside [List][Barcode]
+- [ ] Property distribution panel — right-click arc → histogram of chosen event/sequence property
+
+### Kafka resilience
+- [x] `reconnect.backoff.ms` raised 50ms → 1s, `reconnect.backoff.max.ms` = 30s in `BrokerConnectionFactory`
+- [x] `resilience4j-spring-boot4:2.4.0` — recorder restart with exponential-random backoff (5s → ×2 → 5min, unlimited retries, stops on `isStopped()`)
+- [x] `joxette.recording.retry-*` properties tunable in `application.yml`
 
 ### Functional gaps
 - [x] `entity_source_matchers.id_source` — verified consistent: `init.sql`, `DuckDBTestSupport`, `ConfigRepository.VALID_ID_SOURCES`, and `EntityIdExtractor` all use `'header'` (singular). `EntityIdExtractorTest` covers the header path. No fix needed.
