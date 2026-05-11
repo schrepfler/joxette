@@ -551,9 +551,11 @@ public class SchemaManager {
      * and {@code last_message_type} to {@code known_entities}.
      */
     private void migrateKnownEntities(Connection conn) {
+        // DuckDB does not support NOT NULL or DEFAULT [] on ADD COLUMN for existing tables.
+        // Nulls are handled defensively in KnownEntitiesRepository and mapEntityInfo.
         String[][] migrations = {
-            { "message_count",      "ALTER TABLE known_entities ADD COLUMN IF NOT EXISTS message_count BIGINT NOT NULL DEFAULT 0" },
-            { "source_topics",      "ALTER TABLE known_entities ADD COLUMN IF NOT EXISTS source_topics VARCHAR[] NOT NULL DEFAULT []" },
+            { "message_count",      "ALTER TABLE known_entities ADD COLUMN IF NOT EXISTS message_count BIGINT DEFAULT 0" },
+            { "source_topics",      "ALTER TABLE known_entities ADD COLUMN IF NOT EXISTS source_topics VARCHAR[]" },
             { "last_message_type",  "ALTER TABLE known_entities ADD COLUMN IF NOT EXISTS last_message_type VARCHAR" },
         };
         for (String[] m : migrations) {
