@@ -29,6 +29,7 @@ import { FieldCombobox } from '../../../components/transforms/PredicateBuilder'
 import { ViewModeBar } from '../../../components/ViewModeBar'
 import { SequenceBarcodeView, BarcodeLegend, NumericLegend, buildTagMap, buildNumericDomain, tagColor, extractNumeric, type BarcodeRow } from '../../../components/SequenceBarcodeView'
 import { SunburstChart } from '../../../components/SunburstChart'
+import { SunburstDistributionPanel } from '../../../components/SunburstDistributionPanel'
 import { useQueries } from '@tanstack/react-query'
 
 export const Route = createFileRoute('/entities/$entityType/')({
@@ -601,6 +602,7 @@ function SunburstPanel({ entityType }: { entityType: string }) {
   const [maxEntities, setMaxEntities] = useState(200)
   const [solQueryRaw, setSolQueryRaw] = useState('')
   const [activeSolQuery, setActiveSolQuery] = useState('')
+  const [distribution, setDistribution] = useState<{ nodeName: string; seqIds: string[] } | null>(null)
 
   const query = useQuery({
     queryKey: ['cassettes', 'entities', entityType, 'sunburst', { maxSteps, maxEntities, activeSolQuery }],
@@ -718,7 +720,21 @@ function SunburstPanel({ entityType }: { entityType: string }) {
         </p>
       )}
       {query.data && query.data.totalSequences > 0 && (
-        <SunburstChart data={query.data} diameter={520} maxSteps={maxSteps} />
+        <SunburstChart
+          data={query.data}
+          diameter={520}
+          maxSteps={maxSteps}
+          onArcRightClick={(node, seqIds) => setDistribution({ nodeName: node.name, seqIds })}
+        />
+      )}
+
+      {distribution && (
+        <SunburstDistributionPanel
+          entityType={entityType}
+          nodeName={distribution.nodeName}
+          seqIds={distribution.seqIds}
+          onClose={() => setDistribution(null)}
+        />
       )}
     </div>
   )

@@ -28,6 +28,19 @@ interface Props {
   /** Arcs smaller than this angle (degrees) are hidden. Default 0.5. */
   minAngleDeg?: number
   onNodeClick?: (node: SunburstNode, path: SunburstNode[]) => void
+  /** Called on right-click: receives the arc node and all seqIds in its subtree. */
+  onArcRightClick?: (node: SunburstNode, seqIds: string[]) => void
+}
+
+/** Recursively collects all seqIds from a node and all its descendants. */
+export function collectSubtreeSeqIds(node: SunburstNode): string[] {
+  const ids: string[] = []
+  function walk(n: SunburstNode) {
+    if (n.seqIds) ids.push(...n.seqIds)
+    if (n.children) n.children.forEach(walk)
+  }
+  walk(node)
+  return [...new Set(ids)]
 }
 
 // ── Colour helpers ─────────────────────────────────────────────────────────────
@@ -68,6 +81,7 @@ export function SunburstChart({
   maxSteps = 7,
   minAngleDeg = 0.5,
   onNodeClick,
+  onArcRightClick,
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null)
   const [path, setPath] = useState<SunburstNode[]>([])
@@ -201,6 +215,11 @@ export function SunburstChart({
                   onMouseLeave={handleMouseLeave}
                   onDoubleClick={() => handleDoubleClick(d)}
                   onClick={() => onNodeClick?.(d.data, d.ancestors().reverse().map(n => n.data).slice(1))}
+                  onContextMenu={e => {
+                    if (!onArcRightClick) return
+                    e.preventDefault()
+                    onArcRightClick(d.data, collectSubtreeSeqIds(d.data))
+                  }}
                 >
                   <title>{`${d.data.name}\n${d.data.nodeCount.toLocaleString()} sequences\n${((d.data.nodeCount / data.totalSequences) * 100).toFixed(1)}%`}</title>
                 </path>
@@ -278,6 +297,9 @@ export function SunburstChart({
         )}
         {zoomNode.depth === 0 && (
           <span> · double-click any arc to zoom in</span>
+        )}
+        {onArcRightClick && (
+          <span> · right-click arc to inspect field distribution</span>
         )}
       </div>
     </div>
