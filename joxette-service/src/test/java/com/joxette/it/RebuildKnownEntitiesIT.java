@@ -145,16 +145,16 @@ class RebuildKnownEntitiesIT {
         // cust-001:  one event   → first_seen = last_seen
         try (EntityCassetteBatchWriter writer = new EntityCassetteBatchWriter(duckDB)) {
             writer.writeRoutes(
-                    List.of(new EntityRoute("order", "order-001", 0, "order_created")),
+                    List.of(new EntityRoute("order", "order-001", 0, "order_created", "test-topic")),
                     message("orders.events", 0, 0L, Instant.parse("2024-01-01T10:00:00Z")));
             writer.writeRoutes(
-                    List.of(new EntityRoute("order", "order-001", 0, "order_updated")),
+                    List.of(new EntityRoute("order", "order-001", 0, "order_updated", "test-topic")),
                     message("orders.events", 0, 1L, Instant.parse("2024-01-01T12:00:00Z")));
             writer.writeRoutes(
-                    List.of(new EntityRoute("order", "order-002", 1, "order_created")),
+                    List.of(new EntityRoute("order", "order-002", 1, "order_created", "test-topic")),
                     message("orders.events", 0, 2L, Instant.parse("2024-01-02T08:00:00Z")));
             writer.writeRoutes(
-                    List.of(new EntityRoute("customer", "cust-001", 0, "customer_signup")),
+                    List.of(new EntityRoute("customer", "cust-001", 0, "customer_signup", "test-topic")),
                     message("customers", 0, 0L, Instant.parse("2024-01-01T10:00:00Z")));
         }
 
@@ -218,7 +218,7 @@ class RebuildKnownEntitiesIT {
     void rebuildKnownEntities_idempotent_secondCallProducesSameResult() throws Exception {
         try (EntityCassetteBatchWriter writer = new EntityCassetteBatchWriter(duckDB)) {
             writer.writeRoutes(
-                    List.of(new EntityRoute("order", "order-X", 3, "created")),
+                    List.of(new EntityRoute("order", "order-X", 3, "created", "test-topic")),
                     message("orders.events", 0, 5L, Instant.parse("2024-06-01T09:00:00Z")));
         }
 

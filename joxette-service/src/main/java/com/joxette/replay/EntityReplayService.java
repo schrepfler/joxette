@@ -81,10 +81,13 @@ public class EntityReplayService implements EntityCassetteSource {
     // Field references for known_entities (plain DuckDB, unqualified name)
     // -------------------------------------------------------------------------
 
-    private static final Table<?>              KNOWN_ENTITIES = DSL.table(DSL.name("known_entities"));
-    private static final Field<String>         F_ENTITY_TYPE  = DSL.field(DSL.name("entity_type"), String.class);
-    private static final Field<OffsetDateTime> F_FIRST_SEEN   = DSL.field(DSL.name("first_seen"),  OffsetDateTime.class);
-    private static final Field<OffsetDateTime> F_LAST_SEEN    = DSL.field(DSL.name("last_seen"),   OffsetDateTime.class);
+    private static final Table<?>              KNOWN_ENTITIES      = DSL.table(DSL.name("known_entities"));
+    private static final Field<String>         F_ENTITY_TYPE       = DSL.field(DSL.name("entity_type"),       String.class);
+    private static final Field<OffsetDateTime> F_FIRST_SEEN        = DSL.field(DSL.name("first_seen"),        OffsetDateTime.class);
+    private static final Field<OffsetDateTime> F_LAST_SEEN         = DSL.field(DSL.name("last_seen"),         OffsetDateTime.class);
+    private static final Field<Long>           F_MESSAGE_COUNT     = DSL.field(DSL.name("message_count"),     Long.class);
+    private static final Field<String[]>       F_SOURCE_TOPICS     = DSL.field(DSL.name("source_topics"),     String[].class);
+    private static final Field<String>         F_LAST_MESSAGE_TYPE = DSL.field(DSL.name("last_message_type"), String.class);
 
     // QUALIFY deduplication for entity cassette rows
     private static final Condition QUALIFY_DEDUP = DSL.rowNumber().over(
@@ -393,7 +396,8 @@ public class EntityReplayService implements EntityCassetteSource {
         String afterId = cursor != null ? decodePlainCursor(cursor) : null;
 
         var selectBase = dsl
-                .select(F_ENTITY_TYPE, F_ENTITY_ID, F_FIRST_SEEN, F_LAST_SEEN)
+                .select(F_ENTITY_TYPE, F_ENTITY_ID, F_FIRST_SEEN, F_LAST_SEEN,
+                        F_MESSAGE_COUNT, F_SOURCE_TOPICS, F_LAST_MESSAGE_TYPE)
                 .from(KNOWN_ENTITIES)
                 .where(F_ENTITY_TYPE.eq(entityType))
                 .orderBy(F_ENTITY_ID.asc());
@@ -418,7 +422,8 @@ public class EntityReplayService implements EntityCassetteSource {
         String afterId = cursor != null ? decodePlainCursor(cursor) : null;
 
         var selectBase = dsl
-                .select(F_ENTITY_TYPE, F_ENTITY_ID, F_FIRST_SEEN, F_LAST_SEEN)
+                .select(F_ENTITY_TYPE, F_ENTITY_ID, F_FIRST_SEEN, F_LAST_SEEN,
+                        F_MESSAGE_COUNT, F_SOURCE_TOPICS, F_LAST_MESSAGE_TYPE)
                 .from(KNOWN_ENTITIES)
                 .where(F_ENTITY_TYPE.eq(entityType)
                         .and(F_ENTITY_ID.likeIgnoreCase("%" + escapeLike(q) + "%")))
@@ -521,11 +526,17 @@ public class EntityReplayService implements EntityCassetteSource {
     }
 
     private static EntityInfo mapEntityInfo(Record r) {
+        String[] topicsArr = r.get(F_SOURCE_TOPICS);
+        java.util.List<String> topics = topicsArr != null ? java.util.List.of(topicsArr) : java.util.List.of();
+        Long msgCount = r.get(F_MESSAGE_COUNT);
         return new EntityInfo(
                 r.get(F_ENTITY_TYPE),
                 r.get(F_ENTITY_ID),
                 r.get(F_FIRST_SEEN).toInstant(),
-                r.get(F_LAST_SEEN).toInstant()
+                r.get(F_LAST_SEEN).toInstant(),
+                msgCount != null ? msgCount : 0L,
+                topics,
+                r.get(F_LAST_MESSAGE_TYPE)
         );
     }
 

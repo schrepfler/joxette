@@ -17,5 +17,7 @@ public record EntityRoute(
         String entityType,
         String entityId,
         int entityBucket,
-        String messageType
+        String messageType,
+        /** The Kafka topic this message was consumed from. */
+        String topic
 ) {}

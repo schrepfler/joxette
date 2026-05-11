@@ -4,7 +4,7 @@ import com.joxette.config.JoxetteProperties;
 import com.joxette.management.HealthController;
 import com.joxette.recording.RecordingCoordinator;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
-import org.apache.kafka.clients.admin.AdminClient;
+import com.joxette.config.BrokerConnectionFactory;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -32,7 +32,7 @@ class HealthControllerProblemDetailTest {
 
     @Mock RecordingCoordinator coordinator;
     @Mock JoxetteProperties properties;
-    @Mock AdminClient adminClient;
+    @Mock BrokerConnectionFactory adminClient;
     @Mock Connection duckDB;
     @Mock PrometheusMeterRegistry metricsRegistry;
 

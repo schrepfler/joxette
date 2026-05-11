@@ -156,7 +156,8 @@ public class MessageRouter {
                                 entry.entityType(),
                                 entityId.get(),
                                 bucket,
-                                matcher.messageType()));
+                                matcher.messageType(),
+                                message.topic()));
                         break; // one route per entity-source entry per message
                     }
                 }

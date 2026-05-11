@@ -1,82 +1,93 @@
 package com.joxette.replay;
 
-import org.jooq.BatchBindStep;
 import org.jooq.DSLContext;
-import org.jooq.Field;
-import org.jooq.Table;
-import org.jooq.impl.DSL;
 import org.springframework.stereotype.Repository;
 
+import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Maintains the {@code known_entities} registry (plain DuckDB, main schema).
  *
- * <p>The table records the first time and most recent time each
- * (entity_type, entity_id) pair was observed in the recording pipeline.
- * It is updated once per batch after the cassette rows have been written
- * successfully, so the registry is always a subset of what is stored in the
- * entity cassettes.
- *
- * <p>Because {@code known_entities} is a plain DuckDB table (not DuckLake),
- * the {@code PRIMARY KEY (entity_type, entity_id)} constraint is enforced and
- * {@code ON CONFLICT ... DO UPDATE} works correctly. This avoids the silent
- * duplicate-append problem that occurred when the table was DuckLake-backed.
- *
- * <h2>Upsert semantics</h2>
- * <p>On conflict, only {@code last_seen} is updated; {@code first_seen} is
- * immutable once the entity is registered.
+ * <p>Columns maintained per entity:
+ * <ul>
+ *   <li>{@code first_seen}        — immutable; set on first insert</li>
+ *   <li>{@code last_seen}         — updated to the latest observed timestamp</li>
+ *   <li>{@code message_count}     — incremented by the number of messages in each batch</li>
+ *   <li>{@code source_topics}     — array of distinct Kafka topics that produced events;
+ *       new topics are appended via {@code list_distinct(source_topics || [?])}</li>
+ *   <li>{@code last_message_type} — overwritten with the most recent messageType</li>
+ * </ul>
  */
 @Repository
 public class KnownEntitiesRepository {
 
-    private static final Table<?>              TABLE         = DSL.table(DSL.name("known_entities"));
-    private static final Field<String>         F_ENTITY_TYPE = DSL.field(DSL.name("entity_type"),  String.class);
-    private static final Field<String>         F_ENTITY_ID   = DSL.field(DSL.name("entity_id"),    String.class);
-    private static final Field<OffsetDateTime> F_FIRST_SEEN  = DSL.field(DSL.name("first_seen"),   OffsetDateTime.class);
-    private static final Field<OffsetDateTime> F_LAST_SEEN   = DSL.field(DSL.name("last_seen"),    OffsetDateTime.class);
-
-    private final DSLContext dsl;
+    private final Connection duckDB;
 
     public KnownEntitiesRepository(DSLContext dsl) {
-        this.dsl = dsl;
+        // Extract the underlying JDBC connection — jOOQ's DSLContext.connectionResult()
+        // is the cleanest way to get it without breaking the connection pool abstraction.
+        this.duckDB = dsl.connectionResult(c -> c);
     }
 
     /**
-     * Upserts all distinct (entityType, entityId) pairs found in {@code routes}
-     * using {@code observedAt} as the candidate {@code last_seen} timestamp.
+     * Upserts all distinct (entityType, entityId) pairs found in {@code routes}.
      *
-     * <p>Executes as a single jOOQ batch to amortise round-trip overhead.
-     * The caller is responsible for deduplicating {@code routes} if desired;
-     * duplicate pairs in the same batch are safe but redundant.
-     *
-     * @param routes     entity routes extracted from a recording batch
-     * @param observedAt the wall-clock time at which this batch was processed
-     * @throws SQLException if the batch execution fails
+     * <p>Groups routes by (entityType, entityId) to compute the per-entity
+     * message count, distinct topics, and last messageType for this batch, then
+     * issues one PreparedStatement execution per distinct entity.
      */
     public void upsertBatch(List<EntityRoute> routes, Instant observedAt) throws SQLException {
-        if (routes.isEmpty()) {
-            return;
-        }
+        if (routes.isEmpty()) return;
+
         OffsetDateTime odt = observedAt.atOffset(ZoneOffset.UTC);
 
-        var template = dsl
-                .insertInto(TABLE)
-                .columns(F_ENTITY_TYPE, F_ENTITY_ID, F_FIRST_SEEN, F_LAST_SEEN)
-                .values((String) null, (String) null,
-                        (OffsetDateTime) null, (OffsetDateTime) null)
-                .onConflict(F_ENTITY_TYPE, F_ENTITY_ID)
-                .doUpdate()
-                .set(F_LAST_SEEN, DSL.excluded(F_LAST_SEEN));
+        // Aggregate per entity: count, topics, last messageType
+        record EntitySummary(int count, String topic, String lastMessageType) {}
 
-        BatchBindStep batch = dsl.batch(template);
-        for (EntityRoute route : routes) {
-            batch = batch.bind(route.entityType(), route.entityId(), odt, odt);
+        Map<String, EntitySummary> byKey = new java.util.LinkedHashMap<>();
+        for (EntityRoute r : routes) {
+            String key = r.entityType() + "\0" + r.entityId();
+            byKey.merge(key, new EntitySummary(1, r.topic(), r.messageType()),
+                    (a, b) -> new EntitySummary(a.count() + 1, b.topic(), b.lastMessageType()));
         }
-        batch.execute();
+
+        // DuckDB array append: list_distinct(source_topics || CAST(? AS VARCHAR[]))
+        // — appends the new topic and deduplicates in one expression.
+        String sql = """
+                INSERT INTO known_entities
+                    (entity_type, entity_id, first_seen, last_seen,
+                     message_count, source_topics, last_message_type)
+                VALUES (?, ?, ?, ?, ?, CAST([?] AS VARCHAR[]), ?)
+                ON CONFLICT (entity_type, entity_id) DO UPDATE SET
+                    last_seen         = excluded.last_seen,
+                    message_count     = known_entities.message_count + excluded.message_count,
+                    source_topics     = list_distinct(
+                                            list_concat(known_entities.source_topics,
+                                                        excluded.source_topics)),
+                    last_message_type = excluded.last_message_type
+                """;
+
+        try (PreparedStatement ps = duckDB.prepareStatement(sql)) {
+            for (Map.Entry<String, EntitySummary> entry : byKey.entrySet()) {
+                String[] parts = entry.getKey().split("\0", 2);
+                EntitySummary s = entry.getValue();
+                ps.setString(1, parts[0]);                   // entity_type
+                ps.setString(2, parts[1]);                   // entity_id
+                ps.setObject(3, odt);                        // first_seen
+                ps.setObject(4, odt);                        // last_seen
+                ps.setInt(5, s.count());                     // message_count
+                ps.setString(6, s.topic());                  // source_topics element
+                ps.setString(7, s.lastMessageType());        // last_message_type
+                ps.addBatch();
+            }
+            ps.executeBatch();
+        }
     }
 }

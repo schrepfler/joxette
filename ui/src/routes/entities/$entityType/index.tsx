@@ -359,8 +359,37 @@ function EntityTypeDetailPage() {
 
   const entityColumns = [
     entityColHelper.accessor('entityId', { header: 'Entity ID' }),
-    entityColHelper.accessor('firstSeen', { header: 'First Seen', cell: i => i.getValue().slice(0, 19).replace('T', ' ') }),
-    entityColHelper.accessor('lastSeen', { header: 'Last Seen', cell: i => i.getValue().slice(0, 19).replace('T', ' ') }),
+    entityColHelper.accessor('messageCount', {
+      header: 'Messages',
+      cell: i => <span style={{ fontVariantNumeric: 'tabular-nums', fontFamily: 'var(--font-mono)', fontSize: 'var(--type-caption-size)' }}>{(i.getValue() ?? 0).toLocaleString()}</span>,
+    }),
+    entityColHelper.accessor('lastMessageType', {
+      header: 'Last Type',
+      cell: i => i.getValue()
+        ? <span style={{ background: '#ebf8ff', border: '1px solid #bee3f8', borderRadius: 4, padding: '1px 6px', fontSize: 12, whiteSpace: 'nowrap', fontFamily: 'var(--font-mono)' }}>{i.getValue()}</span>
+        : <span style={{ color: '#a0aec0' }}>—</span>,
+    }),
+    entityColHelper.accessor('lastSeen', {
+      header: 'Last Active',
+      cell: i => {
+        const d = new Date(i.getValue())
+        const diffMs = Date.now() - d.getTime()
+        const diffH = diffMs / 3_600_000
+        const label = diffH < 1 ? 'just now' : diffH < 24 ? `${Math.floor(diffH)}h ago` : diffH < 168 ? `${Math.floor(diffH / 24)}d ago` : d.toLocaleDateString()
+        const color = diffH < 24 ? '#276749' : diffH < 168 ? '#744210' : '#718096'
+        return <span style={{ fontSize: 12, color }}>{label}</span>
+      },
+    }),
+    entityColHelper.accessor('sourceTopics', {
+      header: 'Sources',
+      cell: i => {
+        const topics = i.getValue() ?? []
+        return topics.length === 0
+          ? <span style={{ color: '#a0aec0' }}>—</span>
+          : <span style={{ fontSize: 11, color: '#4a5568' }}>{topics.join(', ')}</span>
+      },
+    }),
+    entityColHelper.accessor('firstSeen', { header: 'First Seen', cell: i => <span style={{ fontSize: 12, color: '#718096' }}>{i.getValue().slice(0, 10)}</span> }),
   ]
 
   const entityTable = useReactTable({ data: entitiesQuery.data?.data ?? [], columns: entityColumns, getCoreRowModel: getCoreRowModel() })

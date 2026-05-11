@@ -128,10 +128,13 @@ public final class DuckDBTestSupport {
             // Known-entities registry: plain DuckDB in main so ON CONFLICT is enforced
             st.execute("""
                     CREATE TABLE IF NOT EXISTS known_entities (
-                        entity_type  VARCHAR NOT NULL,
-                        entity_id    VARCHAR NOT NULL,
-                        first_seen   TIMESTAMPTZ NOT NULL,
-                        last_seen    TIMESTAMPTZ NOT NULL,
+                        entity_type       VARCHAR   NOT NULL,
+                        entity_id         VARCHAR   NOT NULL,
+                        first_seen        TIMESTAMPTZ NOT NULL,
+                        last_seen         TIMESTAMPTZ NOT NULL,
+                        message_count     BIGINT    NOT NULL DEFAULT 0,
+                        source_topics     VARCHAR[] NOT NULL DEFAULT [],
+                        last_message_type VARCHAR,
                         PRIMARY KEY (entity_type, entity_id)
                     )""");
 

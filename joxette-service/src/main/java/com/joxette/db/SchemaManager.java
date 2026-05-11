@@ -324,6 +324,7 @@ public class SchemaManager {
         // Statement while the outer try-with-resources Statement is still open leaves
         // the connection in a "pending query" state and silently drops the ALTER TABLE.
         migrateCompactionHistory(conn);
+        migrateKnownEntities(conn);
     }
 
     // -------------------------------------------------------------------------
@@ -545,6 +546,29 @@ public class SchemaManager {
      * {@code ALTER TABLE … ADD COLUMN IF NOT EXISTS} for each. Errors per table
      * are swallowed (column may already exist, or DuckLake version may differ).
      */
+    /**
+     * Idempotent migration: adds {@code message_count}, {@code source_topics},
+     * and {@code last_message_type} to {@code known_entities}.
+     */
+    private void migrateKnownEntities(Connection conn) {
+        String[][] migrations = {
+            { "message_count",      "ALTER TABLE known_entities ADD COLUMN IF NOT EXISTS message_count BIGINT NOT NULL DEFAULT 0" },
+            { "source_topics",      "ALTER TABLE known_entities ADD COLUMN IF NOT EXISTS source_topics VARCHAR[] NOT NULL DEFAULT []" },
+            { "last_message_type",  "ALTER TABLE known_entities ADD COLUMN IF NOT EXISTS last_message_type VARCHAR" },
+        };
+        for (String[] m : migrations) {
+            try (Statement st = conn.createStatement()) {
+                st.execute(m[1]);
+                log.debug("known_entities migration applied: {}", m[0]);
+            } catch (SQLException e) {
+                log.warn("known_entities migration failed ({}): {}", m[0], e.getMessage());
+                try { conn.rollback(); } catch (SQLException re) {
+                    log.debug("rollback after failed known_entities migration: {}", re.getMessage());
+                }
+            }
+        }
+    }
+
     private void migrateGeneralCassetteTables(Connection conn, String catalog) {
         List<String> tableNames = new ArrayList<>();
         try (Statement stmt = conn.createStatement();

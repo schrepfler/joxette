@@ -133,6 +133,9 @@ export interface EntityInfo {
   entityId: string
   firstSeen: string
   lastSeen: string
+  messageCount: number
+  sourceTopics: string[]
+  lastMessageType: string | null
 }
 
 export interface CassetteStats {

@@ -65,7 +65,7 @@ class CassetteControllerProblemDetailTest {
         CassetteController controller = new CassetteController(
                 topicService, entityService, sseHandler, lifecycle, sinkFactory,
                 scheduledReplayService, metadataInjector, presetRepository, properties,
-                mapper, sequenceMatchService, null /* solMatchService */, fieldSuggestionsService, recordingBus);
+                mapper, sequenceMatchService, null /* solMatchService */, null /* sunburstService */, fieldSuggestionsService, recordingBus);
 
         // Register the Order converter so `?order=asc|desc` binding matches production.
         FormattingConversionService conversion = new FormattingConversionService();

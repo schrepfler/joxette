@@ -243,7 +243,7 @@ class CassetteRecordingBusTest {
                                            String sourceTopic, int routeCount) {
         List<EntityRoute> routes = new java.util.ArrayList<>(routeCount);
         for (int i = 0; i < routeCount; i++) {
-            routes.add(new EntityRoute(entityType, entityId, 0, "type" + i));
+            routes.add(new EntityRoute(entityType, entityId, 0, "type" + i, sourceTopic));
         }
         KafkaMessage msg = new KafkaMessage(
                 sourceTopic, 0, 42L, 1_700_000_000_000L,
