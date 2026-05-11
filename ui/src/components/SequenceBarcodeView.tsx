@@ -11,14 +11,16 @@ import type { EntityRecord } from '../api/client'
  * Inspired by the Observable NFL Barcode Chart analysis (docs/observable-sequences-reference.md).
  *
  * Colour modes:
- *   'type'  — colour by messageType (stable hash → hue)
- *   'tag'   — colour each segment by its SOL tag name; grey if untagged
+ *   'type'    — colour by messageType (stable hash → hue)
+ *   'tag'     — colour each segment by its SOL tag name; grey if untagged
+ *   'numeric' — diverging red→white→green scale based on a numeric field
+ *               extracted from the event value payload
  */
 
 import type { SolTagSpan } from '../api/client'
 
 export type BarcodeXMode = 'time' | 'index'
-export type BarcodeColorMode = 'type' | 'tag'
+export type BarcodeColorMode = 'type' | 'tag' | 'numeric'
 
 export interface BarcodeRow {
   entityId: string
@@ -28,6 +30,11 @@ export interface BarcodeRow {
    * Built from SolMatchResponse.tags via buildTagMap().
    */
   tagMap?: Map<number, string>
+  /**
+   * Per-index extracted numeric value (for 'numeric' colour mode).
+   * Built from extractNumeric() in the parent panel.
+   */
+  numericValues?: Map<number, number>
 }
 
 // ── SOL tag colour palette (mirrors SolSequenceInspector) ─────────────────────
@@ -62,6 +69,59 @@ export function buildTagMap(tags: Record<string, SolTagSpan>): Map<number, strin
     for (let i = span.from; i < span.to; i++) map.set(i, name)
   }
   return map
+}
+
+// ── Numeric colour helpers ─────────────────────────────────────────────────────
+
+/** Decode a base64url event value and extract a numeric field by dot-path (e.g. "amount" or "order.total"). */
+export function extractNumeric(valueB64: string | null, path: string): number | null {
+  if (!valueB64) return null
+  try {
+    const bytes = atob(valueB64.replace(/-/g, '+').replace(/_/g, '/'))
+    const obj = JSON.parse(bytes) as Record<string, unknown>
+    const parts = path.split('.')
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let cur: any = obj
+    for (const p of parts) {
+      if (cur == null || typeof cur !== 'object') return null
+      cur = (cur as Record<string, unknown>)[p]
+    }
+    return typeof cur === 'number' ? cur : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Diverging red→white→green scale.
+ * t=0 → deep red, t=0.5 → white, t=1 → deep green.
+ */
+export function divergingColor(t: number): string {
+  const clamped = Math.max(0, Math.min(1, t))
+  if (clamped < 0.5) {
+    const u = clamped / 0.5           // 0 → 1 as we go red → white
+    const l = Math.round(40 + u * 45) // 40% → 85%
+    const s = Math.round(80 - u * 65) // 80% → 15%
+    return `hsl(0, ${s}%, ${l}%)`
+  } else {
+    const u = (clamped - 0.5) / 0.5   // 0 → 1 as we go white → green
+    const l = Math.round(85 - u * 45) // 85% → 40%
+    const s = Math.round(15 + u * 65) // 15% → 80%
+    return `hsl(120, ${s}%, ${l}%)`
+  }
+}
+
+/** Normalises all values in a row to [0,1] across the global domain [min, max]. */
+export function buildNumericDomain(rows: BarcodeRow[]): [number, number] {
+  let min = Infinity, max = -Infinity
+  for (const row of rows) {
+    if (!row.numericValues) continue
+    for (const v of row.numericValues.values()) {
+      if (v < min) min = v
+      if (v > max) max = v
+    }
+  }
+  return [min === Infinity ? 0 : min, max === -Infinity ? 1 : max]
 }
 
 interface Props {
@@ -127,6 +187,11 @@ export function SequenceBarcodeView({
     [rows, xMode],
   )
 
+  const [numMin, numMax] = useMemo(
+    () => colorMode === 'numeric' ? buildNumericDomain(rows) : [0, 1],
+    [rows, colorMode],
+  )
+
   const totalHeight = rows.length * (cellHeight + PADDING * 2) + 24 // 24 for x-axis
 
   function getRectX(row: BarcodeRow, idx: number): number {
@@ -151,7 +216,19 @@ export function SequenceBarcodeView({
       const name = row.tagMap.get(idx)
       return name ? tagColor(name) : 'hsl(0,0%,88%)'
     }
+    if (colorMode === 'numeric') {
+      const v = row.numericValues?.get(idx)
+      if (v == null) return 'hsl(0,0%,88%)'
+      const range = numMax - numMin || 1
+      return divergingColor((v - numMin) / range)
+    }
     return typeColor(record.messageType)
+  }
+
+  function getNumericLabel(row: BarcodeRow, idx: number): string {
+    if (colorMode !== 'numeric') return ''
+    const v = row.numericValues?.get(idx)
+    return v != null ? `\nvalue: ${v}` : '\nvalue: —'
   }
 
   return (
@@ -239,7 +316,7 @@ export function SequenceBarcodeView({
                             rec.messageType ?? '(no type)',
                             rec.timestamp.slice(0, 19).replace('T', ' '),
                             `offset ${rec.offset}`,
-                          ].join('\n'),
+                          ].join('\n') + getNumericLabel(row, idx),
                         })
                       }}
                       onMouseLeave={() => setTooltip(null)}
@@ -282,7 +359,23 @@ export function SequenceBarcodeView({
   )
 }
 
-// ── Legend ─────────────────────────────────────────────────────────────────────
+// ── Legends ────────────────────────────────────────────────────────────────────
+
+/** Gradient legend for numeric colour mode with min/max labels. */
+export function NumericLegend({ min, max, field }: { min: number; max: number; field: string }) {
+  const stops = Array.from({ length: 9 }, (_, i) => {
+    const t = i / 8
+    return `${divergingColor(t)} ${(t * 100).toFixed(0)}%`
+  }).join(', ')
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 0' }}>
+      <span style={{ fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)', fontFamily: 'var(--font-mono)' }}>{field}</span>
+      <span style={{ fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)', fontVariantNumeric: 'tabular-nums' }}>{min}</span>
+      <div style={{ width: 120, height: 12, borderRadius: 'var(--radius-xs)', background: `linear-gradient(to right, ${stops})`, flexShrink: 0 }} />
+      <span style={{ fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)', fontVariantNumeric: 'tabular-nums' }}>{max}</span>
+    </div>
+  )
+}
 
 export function BarcodeLegend({ messageTypes }: { messageTypes: string[] }) {
   if (messageTypes.length === 0) return null

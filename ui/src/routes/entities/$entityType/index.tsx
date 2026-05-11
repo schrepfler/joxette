@@ -27,7 +27,7 @@ import { useToast } from '../../../components/Toast'
 import { useDebounce } from '../../../hooks/useDebounce'
 import { FieldCombobox } from '../../../components/transforms/PredicateBuilder'
 import { ViewModeBar } from '../../../components/ViewModeBar'
-import { SequenceBarcodeView, BarcodeLegend, buildTagMap, tagColor, type BarcodeRow } from '../../../components/SequenceBarcodeView'
+import { SequenceBarcodeView, BarcodeLegend, NumericLegend, buildTagMap, buildNumericDomain, tagColor, extractNumeric, type BarcodeRow } from '../../../components/SequenceBarcodeView'
 import { SunburstChart } from '../../../components/SunburstChart'
 import { useQueries } from '@tanstack/react-query'
 
@@ -653,7 +653,9 @@ const IMPLICIT_TAGS = ['SEQ', 'PREFIX', 'MATCHED', 'SUFFIX']
 function MultiEntityBarcodePanel({ entityType, entityIds }: { entityType: string; entityIds: string[] }) {
   const [solQuery, setSolQuery] = useState('')
   const [activeQuery, setActiveQuery] = useState('')
-  const [colorMode, setColorMode] = useState<'type' | 'tag'>('type')
+  const [colorMode, setColorMode] = useState<'type' | 'tag' | 'numeric'>('type')
+  const [numericFieldRaw, setNumericFieldRaw] = useState('')
+  const [activeNumericField, setActiveNumericField] = useState('')
 
   const ids = entityIds.slice(0, 20)
 
@@ -682,13 +684,27 @@ function MultiEntityBarcodePanel({ entityType, entityIds }: { entityType: string
     .filter(row => row.records.length > 0)
 
   // Attach tag maps when a SOL query has run
-  const rows: BarcodeRow[] = baseRows.map((row, i) => {
+  const rowsWithTags: BarcodeRow[] = baseRows.map((row, i) => {
     const sol = solResults[i]?.data
     if (!sol || !sol.tags || Object.keys(sol.tags).length === 0) return row
     return { ...row, tagMap: buildTagMap(sol.tags) }
   })
 
+  // Attach numeric values when a field path is active
+  const rows: BarcodeRow[] = activeNumericField
+    ? rowsWithTags.map(row => ({
+        ...row,
+        numericValues: new Map(
+          row.records
+            .map((rec, idx) => [idx, extractNumeric(rec.value ?? null, activeNumericField)] as [number, number | null])
+            .filter((entry): entry is [number, number] => entry[1] != null)
+        ),
+      }))
+    : rowsWithTags
+
   const allTypes = [...new Set(rows.flatMap(r => r.records.map(ev => ev.messageType).filter(Boolean) as string[]))]
+
+  const [numMin, numMax] = activeNumericField ? buildNumericDomain(rows) : [0, 0]
 
   // Collect active tag names for legend
   const activeTags = activeQuery
@@ -770,9 +786,73 @@ function MultiEntityBarcodePanel({ entityType, entityIds }: { entityType: string
         </span>
       </div>
 
+      {/* Numeric field strip */}
+      <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--rule)', background: 'var(--surface-raised)', display: 'flex', alignItems: 'center', gap: 8 }}>
+        <span style={{ fontSize: 'var(--type-body-sm-size)', fontWeight: 600, color: 'var(--ink-secondary)', flexShrink: 0 }}>Colour by field</span>
+        <input
+          value={numericFieldRaw}
+          onChange={e => setNumericFieldRaw(e.target.value)}
+          placeholder="e.g. amount or order.total"
+          style={{
+            flex: 1,
+            padding: '4px 8px',
+            border: '1px solid var(--rule)',
+            borderRadius: 'var(--radius-xs)',
+            fontFamily: 'var(--font-mono)',
+            fontSize: 'var(--type-caption-size)',
+            color: 'var(--ink-primary)',
+            background: 'var(--surface-paper)',
+          }}
+          onKeyDown={e => {
+            if (e.key === 'Enter') {
+              const f = numericFieldRaw.trim()
+              setActiveNumericField(f)
+              if (f) setColorMode('numeric')
+              else setColorMode(activeQuery ? 'tag' : 'type')
+            }
+          }}
+        />
+        <button
+          style={{
+            padding: '5px 12px',
+            background: colorMode === 'numeric' ? 'var(--accent)' : 'transparent',
+            color: colorMode === 'numeric' ? 'var(--accent-ink)' : 'var(--ink-secondary)',
+            border: '1px solid var(--rule)',
+            borderRadius: 'var(--radius-sm)', cursor: 'pointer',
+            fontFamily: 'var(--font-body)', fontSize: 'var(--type-body-sm-size)',
+            flexShrink: 0,
+          }}
+          onClick={() => {
+            const f = numericFieldRaw.trim()
+            setActiveNumericField(f)
+            if (f) setColorMode('numeric')
+            else setColorMode(activeQuery ? 'tag' : 'type')
+          }}
+        >
+          Apply
+        </button>
+        {activeNumericField && (
+          <button
+            style={{
+              padding: '5px 10px',
+              background: 'transparent', color: 'var(--ink-secondary)',
+              border: '1px solid var(--rule)',
+              borderRadius: 'var(--radius-sm)', cursor: 'pointer',
+              fontFamily: 'var(--font-body)', fontSize: 'var(--type-body-sm-size)',
+              flexShrink: 0,
+            }}
+            onClick={() => { setActiveNumericField(''); setNumericFieldRaw(''); setColorMode(activeQuery ? 'tag' : 'type') }}
+          >
+            ✕
+          </button>
+        )}
+      </div>
+
       {/* Legend */}
       <div style={{ padding: '6px 12px', borderBottom: '1px solid var(--rule)' }}>
-        {colorMode === 'tag' && activeTags.length > 0 ? (
+        {colorMode === 'numeric' && activeNumericField ? (
+          <NumericLegend min={numMin} max={numMax} field={activeNumericField} />
+        ) : colorMode === 'tag' && activeTags.length > 0 ? (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px 12px', padding: '4px 0' }}>
             {activeTags.map(name => (
               <div key={name} style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
