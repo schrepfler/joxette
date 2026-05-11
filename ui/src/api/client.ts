@@ -122,10 +122,17 @@ export interface PagedResponse<T> {
   hasMore: boolean
 }
 
+export interface SolTagSpan {
+  from: number
+  to: number
+}
+
 export interface SolMatchResponse {
   records: EntityRecord[]
   matched: boolean
   unexpectedNulls: string[]
+  tags: Record<string, SolTagSpan>
+  sequenceLength: number
 }
 
 export interface EntityInfo {

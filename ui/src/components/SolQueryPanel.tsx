@@ -3,6 +3,7 @@ import { useMutation, useQuery } from '@tanstack/react-query'
 import { cassettesApi, type EntityRecord, type SolMatchResponse } from '../api/client'
 import { JsonView } from './JsonView'
 import { SolEditor } from './SolEditor'
+import { SolSequenceInspector } from './SolSequenceInspector'
 
 interface Props {
   mode: 'entity' | 'topic'
@@ -227,6 +228,14 @@ export function SolQueryPanel({ mode, entityType, entityId, topic, from, to }: P
               </span>
             )}
           </div>
+
+          {/* Sequence inspector — tag coverage bars */}
+          {result.sequenceLength > 0 && Object.keys(result.tags).length > 0 && (
+            <SolSequenceInspector
+              tags={result.tags}
+              sequenceLength={result.sequenceLength}
+            />
+          )}
 
           {/* Matched events table */}
           {result.records.length > 0 && (

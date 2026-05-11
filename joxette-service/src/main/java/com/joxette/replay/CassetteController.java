@@ -1786,9 +1786,11 @@ public class CassetteController {
 
     /** Response for a SOL match query. */
     public record SolMatchResponse(
-            List<EntityRecord>  records,
-            boolean             matched,
-            List<String>        unexpectedNulls
+            List<EntityRecord>              records,
+            boolean                         matched,
+            List<String>                    unexpectedNulls,
+            Map<String, SolMatchService.TagSpan> tags,
+            int                             sequenceLength
     ) {}
 
     @Operation(
@@ -1818,7 +1820,8 @@ public class CassetteController {
     ) throws SQLException {
         SolMatchService.SolMatchResult result =
                 solMatchService.match(entityType, entityId, req.query(), req.from(), req.to());
-        return new SolMatchResponse(result.records(), result.matched(), result.unexpectedNulls());
+        return new SolMatchResponse(result.records(), result.matched(), result.unexpectedNulls(),
+                result.tags(), result.sequenceLength());
     }
 
     @Operation(
@@ -1848,10 +1851,16 @@ public class CassetteController {
         com.sol.engine.SolResult result = com.sol.engine.SolEngine.execute(
                 com.sol.parser.SolParser.parse(req.query()), sequence);
         List<EntityRecord> matched = SolResultMapper.toEntityRecords(result, records);
+        // Build tag spans from the sol result for the topic path
+        java.util.Map<String, SolMatchService.TagSpan> tagSpans = new java.util.LinkedHashMap<>();
+        result.tags().forEach((name, tag) ->
+                tagSpans.put(name, new SolMatchService.TagSpan(tag.from(), tag.to())));
         return new SolMatchResponse(
                 matched,
                 result.matched(),
-                result.unexpectedNulls().stream().map(u -> u.location() + ": " + u.reason()).toList());
+                result.unexpectedNulls().stream().map(u -> u.location() + ": " + u.reason()).toList(),
+                tagSpans,
+                sequence.size());
     }
 
     private static EntityRecord cassetteToEntity(CassetteRecord r, String entityId) {
