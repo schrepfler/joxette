@@ -210,6 +210,10 @@ export function SolQueryPanel({ mode, entityType, entityId, topic, from, to }: P
               value={typeField}
               onChange={e => setTypeField(e.target.value)}
               placeholder="e.g. type"
+              autoComplete="off"
+              autoCorrect="off"
+              autoCapitalize="off"
+              spellCheck={false}
               style={{
                 width: 110,
                 padding: '3px 7px',

@@ -662,6 +662,10 @@ function SunburstPanel({ entityType }: { entityType: string }) {
           value={solQueryRaw}
           onChange={e => setSolQueryRaw(e.target.value)}
           placeholder="match A(login) >> * >> B(purchase)  — only matching sequences appear"
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
           style={{
             flex: 1,
             padding: '4px 8px',
@@ -887,6 +891,10 @@ function MultiEntityBarcodePanel({ entityType, entityIds }: { entityType: string
           value={numericFieldRaw}
           onChange={e => setNumericFieldRaw(e.target.value)}
           placeholder="e.g. amount or order.total"
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
           style={{
             flex: 1,
             padding: '4px 8px',

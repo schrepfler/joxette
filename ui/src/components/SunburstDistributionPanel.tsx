@@ -122,6 +122,10 @@ export function SunburstDistributionPanel({ entityType, nodeName, seqIds, onClos
           value={fieldRaw}
           onChange={e => setFieldRaw(e.target.value)}
           placeholder="e.g. amount or order.total"
+          autoComplete="off"
+          autoCorrect="off"
+          autoCapitalize="off"
+          spellCheck={false}
           style={{
             flex: 1, padding: '4px 8px',
             border: '1px solid var(--rule)',
