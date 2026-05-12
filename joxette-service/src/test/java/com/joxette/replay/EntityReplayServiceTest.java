@@ -391,19 +391,109 @@ class EntityReplayServiceTest {
                 topic, partition, offset, timestamp, recordedAt, entityId, value);
     }
 
+    // -------------------------------------------------------------------------
+    // Sort orders — lastActive and mostMessages with cursor pagination
+    // -------------------------------------------------------------------------
+
+    @Test
+    void listEntities_sortByLastActive_mostRecentFirst() throws Exception {
+        insertKnownEntity("order", "OLD",    1, "2024-01-01T00:00:00Z", "2024-01-10T00:00:00Z", 5);
+        insertKnownEntity("order", "MIDDLE", 2, "2024-01-01T00:00:00Z", "2024-06-01T00:00:00Z", 3);
+        insertKnownEntity("order", "NEW",    3, "2024-01-01T00:00:00Z", "2024-12-01T00:00:00Z", 1);
+
+        PagedResponse<EntityInfo> page = service.listEntities(
+                "order", 50, null, EntityReplayService.EntitySortBy.lastActive);
+
+        assertThat(page.data()).extracting(EntityInfo::entityId)
+                .containsExactly("NEW", "MIDDLE", "OLD");
+    }
+
+    @Test
+    void listEntities_sortByLastActive_paginatesWithCompoundCursor() throws Exception {
+        insertKnownEntity("order", "A", 1, "2024-01-01T00:00:00Z", "2024-12-03T00:00:00Z", 1);
+        insertKnownEntity("order", "B", 2, "2024-01-01T00:00:00Z", "2024-12-02T00:00:00Z", 2);
+        insertKnownEntity("order", "C", 3, "2024-01-01T00:00:00Z", "2024-12-01T00:00:00Z", 3);
+
+        PagedResponse<EntityInfo> page1 = service.listEntities(
+                "order", 2, null, EntityReplayService.EntitySortBy.lastActive);
+        assertThat(page1.data()).extracting(EntityInfo::entityId).containsExactly("A", "B");
+        assertThat(page1.hasMore()).isTrue();
+
+        PagedResponse<EntityInfo> page2 = service.listEntities(
+                "order", 2, page1.nextCursor(), EntityReplayService.EntitySortBy.lastActive);
+        assertThat(page2.data()).extracting(EntityInfo::entityId).containsExactly("C");
+        assertThat(page2.hasMore()).isFalse();
+    }
+
+    @Test
+    void listEntities_sortByMostMessages_highestCountFirst() throws Exception {
+        insertKnownEntity("order", "FEW",   1, "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", 2);
+        insertKnownEntity("order", "MANY",  2, "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", 100);
+        insertKnownEntity("order", "SOME",  3, "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", 50);
+
+        PagedResponse<EntityInfo> page = service.listEntities(
+                "order", 50, null, EntityReplayService.EntitySortBy.mostMessages);
+
+        assertThat(page.data()).extracting(EntityInfo::entityId)
+                .containsExactly("MANY", "SOME", "FEW");
+    }
+
+    @Test
+    void listEntities_sortByMostMessages_paginatesWithCompoundCursor() throws Exception {
+        insertKnownEntity("order", "A", 1, "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", 300);
+        insertKnownEntity("order", "B", 2, "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", 200);
+        insertKnownEntity("order", "C", 3, "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", 100);
+
+        PagedResponse<EntityInfo> page1 = service.listEntities(
+                "order", 2, null, EntityReplayService.EntitySortBy.mostMessages);
+        assertThat(page1.data()).extracting(EntityInfo::entityId).containsExactly("A", "B");
+        assertThat(page1.hasMore()).isTrue();
+
+        PagedResponse<EntityInfo> page2 = service.listEntities(
+                "order", 2, page1.nextCursor(), EntityReplayService.EntitySortBy.mostMessages);
+        assertThat(page2.data()).extracting(EntityInfo::entityId).containsExactly("C");
+        assertThat(page2.hasMore()).isFalse();
+    }
+
+    @Test
+    void listEntities_sortByLastActive_tiesBrokenByEntityId() throws Exception {
+        // Same last_seen — tie-break by entity_id ascending
+        Instant same = Instant.parse("2024-06-15T12:00:00Z");
+        insertKnownEntity("order", "ZZZ", 1, "2024-01-01T00:00:00Z", same.toString(), 1);
+        insertKnownEntity("order", "AAA", 2, "2024-01-01T00:00:00Z", same.toString(), 1);
+        insertKnownEntity("order", "MMM", 3, "2024-01-01T00:00:00Z", same.toString(), 1);
+
+        PagedResponse<EntityInfo> page = service.listEntities(
+                "order", 50, null, EntityReplayService.EntitySortBy.lastActive);
+
+        assertThat(page.data()).extracting(EntityInfo::entityId)
+                .containsExactly("AAA", "MMM", "ZZZ");
+    }
+
+    // -------------------------------------------------------------------------
+    // Helpers
+    // -------------------------------------------------------------------------
+
     private void insertKnownEntity(String entityType, String entityId, int bucket,
             String firstSeen) throws Exception {
+        insertKnownEntity(entityType, entityId, bucket, firstSeen, firstSeen, 0);
+    }
+
+    private void insertKnownEntity(String entityType, String entityId, int bucket,
+            String firstSeen, String lastSeen, long messageCount) throws Exception {
         Instant fs = Instant.parse(firstSeen);
+        Instant ls = Instant.parse(lastSeen);
         try (PreparedStatement ps = duckDB.prepareStatement("""
                 INSERT INTO known_entities
-                    (entity_type, entity_id, first_seen, last_seen)
-                VALUES (?, ?, ?, ?)
+                    (entity_type, entity_id, first_seen, last_seen, message_count)
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT DO NOTHING
                 """)) {
             ps.setString(1, entityType);
             ps.setString(2, entityId);
             ps.setTimestamp(3, Timestamp.from(fs));
-            ps.setTimestamp(4, Timestamp.from(fs));
+            ps.setTimestamp(4, Timestamp.from(ls));
+            ps.setLong(5, messageCount);
             ps.executeUpdate();
         }
     }
