@@ -1,7 +1,9 @@
 package com.joxette.it;
 
 import com.joxette.replay.CassetteController.SolMatchResponse;
+import com.joxette.replay.SolMatchService.TagSpan;
 import com.joxette.support.DuckDBTestSupport;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -20,6 +22,7 @@ import java.sql.Connection;
 import java.sql.Statement;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.Map;
 import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -131,6 +134,15 @@ class SolMatchIT {
                 "match A(login) >> * >> B(purchase)\nif duration(A, B) < 1min",
                 false,
                 4
+            ),
+
+            Arguments.of(
+                "match split + combine — counts occurrences of browse",
+                // split + combine: combine merges sub-sequence dims back into full sequence
+                // matched=false (tags cleared by combine); original records preserved
+                "match split B(browse)+\ncombine count = max(split_index)",
+                false,  // combine clears tags → matched=false
+                4       // combine preserves original sequence length
             )
         );
     }
@@ -160,8 +172,119 @@ class SolMatchIT {
     }
 
     // -------------------------------------------------------------------------
+    // replace operation
+    // -------------------------------------------------------------------------
+
+    @Test
+    void replace_keepsPrefixAndTarget() throws Exception {
+        // Sequence: login → browse → purchase → logout
+        // Keep only events up to and including purchase.
+        // Use wildcard PREFIX rather than a named capture with quantifier.
+        String query = "match start >> * >> Target(purchase)\nreplace SEQ with MATCHED";
+
+        SolMatchResponse result = post(query);
+
+        assertThat(result.matched()).isTrue();
+        // MATCHED covers login(0)..purchase(2) inclusive = 3 events
+        assertThat(result.records()).hasSize(3);
+        assertThat(result.records().stream().map(r -> r.messageType()).toList())
+                .containsExactly("login", "browse", "purchase");
+    }
+
+    // -------------------------------------------------------------------------
+    // set operation
+    // -------------------------------------------------------------------------
+
+    @Test
+    void set_addsDimensionToMatchedResult() throws Exception {
+        // Compute duration between login and purchase; expose as a sequence dim.
+        // filter MATCHED keeps the full sequence (matched=true means SEQ is returned),
+        // but the sequence is unchanged — set only adds a dim, doesn't trim.
+        String query = "match A(login) >> * >> B(purchase)\nset elapsed = duration(A, B)\nfilter MATCHED";
+
+        SolMatchResponse result = post(query);
+
+        assertThat(result.matched()).isTrue();
+        assertThat(result.records()).hasSize(4); // full sequence preserved
+        assertThat(result.sequenceLength()).isEqualTo(4);
+    }
+
+    // -------------------------------------------------------------------------
+    // Tag span assertions
+    // -------------------------------------------------------------------------
+
+    @Test
+    void tagSpans_matchedSpanCoversCorrectIndices() throws Exception {
+        // login(0) → browse(1) → purchase(2) → logout(3)
+        // match A(login) >> * >> B(purchase) → MATCHED covers indices 0..3 (full seq)
+        String query = "match A(login) >> * >> B(purchase)";
+
+        SolMatchResponse result = post(query);
+
+        assertThat(result.matched()).isTrue();
+        assertThat(result.tags()).isNotNull();
+
+        Map<String, TagSpan> tags = result.tags();
+        assertThat(tags).containsKey("MATCHED");
+        assertThat(tags).containsKey("SEQ");
+
+        TagSpan seq = tags.get("SEQ");
+        assertThat(seq.from()).isEqualTo(0);
+        assertThat(seq.to()).isEqualTo(4); // 4 events total
+
+        // MATCHED: login(0) through purchase(2) inclusive → [0, 3) half-open
+        TagSpan matched = tags.get("MATCHED");
+        assertThat(matched.from()).isEqualTo(0);
+        assertThat(matched.to()).isEqualTo(3);
+
+        // A tag covers just index 0 (login) → [0, 1)
+        assertThat(tags).containsKey("A");
+        assertThat(tags.get("A").from()).isEqualTo(0);
+        assertThat(tags.get("A").to()).isEqualTo(1);
+
+        // B tag covers just index 2 (purchase) → [2, 3)
+        assertThat(tags).containsKey("B");
+        assertThat(tags.get("B").from()).isEqualTo(2);
+        assertThat(tags.get("B").to()).isEqualTo(3);
+    }
+
+    @Test
+    void tagSpans_prefixAndSuffixCoversCorrectIndices() throws Exception {
+        // login(0) browse(1) purchase(2) logout(3)
+        // match A(login) >> * >> B(purchase) produces:
+        //   PREFIX = [] (nothing before login)  → from=0 to=0
+        //   MATCHED = [login..purchase] → from=0 to=3
+        //   SUFFIX  = [logout] → from=3 to=4
+        String query = "match A(login) >> * >> B(purchase)";
+
+        SolMatchResponse result = post(query);
+
+        Map<String, TagSpan> tags = result.tags();
+        assertThat(tags).containsKey("SUFFIX");
+        TagSpan suffix = tags.get("SUFFIX");
+        assertThat(suffix.from()).isEqualTo(3);
+        assertThat(suffix.to()).isEqualTo(4);
+
+        assertThat(result.sequenceLength()).isEqualTo(4);
+    }
+
+    // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
+
+    private SolMatchResponse post(String query) {
+        String body = """
+                {"query": %s}
+                """.formatted(jsonString(query));
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        ResponseEntity<SolMatchResponse> response = rest.postForEntity(
+                url("/cassettes/entities/" + ENTITY_TYPE + "/" + ENTITY_ID + "/sol-match"),
+                new HttpEntity<>(body, headers),
+                SolMatchResponse.class);
+        assertThat(response.getStatusCode().is2xxSuccessful()).isTrue();
+        return response.getBody();
+    }
 
     private void insertEvent(String messageType, Instant ts, long offset) throws Exception {
         String value = Base64.getUrlEncoder().withoutPadding()

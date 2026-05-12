@@ -276,12 +276,20 @@ public final class DuckDBTestSupport {
             String topic, int partition, long offset,
             Instant timestamp, Instant recordedAt,
             String key, byte[] value) throws SQLException {
+        insertCassetteRow(conn, topic, partition, offset, timestamp, recordedAt, key, value, null);
+    }
+
+    /** Overload that also sets {@code message_type}. */
+    public static void insertCassetteRow(Connection conn,
+            String topic, int partition, long offset,
+            Instant timestamp, Instant recordedAt,
+            String key, byte[] value, String messageType) throws SQLException {
         String tableName = "lake.main.general_" + normalizeTopicName(topic);
         try (PreparedStatement ps = conn.prepareStatement(String.format("""
                 INSERT INTO %s
                     (recorded_at, kafka_offset, kafka_partition, kafka_timestamp,
-                     kafka_key, kafka_value, kafka_value_str, metadata, headers)
-                VALUES (?, ?, ?, ?, ?, ?, ?, NULL, [])
+                     kafka_key, kafka_value, kafka_value_str, metadata, headers, message_type)
+                VALUES (?, ?, ?, ?, ?, ?, ?, NULL, [], ?)
                 """, tableName))) {
             ps.setTimestamp(1, Timestamp.from(recordedAt));
             ps.setLong(2, offset);
@@ -290,6 +298,7 @@ public final class DuckDBTestSupport {
             ps.setString(5, key);
             ps.setBytes(6, value);
             ps.setString(7, value != null ? new String(value) : null);
+            ps.setString(8, messageType);
             ps.executeUpdate();
         }
     }
