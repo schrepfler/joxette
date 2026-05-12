@@ -27,7 +27,7 @@ import { useToast } from '../../../components/Toast'
 import { useDebounce } from '../../../hooks/useDebounce'
 import { FieldCombobox } from '../../../components/transforms/PredicateBuilder'
 import { ViewModeBar } from '../../../components/ViewModeBar'
-import { SequenceBarcodeView, BarcodeLegend, NumericLegend, buildTagMap, buildNumericDomain, tagColor, extractNumeric, type BarcodeRow } from '../../../components/SequenceBarcodeView'
+import { SequenceBarcodeView, BarcodeLegend, NumericLegend, BarcodeXModeToggle, buildTagMap, buildNumericDomain, tagColor, extractNumeric, type BarcodeRow, type BarcodeXMode } from '../../../components/SequenceBarcodeView'
 import { SunburstChart } from '../../../components/SunburstChart'
 import { SunburstDistributionPanel } from '../../../components/SunburstDistributionPanel'
 import { useQueries } from '@tanstack/react-query'
@@ -753,6 +753,7 @@ function MultiEntityBarcodePanel({ entityType, entityIds }: { entityType: string
   const [activeQuery, setActiveQuery] = useState('')
   const [colorMode, setColorMode] = useState<'type' | 'tag' | 'numeric'>('type')
   const [numericFieldRaw, setNumericFieldRaw] = useState('')
+  const [xMode, setXMode] = useState<BarcodeXMode>('time')
   const [activeNumericField, setActiveNumericField] = useState('')
 
   const ids = entityIds.slice(0, 20)
@@ -971,8 +972,9 @@ function MultiEntityBarcodePanel({ entityType, entityIds }: { entityType: string
         )}
       </div>
 
-      {/* Legend */}
-      <div style={{ padding: '6px 12px', borderBottom: '1px solid var(--rule)' }}>
+      {/* Legend + xMode toggle */}
+      <div style={{ padding: '6px 12px', borderBottom: '1px solid var(--rule)', display: 'flex', alignItems: 'center', gap: 12 }}>
+        <div style={{ flex: 1 }}>
         {colorMode === 'numeric' && activeNumericField ? (
           <NumericLegend min={numMin} max={numMax} field={activeNumericField} />
         ) : colorMode === 'tag' && activeTags.length > 0 ? (
@@ -991,9 +993,11 @@ function MultiEntityBarcodePanel({ entityType, entityIds }: { entityType: string
         ) : (
           <BarcodeLegend messageTypes={allTypes} />
         )}
+        </div>
+        <BarcodeXModeToggle value={xMode} onChange={setXMode} />
       </div>
 
-      <SequenceBarcodeView rows={rows} xMode="time" colorMode={colorMode} cellHeight={16} />
+      <SequenceBarcodeView rows={rows} xMode={xMode} colorMode={colorMode} cellHeight={16} />
     </div>
   )
 }

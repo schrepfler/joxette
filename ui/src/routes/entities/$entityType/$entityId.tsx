@@ -16,7 +16,7 @@ import { ConfirmDialog } from '../../../components/ConfirmDialog'
 import { ReplayToTopicPanel } from '../../../components/ReplayToTopicPanel'
 import { SolQueryPanel } from '../../../components/SolQueryPanel'
 import { ViewModeBar } from '../../../components/ViewModeBar'
-import { SequenceBarcodeView, BarcodeLegend, type BarcodeRow } from '../../../components/SequenceBarcodeView'
+import { SequenceBarcodeView, BarcodeLegend, BarcodeXModeToggle, type BarcodeRow, type BarcodeXMode } from '../../../components/SequenceBarcodeView'
 import { StreamStatusBadge, type StreamStatus } from '../../../components/StreamStatusBadge'
 import { useToast } from '../../../components/Toast'
 import { useDebounce } from '../../../hooks/useDebounce'
@@ -117,6 +117,7 @@ function EntityInstancePage() {
   const [cursors, setCursors] = useState<string[]>([])
   const [deleteStep, setDeleteStep] = useState<0 | 1 | 2>(0)
   const [activeTab, setActiveTab] = useState<'records' | 'sol' | 'timeline' | 'barcode'>('records')
+  const [barcodeXMode, setBarcodeXMode] = useState<BarcodeXMode>('time')
   const [_replayPipelineFragments, _setReplayPipelineFragments] = useState<FragmentDefinition[]>([])
 
   // Streaming state
@@ -411,12 +412,13 @@ function EntityInstancePage() {
         const barcodeRow: BarcodeRow = { entityId, records: allRecords }
         return (
           <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'hidden', marginBottom: '1.5rem' }}>
-            <div style={{ padding: '8px 16px', borderBottom: '1px solid #e2e8f0' }}>
-              <BarcodeLegend messageTypes={messageTypes} />
+            <div style={{ padding: '8px 16px', borderBottom: '1px solid #e2e8f0', display: 'flex', alignItems: 'center', gap: 12 }}>
+              <div style={{ flex: 1 }}><BarcodeLegend messageTypes={messageTypes} /></div>
+              <BarcodeXModeToggle value={barcodeXMode} onChange={setBarcodeXMode} />
             </div>
             {recordsQuery.isLoading && <div style={{ padding: 16 }}><LoadingSpinner /></div>}
             {!recordsQuery.isLoading && allRecords.length > 0 && (
-              <SequenceBarcodeView rows={[barcodeRow]} xMode="time" colorMode="type" cellHeight={28} />
+              <SequenceBarcodeView rows={[barcodeRow]} xMode={barcodeXMode} colorMode="type" cellHeight={28} />
             )}
             {!recordsQuery.isLoading && allRecords.length === 0 && (
               <p style={{ padding: 16, color: '#a0aec0', fontSize: 13 }}>No records to display.</p>

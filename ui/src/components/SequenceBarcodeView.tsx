@@ -390,3 +390,40 @@ export function BarcodeLegend({ messageTypes }: { messageTypes: string[] }) {
     </div>
   )
 }
+
+/**
+ * Two-chip toggle for switching between time-proportional and fixed-width
+ * index x-axis modes. Render it inside the barcode header bar.
+ */
+export function BarcodeXModeToggle({
+  value,
+  onChange,
+}: {
+  value: BarcodeXMode
+  onChange: (mode: BarcodeXMode) => void
+}) {
+  return (
+    <div style={{ display: 'flex', gap: 2, alignItems: 'center' }}>
+      {(['time', 'index'] as BarcodeXMode[]).map(mode => (
+        <button
+          key={mode}
+          onClick={() => onChange(mode)}
+          style={{
+            padding: '2px 8px',
+            fontSize: 'var(--type-caption-size)',
+            fontFamily: 'var(--font-body)',
+            border: '1px solid var(--rule)',
+            borderRadius: mode === 'time' ? 'var(--radius-xs) 0 0 var(--radius-xs)' : '0 var(--radius-xs) var(--radius-xs) 0',
+            cursor: 'pointer',
+            background: value === mode ? 'var(--accent)' : 'transparent',
+            color: value === mode ? 'var(--accent-ink)' : 'var(--ink-tertiary)',
+            transition: 'background 0.1s',
+          }}
+          title={mode === 'time' ? 'Width proportional to time gap between events' : 'Fixed width per event'}
+        >
+          {mode === 'time' ? 'Time' : 'Index'}
+        </button>
+      ))}
+    </div>
+  )
+}
