@@ -1,65 +1,65 @@
 # Active Context
 
-## Current Focus — Stability & quality
+## Current Focus — Next phase planning
 
-Having shipped all planned visualisation features, the focus shifts to making
-the system robust: test coverage for new code, surfacing errors properly,
-and closing known rough edges.
+Stability sprint is complete. The system has a clean TypeScript build (zero errors),
+error surfacing in all async panels, memoized render-path computations, two new test
+suites, and two bug fixes (topic SOL event names, Mac autocomplete). The only open
+stability item is runtime observation of the Kafka AdminClient reconnect noise.
 
-### Recently completed (visualisation sprint)
+### Completed this session (stability sprint)
 
-**SOL engine & endpoints**
-- `sol` standalone module (zero Joxette deps): model, parser, engine, expression evaluator
-- `joxette-sol` adapter: `EntityRecordAdapter`, `SolResultMapper`
-- `POST .../sol-match` (entity + topic), `SolMatchService`, `SolMatchIT`
+**Bug fixes**
+- Topic SOL match: `message_type=NULL` general cassette records now resolve event names
+  from a `typeField` JSON path extracted from the value payload (`SolMatchRequest.typeField`,
+  `cassetteToEntity` fallback, "type field" input in topic `SolQueryPanel`)
+- Mac autocomplete suppressed: `autoComplete/autoCorrect/autoCapitalize/spellCheck` on all
+  code/field inputs (`SolQueryPanel`, `SunburstPanel`, `MultiEntityBarcodePanel`,
+  `SunburstDistributionPanel`)
 
-**UI visualisations**
-- `ViewModeBar<T>` — generic segmented control across all pages
-- `SolEditor` — CodeMirror 6 with SOL syntax highlighting + autocomplete (event vocab)
-- `SolQueryPanel` — recipe dropdown, run, status bar, result table; `SolSequenceInspector` tag coverage bars; clickable tag rows filter the event table
-- `SequenceBarcodeView` — time/index modes; colour by type / SOL tag / numeric field (diverging red→green); `buildTagMap`, `extractNumeric`, `NumericLegend`
-- `MultiEntityBarcodePanel` — SOL overlay strip (parallel entity matches, tag colour mode); "Colour by field" numeric strip
-- `SunburstChart` — D3 partition, sqrt radii, zoom, breadcrumb trail, right-click → distribution panel; `onArcRightClick`, `collectSubtreeSeqIds`
-- `SunburstDistributionPanel` — fetches sequences for arc's subtree, extracts numeric field, 10-bucket histogram
-- `SunburstPanel` — SOL pre-filter bar (server-side, skips non-matching sequences in prefix tree)
-- Entity type detail: [List][Barcode][Sunburst] view modes with sort controls (A–Z / Last Active / Most Messages)
-- Entity detail + Topic detail: [Records][SOL][Timeline][Barcode] view modes
+**Tests**
+- `EntityReplayServiceTest`: 5 new tests — `lastActive` / `mostMessages` sort order,
+  compound cursor pagination across 2 pages, tie-break by entity_id
+- `SunburstServiceTest` (new): 9 Mockito unit tests — prefix-tree structure, SOL filter
+  all-match / none-match / partial-match / blank query, empty-sequence skip, maxEntities cap
 
-**Backend**
-- `SunburstService` — prefix-tree builder, SOL pre-filter wired
-- `EntityReplayService` — `EntitySortBy` enum (id/lastActive/mostMessages), compound keyset cursors
-- `known_entities` enriched: `message_count`, `source_topics`, `last_message_type`
+**Error surfacing**
+- `MultiEntityBarcodePanel`: per-row SOL error count + hover tooltip with first error message
+- `SunburstDistributionPanel`: fetch error shown inline when any sequence load fails
+
+**TypeScript — zero errors build**
+- `CassetteRecord.messageType` added (was missing from interface)
+- `includeInternal` bool → string in `QueryParams`-typed call
+- `@types/d3-hierarchy` installed
+- Unused imports, `JsonValue` → `unknown`, implicit `any` D3 params, `setAnimating`/`prevRef` removed
+
+**Performance**
+- `extractNumeric`, `rowsWithTags`, `buildNumericDomain` wrapped in `useMemo`
+  in `MultiEntityBarcodePanel`
 
 ---
 
-## Stability plan
+## Next phase options
 
-### 1. Test coverage (highest priority)
-- `EntityReplayService` sort + compound cursor logic (unit tests with in-memory jOOQ or SQL assertions)
-- `SunburstService` SOL pre-filter (unit: mock entity records, assert filtered sequences)
-- `SolSequenceInspector` tag-row filtering logic (pure function — easy to unit test)
-- `SolEngine` edge cases from production usage (tag spans, combine, replace)
-- UI: error states in `MultiEntityBarcodePanel` (failed solMatchEntity), `SunburstDistributionPanel` (no values found)
+### 1. Integration test gaps (actionable, no design needed)
+- Topic SOL `typeField` extraction — IT: null message_type resolved from JSON value
+- Sort cursor correctness — IT: page through `lastActive` / `mostMessages` across real DuckDB
+- `SolMatchIT` expansion: `match split` + `combine`, `replace`, `set`, tag span assertions
 
-### 2. Error surfacing
-- SOL parse errors in `SolQueryPanel` show as inline error (already done for mutation errors; check parse-only path)
-- `MultiEntityBarcodePanel` — individual `solMatchEntity` failures currently swallowed by `useQueries`; surface a per-row error badge
-- `SunburstDistributionPanel` — network errors currently uncaught; add error state
+### 2. UI polish (quick wins, user-facing)
+- Barcode `xMode` toggle — time-proportional vs fixed-width index modes not exposed in UI
+- `SequenceQueryPanel` — may still exist as dead code; verify and remove
+- Sunburst zoom animation — wire D3 tween on double-click (stubs already in place)
 
-### 3. Known TS pre-existing errors
-- `client.ts:984` — `includeInternal: boolean` incompatible with `QueryParams` index signature
-- `SunburstChart.tsx` — unused `setAnimating`/`prevRef`, implicit `any` params from D3 generics
-- `$entityId.tsx` / `$topic.tsx` — `SequenceQueryPanel` unused import, `JsonValue` undefined
+### 3. Production readiness (before first real deployment)
+- DuckLake VARIANT probe — verify end-to-end through Parquet; fall back to JSON
+- Object storage config — S3/GCS/Azure setup documentation
+- Snapshot restore IT
+- Multi-topic entity ordering caveat documentation
 
-### 4. Kafka reconnect noise
-- `adminclient-1` still logs aggressive reconnect attempts when broker is down
-- Current fix: short-lived AdminClient per health check (15s cache); verify it's working in practice
-- Fallback: suppress the log level for the specific logger if reconnect noise is still present
-
-### 5. Performance / edge cases
-- Sunburst with large entity counts (>500) — `SunburstService` pages all entities; check memory pressure
-- Barcode numeric extraction — `extractNumeric` called per-record per-render (no memo); move to useMemo
-- `buildTagMap` called inside render loops in `MultiEntityBarcodePanel` — already in useMemo via `rowsWithTags`
+### 4. `sol` library
+- Group ID rename `com.joxette → com.sol` (deferred)
+- `SolEngine` edge-case tests: tag spans after `replace` / `combine`
 
 ---
 
@@ -80,3 +80,8 @@ Not persisted across restarts. Acceptable for test fixtures.
 ### `sol` group ID rename deferred
 Keeping `com.sol` package names as-is; group ID rename (`com.joxette → com.sol`) deferred
 until the library is ready to publish independently.
+
+### Topic SOL event name resolution
+General cassette records may have `message_type=NULL` when no matchers are configured.
+The `typeField` param on `SolMatchRequest` lets the user specify a JSON path to extract
+the event name from the value payload at query time, without requiring permanent matcher setup.

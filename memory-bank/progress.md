@@ -191,17 +191,39 @@
 - [x] Property distribution panel — right-click arc → 10-bucket histogram + min/max/mean
 - [x] SOL pre-filter — server-side filter before prefix tree construction
 
-### Stability backlog
-- [ ] **Tests**: `EntityReplayService` sort/cursor unit tests
-- [ ] **Tests**: `SunburstService` SOL pre-filter unit test
-- [ ] **Tests**: `SolEngine` additional edge cases (tag span correctness, combine+replace)
-- [ ] **Error surfacing**: `MultiEntityBarcodePanel` per-row SOL error badge (swallowed by `useQueries`)
-- [ ] **Error surfacing**: `SunburstDistributionPanel` network error state
-- [ ] **TS cleanup**: `client.ts:984` `includeInternal: boolean` incompatible with `QueryParams` index signature
-- [ ] **TS cleanup**: `SunburstChart.tsx` unused vars + implicit `any` D3 params
-- [ ] **TS cleanup**: `$entityId.tsx` / `$topic.tsx` unused imports + `JsonValue` undefined
-- [ ] **Performance**: `extractNumeric` called per-record per-render — wrap in `useMemo` in `MultiEntityBarcodePanel`
-- [ ] **Kafka**: verify short-lived AdminClient fix silences `adminclient-1` reconnect noise in practice
+### Stability backlog — COMPLETED
+- [x] **Tests**: `EntityReplayService` sort/cursor — 5 new tests (lastActive, mostMessages, tie-break, pagination with compound cursor)
+- [x] **Tests**: `SunburstService` SOL pre-filter — 9 new Mockito unit tests (all-match, none-match, partial-match, blank query, empty-sequence skip, maxEntities cap)
+- [x] **Error surfacing**: `MultiEntityBarcodePanel` SOL error count + hover tooltip
+- [x] **Error surfacing**: `SunburstDistributionPanel` fetch error inline message
+- [x] **TS cleanup**: zero errors — `CassetteRecord.messageType` added, `includeInternal` bool→string, `@types/d3-hierarchy` installed, unused imports/vars removed, `JsonValue` → `unknown`
+- [x] **Performance**: `extractNumeric`, `rowsWithTags`, `buildNumericDomain` wrapped in `useMemo`
+- [x] **Bug**: topic SOL match resolved event names from value JSON via `typeField` param
+- [x] **Bug**: Mac autocomplete/autocorrect suppressed on all code/field inputs
+- [ ] **Kafka**: verify short-lived AdminClient fix silences `adminclient-1` reconnect noise (needs runtime observation)
+
+### Next phase roadmap
+
+#### Integration test gaps
+- [ ] `typeField` extraction in topic SOL match — IT scenario: topic records with null message_type, typeField resolves event names
+- [ ] Sort cursor correctness — IT: page through `lastActive` / `mostMessages` across multiple pages with real DuckDB data
+- [ ] `SolMatchIT` coverage: `match split` + `combine`, `replace`, `set` operations; tag span assertions
+
+#### UI polish
+- [ ] Barcode `xMode` toggle exposed in UI — switch between time-proportional and fixed-width index modes
+- [ ] `SequenceQueryPanel` component — check if it still exists as dead code; remove if unused
+- [ ] Sunburst zoom animation — `animating`/`prevRef` stubs left in place; wire D3 tween if desired
+- [ ] `SolQueryPanel` recipe hints — show the recipe description on hover in the dropdown
+
+#### Production readiness
+- [ ] DuckLake VARIANT probe — verify VARIANT type works end-to-end through DuckLake Parquet serialisation; fall back to JSON if not
+- [ ] Object storage config walkthrough — document S3/GCS/Azure setup in README
+- [ ] Snapshot restore path — integration test for `POST /cassettes/snapshots/{name}/restore`
+- [ ] Multi-topic entity ordering — document clock-skew caveat; add warning to entity cassette replay docs
+
+#### `sol` library
+- [ ] Group ID rename `com.joxette → com.sol` — deferred until ready to publish independently
+- [ ] `SolEngine` edge-case tests: tag span correctness after `replace`, `combine` output dims
 
 ### Kafka resilience
 - [x] `reconnect.backoff.ms` raised 50ms → 1s, `reconnect.backoff.max.ms` = 30s in `BrokerConnectionFactory`
