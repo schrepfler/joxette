@@ -7,7 +7,7 @@ import {
   createColumnHelper,
 } from '@tanstack/react-table'
 import { useForm } from '@tanstack/react-form'
-import { useState } from 'react'
+import { useState, useMemo } from 'react'
 import {
   entitiesApi,
   cassettesApi,
@@ -776,20 +776,24 @@ function MultiEntityBarcodePanel({ entityType, entityIds }: { entityType: string
 
   const loadingRecords = recordResults.some(r => r.isLoading)
   const loadingSol     = solResults.some(r => r.isLoading)
+  const solErrorCount  = solResults.filter(r => r.isError).length
+  // Collect the first distinct SOL error message to show to the user
+  const firstSolError  = solResults.find(r => r.isError)?.error as Error | undefined
 
   const baseRows: BarcodeRow[] = recordResults
     .map((r, i) => ({ entityId: ids[i], records: r.data?.data ?? [] }))
     .filter(row => row.records.length > 0)
 
-  // Attach tag maps when a SOL query has run
-  const rowsWithTags: BarcodeRow[] = baseRows.map((row, i) => {
+  // Attach tag maps when a SOL query has run (stable reference via index alignment)
+  const rowsWithTags: BarcodeRow[] = useMemo(() => baseRows.map((row, i) => {
     const sol = solResults[i]?.data
     if (!sol || !sol.tags || Object.keys(sol.tags).length === 0) return row
     return { ...row, tagMap: buildTagMap(sol.tags) }
-  })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [solResults, baseRows.length, activeQuery])
 
   // Attach numeric values when a field path is active
-  const rows: BarcodeRow[] = activeNumericField
+  const rows: BarcodeRow[] = useMemo(() => activeNumericField
     ? rowsWithTags.map(row => ({
         ...row,
         numericValues: new Map(
@@ -798,11 +802,16 @@ function MultiEntityBarcodePanel({ entityType, entityIds }: { entityType: string
             .filter((entry): entry is [number, number] => entry[1] != null)
         ),
       }))
-    : rowsWithTags
+    : rowsWithTags,
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  [rowsWithTags, activeNumericField])
 
   const allTypes = [...new Set(rows.flatMap(r => r.records.map(ev => ev.messageType).filter(Boolean) as string[]))]
 
-  const [numMin, numMax] = activeNumericField ? buildNumericDomain(rows) : [0, 0]
+  const [numMin, numMax] = useMemo(
+    () => activeNumericField ? buildNumericDomain(rows) : [0, 0] as [number, number],
+    [rows, activeNumericField],
+  )
 
   // Collect active tag names for legend
   const activeTags = activeQuery
@@ -879,9 +888,21 @@ function MultiEntityBarcodePanel({ entityType, entityIds }: { entityType: string
             </button>
           )}
         </div>
-        <span style={{ fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)' }}>
-          {activeQuery ? `Overlay active — ${rows.filter(r => r.tagMap && r.tagMap.size > 0).length}/${rows.length} entities matched` : '⌘↵ to run · segments coloured by SOL tag'}
-        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)' }}>
+            {activeQuery
+              ? `Overlay active — ${rows.filter(r => r.tagMap && r.tagMap.size > 0).length}/${rows.length} entities matched`
+              : '⌘↵ to run · segments coloured by SOL tag'}
+          </span>
+          {solErrorCount > 0 && (
+            <span
+              style={{ fontSize: 'var(--type-caption-size)', color: 'var(--signal-error)', cursor: 'help' }}
+              title={firstSolError?.message ?? 'SOL match failed'}
+            >
+              ⚠ {solErrorCount} entr{solErrorCount === 1 ? 'y' : 'ies'} failed — hover for details
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Numeric field strip */}

@@ -62,7 +62,8 @@ export function SunburstDistributionPanel({ entityType, nodeName, seqIds, onClos
     })),
   })
 
-  const loading = results.some(r => r.isLoading)
+  const loading    = results.some(r => r.isLoading)
+  const fetchError = results.find(r => r.isError)?.error as Error | undefined
 
   const { values, missing } = useMemo(() => {
     if (!activeField) return { values: [], missing: 0 }
@@ -161,12 +162,17 @@ export function SunburstDistributionPanel({ entityType, nodeName, seqIds, onClos
           </p>
         )}
         {activeField && loading && <LoadingSpinner />}
-        {activeField && !loading && values.length === 0 && (
+        {activeField && !loading && fetchError && (
+          <p style={{ margin: 0, fontSize: 'var(--type-body-sm-size)', color: 'var(--signal-error)' }}>
+            Failed to load sequences: {fetchError.message}
+          </p>
+        )}
+        {activeField && !loading && !fetchError && values.length === 0 && (
           <p style={{ margin: 0, fontSize: 'var(--type-body-sm-size)', color: 'var(--ink-tertiary)' }}>
             No numeric values found for <code style={{ fontFamily: 'var(--font-mono)' }}>{activeField}</code>.
           </p>
         )}
-        {activeField && !loading && values.length > 0 && (
+        {activeField && !loading && !fetchError && values.length > 0 && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
             {buckets.map((b, i) => (
               <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
