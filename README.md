@@ -213,11 +213,17 @@ joxette:
 
 ### Object Storage (Production)
 
-Set `JOXETTE_CATALOG_OBJECT-STORAGE-PATH` to point DuckLake at your bucket. All S3/GCS/Azure interaction is handled by DuckDB's `httpfs` extension — no Java SDK required.
+Set `JOXETTE_CATALOG_OBJECT-STORAGE-PATH` to point DuckLake at your bucket.
+All S3/GCS/Azure interaction is handled by DuckDB's `httpfs` extension — no
+Java SDK required.
 
 ```bash
 JOXETTE_CATALOG_OBJECT-STORAGE-PATH=s3://my-bucket/joxette/data
 ```
+
+See **[docs/object-storage.md](docs/object-storage.md)** for the full guide:
+path format per provider, `CREATE SECRET` syntax, required IAM/SA permissions,
+and working `application.yml` snippets for AWS S3, GCS, and Azure Blob.
 
 ---
 
