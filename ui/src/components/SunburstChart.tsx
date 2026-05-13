@@ -1,5 +1,6 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import * as d3Hierarchy from 'd3-hierarchy'
+import * as d3Interpolate from 'd3-interpolate'
 import * as d3Shape from 'd3-shape'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -17,6 +18,8 @@ export interface SunburstData {
   eventNames: string[]
   totalSequences: number
 }
+
+interface ZoomCoords { x0: number; x1: number; y0: number }
 
 interface Props {
   data: SunburstData
@@ -83,6 +86,7 @@ export function SunburstChart({
   onArcRightClick,
 }: Props) {
   const svgRef = useRef<SVGSVGElement>(null)
+  const animFrameRef = useRef<number | null>(null)
   const [path, setPath] = useState<SunburstNode[]>([])
   const [hovered, setHovered] = useState<d3Hierarchy.HierarchyRectangularNode<SunburstNode> | null>(null)
 
@@ -119,9 +123,30 @@ export function SunburstChart({
 
   // Zoom state
   const [zoomNode, setZoomNode] = useState<d3Hierarchy.HierarchyRectangularNode<SunburstNode>>(partitioned)
+  const [animZoom, setAnimZoom] = useState<ZoomCoords>({ x0: 0, x1: 2 * Math.PI, y0: 0 })
+
+  useEffect(() => () => { if (animFrameRef.current != null) cancelAnimationFrame(animFrameRef.current) }, [])
+
+  function tweenZoom(from: ZoomCoords, to: ZoomCoords) {
+    if (animFrameRef.current != null) cancelAnimationFrame(animFrameRef.current)
+    const ix0 = d3Interpolate.interpolateNumber(from.x0, to.x0)
+    const ix1 = d3Interpolate.interpolateNumber(from.x1, to.x1)
+    const iy0 = d3Interpolate.interpolateNumber(from.y0, to.y0)
+    const start = performance.now()
+    const DURATION = 400
+    function tick(now: number) {
+      const raw = Math.min((now - start) / DURATION, 1)
+      const t = raw < 0.5 ? 2 * raw * raw : -1 + (4 - 2 * raw) * raw  // easeInOutQuad
+      setAnimZoom({ x0: ix0(t), x1: ix1(t), y0: iy0(t) })
+      if (raw < 1) animFrameRef.current = requestAnimationFrame(tick)
+      else animFrameRef.current = null
+    }
+    animFrameRef.current = requestAnimationFrame(tick)
+  }
 
   function handleDoubleClick(d: d3Hierarchy.HierarchyRectangularNode<SunburstNode>) {
     const target = d.depth > 0 ? d : partitioned  // double-click root = zoom out
+    tweenZoom(animZoom, { x0: target.x0, x1: target.x1, y0: target.y0 })
     setZoomNode(target)
     setPath(target.ancestors().reverse().map(n => n.data).slice(1))
     onNodeClick?.(d.data, d.ancestors().reverse().map(n => n.data).slice(1))
@@ -137,18 +162,15 @@ export function SunburstChart({
     setPath(zoomNode.ancestors().reverse().map(n => n.data).slice(1))
   }
 
-  // Compute zoomed arc coordinates
-  function zoomedArc(d: d3Hierarchy.HierarchyRectangularNode<SunburstNode>) {
-    const xScale = (x: number) => {
-      const a0 = zoomNode.x0, a1 = zoomNode.x1
-      return ((x - a0) / (a1 - a0)) * 2 * Math.PI
-    }
+  // Compute zoomed arc coordinates using interpolated zoom window
+  function zoomedArc(d: d3Hierarchy.HierarchyRectangularNode<SunburstNode>, zoom: ZoomCoords) {
+    const xScale = (x: number) => ((x - zoom.x0) / (zoom.x1 - zoom.x0)) * 2 * Math.PI
     const scaledD = {
       ...d,
       x0: xScale(d.x0),
       x1: xScale(d.x1),
-      y0: d.y0 - zoomNode.y0,
-      y1: d.y1 - zoomNode.y0,
+      y0: d.y0 - zoom.y0,
+      y1: d.y1 - zoom.y0,
     }
     return arc(scaledD as any) ?? ''
   }
@@ -184,7 +206,11 @@ export function SunburstChart({
               stroke="var(--rule)"
               strokeWidth={1}
               style={{ cursor: zoomNode.depth > 0 ? 'pointer' : 'default' }}
-              onDoubleClick={() => { setZoomNode(partitioned); setPath([]) }}
+              onDoubleClick={() => {
+                tweenZoom(animZoom, { x0: partitioned.x0, x1: partitioned.x1, y0: partitioned.y0 })
+                setZoomNode(partitioned)
+                setPath([])
+              }}
             />
             <text textAnchor="middle" dominantBaseline="middle"
               style={{ fontSize: 11, fill: 'var(--ink-tertiary)', pointerEvents: 'none', userSelect: 'none' }}>
@@ -199,7 +225,7 @@ export function SunburstChart({
               return (
                 <path
                   key={d.data.nodeId}
-                  d={zoomedArc(d)}
+                  d={zoomedArc(d, animZoom)}
                   fill={fill}
                   fillOpacity={onPath ? 1 : isHovered ? 0.85 : 0.7}
                   stroke="var(--surface-paper)"
@@ -224,7 +250,7 @@ export function SunburstChart({
             {visibleNodes.filter(d => d.depth > 0 && (d.x1 - d.x0) > 0.15).map(d => {
               const centroid = arc.centroid(d as d3Hierarchy.HierarchyRectangularNode<SunburstNode>)
               if (!centroid || isNaN(centroid[0])) return null
-              const xScale = (x: number) => ((x - zoomNode.x0) / (zoomNode.x1 - zoomNode.x0)) * 2 * Math.PI
+              const xScale = (x: number) => ((x - animZoom.x0) / (animZoom.x1 - animZoom.x0)) * 2 * Math.PI
               const cx = (radius * Math.sqrt((d.y0 + d.y1) / 2 / (maxSteps + 1))) *
                 Math.sin((xScale(d.x0) + xScale(d.x1)) / 2)
               const cy = -(radius * Math.sqrt((d.y0 + d.y1) / 2 / (maxSteps + 1))) *
