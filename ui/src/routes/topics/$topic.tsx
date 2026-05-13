@@ -35,6 +35,7 @@ import { useToast } from '../../components/Toast'
 import { useDebounce } from '../../hooks/useDebounce'
 import { Button, Input, Select, Hairline, Tabular, Badge, StatusDot } from '../../design/primitives'
 import type { FragmentDefinition } from '../../transforms/types'
+import { SequenceQueryPanel } from '../../components/SequenceQueryPanel'
 
 // ── JSON viewer ────────────────────────────────────────────────────────────────
 function tryDecodeBase64(s: string): string | null {
@@ -236,7 +237,7 @@ function TopicDetailPage() {
   const [showTruncateDialog, setShowTruncateDialog] = useState(false)
   const [showAddMatcher, setShowAddMatcher] = useState(false)
   const [confirmDeleteMatcher, setConfirmDeleteMatcher] = useState<string | null>(null)
-  const [activeTab, setActiveTab] = useState<'records' | 'sol' | 'timeline' | 'barcode'>('records')
+  const [activeTab, setActiveTab] = useState<'records' | 'sol' | 'timeline' | 'barcode' | 'sequence'>('records')
   const [barcodeXMode, setBarcodeXMode] = useState<BarcodeXMode>('time')
   const [_replayPipelineFragments, _setReplayPipelineFragments] = useState<FragmentDefinition[]>([])
 
@@ -738,6 +739,7 @@ function TopicDetailPage() {
                 { id: 'sol',      label: 'SOL',       icon: '⌥' },
                 { id: 'timeline', label: 'Timeline',  icon: '⏱' },
                 { id: 'barcode',  label: 'Barcode',   icon: '▦' },
+                { id: 'sequence', label: 'Sequence',  icon: '⛓' },
               ]}
               active={activeTab}
               onChange={setActiveTab}
@@ -791,6 +793,12 @@ function TopicDetailPage() {
               </section>
             )
           })()}
+
+          {activeTab === 'sequence' && (
+            <section style={{ marginBottom: 24, border: '1px solid var(--rule)', borderRadius: 'var(--radius-md)', overflow: 'hidden', height: 600 }}>
+              <SequenceQueryPanel mode="topic" topic={topic} />
+            </section>
+          )}
 
           {activeTab === 'records' && (
             <section style={sectionStyle}>

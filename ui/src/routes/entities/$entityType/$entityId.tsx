@@ -21,6 +21,7 @@ import { StreamStatusBadge, type StreamStatus } from '../../../components/Stream
 import { useToast } from '../../../components/Toast'
 import { useDebounce } from '../../../hooks/useDebounce'
 import type { FragmentDefinition } from '../../../transforms/types'
+import { SequenceQueryPanel } from '../../../components/SequenceQueryPanel'
 
 interface EntitySearch {
   /** Sort direction for entity event replay. UI default: 'desc' (latest first). */
@@ -116,7 +117,7 @@ function EntityInstancePage() {
   const [cursor, setCursor] = useState<string | undefined>()
   const [cursors, setCursors] = useState<string[]>([])
   const [deleteStep, setDeleteStep] = useState<0 | 1 | 2>(0)
-  const [activeTab, setActiveTab] = useState<'records' | 'sol' | 'timeline' | 'barcode'>('records')
+  const [activeTab, setActiveTab] = useState<'records' | 'sol' | 'timeline' | 'barcode' | 'sequence'>('records')
   const [barcodeXMode, setBarcodeXMode] = useState<BarcodeXMode>('time')
   const [_replayPipelineFragments, _setReplayPipelineFragments] = useState<FragmentDefinition[]>([])
 
@@ -370,6 +371,7 @@ function EntityInstancePage() {
             { id: 'sol',      label: 'SOL',       icon: '⌥' },
             { id: 'timeline', label: 'Timeline',  icon: '⏱' },
             { id: 'barcode',  label: 'Barcode',   icon: '▦' },
+            { id: 'sequence', label: 'Sequence',  icon: '⛓' },
           ]}
           active={activeTab}
           onChange={setActiveTab}
@@ -426,6 +428,13 @@ function EntityInstancePage() {
           </div>
         )
       })()}
+
+      {/* Sequence tab */}
+      {activeTab === 'sequence' && (
+        <div style={{ border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'hidden', marginBottom: '1.5rem', height: 600 }}>
+          <SequenceQueryPanel mode="entity" entityType={entityType} />
+        </div>
+      )}
 
       {/* Records tab */}
       {activeTab === 'records' && (

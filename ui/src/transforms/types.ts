@@ -351,3 +351,4 @@ export type SequenceMatchResponse = {
   reachRates: number[]
   examples: MatchedSequence[]
 }
+

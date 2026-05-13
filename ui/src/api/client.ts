@@ -427,6 +427,7 @@ export const cassettesApi = {
   getEntityFields: (entityType: string, limit = 500) =>
     request<{ fields: string[] }>(`/cassettes/entities/${encodeURIComponent(entityType)}/fields?limit=${limit}`)
       .then(r => r.fields),
+
   /** Find sequences matching a SequenceQuery across a topic or entity cassette. */
   matchSequences: (
     mode: 'topic' | 'entity',
