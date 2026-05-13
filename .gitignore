@@ -42,3 +42,6 @@ out/
 # Application data
 data/
 .metals
+
+# DuckLake test artifact: written when inlining is disabled with DATA_PATH=':memory:'
+joxette-service/:memory:/
