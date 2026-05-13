@@ -30,6 +30,7 @@ import { ViewModeBar } from '../../../components/ViewModeBar'
 import { SequenceBarcodeView, BarcodeLegend, NumericLegend, BarcodeXModeToggle, buildTagMap, buildNumericDomain, tagColor, extractNumeric, type BarcodeRow, type BarcodeXMode } from '../../../components/SequenceBarcodeView'
 import { SunburstChart } from '../../../components/SunburstChart'
 import { SunburstDistributionPanel } from '../../../components/SunburstDistributionPanel'
+import { SolEditor } from '../../../components/SolEditor'
 import { useQueries } from '@tanstack/react-query'
 
 export const Route = createFileRoute('/entities/$entityType/')({
@@ -604,6 +605,13 @@ function SunburstPanel({ entityType }: { entityType: string }) {
   const [activeSolQuery, setActiveSolQuery] = useState('')
   const [distribution, setDistribution] = useState<{ nodeName: string; seqIds: string[] } | null>(null)
 
+  const fieldsQuery = useQuery({
+    queryKey: ['fields', 'entity', entityType],
+    queryFn: () => cassettesApi.getEntityFields(entityType),
+    staleTime: 300_000,
+  })
+  const eventNames = fieldsQuery.data ?? []
+
   const query = useQuery({
     queryKey: ['cassettes', 'entities', entityType, 'sunburst', { maxSteps, maxEntities, activeSolQuery }],
     queryFn: () => cassettesApi.buildSunburst(entityType, {
@@ -658,26 +666,16 @@ function SunburstPanel({ entityType }: { entityType: string }) {
         <span style={{ fontSize: 'var(--type-body-sm-size)', fontWeight: 600, color: 'var(--ink-secondary)', flexShrink: 0 }}>
           SOL filter
         </span>
-        <input
-          value={solQueryRaw}
-          onChange={e => setSolQueryRaw(e.target.value)}
-          placeholder="match A(login) >> * >> B(purchase)  — only matching sequences appear"
-          autoComplete="off"
-          autoCorrect="off"
-          autoCapitalize="off"
-          spellCheck={false}
-          style={{
-            flex: 1,
-            padding: '4px 8px',
-            border: '1px solid var(--rule)',
-            borderRadius: 'var(--radius-xs)',
-            fontFamily: 'var(--font-mono)',
-            fontSize: 'var(--type-caption-size)',
-            color: 'var(--ink-primary)',
-            background: 'var(--surface-paper)',
-          }}
-          onKeyDown={e => { if (e.key === 'Enter') runQuery() }}
-        />
+        <div style={{ flex: 1 }}>
+          <SolEditor
+            value={solQueryRaw}
+            onChange={setSolQueryRaw}
+            onRun={runQuery}
+            eventNames={eventNames}
+            compact
+            minHeight={28}
+          />
+        </div>
         <button
           style={{
             padding: '4px 10px',
@@ -755,6 +753,13 @@ function MultiEntityBarcodePanel({ entityType, entityIds }: { entityType: string
   const [numericFieldRaw, setNumericFieldRaw] = useState('')
   const [xMode, setXMode] = useState<BarcodeXMode>('time')
   const [activeNumericField, setActiveNumericField] = useState('')
+
+  const fieldsQuery = useQuery({
+    queryKey: ['fields', 'entity', entityType],
+    queryFn: () => cassettesApi.getEntityFields(entityType),
+    staleTime: 300_000,
+  })
+  const eventNames = fieldsQuery.data ?? []
 
   const ids = entityIds.slice(0, 20)
 
@@ -836,29 +841,16 @@ function MultiEntityBarcodePanel({ entityType, entityIds }: { entityType: string
       <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--rule)', background: 'var(--surface-raised)', display: 'flex', flexDirection: 'column', gap: 6 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ fontSize: 'var(--type-body-sm-size)', fontWeight: 600, color: 'var(--ink-secondary)', flexShrink: 0 }}>SOL overlay</span>
-          <textarea
-            value={solQuery}
-            onChange={e => setSolQuery(e.target.value)}
-            rows={1}
-            placeholder="match A(event_a) >> * >> B(event_b)"
-            style={{
-              flex: 1, resize: 'vertical', minHeight: 30, maxHeight: 80,
-              padding: '4px 8px',
-              border: '1px solid var(--rule)',
-              borderRadius: 'var(--radius-xs)',
-              fontFamily: 'var(--font-mono)',
-              fontSize: 'var(--type-caption-size)',
-              color: 'var(--ink-primary)',
-              background: 'var(--surface-paper)',
-            }}
-            onKeyDown={e => {
-              if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-                e.preventDefault()
-                setActiveQuery(solQuery.trim())
-                if (solQuery.trim()) setColorMode('tag')
-              }
-            }}
-          />
+          <div style={{ flex: 1 }}>
+            <SolEditor
+              value={solQuery}
+              onChange={setSolQuery}
+              onRun={() => { setActiveQuery(solQuery.trim()); if (solQuery.trim()) setColorMode('tag') }}
+              eventNames={eventNames}
+              compact
+              minHeight={28}
+            />
+          </div>
           <button
             style={{
               padding: '5px 12px',
@@ -893,7 +885,7 @@ function MultiEntityBarcodePanel({ entityType, entityIds }: { entityType: string
           <span style={{ fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)' }}>
             {activeQuery
               ? `Overlay active — ${rows.filter(r => r.tagMap && r.tagMap.size > 0).length}/${rows.length} entities matched`
-              : '⌘↵ to run · segments coloured by SOL tag'}
+              : 'Ctrl+Space for autocomplete · ⌘↵ to run · segments coloured by SOL tag'}
           </span>
           {solErrorCount > 0 && (
             <span

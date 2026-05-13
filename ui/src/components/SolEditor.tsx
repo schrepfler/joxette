@@ -42,6 +42,8 @@ interface Props {
   dark?: boolean
   minHeight?: number
   disabled?: boolean
+  /** Compact mode: no line numbers, no gutter, tighter padding. For inline strips. */
+  compact?: boolean
 }
 
 // ── Light theme overrides to match the app's surface variables ─────────────────
@@ -118,7 +120,7 @@ const solHighlightStyle = syntaxHighlighting(defaultHighlightStyle)
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
-export function SolEditor({ value, onChange, onRun, eventNames = [], dark = false, minHeight = 120, disabled = false }: Props) {
+export function SolEditor({ value, onChange, onRun, eventNames = [], dark = false, minHeight = 120, disabled = false, compact = false }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const viewRef      = useRef<EditorView | null>(null)
   const onChangeRef  = useRef(onChange)
@@ -135,6 +137,34 @@ export function SolEditor({ value, onChange, onRun, eventNames = [], dark = fals
     },
   ])
 
+  const compactTheme = EditorView.theme({
+    '&': {
+      fontFamily: 'var(--font-mono)',
+      fontSize: 'var(--type-caption-size)',
+      background: 'var(--surface-paper)',
+      color: 'var(--ink-primary)',
+      border: '1px solid var(--rule)',
+      borderRadius: 'var(--radius-xs)',
+    },
+    '.cm-focused': { outline: 'none', borderColor: 'var(--accent)' },
+    '.cm-editor.cm-focused': { outline: 'none' },
+    '.cm-scroller': { fontFamily: 'inherit', lineHeight: '1.4', overflowX: 'auto' },
+    '.cm-content': { padding: '4px 8px', caretColor: 'var(--accent)' },
+    '.cm-line': { padding: '0' },
+    // Autocomplete dropdown
+    '.cm-tooltip': {
+      background: 'var(--surface-paper)',
+      border: '1px solid var(--rule)',
+      borderRadius: 'var(--radius-sm)',
+      boxShadow: 'var(--shadow-md)',
+    },
+    '.cm-tooltip-autocomplete ul li[aria-selected]': {
+      background: 'var(--accent)', color: 'var(--accent-ink)',
+    },
+    '.cm-completionLabel': { fontFamily: 'var(--font-mono)', fontSize: '0.8125rem' },
+    '.cm-completionDetail': { color: 'var(--ink-tertiary)', fontSize: '0.75rem', marginLeft: 8 },
+  })
+
   const buildExtensions = useCallback((): Extension[] => {
     const base: Extension[] = [
       // Core editing
@@ -143,10 +173,7 @@ export function SolEditor({ value, onChange, onRun, eventNames = [], dark = fals
       dropCursor(),
       rectangularSelection(),
       crosshairCursor(),
-      highlightActiveLine(),
-      highlightActiveLineGutter(),
-      highlightSpecialChars(),
-      lineNumbers(),
+      ...(!compact ? [highlightActiveLine(), highlightActiveLineGutter(), highlightSpecialChars(), lineNumbers()] : []),
       closeBrackets(),
 
       // Keymaps
@@ -166,7 +193,7 @@ export function SolEditor({ value, onChange, onRun, eventNames = [], dark = fals
       solHighlightStyle,
 
       // Theme
-      dark ? oneDark : lightTheme,
+      dark ? oneDark : compact ? compactTheme : lightTheme,
 
       // Min height
       EditorView.theme({ '.cm-editor': { minHeight: `${minHeight}px` }, '.cm-scroller': { minHeight: `${minHeight}px` } }),
@@ -182,7 +209,7 @@ export function SolEditor({ value, onChange, onRun, eventNames = [], dark = fals
       ...(disabled ? [EditorState.readOnly.of(true)] : []),
     ]
     return base
-  }, [eventNames, dark, minHeight, disabled]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [eventNames, dark, minHeight, disabled, compact]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Mount
   useEffect(() => {
@@ -220,7 +247,7 @@ export function SolEditor({ value, onChange, onRun, eventNames = [], dark = fals
     if (!view) return
     const doc = view.state.doc.toString()
     view.setState(EditorState.create({ doc, extensions: buildExtensions() }))
-  }, [eventNames, dark, disabled]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [eventNames, dark, disabled, compact]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div
