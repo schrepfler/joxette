@@ -16,10 +16,12 @@ import java.sql.*;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
@@ -279,6 +281,9 @@ public class CassetteLifecycleService {
                 // Path is validated to contain only [a-zA-Z0-9_/-] — no SQL injection risk.
                 st.execute("EXPORT DATABASE '" + snapshotDir + "'");
             }
+            // EXPORT DATABASE only covers the main catalog. Cassette tables live in the
+            // attached 'lake' catalog — export each one as a separate Parquet file.
+            exportLakeTables(snapshotDir);
             long sizeBytes = directorySize(snapshotDir);
             try (PreparedStatement ps = duckDB.prepareStatement("""
                     INSERT INTO snapshots (name, created_at, size_bytes)
@@ -324,12 +329,143 @@ public class CassetteLifecycleService {
             throw com.joxette.api.error.ResourceNotFoundException.snapshot(name);
         }
         log.warn("Restoring snapshot '{}' from {} — all existing tables will be replaced", name, snapshotDir);
+        patchSchemaSqlForRestore(snapshotDir);
         synchronized (duckDB) {
             try (Statement st = duckDB.createStatement()) {
                 st.execute("IMPORT DATABASE '" + snapshotDir + "'");
             }
+            // Restore lake (DuckLake) cassette tables from the Parquet files exported
+            // alongside the main snapshot.
+            restoreLakeTables(snapshotDir);
         }
         log.info("Snapshot '{}' restored", name);
+    }
+
+    /**
+     * Rewrites the {@code schema.sql} inside a snapshot directory so that
+     * {@code IMPORT DATABASE} is idempotent when the Spring context has already
+     * created the same sequences, tables, and views.
+     *
+     * <p>DuckDB's {@code EXPORT DATABASE} generates bare {@code CREATE} statements.
+     * When {@code IMPORT DATABASE} replays them against a live database the
+     * {@code "already exists"} error aborts the entire restore.  Replacing every
+     * {@code CREATE} with {@code CREATE OR REPLACE} makes each statement a no-op
+     * when the object already has the correct structure, and drops-and-recreates
+     * it otherwise — which is the correct restore semantics.
+     */
+    private static void patchSchemaSqlForRestore(Path snapshotDir) {
+        Path schemaSql = snapshotDir.resolve("schema.sql");
+        if (!Files.exists(schemaSql)) {
+            return;
+        }
+        try {
+            String original = Files.readString(schemaSql);
+            // Sequences: use IF NOT EXISTS to keep the existing sequence (dropping one
+            // that a table depends on would require CASCADE and lose the counter).
+            // Tables/views/types: use OR REPLACE so data is wiped and schema is refreshed.
+            String patched = original
+                    .replace("CREATE SEQUENCE ", "CREATE SEQUENCE IF NOT EXISTS ")
+                    .replace("CREATE TABLE ", "CREATE OR REPLACE TABLE ")
+                    .replace("CREATE VIEW ", "CREATE OR REPLACE VIEW ")
+                    .replace("CREATE TYPE ", "CREATE OR REPLACE TYPE ")
+                    .replace("CREATE MACRO ", "CREATE OR REPLACE MACRO ");
+            if (!patched.equals(original)) {
+                Files.writeString(schemaSql, patched);
+            }
+        } catch (IOException e) {
+            throw new UncheckedIOException("Failed to patch schema.sql for restore in " + snapshotDir, e);
+        }
+    }
+
+    /**
+     * Exports every table in the {@code lake.main} schema to a Parquet file alongside
+     * the main snapshot directory so that {@link #restoreLakeTables(Path)} can reload them.
+     *
+     * <p>Files are written to {@code <snapshotDir>/lake/<tableName>.parquet}.
+     * Must be called inside {@code synchronized(duckDB)}.
+     */
+    private void exportLakeTables(Path snapshotDir) throws SQLException {
+        Path lakeDir = snapshotDir.resolve("lake");
+        try {
+            Files.createDirectories(lakeDir);
+        } catch (IOException e) {
+            throw new UncheckedIOException("Cannot create lake snapshot dir: " + lakeDir, e);
+        }
+        List<String> tableNames = new ArrayList<>();
+        try (Statement st = duckDB.createStatement();
+             ResultSet rs = st.executeQuery(
+                     "SELECT table_name FROM duckdb_tables()" +
+                     " WHERE database_name = 'lake' AND schema_name = 'main'" +
+                     " ORDER BY table_name")) {
+            while (rs.next()) {
+                tableNames.add(rs.getString("table_name"));
+            }
+        }
+        for (String tableName : tableNames) {
+            Path parquet = lakeDir.resolve(tableName + ".parquet");
+            // COPY ... TO writes all rows as a single Parquet file.
+            try (Statement st = duckDB.createStatement()) {
+                st.execute("COPY lake.main." + tableName +
+                           " TO '" + parquet + "' (FORMAT PARQUET)");
+            }
+            log.debug("Snapshot: exported lake table {} → {}", tableName, parquet);
+        }
+        log.info("Snapshot: exported {} lake table(s) to {}", tableNames.size(), lakeDir);
+    }
+
+    /**
+     * Restores lake cassette tables from the Parquet files created by
+     * {@link #exportLakeTables(Path)} during snapshot creation.
+     *
+     * <p>Each {@code lake/<table>.parquet} file found in the snapshot is loaded via
+     * {@code DELETE FROM} + {@code INSERT INTO … SELECT * FROM read_parquet(…)},
+     * which replaces the table contents atomically without dropping the table
+     * (preserving the DuckLake schema metadata).
+     *
+     * <p>Must be called inside {@code synchronized(duckDB)}.
+     */
+    private void restoreLakeTables(Path snapshotDir) throws SQLException {
+        Path lakeDir = snapshotDir.resolve("lake");
+        if (!Files.exists(lakeDir)) {
+            log.debug("Restore: no lake/ sub-directory in snapshot '{}' — skipping lake restore",
+                      snapshotDir.getFileName());
+            return;
+        }
+        // Collect existing lake table names so we only restore tables that are present.
+        Set<String> existingTables = new HashSet<>();
+        try (Statement st = duckDB.createStatement();
+             ResultSet rs = st.executeQuery(
+                     "SELECT table_name FROM duckdb_tables()" +
+                     " WHERE database_name = 'lake' AND schema_name = 'main'")) {
+            while (rs.next()) {
+                existingTables.add(rs.getString("table_name"));
+            }
+        }
+        List<Path> parquetFiles;
+        try (Stream<Path> s = Files.list(lakeDir)) {
+            parquetFiles = s.filter(p -> p.getFileName().toString().endsWith(".parquet"))
+                            .sorted()
+                            .toList();
+        } catch (IOException e) {
+            throw new UncheckedIOException("Cannot list lake snapshot dir: " + lakeDir, e);
+        }
+        for (Path parquet : parquetFiles) {
+            String fileName = parquet.getFileName().toString();
+            String tableName = fileName.substring(0, fileName.length() - ".parquet".length());
+            if (!existingTables.contains(tableName)) {
+                log.warn("Restore: lake table {} not found in current schema — skipping", tableName);
+                continue;
+            }
+            try (Statement st = duckDB.createStatement()) {
+                st.execute("DELETE FROM lake.main." + tableName);
+            }
+            try (Statement st = duckDB.createStatement()) {
+                st.execute("INSERT INTO lake.main." + tableName +
+                           " SELECT * FROM read_parquet('" + parquet + "')");
+            }
+            log.debug("Restore: reloaded lake table {} from {}", tableName, parquet);
+        }
+        log.info("Restore: reloaded {} lake table(s) from {}", parquetFiles.size(), lakeDir);
     }
 
     /**
