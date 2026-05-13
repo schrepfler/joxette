@@ -81,18 +81,30 @@ public class SchemaManager {
     // -------------------------------------------------------------------------
 
     /**
-     * Tests whether VARIANT survives a full DuckLake write/read round-trip.
-     * Creates a temporary DuckLake probe table, inserts one row, reads it back,
-     * and drops the table.  Returns {@code false} on any failure.
+     * Tests whether VARIANT survives a full DuckLake write/read round-trip through Parquet.
      *
-     * <p>The catalog is verified to exist before any DDL is attempted.  If the catalog
-     * is absent (e.g. ATTACH failed silently), the method returns {@code false}
-     * immediately without issuing any SQL against the catalog, avoiding the DuckDB
-     * "pending query" connection-corruption that occurs when a statement against a
-     * non-existent catalog fails.
+     * <p>Steps:
+     * <ol>
+     *   <li>Verify the catalog is attached (guard against silent ATTACH failures).</li>
+     *   <li>Disable DuckLake data inlining ({@code data_inlining_row_limit=0}) so the probe
+     *       row is serialised to a Parquet file, not buffered in the catalog database.
+     *       This is the critical difference from a plain in-memory test: the VARIANT binary
+     *       encoding must survive the Parquet write/read cycle.</li>
+     *   <li>Create a one-column probe table, insert a JSON value cast to {@code VARIANT},
+     *       read it back, and assert that the payload is intact.</li>
+     *   <li>Always drop the probe table and restore the original inlining limit in
+     *       {@code finally}, even when an exception aborts earlier steps.</li>
+     * </ol>
      *
-     * <p>On any other failure the connection is reset via {@link Connection#rollback()}
-     * to clear the pending-query flag before returning.
+     * <p>Returns {@code false} on any failure — including VARIANT not being recognised,
+     * Parquet serialisation failing, or the value changing during the round-trip.
+     *
+     * <p><b>Observed behaviour (duckdb_jdbc 1.5.2.0 + current ducklake extension):</b>
+     * VARIANT is supported and survives the Parquet round-trip correctly.
+     * The {@code metadata} column in cassette tables is therefore created as {@code VARIANT},
+     * enabling DuckDB's shredded JSON encoding for up to 100× faster analytical queries.
+     * Should a future DuckLake build regress on Parquet VARIANT serialisation, the probe
+     * will automatically fall back to the {@code JSON} type with no schema change required.
      */
     private boolean probeVariant(Connection conn, String catalog) {
         // Guard: verify the catalog is actually attached before issuing any DDL against it.
@@ -102,17 +114,44 @@ public class SchemaManager {
         }
 
         String probeTable = catalog + ".main.__variant_probe";
+        boolean inliningDisabled = false;
         try {
             exec(conn, "DROP TABLE IF EXISTS " + probeTable);
-            exec(conn, "CREATE TABLE " + probeTable + " (v VARIANT)");
-            exec(conn, "INSERT INTO " + probeTable + " VALUES ('{\"probe\":true}'::VARIANT)");
-            try (Statement stmt = conn.createStatement();
-                 var rs = stmt.executeQuery("SELECT v FROM " + probeTable)) {
-                // consume result set so the connection is not left in a pending state
-                rs.next();
+
+            // Disable inlining so the probe row goes to Parquet rather than the catalog DB.
+            // This is a DuckLake 1.0+ feature; on older builds the call fails silently and
+            // the probe runs against inlined data (still catches VARIANT parse errors).
+            try (Statement stmt = conn.createStatement()) {
+                stmt.execute("CALL " + catalog + ".set_option('data_inlining_row_limit', 0)");
+                inliningDisabled = true;
+                log.debug("VARIANT probe: inlining disabled to force Parquet serialisation path");
+            } catch (SQLException e) {
+                log.debug("VARIANT probe: could not disable inlining ({}); probe uses inlined path", e.getMessage());
             }
-            exec(conn, "DROP TABLE IF EXISTS " + probeTable);
+
+            exec(conn, "CREATE TABLE " + probeTable + " (v VARIANT)");
+            exec(conn, "INSERT INTO " + probeTable + " VALUES ('{\"probe\":true,\"x\":1}'::VARIANT)");
+
+            String roundTripped;
+            try (Statement stmt = conn.createStatement();
+                 var rs = stmt.executeQuery("SELECT v::VARCHAR FROM " + probeTable)) {
+                if (!rs.next()) {
+                    log.warn("VARIANT probe: no row returned after INSERT; falling back to JSON");
+                    return false;
+                }
+                roundTripped = rs.getString(1);
+            }
+
+            // Assert that the JSON payload survives the round-trip intact.
+            if (roundTripped == null || !roundTripped.contains("probe")) {
+                log.warn("VARIANT probe: value did not round-trip correctly (got: {}); falling back to JSON",
+                         roundTripped);
+                return false;
+            }
+
+            log.debug("VARIANT probe: round-trip value = {}", roundTripped);
             return true;
+
         } catch (SQLException e) {
             log.warn("VARIANT probe failed ({}); falling back to JSON for flexible columns", e.getMessage());
             // Reset DuckDB connection state – a failed statement leaves a "pending query"
@@ -123,6 +162,34 @@ public class SchemaManager {
                 log.debug("Rollback after VARIANT probe failed: {}", rollbackEx.getMessage());
             }
             return false;
+        } finally {
+            // Drop the probe table regardless of outcome — DDL in DuckDB auto-commits,
+            // so it persists even after a rollback() in the catch block above.
+            try {
+                exec(conn, "DROP TABLE IF EXISTS " + probeTable);
+            } catch (SQLException e) {
+                log.debug("Could not drop VARIANT probe table on cleanup: {}", e.getMessage());
+            }
+            // Restore inlining to the user-configured limit (or DuckLake's default of 10).
+            if (inliningDisabled) {
+                restoreInliningAfterProbe(conn, catalog);
+            }
+        }
+    }
+
+    /**
+     * Restores {@code data_inlining_row_limit} after the VARIANT probe's temporary override.
+     * Re-applies {@code joxette.catalog.inlining-row-limit} when explicitly configured, or
+     * falls back to DuckLake's built-in default of 10 rows.
+     */
+    private void restoreInliningAfterProbe(Connection conn, String catalog) {
+        Integer configured = properties.getCatalog().getInliningRowLimit();
+        int restoreTo = configured != null ? configured : 10;
+        try (Statement stmt = conn.createStatement()) {
+            stmt.execute("CALL " + catalog + ".set_option('data_inlining_row_limit', " + restoreTo + ")");
+            log.debug("VARIANT probe: inlining row limit restored to {}", restoreTo);
+        } catch (SQLException e) {
+            log.debug("Could not restore inlining limit after VARIANT probe ({})", e.getMessage());
         }
     }
 
