@@ -202,7 +202,10 @@ final class MatchEngine {
     }
 
     private static int matchedEnd(Map<String, Tag> tags) {
-        return tags.values().stream().mapToInt(Tag::to).max().orElse(0);
+        // Use MATCHED tag only — SEQ/PREFIX/SUFFIX span the whole sequence and
+        // would always advance searchFrom to seq.size(), preventing further matches.
+        Tag m = tags.get("MATCHED");
+        return m != null ? m.to() : 0;
     }
 
     private static Map<String, Tag> buildCombinedTags(Sequence seq, Map<String, Tag> named, int from, int to) {

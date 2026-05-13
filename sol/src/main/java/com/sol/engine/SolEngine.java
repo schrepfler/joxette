@@ -42,10 +42,18 @@ public final class SolEngine {
                     state.nulls());
         }
 
-        // Collapse multiple sequences (after split+combine) back into one for result
-        Sequence finalSeq = state.sequences().isEmpty()
-                ? new Sequence(input.id(), List.of(), input.dims())
-                : mergeTo(input.id(), state.sequences(), input.dims());
+        // Collapse multiple sequences (after split+combine) back into one for result.
+        // When exactly one sequence remains (e.g. after combine), preserve its dims so
+        // that aggregation dimensions set by COMBINE are visible in the result.
+        Sequence finalSeq;
+        if (state.sequences().isEmpty()) {
+            finalSeq = new Sequence(input.id(), List.of(), input.dims());
+        } else {
+            Map<String, Object> finalDims = state.sequences().size() == 1
+                    ? state.sequences().getFirst().dims()
+                    : input.dims();
+            finalSeq = mergeTo(input.id(), state.sequences(), finalDims);
+        }
 
         boolean matched = state.tags().containsKey("MATCHED")
                 && !state.tags().get("MATCHED").isEmpty();
