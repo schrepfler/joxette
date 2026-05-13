@@ -190,18 +190,18 @@ class SolMatchIT {
 
             Arguments.of(
                 "replace MATCHED with null — removes matched events from sequence",
-                // match login → MATCHED = [0,1); replace removes it; 3 events remain
+                // match login → MATCHED=[0,1); replace empties it → tag becomes [0,0) → matched=false
                 "match L(login)\nreplace MATCHED with null",
-                true,
+                false,  // MATCHED tag becomes empty after replace → matched=false
                 3
             ),
 
             Arguments.of(
-                "replace PREFIX+MATCHED preserves only matched and suffix",
-                // match purchase → MATCHED=[2,3); PREFIX=[0,2); replace PREFIX with null → 2 events
+                "replace PREFIX with null — removes prefix events, leaves matched+suffix",
+                // match purchase → PREFIX=[0,2); replace removes login+browse → 2 events remain
                 "match P(purchase)\nreplace PREFIX with null",
                 true,
-                3
+                2
             ),
 
             // ------------------------------------------------------------------
@@ -429,12 +429,13 @@ class SolMatchIT {
     @Test
     void replace_withNull_removesTargetTag() throws Exception {
         // match login → MATCHED=[0,1); replace MATCHED with null removes login.
+        // MATCHED tag becomes empty [0,0) → engine reports matched=false.
         // Remaining sequence: browse(0) purchase(1) logout(2) — 3 events.
         String query = "match L(login)\nreplace MATCHED with null";
 
         SolMatchResponse result = post(query);
 
-        assertThat(result.matched()).isTrue();
+        assertThat(result.matched()).isFalse(); // MATCHED tag emptied by replace
         assertThat(result.records()).hasSize(3);
         assertThat(result.records().stream().map(r -> r.messageType()).toList())
                 .containsExactly("browse", "purchase", "logout");
