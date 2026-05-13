@@ -174,6 +174,10 @@ public class EntityReplayService implements EntityCassetteSource {
         if (to != null)   cond = cond.and(F_TIMESTAMP.le(to.atOffset(ZoneOffset.UTC)));
 
         boolean desc = order == Order.DESC;
+        // kafka_timestamp is producer-assigned and subject to cross-host clock skew when
+        // events originate from multiple topics / services. recorded_at is the tiebreaker
+        // and provides a consistent single-clock view, but it is not the primary sort key.
+        // See docs/entity-ordering.md for guidance on when to prefer recorded_at ordering.
         var selectBase = dsl
                 .select(F_ENTITY_ID, F_MESSAGE_TYPE, F_TOPIC, F_PARTITION, F_OFFSET,
                         F_TIMESTAMP, F_RECORDED_AT, F_KEY, F_VALUE, F_HEADERS)
