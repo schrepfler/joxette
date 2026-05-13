@@ -1,6 +1,7 @@
 package com.joxette.it;
 
 import com.joxette.replay.CassetteController.SolMatchResponse;
+import com.joxette.replay.SolMatchService.TagSpan;
 import com.joxette.support.DuckDBTestSupport;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -18,6 +19,7 @@ import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.Statement;
 import java.time.Instant;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -139,6 +141,71 @@ class SolTopicMatchIT {
                 "match A(login) >> * >> B(purchase)", null);
 
         assertThat(result.matched()).isTrue();
+    }
+
+    // -------------------------------------------------------------------------
+    // Record-level messageType after typeField extraction
+    // -------------------------------------------------------------------------
+
+    @Test
+    void withTypeField_recordsCarryExtractedEventNames() {
+        // typeField="type" should surface the extracted names as messageType on each record
+        SolMatchResponse result = post(
+                "match A(login) >> * >> B(purchase)",
+                "type");
+
+        assertThat(result.matched()).isTrue();
+        assertThat(result.records()).hasSize(4);
+        assertThat(result.records().stream().map(r -> r.messageType()).toList())
+                .containsExactly("login", "browse", "purchase", "logout");
+    }
+
+    // -------------------------------------------------------------------------
+    // Tag span assertions for typeField path
+    // -------------------------------------------------------------------------
+
+    @Test
+    void withTypeField_tagSpansAreCorrect() {
+        // Sequence (indices):  login(0)  browse(1)  purchase(2)  logout(3)
+        // Query: match A(login) >> * >> B(purchase)
+        // Expected tags:
+        //   SEQ     [0, 4)  — full sequence
+        //   MATCHED [0, 3)  — login through purchase inclusive
+        //   A       [0, 1)  — login only
+        //   B       [2, 3)  — purchase only
+        //   SUFFIX  [3, 4)  — logout
+        SolMatchResponse result = post(
+                "match A(login) >> * >> B(purchase)",
+                "type");
+
+        assertThat(result.matched()).isTrue();
+
+        Map<String, TagSpan> tags = result.tags();
+
+        assertThat(tags).containsKey("SEQ");
+        TagSpan seq = tags.get("SEQ");
+        assertThat(seq.from()).isEqualTo(0);
+        assertThat(seq.to()).isEqualTo(4);
+
+        assertThat(tags).containsKey("MATCHED");
+        TagSpan matched = tags.get("MATCHED");
+        assertThat(matched.from()).isEqualTo(0);
+        assertThat(matched.to()).isEqualTo(3);
+
+        assertThat(tags).containsKey("A");
+        assertThat(tags.get("A").from()).isEqualTo(0);
+        assertThat(tags.get("A").to()).isEqualTo(1);
+
+        assertThat(tags).containsKey("B");
+        assertThat(tags.get("B").from()).isEqualTo(2);
+        assertThat(tags.get("B").to()).isEqualTo(3);
+
+        assertThat(tags).containsKey("SUFFIX");
+        TagSpan suffix = tags.get("SUFFIX");
+        assertThat(suffix.from()).isEqualTo(3);
+        assertThat(suffix.to()).isEqualTo(4);
+
+        assertThat(result.sequenceLength()).isEqualTo(4);
     }
 
     // -------------------------------------------------------------------------
