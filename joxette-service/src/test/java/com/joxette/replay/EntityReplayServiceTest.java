@@ -471,8 +471,215 @@ class EntityReplayServiceTest {
     }
 
     // -------------------------------------------------------------------------
+    // Large-scale sort cursor pagination (≥10 entities)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void lastActive_twelveEntities_fullExhaustionNoDuplicatesNoSkips() throws Exception {
+        // ACT01 is most recently active (2025-01-12), ACT12 is oldest (2025-01-01).
+        // message_count is deliberately non-correlated with time to avoid hiding sort bugs.
+        for (int i = 1; i <= 12; i++) {
+            String id        = "ACT%02d".formatted(i);
+            String lastSeen  = "2025-01-%02dT00:00:00Z".formatted(13 - i);
+            long   count     = (long) (i * 13);
+            insertKnownEntity(ENTITY_TYPE, id, i, "2024-01-01T00:00:00Z", lastSeen, count);
+        }
+
+        List<String> all = exhaustPages(EntityReplayService.EntitySortBy.lastActive, 4);
+
+        assertThat(all)
+                .hasSize(12)
+                .doesNotHaveDuplicates()
+                .containsExactly(
+                        "ACT01", "ACT02", "ACT03", "ACT04",
+                        "ACT05", "ACT06", "ACT07", "ACT08",
+                        "ACT09", "ACT10", "ACT11", "ACT12");
+    }
+
+    @Test
+    void lastActive_twelveEntities_pageBoundariesStable() throws Exception {
+        for (int i = 1; i <= 12; i++) {
+            String id       = "ACT%02d".formatted(i);
+            String lastSeen = "2025-01-%02dT00:00:00Z".formatted(13 - i);
+            insertKnownEntity(ENTITY_TYPE, id, i, "2024-01-01T00:00:00Z", lastSeen, (long) (i * 13));
+        }
+
+        PagedResponse<EntityInfo> page1 = service.listEntities(
+                ENTITY_TYPE, 4, null, EntityReplayService.EntitySortBy.lastActive);
+        assertThat(page1.data()).extracting(EntityInfo::entityId)
+                .containsExactly("ACT01", "ACT02", "ACT03", "ACT04");
+        assertThat(page1.hasMore()).isTrue();
+
+        PagedResponse<EntityInfo> page2 = service.listEntities(
+                ENTITY_TYPE, 4, page1.nextCursor(), EntityReplayService.EntitySortBy.lastActive);
+        assertThat(page2.data()).extracting(EntityInfo::entityId)
+                .containsExactly("ACT05", "ACT06", "ACT07", "ACT08");
+        assertThat(page2.hasMore()).isTrue();
+
+        PagedResponse<EntityInfo> page3 = service.listEntities(
+                ENTITY_TYPE, 4, page2.nextCursor(), EntityReplayService.EntitySortBy.lastActive);
+        assertThat(page3.data()).extracting(EntityInfo::entityId)
+                .containsExactly("ACT09", "ACT10", "ACT11", "ACT12");
+        assertThat(page3.hasMore()).isFalse();
+    }
+
+    @Test
+    void mostMessages_twelveEntities_fullExhaustionNoDuplicatesNoSkips() throws Exception {
+        // MSG01 has most messages (1200), MSG12 fewest (100).
+        // last_seen is non-correlated with count to avoid masking sort bugs.
+        for (int i = 1; i <= 12; i++) {
+            String id      = "MSG%02d".formatted(i);
+            long   count   = (long) ((13 - i) * 100);
+            String lastSeen = "2025-02-%02dT00:00:00Z".formatted(i);
+            insertKnownEntity(ENTITY_TYPE, id, i, "2024-01-01T00:00:00Z", lastSeen, count);
+        }
+
+        List<String> all = exhaustPages(EntityReplayService.EntitySortBy.mostMessages, 4);
+
+        assertThat(all)
+                .hasSize(12)
+                .doesNotHaveDuplicates()
+                .containsExactly(
+                        "MSG01", "MSG02", "MSG03", "MSG04",
+                        "MSG05", "MSG06", "MSG07", "MSG08",
+                        "MSG09", "MSG10", "MSG11", "MSG12");
+    }
+
+    @Test
+    void mostMessages_twelveEntities_pageBoundariesStable() throws Exception {
+        for (int i = 1; i <= 12; i++) {
+            String id      = "MSG%02d".formatted(i);
+            long   count   = (long) ((13 - i) * 100);
+            String lastSeen = "2025-02-%02dT00:00:00Z".formatted(i);
+            insertKnownEntity(ENTITY_TYPE, id, i, "2024-01-01T00:00:00Z", lastSeen, count);
+        }
+
+        PagedResponse<EntityInfo> page1 = service.listEntities(
+                ENTITY_TYPE, 4, null, EntityReplayService.EntitySortBy.mostMessages);
+        assertThat(page1.data()).extracting(EntityInfo::entityId)
+                .containsExactly("MSG01", "MSG02", "MSG03", "MSG04");
+        assertThat(page1.hasMore()).isTrue();
+
+        PagedResponse<EntityInfo> page2 = service.listEntities(
+                ENTITY_TYPE, 4, page1.nextCursor(), EntityReplayService.EntitySortBy.mostMessages);
+        assertThat(page2.data()).extracting(EntityInfo::entityId)
+                .containsExactly("MSG05", "MSG06", "MSG07", "MSG08");
+        assertThat(page2.hasMore()).isTrue();
+
+        PagedResponse<EntityInfo> page3 = service.listEntities(
+                ENTITY_TYPE, 4, page2.nextCursor(), EntityReplayService.EntitySortBy.mostMessages);
+        assertThat(page3.data()).extracting(EntityInfo::entityId)
+                .containsExactly("MSG09", "MSG10", "MSG11", "MSG12");
+        assertThat(page3.hasMore()).isFalse();
+    }
+
+    @Test
+    void lastActive_tieAtPageBoundary_noDuplicateOrSkip() throws Exception {
+        // TIE03 and TIE04 share last_seen=2025-03-10 — the tie falls exactly at the page
+        // boundary when limit=3.  Tiebreak is entity_id ASC, so TIE03 ends page 1 and TIE04
+        // must open page 2 without being skipped or duplicated.
+        //
+        //  id     last_seen      rank (last_seen DESC, id ASC)
+        //  TIE01  2025-03-12      1
+        //  TIE02  2025-03-11      2
+        //  TIE03  2025-03-10      3  ← last item on page 1
+        //  TIE04  2025-03-10      4  ← first item on page 2
+        //  TIE05  2025-03-09      5
+        //  …
+        //  TIE12  2025-03-02     12
+        insertKnownEntity(ENTITY_TYPE, "TIE01", 1, "2024-01-01T00:00:00Z", "2025-03-12T00:00:00Z", 10);
+        insertKnownEntity(ENTITY_TYPE, "TIE02", 2, "2024-01-01T00:00:00Z", "2025-03-11T00:00:00Z", 20);
+        insertKnownEntity(ENTITY_TYPE, "TIE03", 3, "2024-01-01T00:00:00Z", "2025-03-10T00:00:00Z", 30);
+        insertKnownEntity(ENTITY_TYPE, "TIE04", 4, "2024-01-01T00:00:00Z", "2025-03-10T00:00:00Z", 40);
+        for (int i = 5; i <= 12; i++) {
+            String id      = "TIE%02d".formatted(i);
+            // 5→09, 6→08, 7→07, …, 12→02 — all strictly below the tied pair (2025-03-10)
+            String lastSeen = "2025-03-%02dT00:00:00Z".formatted(14 - i);
+            insertKnownEntity(ENTITY_TYPE, id, i, "2024-01-01T00:00:00Z", lastSeen, (long) (i * 5));
+        }
+
+        List<String> all = exhaustPages(EntityReplayService.EntitySortBy.lastActive, 3);
+
+        assertThat(all)
+                .hasSize(12)
+                .doesNotHaveDuplicates()
+                .startsWith("TIE01", "TIE02", "TIE03", "TIE04");
+
+        // Explicit page-boundary check: TIE04 must be first on page 2, not missing.
+        PagedResponse<EntityInfo> page1 = service.listEntities(
+                ENTITY_TYPE, 3, null, EntityReplayService.EntitySortBy.lastActive);
+        assertThat(page1.data()).extracting(EntityInfo::entityId)
+                .containsExactly("TIE01", "TIE02", "TIE03");
+        assertThat(page1.hasMore()).isTrue();
+
+        PagedResponse<EntityInfo> page2 = service.listEntities(
+                ENTITY_TYPE, 3, page1.nextCursor(), EntityReplayService.EntitySortBy.lastActive);
+        assertThat(page2.data()).extracting(EntityInfo::entityId)
+                .first().isEqualTo("TIE04");
+    }
+
+    @Test
+    void mostMessages_tieAtPageBoundary_noDuplicateOrSkip() throws Exception {
+        // TMG03 and TMG04 both have message_count=800, tied at the page boundary when limit=3.
+        // Tiebreak is entity_id ASC, so TMG03 closes page 1 and TMG04 opens page 2.
+        //
+        //  id     count   rank (count DESC, id ASC)
+        //  TMG01   1000    1
+        //  TMG02    900    2
+        //  TMG03    800    3  ← last item on page 1
+        //  TMG04    800    4  ← first item on page 2
+        //  TMG05    700    5
+        //  …
+        //  TMG12    200   12
+        insertKnownEntity(ENTITY_TYPE, "TMG01", 1, "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", 1000);
+        insertKnownEntity(ENTITY_TYPE, "TMG02", 2, "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", 900);
+        insertKnownEntity(ENTITY_TYPE, "TMG03", 3, "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", 800);
+        insertKnownEntity(ENTITY_TYPE, "TMG04", 4, "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z", 800);
+        for (int i = 5; i <= 12; i++) {
+            String id    = "TMG%02d".formatted(i);
+            long   count = (long) ((17 - i) * 100); // 5→1200? No: 17-5=12 → 1200 clashes
+            // Use simple explicit counts instead: 700, 600, 500, 400, 300, 250, 150, 50
+            long[] counts = {700, 600, 500, 400, 300, 250, 150, 50};
+            insertKnownEntity(ENTITY_TYPE, id, i, "2024-01-01T00:00:00Z", "2024-01-01T00:00:00Z",
+                    counts[i - 5]);
+        }
+
+        List<String> all = exhaustPages(EntityReplayService.EntitySortBy.mostMessages, 3);
+
+        assertThat(all)
+                .hasSize(12)
+                .doesNotHaveDuplicates()
+                .startsWith("TMG01", "TMG02", "TMG03", "TMG04");
+
+        // Explicit page-boundary check: TMG04 must be first on page 2, not missing.
+        PagedResponse<EntityInfo> page1 = service.listEntities(
+                ENTITY_TYPE, 3, null, EntityReplayService.EntitySortBy.mostMessages);
+        assertThat(page1.data()).extracting(EntityInfo::entityId)
+                .containsExactly("TMG01", "TMG02", "TMG03");
+        assertThat(page1.hasMore()).isTrue();
+
+        PagedResponse<EntityInfo> page2 = service.listEntities(
+                ENTITY_TYPE, 3, page1.nextCursor(), EntityReplayService.EntitySortBy.mostMessages);
+        assertThat(page2.data()).extracting(EntityInfo::entityId)
+                .first().isEqualTo("TMG04");
+    }
+
+    // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
+
+    /** Pages through all results for the given sort mode using the given page size. */
+    private List<String> exhaustPages(EntityReplayService.EntitySortBy sortBy, int pageSize)
+            throws Exception {
+        List<String> ids = new ArrayList<>();
+        String cursor = null;
+        do {
+            PagedResponse<EntityInfo> page = service.listEntities(ENTITY_TYPE, pageSize, cursor, sortBy);
+            page.data().forEach(e -> ids.add(e.entityId()));
+            cursor = page.hasMore() ? page.nextCursor() : null;
+        } while (cursor != null);
+        return ids;
+    }
 
     private void insertKnownEntity(String entityType, String entityId, int bucket,
             String firstSeen) throws Exception {
