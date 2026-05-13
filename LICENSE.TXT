@@ -1,0 +1,57 @@
+Business Source License 1.1
+
+Parameters
+
+Licensor: Srdan Srepfler
+
+Licensed Work: This software and associated documentation, source code, configuration, assets, and related materials made available by the Licensor.
+
+Additional Use Grant:
+You may use, copy, modify, and distribute the Licensed Work for:
+- personal use,
+- educational use,
+- research use,
+- evaluation use,
+- internal development and testing,
+- non-commercial purposes.
+
+Commercial use and production use are prohibited without prior written permission from the Licensor.
+
+Change Date: 2030-05-13
+
+Change License: Apache License, Version 2.0
+
+Terms
+
+The Licensor hereby grants you the right to copy, modify, create derivative works, redistribute, and make non-production use of the Licensed Work, subject to the limitations and conditions in this License.
+
+Use Limitation
+
+The Licensed Work may not be used for commercial purposes or production workloads unless you obtain explicit written permission from the Licensor.
+
+For purposes of this License:
+- "Production use" means any use of the Licensed Work to provide services to third parties, operate revenue-generating systems, or support internal business operations in a commercial environment.
+- "Commercial use" means any use primarily intended for commercial advantage or monetary compensation.
+
+Change License
+
+On the Change Date specified above, or the fourth anniversary of the first public release of a specific version of the Licensed Work, whichever comes first, the Licensor hereby grants you rights under the terms of the Change License specified above.
+
+Notice
+
+Any use of the Licensed Work must retain all copyright notices, license notices, and attribution notices.
+
+Trademark Rights
+
+This License does not grant any right in the trademarks, service marks, brand names, or logos of the Licensor.
+
+Disclaimer
+
+THE LICENSED WORK IS PROVIDED “AS IS”. THE LICENSOR DISCLAIMS ALL WARRANTIES, EXPRESS OR IMPLIED, INCLUDING WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, NON-INFRINGEMENT, AND TITLE.
+
+Limitation of Liability
+
+IN NO EVENT WILL THE LICENSOR BE LIABLE FOR ANY DAMAGES OR OTHER LIABILITY ARISING FROM, OUT OF, OR IN CONNECTION WITH THE LICENSED WORK OR THE USE OR OTHER DEALINGS IN THE LICENSED WORK.
+
+This License is based on the Business Source License 1.1 by MariaDB Corporation Ab.
+
