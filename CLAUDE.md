@@ -53,7 +53,10 @@ DuckDB is used as the DuckLake catalog database (not PostgreSQL). This means:
 - Single process only — no multi-process writes
 - All Kafka consumer threads share one DuckDB JDBC connection; DuckDB serializes writes internally
 - Multiple concurrent reads are fine (multiple Statement objects from one Connection)
-- If multi-process writes are needed later, migrate catalog to PostgreSQL — DuckLake schema is the same across backends, so this is a config change not a rewrite
+- If multi-process writes are needed later, there is a **three-stage scaling path** (see `docs/catalog-scaling.md`):
+  1. **Embedded DuckDB** (current) — single process, zero ops overhead
+  2. **Quack server** (DuckDB 1.5.3+, beta) — DuckDB semantics, multi-process, no PostgreSQL needed; evaluate at DuckDB 2.0 GA
+  3. **PostgreSQL** — if Quack becomes a bottleneck; DuckLake schema is identical across all backends, only the connection string changes
 
 ---
 
@@ -747,7 +750,15 @@ Order by `timestamp` (Kafka producer timestamp) primary, `recorded_at` (service 
 YAML bootstrap config is loaded only on first start (when config tables are empty). After that, the REST API is the source of truth. Config lives in plain DuckDB tables, not DuckLake.
 
 ### Catalog Migration Path
-Starting with DuckDB as DuckLake catalog (simplest, single-process). If multi-process writes needed later, migrate to PostgreSQL — DuckLake catalog schema is identical across backends, only connection config changes.
+Three-stage scaling path — see [`docs/catalog-scaling.md`](docs/catalog-scaling.md) for the full runbook.
+
+| Stage | Catalog backend | When to use |
+|---|---|---|
+| 1 (current) | Embedded DuckDB | Single Joxette process; zero ops overhead |
+| 2 | Quack server (DuckDB 1.5.3+, **beta**) | Multi-process needed; want DuckDB semantics without PostgreSQL; evaluate at DuckDB 2.0 GA |
+| 3 | PostgreSQL | Quack throughput or HA not sufficient |
+
+DuckLake catalog schema is **identical across all three backends** — only the JDBC connection string and DuckLake `catalog_connection` property change. No data migration, no schema rewrite.
 
 ### Storage Delegation
 All object storage interaction (S3, GCS, Azure) is delegated to DuckDB/DuckLake via the httpfs extension and DuckLake's built-in storage management. No direct S3 SDK usage from Java.
