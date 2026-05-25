@@ -121,6 +121,43 @@ class DuckLakeManagerTest {
     }
 
     // -------------------------------------------------------------------------
+    // Backend detection via getBackend()
+    // -------------------------------------------------------------------------
+
+    @Nested
+    class BackendDetectionTests {
+
+        @Test
+        void initialize_memoryPath_exposesEmbeddedDuckDbBackend() throws Exception {
+            var manager = new DuckLakeManager(conn, memoryCatalogProperties());
+            manager.initialize();
+            assertThat(manager.getBackend()).isEqualTo(CatalogBackend.EMBEDDED_DUCKDB);
+        }
+
+        @Test
+        void initialize_logsBackendNameAtInfoLevel() throws Exception {
+            var appender = attachListAppender(DuckLakeManager.class);
+            try {
+                new DuckLakeManager(conn, memoryCatalogProperties()).initialize();
+
+                assertThat(appender.list)
+                    .extracting(ILoggingEvent::getFormattedMessage)
+                    .anyMatch(msg -> msg.contains("Catalog backend")
+                        && msg.contains(CatalogBackend.EMBEDDED_DUCKDB.name()));
+            } finally {
+                detachListAppender(DuckLakeManager.class, appender);
+            }
+        }
+
+        @Test
+        void getBackend_returnsNull_beforeInitialize() {
+            var manager = new DuckLakeManager(conn, memoryCatalogProperties());
+            // @PostConstruct has not been called yet
+            assertThat(manager.getBackend()).isNull();
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // ducklake_settings()
     // -------------------------------------------------------------------------
 

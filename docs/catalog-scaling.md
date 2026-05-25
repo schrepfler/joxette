@@ -6,6 +6,64 @@ This document describes the three stages and the exact configuration change requ
 
 ---
 
+## How the backend is selected
+
+The catalog backend is detected **automatically from the URI scheme** of `joxette.catalog.path`. No other configuration change is needed at transition time:
+
+| URI form | `CatalogBackend` enum value | Backend |
+|---|---|---|
+| No scheme, or `file:` prefix | `EMBEDDED_DUCKDB` | Local DuckDB file (default) |
+| `quack://` | `QUACK` | Quack client–server DuckDB (1.5.3+, beta) |
+| `postgresql://` or `postgres://` | `POSTGRESQL` | PostgreSQL |
+| `:memory:` | `EMBEDDED_DUCKDB` | In-memory DuckDB (tests only) |
+
+The detection logic lives in `com.joxette.db.CatalogBackend.detect(String)`. Any unrecognised URI scheme throws an `IllegalArgumentException` at startup.
+
+The `ATTACH` statement issued by `DuckLakeManager` follows the same structure for all three backends:
+
+```sql
+ATTACH 'ducklake:<joxette.catalog.path>' AS lake
+    (DATA_PATH '<joxette.catalog.object-storage-path>',
+     OVERRIDE_DATA_PATH TRUE,
+     AUTOMATIC_MIGRATION TRUE|FALSE)
+```
+
+Only the value after `ducklake:` changes. No Java code changes, no schema changes.
+
+---
+
+## Startup health check
+
+`DuckLakeManager.initialize()` throws a `SQLException` if the `ATTACH` fails, preventing the Spring context from completing startup. The application never passes a Kubernetes readiness probe in a broken catalog state.
+
+After startup, `CatalogHealthIndicator` provides ongoing readiness signalling via:
+
+```
+GET /actuator/health          # includes 'catalog' component
+GET /actuator/health/readiness # Kubernetes readiness probe
+```
+
+Sample healthy response:
+
+```json
+{
+  "status": "UP",
+  "components": {
+    "catalog": {
+      "status": "UP",
+      "details": {
+        "backend": "EMBEDDED_DUCKDB",
+        "catalogType": "duckdb",
+        "extensionVersion": "1.0.0",
+        "dataPath": "s3://my-bucket/joxette/data"
+      }
+    }
+  }
+}
+```
+
+---
+
 ## Stage Overview
 
 ```
@@ -21,6 +79,7 @@ This document describes the three stages and the exact configuration change requ
 | | Stage 1 | Stage 2 | Stage 3 |
 |---|---|---|---|
 | **Catalog backend** | Embedded DuckDB file | Quack server (DuckDB extension) | PostgreSQL |
+| **`CatalogBackend` value** | `EMBEDDED_DUCKDB` | `QUACK` | `POSTGRESQL` |
 | **Processes** | 1 | Multiple | Multiple |
 | **Ops overhead** | Zero | Low (one DuckDB process) | Medium (managed PG or self-hosted) |
 | **DuckDB semantics** | ✅ | ✅ | ❌ (SQL dialect difference) |
@@ -34,6 +93,8 @@ This document describes the three stages and the exact configuration change requ
 
 Joxette embeds DuckDB directly via JDBC. The catalog is a single `.ducklake` file on local disk (or a mounted volume). All Kafka consumer threads share one JDBC `Connection`; DuckDB serializes concurrent writes internally. Reads are concurrent via separate `Statement` objects.
 
+**Detected from:** any path without a `://` scheme (e.g. `./data/joxette.ducklake`), or the `file:` prefix.
+
 **Constraints:**
 - One JVM process only. Running a second Joxette instance against the same catalog file will corrupt it.
 - Catalog file must be accessible from the single host (local disk, NFS, EFS). Object storage is handled separately by DuckLake for Parquet files.
@@ -41,18 +102,25 @@ Joxette embeds DuckDB directly via JDBC. The catalog is a single `.ducklake` fil
 ### Configuration
 
 ```yaml
-# application.yml
+# application.yml — Stage 1 (default)
 joxette:
   catalog:
     path: "./data/joxette.ducklake"
     object-storage-path: "s3://my-bucket/joxette/data"
 ```
 
-The DuckLake connection string used internally by `DuckLakeManager`:
+`CatalogBackend.detect("./data/joxette.ducklake")` → `EMBEDDED_DUCKDB`
+
+The `DuckLakeManager` ATTACH statement:
 
 ```sql
-ATTACH 'ducklake:./data/joxette.ducklake' AS lake (DATA_PATH 's3://my-bucket/joxette/data');
+ATTACH 'ducklake:./data/joxette.ducklake' AS lake
+    (DATA_PATH 's3://my-bucket/joxette/data',
+     OVERRIDE_DATA_PATH TRUE,
+     AUTOMATIC_MIGRATION TRUE);
 ```
+
+The `DuckDBConfig` connection opens `./data/joxette.db` — a sibling file that holds the config tables (`topic_configs`, `entity_type_configs`, etc.).
 
 ---
 
@@ -62,11 +130,13 @@ DuckDB 1.5.3 ships **Quack** as a core extension. Quack is a lightweight client�
 
 > ⚠️ **Quack is in beta in DuckDB 1.5.3.** It is production-ready enough to evaluate but should not be adopted for critical workloads until DuckDB 2.0 GA, when Quack is expected to graduate. Revisit this decision at DuckDB 2.0 GA.
 
+**Detected from:** `quack://` URI prefix.
+
 **Why Quack before PostgreSQL:**
 - Keeps full DuckDB SQL semantics in the catalog (VARIANT, LIST, STRUCT, nested types).
 - No additional database engine to operate — Quack runs as a sidecar DuckDB process.
 - Zero schema changes: DuckLake's internal tables are identical to Stage 1.
-- Connection change only: swap the `ATTACH` URI from a file path to a `quack://` endpoint.
+- Connection change only: swap the `catalog.path` from a file path to a `quack://` URI.
 
 **Constraints:**
 - Single Quack server process — no built-in HA or replication. If the Quack process restarts, catalog reads/writes block until it is back.
@@ -78,20 +148,15 @@ DuckDB 1.5.3 ships **Quack** as a core extension. Quack is a lightweight client�
 Start a DuckDB Quack server sidecar (example using the DuckDB CLI):
 
 ```bash
-duckdb -c "LOAD quack; SELECT quack_serve('./data/joxette-catalog.duckdb', host := '0.0.0.0', port := 5432);"
-```
-
-Or via the DuckDB Quack extension's recommended approach (see DuckDB docs for the authoritative invocation at your DuckDB version):
-
-```bash
-duckdb ./data/joxette-catalog.duckdb -c "INSTALL quack; LOAD quack; CALL quack_serve(port := 9999);"
+duckdb ./data/joxette-catalog.duckdb \
+  -c "INSTALL quack; LOAD quack; CALL quack_serve(port := 9999);"
 ```
 
 Keep this process running as a systemd service, Docker sidecar, or Kubernetes container.
 
 ### Configuration change
 
-Only the `catalog.path` value changes. The `object-storage-path` and all other settings are unchanged.
+Only `catalog.path` changes. The `object-storage-path` and all other settings are unchanged.
 
 ```yaml
 # application.yml — Stage 2
@@ -102,29 +167,38 @@ joxette:
     object-storage-path: "s3://my-bucket/joxette/data"
 ```
 
-The DuckLake `ATTACH` statement becomes:
+`CatalogBackend.detect("quack://quack-host:9999/joxette-catalog")` → `QUACK`
+
+The `DuckLakeManager` ATTACH statement becomes:
 
 ```sql
-ATTACH 'ducklake:quack://quack-host:9999/joxette-catalog' AS lake (DATA_PATH 's3://my-bucket/joxette/data');
+ATTACH 'ducklake:quack://quack-host:9999/joxette-catalog' AS lake
+    (DATA_PATH 's3://my-bucket/joxette/data',
+     OVERRIDE_DATA_PATH TRUE,
+     AUTOMATIC_MIGRATION TRUE);
 ```
 
-That is the **only change** required in `DuckLakeManager`. No Java code changes, no schema changes, no data migration.
+The `DuckDBConfig` connection opens `./data/joxette.db` for the local config-table schema. This is the **same path** used by a default Stage 1 deployment, so no file-copy step is needed during migration when using default settings.
+
+> **Non-default Stage 1 paths:** If your Stage 1 catalog was at a non-standard path (e.g. `/opt/joxette/catalog.ducklake`), the config DB was at `/opt/joxette/catalog.db`. After switching to Quack, the fallback is `./data/joxette.db`. Copy `/opt/joxette/catalog.db` to `./data/joxette.db` before starting Stage 2.
 
 ### Migration steps (Stage 1 → Stage 2)
 
 1. **Drain writes**: pause all Joxette topic recorders via `POST /topics/{topic}/pause` or stop the service cleanly.
-2. **Copy catalog file**: copy the existing `.ducklake` DuckDB file to the host that will run the Quack server. This is the authoritative catalog — all DuckLake metadata lives here.
+2. **Copy catalog file**: copy the existing `.ducklake` DuckDB file to the host that will run the Quack server. This is the authoritative DuckLake catalog — all table metadata lives here.
 3. **Start Quack server**: point it at the copied catalog file.
 4. **Update application.yml**: change `catalog.path` to `quack://quack-host:9999/joxette-catalog`.
-5. **Start Joxette**: on startup `DuckLakeManager` will `ATTACH` via Quack instead of the local file. No schema initialization runs because the tables already exist.
+5. **Start Joxette**: on startup `DuckLakeManager` detects `QUACK` from the URI, logs the backend, and ATTACHes via Quack. No schema initialization runs because the tables already exist.
 6. **Resume recorders**: `POST /topics/{topic}/resume` or let the service auto-start per `RecordingCoordinator`.
-7. **Verify**: check `/health` — catalog connectivity and inlined data size should be non-zero and stable.
+7. **Verify**: `GET /actuator/health/readiness` — `catalog.status` should be `UP` with `backend: QUACK`.
 
 ---
 
 ## Stage 3 — PostgreSQL
 
 If Quack becomes a throughput bottleneck, or if catalog HA/replication is required, migrate to PostgreSQL. DuckLake supports PostgreSQL as a catalog backend; its internal table schema is identical to Stage 1 and Stage 2 — only the connection string changes.
+
+**Detected from:** `postgresql://` or `postgres://` URI prefix.
 
 **When to consider this:**
 - Multiple Joxette instances with high write concurrency overwhelm the single Quack process.
@@ -147,23 +221,30 @@ joxette:
     object-storage-path: "s3://my-bucket/joxette/data"
 ```
 
-The DuckLake `ATTACH` statement becomes:
+`CatalogBackend.detect("postgresql://pg-host:5432/joxette_catalog?user=joxette&password=secret")` → `POSTGRESQL`
+
+The `DuckLakeManager` ATTACH statement becomes:
 
 ```sql
 ATTACH 'ducklake:postgresql://pg-host:5432/joxette_catalog?user=joxette&password=secret'
-    AS lake (DATA_PATH 's3://my-bucket/joxette/data');
+    AS lake
+    (DATA_PATH 's3://my-bucket/joxette/data',
+     OVERRIDE_DATA_PATH TRUE,
+     AUTOMATIC_MIGRATION TRUE);
 ```
 
-Again, **no Java code changes, no schema changes, no data migration** — only the URI in `DuckLakeManager.attachStatement()`.
+The `DuckDBConfig` connection opens `./data/joxette.db` for the local config-table schema (same fallback as Stage 2).
+
+> **`postgres://` is also accepted:** Both `postgresql://` and `postgres://` are recognised by `CatalogBackend.detect()` and produce identical behaviour.
 
 ### Migration steps (Stage 2 → Stage 3)
 
 1. **Provision PostgreSQL**: create database `joxette_catalog`, user `joxette` with full privileges.
 2. **Drain writes**: pause all topic recorders, quiesce the Quack server.
 3. **Export catalog**: use DuckLake's built-in export (or `duckdb_to_pg` tooling) to copy the DuckLake catalog tables from the Quack-managed DuckDB file into PostgreSQL. DuckLake's catalog schema is documented at [ducklake.tech](https://ducklake.tech) — tables are standard SQL, no DuckDB-specific DDL.
-4. **Update application.yml**: change `catalog.path` to the PostgreSQL JDBC URI.
-5. **Start Joxette**: `DuckLakeManager` attaches to PostgreSQL. No re-initialization needed.
-6. **Verify**: `/health`, spot-check a replay query against a recent entity cassette.
+4. **Update application.yml**: change `catalog.path` to the PostgreSQL URI.
+5. **Start Joxette**: `DuckLakeManager` detects `POSTGRESQL`, logs the backend, and ATTACHes to PostgreSQL. No re-initialization needed.
+6. **Verify**: `GET /actuator/health/readiness` — `catalog.status` should be `UP` with `backend: POSTGRESQL`.
 7. **Decommission Quack server** once stable.
 
 ---
@@ -176,3 +257,5 @@ Again, **no Java code changes, no schema changes, no data migration** — only t
 | Stage 2 → Stage 3 | `catalog.path` URI (`quack://` → `postgresql://`) + catalog data export | All Java code, all DuckLake schema, all Parquet data on object storage |
 
 The key invariant: **DuckLake's catalog schema is backend-agnostic.** The tables DuckLake creates (snapshots, file manifests, inlined data, column statistics) are identical SQL DDL regardless of whether the backend is an embedded DuckDB file, a Quack server, or PostgreSQL. Joxette's application code never speaks directly to the catalog tables — it issues DuckLake SQL (`CREATE TABLE`, `INSERT`, `SELECT`) through DuckDB's JDBC driver, and DuckDB's DuckLake extension handles catalog persistence transparently.
+
+The `CatalogBackend` enum (detected from the URI prefix) and the `DuckLakeManager.getBackend()` accessor are the sole points that know which backend is active. `CatalogHealthIndicator` exposes this at runtime via `/actuator/health`.
