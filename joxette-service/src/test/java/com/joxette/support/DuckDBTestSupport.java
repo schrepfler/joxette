@@ -195,6 +195,17 @@ public final class DuckDBTestSupport {
                         updated_at              TIMESTAMPTZ NOT NULL DEFAULT now()
                     )""");
 
+            // Instance registry — tracks running Joxette processes.
+            st.execute("""
+                    CREATE TABLE IF NOT EXISTS joxette_instances (
+                        instance_id      VARCHAR     NOT NULL PRIMARY KEY,
+                        roles            VARCHAR[]   NOT NULL,
+                        catalog_backend  VARCHAR     NOT NULL,
+                        started_at       TIMESTAMPTZ NOT NULL,
+                        last_heartbeat   TIMESTAMPTZ NOT NULL,
+                        kafka_assignments JSON
+                    )""");
+
             st.execute("CREATE SEQUENCE IF NOT EXISTS seq_retention_history START 1");
             st.execute("""
                     CREATE TABLE IF NOT EXISTS retention_history (

@@ -1,5 +1,6 @@
 package com.joxette.management;
 
+import com.joxette.cluster.InstanceRegistry;
 import com.joxette.config.InstanceRoles;
 import com.joxette.config.JoxetteProperties;
 import com.joxette.recording.RecordingCoordinator;
@@ -21,7 +22,6 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.io.IOException;
-import java.net.InetAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
@@ -65,6 +65,23 @@ public class HealthController {
                     example = "{\"0\": 80, \"1\": 70}")
             Map<Integer, Long> lagByPartition) {}
 
+    /**
+     * Cluster-level summary derived from the {@code joxette_instances} registry table.
+     *
+     * @param instanceCount total number of rows in the registry
+     * @param alive         rows whose {@code last_heartbeat} is within 90 seconds of now
+     * @param stale         rows whose {@code last_heartbeat} is older than 90 seconds
+     */
+    @Schema(description = "Cluster-level instance count from the joxette_instances registry",
+            example = "{\"instanceCount\": 3, \"alive\": 3, \"stale\": 0}")
+    public record ClusterSummary(
+            @Schema(description = "Total number of registered instances", example = "3")
+            int instanceCount,
+            @Schema(description = "Instances with a recent heartbeat (within 90 s)", example = "3")
+            int alive,
+            @Schema(description = "Instances with a stale heartbeat (older than 90 s)", example = "0")
+            int stale) {}
+
     @Schema(description = "Liveness and observability response from GET /health", example = """
             {
               "status": "UP",
@@ -77,7 +94,8 @@ public class HealthController {
               "inlinedDataSizeBytes": 52428800,
               "catalogPath": "./data/joxette.ducklake",
               "roles": ["compaction", "entity-router", "recorder", "replay"],
-              "instanceId": "myhost:12345"
+              "instanceId": "myhost:12345",
+              "cluster": {"instanceCount": 1, "alive": 1, "stale": 0}
             }""")
     public record HealthStatus(
             @Schema(description = "Liveness status; always 'UP' when the endpoint responds", example = "UP")
@@ -99,7 +117,10 @@ public class HealthController {
             List<String> roles,
             @Schema(description = "Unique identifier for this instance in hostname:pid format",
                     example = "myhost:12345")
-            String instanceId
+            String instanceId,
+            @Schema(description = "Cluster-level instance count derived from joxette_instances registry",
+                    example = "{\"instanceCount\": 1, \"alive\": 1, \"stale\": 0}")
+            ClusterSummary cluster
     ) {}
 
     private final RecordingCoordinator coordinator;
@@ -108,9 +129,7 @@ public class HealthController {
     private final com.joxette.config.BrokerConnectionFactory brokerConnectionFactory;
     private final Connection duckDB;
     private final PrometheusMeterRegistry metricsRegistry;
-
-    /** Pre-computed {@code hostname:pid} identifier for this instance. */
-    private final String instanceId;
+    private final InstanceRegistry instanceRegistry;
 
     /**
      * Cached consumer lag result — refreshed at most once every 15 seconds
@@ -128,24 +147,15 @@ public class HealthController {
             InstanceRoles instanceRoles,
             com.joxette.config.BrokerConnectionFactory brokerConnectionFactory,
             Connection duckDB,
-            PrometheusMeterRegistry metricsRegistry) {
+            PrometheusMeterRegistry metricsRegistry,
+            InstanceRegistry instanceRegistry) {
         this.coordinator              = coordinator;
         this.properties               = properties;
         this.instanceRoles            = instanceRoles;
         this.brokerConnectionFactory  = brokerConnectionFactory;
         this.duckDB                   = duckDB;
         this.metricsRegistry          = metricsRegistry;
-        this.instanceId               = resolveInstanceId();
-    }
-
-    private static String resolveInstanceId() {
-        String host;
-        try {
-            host = InetAddress.getLocalHost().getHostName();
-        } catch (Exception e) {
-            host = "unknown";
-        }
-        return host + ":" + ProcessHandle.current().pid();
+        this.instanceRegistry         = instanceRegistry;
     }
 
     @Operation(
@@ -174,8 +184,9 @@ public class HealthController {
     })
     @GetMapping(value = "/health", produces = MediaType.APPLICATION_JSON_VALUE)
     public HealthStatus health() {
-        List<String> active = coordinator.activeTopics().stream().sorted().toList();
+        List<String> active      = coordinator.activeTopics().stream().sorted().toList();
         List<String> activeRoles = instanceRoles.resolvedRoles().stream().sorted().toList();
+        ClusterSummary cluster   = buildClusterSummary();
         return new HealthStatus(
                 "UP",
                 active,
@@ -184,7 +195,15 @@ public class HealthController {
                 inlinedDataSizeBytes(),
                 properties.getCatalog().getPath(),
                 activeRoles,
-                instanceId);
+                instanceRegistry.getInstanceId(),
+                cluster);
+    }
+
+    /** Reads the instance registry and computes alive/stale counts. */
+    private ClusterSummary buildClusterSummary() {
+        var instances = instanceRegistry.listAll();
+        long alive = instances.stream().filter(r -> "alive".equals(r.status())).count();
+        return new ClusterSummary(instances.size(), (int) alive, instances.size() - (int) alive);
     }
 
     @GetMapping(value = "/metrics", produces = MediaType.TEXT_PLAIN_VALUE)

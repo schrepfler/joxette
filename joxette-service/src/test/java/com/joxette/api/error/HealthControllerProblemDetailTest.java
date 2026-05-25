@@ -1,5 +1,6 @@
 package com.joxette.api.error;
 
+import com.joxette.cluster.InstanceRegistry;
 import com.joxette.config.BrokerConnectionFactory;
 import com.joxette.config.InstanceRoles;
 import com.joxette.config.JoxetteProperties;
@@ -36,13 +37,15 @@ class HealthControllerProblemDetailTest {
     @Mock BrokerConnectionFactory adminClient;
     @Mock Connection duckDB;
     @Mock PrometheusMeterRegistry metricsRegistry;
+    @Mock InstanceRegistry instanceRegistry;
 
     private MockMvc mvc;
 
     @BeforeEach
     void setUp() {
         HealthController controller = new HealthController(
-                coordinator, properties, new InstanceRoles(), adminClient, duckDB, metricsRegistry);
+                coordinator, properties, new InstanceRoles(), adminClient, duckDB,
+                metricsRegistry, instanceRegistry);
         mvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();

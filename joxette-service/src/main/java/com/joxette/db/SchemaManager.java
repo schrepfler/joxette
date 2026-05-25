@@ -396,6 +396,20 @@ public class SchemaManager {
 
             stmt.execute("ALTER TABLE topic_configs ADD COLUMN IF NOT EXISTS broker_id VARCHAR");
 
+            // Instance registry: tracks running Joxette processes for cluster-wide observability.
+            // In embedded DuckDB mode this table holds one row; in Quack/PostgreSQL mode it is
+            // shared across all processes.  Rows are reaped on startup and deleted on clean shutdown.
+            stmt.execute("""
+                CREATE TABLE IF NOT EXISTS joxette_instances (
+                    instance_id      VARCHAR     NOT NULL PRIMARY KEY,
+                    roles            VARCHAR[]   NOT NULL,
+                    catalog_backend  VARCHAR     NOT NULL,
+                    started_at       TIMESTAMPTZ NOT NULL,
+                    last_heartbeat   TIMESTAMPTZ NOT NULL,
+                    kafka_assignments JSON
+                )
+                """);
+
             log.debug("Config tables ready");
         }
 
