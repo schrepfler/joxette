@@ -1,5 +1,6 @@
 package com.joxette.management;
 
+import com.joxette.config.InstanceRoles;
 import com.joxette.config.JoxetteProperties;
 import com.joxette.recording.RecordingCoordinator;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
@@ -20,6 +21,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.io.IOException;
+import java.net.InetAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
@@ -73,7 +75,9 @@ public class HealthController {
               ],
               "catalogSizeBytes": 1073741824,
               "inlinedDataSizeBytes": 52428800,
-              "catalogPath": "./data/joxette.ducklake"
+              "catalogPath": "./data/joxette.ducklake",
+              "roles": ["compaction", "entity-router", "recorder", "replay"],
+              "instanceId": "myhost:12345"
             }""")
     public record HealthStatus(
             @Schema(description = "Liveness status; always 'UP' when the endpoint responds", example = "UP")
@@ -89,14 +93,24 @@ public class HealthController {
                     example = "52428800")
             long inlinedDataSizeBytes,
             @Schema(description = "Filesystem path to the DuckDB catalog file", example = "./data/joxette.ducklake")
-            String catalogPath
+            String catalogPath,
+            @Schema(description = "Active subsystem roles on this instance (expanded from joxette.roles); sorted alphabetically",
+                    example = "[\"compaction\", \"entity-router\", \"recorder\", \"replay\"]")
+            List<String> roles,
+            @Schema(description = "Unique identifier for this instance in hostname:pid format",
+                    example = "myhost:12345")
+            String instanceId
     ) {}
 
     private final RecordingCoordinator coordinator;
     private final JoxetteProperties properties;
+    private final InstanceRoles instanceRoles;
     private final com.joxette.config.BrokerConnectionFactory brokerConnectionFactory;
     private final Connection duckDB;
     private final PrometheusMeterRegistry metricsRegistry;
+
+    /** Pre-computed {@code hostname:pid} identifier for this instance. */
+    private final String instanceId;
 
     /**
      * Cached consumer lag result — refreshed at most once every 15 seconds
@@ -111,14 +125,27 @@ public class HealthController {
     public HealthController(
             @Lazy RecordingCoordinator coordinator,
             JoxetteProperties properties,
+            InstanceRoles instanceRoles,
             com.joxette.config.BrokerConnectionFactory brokerConnectionFactory,
             Connection duckDB,
             PrometheusMeterRegistry metricsRegistry) {
         this.coordinator              = coordinator;
         this.properties               = properties;
+        this.instanceRoles            = instanceRoles;
         this.brokerConnectionFactory  = brokerConnectionFactory;
         this.duckDB                   = duckDB;
         this.metricsRegistry          = metricsRegistry;
+        this.instanceId               = resolveInstanceId();
+    }
+
+    private static String resolveInstanceId() {
+        String host;
+        try {
+            host = InetAddress.getLocalHost().getHostName();
+        } catch (Exception e) {
+            host = "unknown";
+        }
+        return host + ":" + ProcessHandle.current().pid();
     }
 
     @Operation(
@@ -148,13 +175,16 @@ public class HealthController {
     @GetMapping(value = "/health", produces = MediaType.APPLICATION_JSON_VALUE)
     public HealthStatus health() {
         List<String> active = coordinator.activeTopics().stream().sorted().toList();
+        List<String> activeRoles = instanceRoles.resolvedRoles().stream().sorted().toList();
         return new HealthStatus(
                 "UP",
                 active,
                 computeConsumerLag(active),
                 catalogSizeBytes(),
                 inlinedDataSizeBytes(),
-                properties.getCatalog().getPath());
+                properties.getCatalog().getPath(),
+                activeRoles,
+                instanceId);
     }
 
     @GetMapping(value = "/metrics", produces = MediaType.TEXT_PLAIN_VALUE)

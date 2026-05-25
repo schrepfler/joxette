@@ -1,5 +1,6 @@
 package com.joxette.management;
 
+import com.joxette.config.InstanceRoles;
 import com.joxette.recording.RecordingCoordinator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -19,6 +20,10 @@ import java.sql.SQLException;
  * at construction time, so the chain
  * {@code CompactionController → CompactionService → ConfigRepository → RecordingCoordinator → …}
  * is severed.
+ *
+ * <p>When the {@code recorder} role is not active on this instance (see
+ * {@link com.joxette.config.InstanceRoles}), the runner exits immediately
+ * without starting any Kafka consumers.
  */
 @Component
 public class RecordingStartupRunner implements ApplicationRunner {
@@ -27,15 +32,22 @@ public class RecordingStartupRunner implements ApplicationRunner {
 
     private final ConfigRepository configRepository;
     private final RecordingCoordinator coordinator;
+    private final InstanceRoles instanceRoles;
 
     public RecordingStartupRunner(ConfigRepository configRepository,
-                                  @Lazy RecordingCoordinator coordinator) {
+                                  @Lazy RecordingCoordinator coordinator,
+                                  InstanceRoles instanceRoles) {
         this.configRepository = configRepository;
         this.coordinator      = coordinator;
+        this.instanceRoles    = instanceRoles;
     }
 
     @Override
     public void run(ApplicationArguments args) throws SQLException {
+        if (!instanceRoles.isRecorder()) {
+            log.info("RecordingStartupRunner: 'recorder' role not active — skipping Kafka consumer startup");
+            return;
+        }
         int started = 0;
         int skipped = 0;
         for (TopicConfig tc : configRepository.listTopics()) {

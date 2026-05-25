@@ -1,10 +1,11 @@
 package com.joxette.api.error;
 
+import com.joxette.config.BrokerConnectionFactory;
+import com.joxette.config.InstanceRoles;
 import com.joxette.config.JoxetteProperties;
 import com.joxette.management.HealthController;
 import com.joxette.recording.RecordingCoordinator;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
-import com.joxette.config.BrokerConnectionFactory;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -41,7 +42,7 @@ class HealthControllerProblemDetailTest {
     @BeforeEach
     void setUp() {
         HealthController controller = new HealthController(
-                coordinator, properties, adminClient, duckDB, metricsRegistry);
+                coordinator, properties, new InstanceRoles(), adminClient, duckDB, metricsRegistry);
         mvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();

@@ -1,5 +1,6 @@
 package com.joxette.compaction;
 
+import com.joxette.config.ConditionalOnRole;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -23,6 +24,7 @@ import org.springframework.stereotype.Component;
  * runs with an {@link java.util.concurrent.atomic.AtomicBoolean}.
  */
 @Component
+@ConditionalOnRole("compaction")
 public class RetentionScheduler {
 
     private static final Logger log = LoggerFactory.getLogger(RetentionScheduler.class);

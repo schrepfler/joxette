@@ -18,10 +18,12 @@ import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
+import com.joxette.config.ConditionalOnRole;
 import com.joxette.config.JoxetteProperties;
 import com.joxette.recording.CassetteRecordingBus;
 import com.joxette.replay.sink.RecordSink;
@@ -87,6 +89,8 @@ import java.util.UUID;
                    "All replay endpoints support optional start_at / start_delay_ms parameters for scheduled delivery.")
 @RestController
 @RequestMapping("/cassettes")
+@ConditionalOnRole("replay")
+@ConditionalOnProperty(prefix = "joxette.replay", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class CassetteController {
 
     private static final int DEFAULT_LIMIT = 100;

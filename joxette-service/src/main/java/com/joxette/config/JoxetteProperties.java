@@ -341,6 +341,18 @@ public class JoxetteProperties {
 
     public static class Replay {
         /**
+         * When {@code false}, the {@code /cassettes/**} REST endpoints are not registered
+         * on this instance, making it a pure write-only node.
+         *
+         * <p>Defaults to {@code true}.  On dedicated write-only nodes set this to
+         * {@code false} (or use {@code joxette.roles: [recorder, entity-router]} which
+         * implicitly excludes replay).  The {@code replay} role in {@code joxette.roles}
+         * and this flag are independent — both must allow replay for the endpoints to
+         * be active.
+         */
+        private boolean enabled = true;
+
+        /**
          * Maximum number of scheduled replays that may be pending or actively streaming
          * at any one time. Attempts to schedule beyond this limit return HTTP 429.
          */
@@ -353,6 +365,9 @@ public class JoxetteProperties {
         private int maxTransformSteps = 50;
 
         private Follow follow = new Follow();
+
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
 
         public int getMaxScheduled() { return maxScheduled; }
         public void setMaxScheduled(int maxScheduled) { this.maxScheduled = maxScheduled; }

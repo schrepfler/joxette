@@ -1,5 +1,6 @@
 package com.joxette.replay;
 
+import com.joxette.config.InstanceRoles;
 import com.joxette.management.ConfigRepository;
 import com.joxette.management.EntitySourceConfig;
 import com.joxette.management.EntityTypeConfig;
@@ -56,13 +57,16 @@ public class MessageRouter {
 
     private final ConfigRepository configRepo;
     private final EntityIdExtractor extractor;
+    private final InstanceRoles instanceRoles;
 
     /** Snapshot of routing state, replaced atomically on reload(). */
     private volatile RoutingTables tables;
 
-    public MessageRouter(ConfigRepository configRepo, EntityIdExtractor extractor) {
-        this.configRepo = configRepo;
-        this.extractor  = extractor;
+    public MessageRouter(ConfigRepository configRepo, EntityIdExtractor extractor,
+                         InstanceRoles instanceRoles) {
+        this.configRepo    = configRepo;
+        this.extractor     = extractor;
+        this.instanceRoles = instanceRoles;
         try {
             reload();
         } catch (SQLException e) {
@@ -132,6 +136,11 @@ public class MessageRouter {
      * declaration order.  The first matcher that yields an entity ID produces
      * one {@link EntityRoute} (with the matched {@code messageType}).  If no
      * matcher matches, the source-entry produces no route for this message.
+     *
+     * <p>When the {@code entity-router} role is not active on this instance, entity
+     * extraction is skipped entirely — only the general-cassette routing decision is
+     * computed.  Messages on {@code entity_only} topics are silently dropped on
+     * such nodes (no general route, no entity route).
      */
     public RouteDecision route(KafkaMessage message) {
         RoutingTables t = this.tables;
@@ -140,7 +149,7 @@ public class MessageRouter {
         boolean routeToGeneral = !"entity_only".equals(topicMode);
 
         List<EntityRoute> entityRoutes = new ArrayList<>();
-        if (!"general".equals(topicMode)) {
+        if (instanceRoles.isEntityRouter() && !"general".equals(topicMode)) {
             List<EntitySourceEntry> entries =
                     t.topicSourceEntries().getOrDefault(message.topic(), List.of());
 
