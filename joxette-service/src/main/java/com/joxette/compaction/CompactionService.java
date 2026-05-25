@@ -13,6 +13,7 @@ import java.sql.*;
 import java.time.*;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 
 /**
  * Compacts entity and general cassette tables in DuckLake using
@@ -51,7 +52,20 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  * <h2>Run tracking</h2>
  * <p>Every run is recorded in {@code compaction_history}.  An
- * {@link AtomicBoolean} guard prevents overlapping runs.
+ * {@link AtomicBoolean} guard prevents overlapping runs within this process.
+ *
+ * <h2>Distributed locking</h2>
+ * <p>When multiple Joxette instances share a catalog (PostgreSQL or Quack at Stage 2/3
+ * of the scaling path), two instances must not compact the same target concurrently —
+ * {@code ducklake_merge_adjacent_files} is not safe to call in parallel on the same
+ * DuckLake table.  Each compaction target (entity type or general-cassette topic) is
+ * therefore guarded by a row in {@code compaction_locks} via {@link CompactionLockManager}.
+ *
+ * <p>Lock acquisition, heartbeating, and release are transparent to the caller —
+ * targets whose lock is held by another instance are silently skipped and counted
+ * as skipped in the run result.  Heartbeats fire every
+ * {@link CompactionLockManager#HEARTBEAT_INTERVAL_MINUTES} minutes from a dedicated
+ * virtual thread so a long-running merge never trips its own TTL.
  */
 @Service
 @DependsOn("dbSchemaManager")
@@ -59,15 +73,18 @@ public class CompactionService {
 
     private static final Logger log = LoggerFactory.getLogger(CompactionService.class);
 
-    private final Connection duckDB;
-    private final JoxetteProperties props;
-    private final ConfigRepository configRepo;
-    private final AtomicBoolean running = new AtomicBoolean(false);
+    private final Connection           duckDB;
+    private final JoxetteProperties    props;
+    private final ConfigRepository     configRepo;
+    private final CompactionLockManager lockManager;
+    private final AtomicBoolean        running = new AtomicBoolean(false);
 
-    public CompactionService(Connection duckDB, JoxetteProperties props, ConfigRepository configRepo) {
-        this.duckDB    = duckDB;
-        this.props     = props;
-        this.configRepo = configRepo;
+    public CompactionService(Connection duckDB, JoxetteProperties props,
+                             ConfigRepository configRepo, CompactionLockManager lockManager) {
+        this.duckDB      = duckDB;
+        this.props       = props;
+        this.configRepo  = configRepo;
+        this.lockManager = lockManager;
     }
 
     // =========================================================================
@@ -107,6 +124,13 @@ public class CompactionService {
         int generalTopics = 0;
         FileStats totalFileStats = FileStats.EMPTY;
         try {
+            // Reclaim expired locks from dead instances before processing our targets.
+            try {
+                lockManager.cleanExpiredLocks();
+            } catch (SQLException e) {
+                log.warn("Could not clean expired compaction locks: {}", e.getMessage());
+            }
+
             CompactionResult entityResult = compactEntityTypes(targets);
             entityTypes    = entityResult.unitsProcessed();
             totalFileStats = totalFileStats.add(entityResult.fileStats());
@@ -157,6 +181,11 @@ public class CompactionService {
         CompactionRun lastRun = queryLastRun();
         Instant nextScheduledRun = computeNextScheduledRun();
         return new CompactionStatus(lastRun, nextScheduledRun, running.get());
+    }
+
+    /** Returns all rows in {@code compaction_locks} — used by {@code GET /compaction/locks}. */
+    public List<CompactionLockInfo> getActiveLocks() throws SQLException {
+        return lockManager.listActiveLocks();
     }
 
     public List<CompactionRun> getHistory(int limit) throws SQLException {
@@ -221,6 +250,15 @@ public class CompactionService {
     }
 
     /**
+     * Acquires the distributed lock for {@code "entity:" + entityType} and delegates
+     * to {@link #doCompactEntityType}.  If the lock is held by another instance, the
+     * target is skipped and {@link CompactionResult#NONE} is returned.
+     */
+    private CompactionResult compactEntityType(String entityType) {
+        return withLock("entity:" + entityType, () -> doCompactEntityType(entityType));
+    }
+
+    /**
      * Merges adjacent small files for one entity type using
      * {@code ducklake_merge_adjacent_files} — DuckLake 1.0.
      *
@@ -238,7 +276,7 @@ public class CompactionService {
      * <p>Idempotent — errors are logged at WARN and the caller receives
      * {@link CompactionResult#NONE}, consistent with the non-fatal compaction error policy.
      */
-    private CompactionResult compactEntityType(String entityType) {
+    private CompactionResult doCompactEntityType(String entityType) {
         SchemaManager.validateEntityType(entityType);
         long maxFileSizeBytes = (long) props.getCompaction().getEntity().getTargetFileSizeMb() * 1024L * 1024L;
         int rowGroupMemoryLimitMb = props.getCompaction().getEntity().getRowGroupMemoryLimitMb();
@@ -304,13 +342,22 @@ public class CompactionService {
     }
 
     /**
+     * Acquires the distributed lock for {@code "topic:" + normalizedTopicName} and
+     * delegates to {@link #doCompactGeneralTopic}.  If the lock is held by another
+     * instance, the target is skipped and {@link CompactionResult#NONE} is returned.
+     */
+    private CompactionResult compactGeneralTopic(String topic) {
+        return withLock("topic:" + normalizeTopicName(topic), () -> doCompactGeneralTopic(topic));
+    }
+
+    /**
      * Merges adjacent small files for one general cassette topic using
      * {@code ducklake_merge_adjacent_files} — DuckLake 1.0.
      *
-     * <p>See {@link #compactEntityType} for the function signature reference.
+     * <p>See {@link #doCompactEntityType} for the function signature reference.
      * Idempotent — errors are logged at WARN and do not rethrow.
      */
-    private CompactionResult compactGeneralTopic(String topic) {
+    private CompactionResult doCompactGeneralTopic(String topic) {
         String tableName = "general_" + normalizeTopicName(topic);
         long maxFileSizeBytes = (long) props.getCompaction().getGeneral().getTargetFileSizeMb() * 1024L * 1024L;
         String sql = "CALL ducklake_merge_adjacent_files('lake', '" + tableName + "',"
@@ -342,6 +389,77 @@ public class CompactionService {
     /** Normalises a topic name to {@code [a-z0-9_]}, matching {@code SchemaManager.normalize}. */
     private static String normalizeTopicName(String topic) {
         return topic.toLowerCase().replaceAll("[^a-z0-9_]", "_");
+    }
+
+    // =========================================================================
+    // Distributed lock helpers
+    // =========================================================================
+
+    /**
+     * Wraps a compaction task with distributed lock acquire / heartbeat / release.
+     *
+     * <ol>
+     *   <li>Tries to acquire the lock for {@code target}; returns {@link CompactionResult#NONE}
+     *       immediately if another instance holds it.</li>
+     *   <li>Starts a heartbeat virtual thread that refreshes {@code expires_at} every
+     *       {@link CompactionLockManager#HEARTBEAT_INTERVAL_MINUTES} minutes so a
+     *       legitimately long merge never trips its own TTL.</li>
+     *   <li>Runs {@code task.get()} and returns its result.</li>
+     *   <li>Always stops the heartbeat and releases the lock in {@code finally}, even
+     *       when the task throws an unchecked exception.</li>
+     * </ol>
+     */
+    private CompactionResult withLock(String target, Supplier<CompactionResult> task) {
+        boolean owned;
+        try {
+            owned = lockManager.tryAcquire(target);
+        } catch (SQLException e) {
+            log.warn("Cannot acquire compaction lock for '{}': {}; skipping target", target, e.getMessage());
+            return CompactionResult.NONE;
+        }
+        if (!owned) {
+            log.info("Skipping compaction of '{}' — lock is held by another instance", target);
+            return CompactionResult.NONE;
+        }
+
+        // Heartbeat: refresh the lock expiry periodically while the merge is running.
+        AtomicBoolean heartbeatStop = new AtomicBoolean(false);
+        Thread heartbeatThread = Thread.ofVirtual()
+                .name("compaction-heartbeat-" + target)
+                .start(() -> runHeartbeat(target, heartbeatStop));
+        try {
+            return task.get();
+        } finally {
+            heartbeatStop.set(true);
+            heartbeatThread.interrupt();  // wake it from sleep immediately
+            lockManager.release(target);
+        }
+    }
+
+    /**
+     * Heartbeat loop: sleeps for {@link CompactionLockManager#HEARTBEAT_INTERVAL_MINUTES}
+     * minutes then refreshes the lock expiry.  Terminates when {@code stop} is set
+     * or the thread is interrupted (triggered from the {@code finally} block in
+     * {@link #withLock}).
+     */
+    private void runHeartbeat(String target, AtomicBoolean stop) {
+        long sleepMs = (long) CompactionLockManager.HEARTBEAT_INTERVAL_MINUTES * 60_000L;
+        while (!stop.get()) {
+            try {
+                Thread.sleep(sleepMs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+            if (!stop.get()) {
+                try {
+                    lockManager.refresh(target);
+                    log.debug("Refreshed compaction lock for '{}'", target);
+                } catch (SQLException e) {
+                    log.warn("Heartbeat refresh failed for '{}': {}", target, e.getMessage());
+                }
+            }
+        }
     }
 
     // =========================================================================

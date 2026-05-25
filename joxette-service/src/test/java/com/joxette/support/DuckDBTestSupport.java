@@ -163,6 +163,14 @@ public final class DuckDBTestSupport {
                     )""");
 
             st.execute("""
+                    CREATE TABLE IF NOT EXISTS compaction_locks (
+                        target      VARCHAR     NOT NULL PRIMARY KEY,
+                        instance_id VARCHAR     NOT NULL,
+                        acquired_at TIMESTAMPTZ NOT NULL,
+                        expires_at  TIMESTAMPTZ NOT NULL
+                    )""");
+
+            st.execute("""
                     CREATE TABLE IF NOT EXISTS topic_message_type_matchers (
                         topic           VARCHAR NOT NULL,
                         message_type    VARCHAR NOT NULL,

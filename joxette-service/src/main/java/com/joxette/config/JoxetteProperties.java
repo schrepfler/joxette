@@ -135,6 +135,19 @@ public class JoxetteProperties {
         private String schedule = "0 0 3 * * *";
         private Entity entity = new Entity();
         private General general = new General();
+        /**
+         * Time-to-live for a distributed compaction lock, in minutes.
+         *
+         * <p>A lock acquired before starting a compaction target is refreshed every
+         * {@code CompactionLockManager.HEARTBEAT_INTERVAL_MINUTES} (10 min) by a
+         * heartbeat thread.  The TTL must therefore exceed the maximum expected
+         * compaction duration for a single target — 2 hours (120 min) is a safe
+         * default for most datasets.
+         *
+         * <p>Set lower only when compaction targets are reliably fast and you want
+         * stale locks from crashed instances to be reclaimed sooner.
+         */
+        private int lockTtlMinutes = 120;
 
         public static class Entity {
             private int minFilesPerBucket = 10;
@@ -200,6 +213,9 @@ public class JoxetteProperties {
 
         public General getGeneral() { return general; }
         public void setGeneral(General general) { this.general = general; }
+
+        public int getLockTtlMinutes() { return lockTtlMinutes; }
+        public void setLockTtlMinutes(int lockTtlMinutes) { this.lockTtlMinutes = lockTtlMinutes; }
     }
 
     // -----------------------------------------------------------------------

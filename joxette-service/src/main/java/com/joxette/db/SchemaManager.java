@@ -317,6 +317,18 @@ public class SchemaManager {
                 )
                 """);
 
+            // Distributed compaction lock table — one row per in-progress target.
+            // Shared across Joxette instances when using an external catalog (PostgreSQL, Quack).
+            // In embedded-DuckDB mode it provides intra-process protection as a bonus.
+            stmt.execute("""
+                CREATE TABLE IF NOT EXISTS compaction_locks (
+                    target      VARCHAR     NOT NULL PRIMARY KEY,
+                    instance_id VARCHAR     NOT NULL,
+                    acquired_at TIMESTAMPTZ NOT NULL,
+                    expires_at  TIMESTAMPTZ NOT NULL
+                )
+                """);
+
             // Message-type matchers for general cassettes.
             // Semantics: first matcher whose id_source/id_expression extracts a non-null
             // value from a message wins; its message_type is stored in the cassette row.

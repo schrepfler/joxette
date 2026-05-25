@@ -209,6 +209,37 @@ public class CompactionController {
     }
 
     @Operation(
+        operationId = "getCompactionLocks",
+        summary = "List active compaction distributed locks",
+        description = "Returns all rows in compaction_locks — the distributed lock table used to " +
+                      "prevent concurrent compaction of the same target by multiple Joxette instances. " +
+                      "Locks with a past expires_at are stale and will be removed at the start of the " +
+                      "next compaction run. Each lock carries a seconds_remaining field for quick " +
+                      "triage without parsing timestamps."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Active (and any stale) compaction locks",
+            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                schema = @Schema(type = "array", implementation = CompactionLockInfo.class),
+                examples = @ExampleObject(name = "one lock", value = """
+                    [
+                      {
+                        "target": "entity:order",
+                        "instanceId": "worker-node-1:42",
+                        "acquiredAt": "2024-06-01T03:01:00Z",
+                        "expiresAt": "2024-06-01T05:01:00Z",
+                        "secondsRemaining": 7189
+                      }
+                    ]"""))),
+        @ApiResponse(responseCode = "500", description = "Database error",
+            content = @Content(schema = @Schema(type = "string")))
+    })
+    @GetMapping(value = "/locks", produces = MediaType.APPLICATION_JSON_VALUE)
+    public List<CompactionLockInfo> getLocks() throws SQLException {
+        return compactionService.getActiveLocks();
+    }
+
+    @Operation(
         operationId = "getRetentionStatus",
         summary = "Get retention enforcement status",
         description = "Returns the current retention status including the most-recent run summary " +
