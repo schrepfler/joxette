@@ -18,7 +18,7 @@ The service leverages DuckLake's **data inlining** feature to buffer small write
 | Concurrency/Flows | Jox (softwaremill) | latest |
 | Kafka | Jox Kafka module | latest |
 | Structured concurrency | Jox structured concurrency | latest |
-| Database | DuckDB JDBC | org.duckdb:duckdb_jdbc:1.5.1.0 |
+| Database | DuckDB JDBC | org.duckdb:duckdb_jdbc:1.5.3.0 |
 | Storage format | DuckLake (ducklake extension) | latest |
 | Object storage | Delegated entirely to DuckDB/DuckLake layer |
 | Testing | Testcontainers (Kafka + DuckDB) | latest |
@@ -71,7 +71,7 @@ CREATE TABLE IF NOT EXISTS lake.cassette_{sanitized_topic} (
     "partition"     INTEGER NOT NULL,
     "offset"        BIGINT NOT NULL,
     key             VARCHAR,
-    value           JSON,  -- use VARIANT if DuckLake supports it well, JSON as fallback
+    value           VARIANT,  -- confirmed working: duckdb_jdbc 1.5.3.0 + ducklake; see SchemaManager.probeVariant()
     recorded_at     TIMESTAMPTZ NOT NULL
 );
 ```
@@ -90,7 +90,7 @@ CREATE TABLE IF NOT EXISTS lake.entity_{sanitized_type} (
     source_partition INTEGER NOT NULL,
     source_offset   BIGINT NOT NULL,
     key             VARCHAR,
-    value           JSON,
+    value           VARIANT,  -- confirmed working: duckdb_jdbc 1.5.3.0 + ducklake; see SchemaManager.probeVariant()
     recorded_at     TIMESTAMPTZ NOT NULL
 );
 ```
@@ -174,7 +174,18 @@ Provide helper functions (registered as DuckDB macros at startup):
 
 ### VARIANT vs JSON
 
-DuckDB 1.5 supports the VARIANT type (JSON shredded to binary, up to 100x faster queries). Test early whether VARIANT works correctly through DuckLake's Parquet serialization. If it has issues, fall back to the JSON type which is still efficient and queryable.
+**Decision: use VARIANT (confirmed, duckdb_jdbc 1.5.3.0).**
+
+DuckDB 1.5 introduced the VARIANT type (JSON shredded to binary, up to 100× faster analytical queries). We ran a full round-trip probe through DuckLake's Parquet serialisation path — inlining disabled to force the Parquet code path — using 18 test cases spanning four payload classes:
+
+| Test class | What it covers |
+|---|---|
+| `RoundTripTests` | Core probe + four JSON payload shapes (object, string, nested, array) |
+| `DecimalParquetTests` | Small decimal Parquet encoding fix in 1.5.3 (`0.01`, `99.50`, `1234567.89`, `0.001`) |
+| `SelectionVectorTests` | Selection-vector indexing fix in 1.5.3 (5 rows read back in order; filtered SELECT returns correct rows) |
+| `CleanupTests`, `InliningRestoreTests`, `SchemaManagerInitializeTests` | Lifecycle correctness |
+
+All 18 tests pass. VARIANT is therefore the column type for the `value` / `metadata` column in both general and entity cassette tables. `SchemaManager.probeVariant()` still runs at startup as a safety net — if a future DuckLake build regresses, it falls back to JSON automatically with no schema change needed.
 
 ---
 
@@ -709,7 +720,7 @@ joxette/
 ## Implementation Order
 
 1. **Project skeleton** — pom.xml, JoxetteApplication.java, config binding
-2. **DuckDB + DuckLake setup** — connection management, schema creation, verify VARIANT works through DuckLake
+2. **DuckDB + DuckLake setup** — connection management, schema creation, VARIANT confirmed through DuckLake (see `SchemaManager.probeVariant()`)
 3. **Config repository** — CRUD for topic/entity configs in plain DuckDB tables
 4. **Headers helper** — multimap utility functions registered as DuckDB macros
 5. **Recording pipeline** — Jox Kafka source → batching → DuckLake writer, single topic, general cassette only

@@ -99,8 +99,10 @@ public class SchemaManager {
      * <p>Returns {@code false} on any failure — including VARIANT not being recognised,
      * Parquet serialisation failing, or the value changing during the round-trip.
      *
-     * <p><b>Observed behaviour (duckdb_jdbc 1.5.2.0 + current ducklake extension):</b>
-     * VARIANT is supported and survives the Parquet round-trip correctly.
+     * <p><b>Observed behaviour (duckdb_jdbc 1.5.3.0 + current ducklake extension):</b>
+     * VARIANT is supported and survives the Parquet round-trip correctly, including the
+     * two fixes shipped in 1.5.3: correct VARIANT selection-vector indexing and correct
+     * small-decimal Parquet encoding (e.g. {@code 0.01}, {@code 99.50}, {@code 1234567.89}).
      * The {@code metadata} column in cassette tables is therefore created as {@code VARIANT},
      * enabling DuckDB's shredded JSON encoding for up to 100× faster analytical queries.
      * Should a future DuckLake build regress on Parquet VARIANT serialisation, the probe

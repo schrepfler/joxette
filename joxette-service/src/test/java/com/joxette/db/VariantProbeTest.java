@@ -275,6 +275,202 @@ class VariantProbeTest {
     }
 
     // -------------------------------------------------------------------------
+    // 1.5.3 bug-fix coverage: small decimal Parquet writing
+    // -------------------------------------------------------------------------
+
+    /**
+     * Regression coverage for duckdb_jdbc 1.5.3.0 fix:
+     * <em>"Corrected VARIANT small decimal writing to Parquet"</em>.
+     *
+     * <p>Prior to 1.5.3 a DECIMAL value embedded inside a VARIANT JSON object could
+     * be silently mis-encoded when written to a Parquet file, causing the value to
+     * change (or become NULL) on read-back.  This test forces the Parquet path
+     * (inlining disabled) and asserts that typical order-amount decimals survive the
+     * round-trip exactly.
+     *
+     * <p>Amounts chosen to cover distinct IEEE-754 edge cases:
+     * <ul>
+     *   <li>{@code 0.01} — smallest typical amount; triggers subnormal-precision paths</li>
+     *   <li>{@code 99.50} — two-decimal "money" amount representative of order totals</li>
+     *   <li>{@code 1234567.89} — large amount exercising the full mantissa width</li>
+     *   <li>{@code 0.001} — sub-cent precision (cryptocurrency / micro-billing)</li>
+     * </ul>
+     */
+    @Nested
+    class DecimalParquetTests {
+
+        static Stream<Arguments> decimalPayloads() {
+            return Stream.of(
+                Arguments.of("'{\"amount\":0.01}'",          "0.01"),
+                Arguments.of("'{\"amount\":99.50}'",         "99.5"),      // JSON normalises trailing zero
+                Arguments.of("'{\"amount\":1234567.89}'",    "1234567.89"),
+                Arguments.of("'{\"amount\":0.001}'",         "0.001")
+            );
+        }
+
+        @ParameterizedTest(name = "[{index}] payload={0} must contain {1}")
+        @MethodSource("decimalPayloads")
+        void smallDecimal_roundTripsThroughParquet(
+                String insertExpr, String expectedSubstring) throws Exception {
+            String probeTable = DuckLakeManager.CATALOG_NAME + ".main.__variant_decimal_test";
+            try {
+                exec("DROP TABLE IF EXISTS " + probeTable);
+                try (Statement st = conn.createStatement()) {
+                    st.execute("CALL " + DuckLakeManager.CATALOG_NAME +
+                               ".set_option('data_inlining_row_limit', 0)");
+                }
+                exec("CREATE TABLE " + probeTable + " (v VARIANT)");
+                exec("INSERT INTO " + probeTable + " VALUES (" + insertExpr + "::VARIANT)");
+
+                String roundTripped;
+                try (Statement st = conn.createStatement();
+                     ResultSet rs = st.executeQuery("SELECT v::VARCHAR FROM " + probeTable)) {
+                    assertThat(rs.next()).as("row must be present after INSERT").isTrue();
+                    roundTripped = rs.getString(1);
+                }
+
+                assertThat(roundTripped)
+                        .as("decimal value must survive DuckLake Parquet round-trip " +
+                            "(1.5.3 fix: 'corrected VARIANT small decimal writing to Parquet'); " +
+                            "payload=%s, expected substring='%s'", insertExpr, expectedSubstring)
+                        .isNotNull()
+                        .contains(expectedSubstring);
+            } finally {
+                try { exec("DROP TABLE IF EXISTS " + probeTable); } catch (SQLException ignored) {}
+            }
+        }
+
+        private void exec(String sql) throws SQLException {
+            try (Statement st = conn.createStatement()) {
+                st.execute(sql);
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // 1.5.3 bug-fix coverage: VARIANT selection vector indexing
+    // -------------------------------------------------------------------------
+
+    /**
+     * Regression coverage for duckdb_jdbc 1.5.3.0 fix:
+     * <em>"Fixed VARIANT selection vector indexing issues"</em>.
+     *
+     * <p>Prior to 1.5.3, when multiple VARIANT rows were read back from Parquet,
+     * incorrect selection-vector indexing could cause a row at position N to return
+     * the value from position M.  This test inserts several rows with distinct,
+     * easily-distinguishable JSON values and verifies that each row contains its own
+     * payload — not a neighbour's — after the Parquet round-trip.
+     */
+    @Nested
+    class SelectionVectorTests {
+
+        @Test
+        void multipleRows_eachReturnCorrectVariantValue() throws Exception {
+            String probeTable = DuckLakeManager.CATALOG_NAME + ".main.__variant_selvec_test";
+            try {
+                exec("DROP TABLE IF EXISTS " + probeTable);
+                // Disable inlining to force the Parquet code path.
+                try (Statement st = conn.createStatement()) {
+                    st.execute("CALL " + DuckLakeManager.CATALOG_NAME +
+                               ".set_option('data_inlining_row_limit', 0)");
+                }
+                exec("CREATE TABLE " + probeTable + " (id INTEGER, v VARIANT)");
+
+                // Insert 5 rows each with a unique, non-overlapping sentinel value.
+                for (int i = 1; i <= 5; i++) {
+                    exec("INSERT INTO " + probeTable +
+                         " VALUES (" + i + ", '{\"row\":" + i + ",\"tag\":\"row" + i + "\"}'::VARIANT)");
+                }
+
+                // Read back ordered by id and assert each row has its own sentinel.
+                try (Statement st = conn.createStatement();
+                     ResultSet rs = st.executeQuery(
+                             "SELECT id, v::VARCHAR FROM " + probeTable +
+                             " ORDER BY id ASC")) {
+
+                    for (int expected = 1; expected <= 5; expected++) {
+                        assertThat(rs.next())
+                                .as("row %d must be present", expected)
+                                .isTrue();
+                        int gotId         = rs.getInt("id");
+                        String gotVariant = rs.getString(2);
+
+                        assertThat(gotId)
+                                .as("row id must match insertion order (selection vector indexing)")
+                                .isEqualTo(expected);
+                        assertThat(gotVariant)
+                                .as("VARIANT at row %d must contain sentinel 'row%d' " +
+                                    "(1.5.3 fix: 'fixed VARIANT selection vector indexing issues')",
+                                    expected, expected)
+                                .isNotNull()
+                                .contains("row" + expected);
+                    }
+                    assertThat(rs.next())
+                            .as("no extra rows beyond the 5 inserted")
+                            .isFalse();
+                }
+            } finally {
+                try { exec("DROP TABLE IF EXISTS " + probeTable); } catch (SQLException ignored) {}
+            }
+        }
+
+        /**
+         * A filtered SELECT (WHERE clause) relies on the selection vector to map
+         * result rows back to storage positions.  Verify that VARIANT values are
+         * still correct after the engine applies a predicate filter.
+         */
+        @Test
+        void filteredSelect_returnsCorrectVariantRow() throws Exception {
+            String probeTable = DuckLakeManager.CATALOG_NAME + ".main.__variant_selvec_filter_test";
+            try {
+                exec("DROP TABLE IF EXISTS " + probeTable);
+                try (Statement st = conn.createStatement()) {
+                    st.execute("CALL " + DuckLakeManager.CATALOG_NAME +
+                               ".set_option('data_inlining_row_limit', 0)");
+                }
+                exec("CREATE TABLE " + probeTable + " (id INTEGER, v VARIANT)");
+
+                for (int i = 1; i <= 10; i++) {
+                    exec("INSERT INTO " + probeTable +
+                         " VALUES (" + i + ", '{\"id\":" + i + ",\"label\":\"item" + i + "\"}'::VARIANT)");
+                }
+
+                // Select only rows 4 and 7 — tests that the selection vector correctly
+                // maps filtered positions back to the right VARIANT storage cells.
+                try (Statement st = conn.createStatement();
+                     ResultSet rs = st.executeQuery(
+                             "SELECT id, v::VARCHAR FROM " + probeTable +
+                             " WHERE id IN (4, 7) ORDER BY id")) {
+
+                    assertThat(rs.next()).as("first filtered row (id=4)").isTrue();
+                    assertThat(rs.getInt("id")).isEqualTo(4);
+                    assertThat(rs.getString(2))
+                            .as("VARIANT at row 4 must contain 'item4'")
+                            .contains("item4");
+
+                    assertThat(rs.next()).as("second filtered row (id=7)").isTrue();
+                    assertThat(rs.getInt("id")).isEqualTo(7);
+                    assertThat(rs.getString(2))
+                            .as("VARIANT at row 7 must contain 'item7'")
+                            .contains("item7");
+
+                    assertThat(rs.next())
+                            .as("no rows beyond the two selected")
+                            .isFalse();
+                }
+            } finally {
+                try { exec("DROP TABLE IF EXISTS " + probeTable); } catch (SQLException ignored) {}
+            }
+        }
+
+        private void exec(String sql) throws SQLException {
+            try (Statement st = conn.createStatement()) {
+                st.execute(sql);
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // SchemaManager.initialize() integration: isVariantSupported()
     // -------------------------------------------------------------------------
 
