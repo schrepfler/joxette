@@ -140,6 +140,23 @@ public class JoxetteProperties {
             private int minFilesPerBucket = 10;
             private int targetFileSizeMb = 256;
             private int lookbackDays = 30;
+            /**
+             * Parquet row-group memory budget applied during entity cassette merges
+             * (DuckDB 1.5.3+ {@code write_buffer_row_group_memory_limit}).
+             *
+             * <p>Issued as {@code SET write_buffer_row_group_memory_limit = 'NMB'} inside
+             * the same {@code synchronized(duckDB)} block before each
+             * {@code ducklake_merge_adjacent_files} call.  Capping the per-row-group
+             * buffer prevents OOM when a single bucket contains millions of rows — DuckDB
+             * flushes the row group to Parquet once this memory threshold is reached rather
+             * than waiting for the default row-count trigger.
+             *
+             * <p>Defaults to {@code 256} (matching {@code target-file-size-mb}) so output
+             * row groups never exceed the target file size in memory before being spilled.
+             * Set to {@code 0} to leave the DuckDB default in place (useful for
+             * benchmarking or when the DuckDB version predates 1.5.3).
+             */
+            private int rowGroupMemoryLimitMb = 256;
 
             public int getMinFilesPerBucket() { return minFilesPerBucket; }
             public void setMinFilesPerBucket(int minFilesPerBucket) { this.minFilesPerBucket = minFilesPerBucket; }
@@ -149,6 +166,11 @@ public class JoxetteProperties {
 
             public int getLookbackDays() { return lookbackDays; }
             public void setLookbackDays(int lookbackDays) { this.lookbackDays = lookbackDays; }
+
+            public int getRowGroupMemoryLimitMb() { return rowGroupMemoryLimitMb; }
+            public void setRowGroupMemoryLimitMb(int rowGroupMemoryLimitMb) {
+                this.rowGroupMemoryLimitMb = rowGroupMemoryLimitMb;
+            }
         }
 
         public static class General {

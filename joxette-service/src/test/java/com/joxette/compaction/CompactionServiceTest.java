@@ -9,6 +9,8 @@ import com.joxette.support.DuckDBTestSupport;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.slf4j.LoggerFactory;
 
 import java.sql.Connection;
@@ -424,6 +426,62 @@ class CompactionServiceTest {
         // With DuckLake loaded and files to merge, the productive assertion would be:
         //   assertThat(result.filesProcessed()).isGreaterThan(result.filesCreated())
         //   i.e., files_after < files_before → bytes_reclaimed > 0.
+    }
+
+    // -------------------------------------------------------------------------
+    // write_buffer_row_group_memory_limit (DuckDB 1.5.3)
+    // -------------------------------------------------------------------------
+
+    /**
+     * When {@code row-group-memory-limit-mb} is positive the service must issue a
+     * {@code SET write_buffer_row_group_memory_limit} statement and log it at DEBUG.
+     * When it is {@code 0} the SET must be skipped entirely — no related log event
+     * should appear.
+     *
+     * <p>With DuckDB 1.5.3 the SET succeeds and the success message is logged.
+     * With older DuckDB it would fail and the fallback message is logged instead.
+     * Either way the presence / absence of any "write_buffer_row_group_memory_limit"
+     * log entry correctly reflects whether the SET was attempted.
+     */
+    @ParameterizedTest
+    @CsvSource({
+        "256, true",   // positive limit → SET attempted → log event present
+        "0,   false"   // zero limit    → SET skipped   → no log event
+    })
+    void compactEntityType_rowGroupMemoryLimit_setAttemptedOrSkipped(
+            int limitMb, boolean expectLogEvent) throws Exception {
+
+        JoxetteProperties props = testProperties();
+        props.getCompaction().getEntity().setRowGroupMemoryLimitMb(limitMb);
+        CompactionService svc = new CompactionService(duckDB, props, configRepo);
+
+        ch.qos.logback.classic.Logger logger =
+                (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(CompactionService.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        Level savedLevel = logger.getLevel();
+        logger.setLevel(Level.DEBUG);
+        logger.addAppender(appender);
+        try {
+            CompactionRun run = svc.beginRun("rwgml-test", List.of(ENTITY_TYPE));
+            svc.executeRun(run.id(), List.of(ENTITY_TYPE));
+
+            // Run must complete regardless of the limit setting.
+            assertThat(svc.getRunById(run.id()).status()).isEqualTo("completed");
+
+            // Check whether a DEBUG event mentioning the setting was emitted.
+            boolean hasLog = appender.list.stream()
+                    .filter(e -> e.getLevel() == Level.DEBUG)
+                    .anyMatch(e -> e.getFormattedMessage()
+                                    .contains("write_buffer_row_group_memory_limit"));
+            assertThat(hasLog)
+                    .as("A 'write_buffer_row_group_memory_limit' DEBUG log must %s when limitMb=%d",
+                            expectLogEvent ? "appear" : "not appear", limitMb)
+                    .isEqualTo(expectLogEvent);
+        } finally {
+            logger.detachAppender(appender);
+            logger.setLevel(savedLevel);
+        }
     }
 
     // -------------------------------------------------------------------------

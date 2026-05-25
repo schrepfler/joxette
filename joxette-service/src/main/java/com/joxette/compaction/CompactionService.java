@@ -228,17 +228,39 @@ public class CompactionService {
      * need merging based on the {@code max_file_size} threshold.  Files already at or
      * above the target size are left untouched.
      *
+     * <p>Before the merge call, {@code write_buffer_row_group_memory_limit} is set
+     * (DuckDB 1.5.3+) so the Parquet writer flushes row groups based on memory rather
+     * than row count — preventing OOM when a single bucket contains millions of rows.
+     * The SET is issued inside the same {@code synchronized(duckDB)} block as the merge
+     * and is wrapped in its own try/catch: a failure (e.g. DuckDB version &lt; 1.5.3)
+     * is logged at DEBUG and never prevents the merge from running.
+     *
      * <p>Idempotent — errors are logged at WARN and the caller receives
      * {@link CompactionResult#NONE}, consistent with the non-fatal compaction error policy.
      */
     private CompactionResult compactEntityType(String entityType) {
         SchemaManager.validateEntityType(entityType);
         long maxFileSizeBytes = (long) props.getCompaction().getEntity().getTargetFileSizeMb() * 1024L * 1024L;
+        int rowGroupMemoryLimitMb = props.getCompaction().getEntity().getRowGroupMemoryLimitMb();
         String sql = "CALL ducklake_merge_adjacent_files('lake', 'entity_" + entityType + "',"
                    + " max_file_size => " + maxFileSizeBytes + ")";
         log.debug("Merging adjacent files for entity_type='{}'", entityType);
         try {
             synchronized (duckDB) {
+                // Apply the Parquet row-group memory cap before the merge (DuckDB 1.5.3+).
+                // A value of 0 means "use the DuckDB default" — skip the SET entirely.
+                if (rowGroupMemoryLimitMb > 0) {
+                    try (Statement st = duckDB.createStatement()) {
+                        st.execute("SET write_buffer_row_group_memory_limit = '"
+                                + rowGroupMemoryLimitMb + "MB'");
+                        log.debug("write_buffer_row_group_memory_limit set to {} MB for entity_{} merge",
+                                rowGroupMemoryLimitMb, entityType);
+                    } catch (SQLException setEx) {
+                        // Older DuckDB (< 1.5.3) does not support this setting — safe to continue.
+                        log.debug("write_buffer_row_group_memory_limit not applied for entity_{} "
+                                + "(DuckDB < 1.5.3?): {}", entityType, setEx.getMessage());
+                    }
+                }
                 try (Statement st = duckDB.createStatement();
                      ResultSet rs = st.executeQuery(sql)) {
                     FileStats stats = FileStats.EMPTY;
