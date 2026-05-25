@@ -24,7 +24,7 @@ import static org.assertj.core.api.Assertions.*;
  *
  * <p>Each test group documents the expected outcome for the current library versions:
  * <ul>
- *   <li>duckdb_jdbc {@code 1.5.2.0} + current {@code ducklake} extension:
+ *   <li>duckdb_jdbc {@code 1.5.3.0} + current {@code ducklake} extension:
  *       VARIANT is <b>supported</b> — {@code probeVariant} returns {@code true} and
  *       {@code SchemaManager.isVariantSupported()} returns {@code true}.</li>
  *   <li>If a future version regresses the Parquet serialisation of VARIANT, the probe
@@ -106,7 +106,7 @@ class VariantProbeTest {
          * sent through DuckLake's Parquet serialisation path rather than buffered in the
          * catalog DB.  The SELECT asserts that the JSON payload is intact after the cycle.
          *
-         * <p>Expected result with duckdb_jdbc 1.5.2.0: {@code true} — VARIANT works.
+         * <p>Expected result with duckdb_jdbc 1.5.3.0: {@code true} — VARIANT works.
          */
         @Test
         void probeVariant_withRealDuckLakeCatalog_returnsTrue() throws Exception {
@@ -117,7 +117,7 @@ class VariantProbeTest {
 
             assertThat(result)
                     .as("VARIANT must survive the DuckLake Parquet round-trip " +
-                        "(duckdb_jdbc 1.5.2.0 + current ducklake extension)")
+                        "(duckdb_jdbc 1.5.3.0 + current ducklake extension)")
                     .isTrue();
         }
 
@@ -297,7 +297,7 @@ class VariantProbeTest {
 
             assertThat(sm.isVariantSupported())
                     .as("isVariantSupported() must be true after successful probe " +
-                        "with duckdb_jdbc 1.5.2.0 + current ducklake extension")
+                        "with duckdb_jdbc 1.5.3.0 + current ducklake extension")
                     .isTrue();
         }
 
