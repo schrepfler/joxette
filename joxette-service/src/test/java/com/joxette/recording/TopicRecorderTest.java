@@ -132,7 +132,7 @@ class TopicRecorderTest {
             }
         }
 
-        recorder = new TopicRecorder(TOPIC, consumerSettings(), writeChannel, 100, 200, generalRouter, noopEntities, "latest");
+        recorder = new TopicRecorder(TOPIC, consumerSettings(), writeChannel, 100, 200, generalRouter, noopEntities, "earliest");
         recorderThread = Thread.ofVirtual().name("test-recorder").start(() -> {
             try {
                 recorder.run();
@@ -173,7 +173,7 @@ class TopicRecorderTest {
             producer.send(rec).get();
         }
 
-        recorder = new TopicRecorder(TOPIC, consumerSettings(), writeChannel, 10, 200, generalRouter, noopEntities, "latest");
+        recorder = new TopicRecorder(TOPIC, consumerSettings(), writeChannel, 10, 200, generalRouter, noopEntities, "earliest");
         recorderThread = Thread.ofVirtual().name("test-recorder-hdr").start(() -> {
             try { recorder.run(); } catch (Exception ignored) {}
         });
@@ -228,7 +228,7 @@ class TopicRecorderTest {
         // Capture time just before the recorder writes so we can bound recorded_at.
         java.time.Instant beforeRecord = java.time.Instant.now();
 
-        recorder = new TopicRecorder(TOPIC, consumerSettings(), writeChannel, 100, 200, generalRouter, noopEntities, "latest");
+        recorder = new TopicRecorder(TOPIC, consumerSettings(), writeChannel, 100, 200, generalRouter, noopEntities, "earliest");
         recorderThread = Thread.ofVirtual().name("test-recorder-fields").start(() -> {
             try { recorder.run(); } catch (Exception ignored) {}
         });
@@ -299,7 +299,7 @@ class TopicRecorderTest {
             }
         }
 
-        TopicRecorder multiRecorder = new TopicRecorder(multiTopic, consumerSettings(), writeChannel, 20, 300, generalRouter, noopEntities, "latest");
+        TopicRecorder multiRecorder = new TopicRecorder(multiTopic, consumerSettings(), writeChannel, 20, 300, generalRouter, noopEntities, "earliest");
         Thread multiThread = Thread.ofVirtual().name("test-multi-recorder").start(() -> {
             try { multiRecorder.run(); } catch (Exception ignored) {}
         });
