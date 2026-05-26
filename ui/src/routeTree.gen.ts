@@ -18,6 +18,7 @@ import { Route as RetentionIndexRouteImport } from './routes/retention/index'
 import { Route as HealthIndexRouteImport } from './routes/health/index'
 import { Route as EntitiesIndexRouteImport } from './routes/entities/index'
 import { Route as CompactionIndexRouteImport } from './routes/compaction/index'
+import { Route as ClusterIndexRouteImport } from './routes/cluster/index'
 import { Route as BrokersIndexRouteImport } from './routes/brokers/index'
 import { Route as TopicsTopicRouteImport } from './routes/topics/$topic'
 import { Route as BrokersBrokerIdRouteImport } from './routes/brokers/$brokerId'
@@ -71,6 +72,11 @@ const EntitiesIndexRoute = EntitiesIndexRouteImport.update({
 const CompactionIndexRoute = CompactionIndexRouteImport.update({
   id: '/compaction/',
   path: '/compaction/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ClusterIndexRoute = ClusterIndexRouteImport.update({
+  id: '/cluster/',
+  path: '/cluster/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const BrokersIndexRoute = BrokersIndexRouteImport.update({
@@ -129,6 +135,7 @@ export interface FileRoutesByFullPath {
   '/brokers/$brokerId': typeof BrokersBrokerIdRoute
   '/topics/$topic': typeof TopicsTopicRoute
   '/brokers/': typeof BrokersIndexRoute
+  '/cluster/': typeof ClusterIndexRoute
   '/compaction/': typeof CompactionIndexRoute
   '/entities/': typeof EntitiesIndexRoute
   '/health/': typeof HealthIndexRoute
@@ -149,6 +156,7 @@ export interface FileRoutesByTo {
   '/brokers/$brokerId': typeof BrokersBrokerIdRoute
   '/topics/$topic': typeof TopicsTopicRoute
   '/brokers': typeof BrokersIndexRoute
+  '/cluster': typeof ClusterIndexRoute
   '/compaction': typeof CompactionIndexRoute
   '/entities': typeof EntitiesIndexRoute
   '/health': typeof HealthIndexRoute
@@ -170,6 +178,7 @@ export interface FileRoutesById {
   '/brokers/$brokerId': typeof BrokersBrokerIdRoute
   '/topics/$topic': typeof TopicsTopicRoute
   '/brokers/': typeof BrokersIndexRoute
+  '/cluster/': typeof ClusterIndexRoute
   '/compaction/': typeof CompactionIndexRoute
   '/entities/': typeof EntitiesIndexRoute
   '/health/': typeof HealthIndexRoute
@@ -192,6 +201,7 @@ export interface FileRouteTypes {
     | '/brokers/$brokerId'
     | '/topics/$topic'
     | '/brokers/'
+    | '/cluster/'
     | '/compaction/'
     | '/entities/'
     | '/health/'
@@ -212,6 +222,7 @@ export interface FileRouteTypes {
     | '/brokers/$brokerId'
     | '/topics/$topic'
     | '/brokers'
+    | '/cluster'
     | '/compaction'
     | '/entities'
     | '/health'
@@ -232,6 +243,7 @@ export interface FileRouteTypes {
     | '/brokers/$brokerId'
     | '/topics/$topic'
     | '/brokers/'
+    | '/cluster/'
     | '/compaction/'
     | '/entities/'
     | '/health/'
@@ -253,6 +265,7 @@ export interface RootRouteChildren {
   BrokersBrokerIdRoute: typeof BrokersBrokerIdRoute
   TopicsTopicRoute: typeof TopicsTopicRoute
   BrokersIndexRoute: typeof BrokersIndexRoute
+  ClusterIndexRoute: typeof ClusterIndexRoute
   CompactionIndexRoute: typeof CompactionIndexRoute
   EntitiesIndexRoute: typeof EntitiesIndexRoute
   HealthIndexRoute: typeof HealthIndexRoute
@@ -333,6 +346,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof CompactionIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/cluster/': {
+      id: '/cluster/'
+      path: '/cluster'
+      fullPath: '/cluster/'
+      preLoaderRoute: typeof ClusterIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/brokers/': {
       id: '/brokers/'
       path: '/brokers'
@@ -405,6 +425,7 @@ const rootRouteChildren: RootRouteChildren = {
   BrokersBrokerIdRoute: BrokersBrokerIdRoute,
   TopicsTopicRoute: TopicsTopicRoute,
   BrokersIndexRoute: BrokersIndexRoute,
+  ClusterIndexRoute: ClusterIndexRoute,
   CompactionIndexRoute: CompactionIndexRoute,
   EntitiesIndexRoute: EntitiesIndexRoute,
   HealthIndexRoute: HealthIndexRoute,

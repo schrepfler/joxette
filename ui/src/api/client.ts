@@ -918,6 +918,57 @@ export const configApi = {
   getRuntime: () => request<RuntimeConfig>('/config/runtime'),
 }
 
+// ---- Cluster / instances ----
+
+export interface RecorderStatus {
+  topic: string
+  running: boolean
+  startedAt: string
+  lastBatchAt: string | null
+  consumerLag: number
+  lastError: string | null
+  protocol: string
+  assignedPartitions: number[]
+}
+
+export interface InstanceRecord {
+  instanceId: string
+  roles: string[]
+  catalogBackend: string
+  startedAt: string
+  lastHeartbeat: string
+  kafkaAssignments: Record<string, number[]>
+  status: string
+}
+
+export interface MemberView {
+  address: string
+  status: string
+  reachable: boolean
+  roles: string[]
+}
+
+export interface ClusterStateView {
+  self: {
+    instanceId: string
+    roles: string[]
+    catalogBackend: string
+    startedAt: string | null
+    lastHeartbeat: string | null
+    heartbeatStatus: string
+    pekkoAddress: string | null
+    pekkoStatus: string | null
+    pekkoReachable: boolean
+    recorders: Record<string, RecorderStatus>
+  }
+  instances: InstanceRecord[]
+  topology: MemberView[]
+}
+
+export const instancesApi = {
+  clusterState: () => request<ClusterStateView>('/instances/cluster-state'),
+}
+
 // ---- Brokers ----
 
 export interface BrokerConfig {
