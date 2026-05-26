@@ -208,7 +208,9 @@ public class TopicLifecycleActor {
                 lag,
                 lastError,
                 recorder.negotiatedProtocol(),
-                partitions
+                partitions,
+                recorder.messagesConsumed(),
+                recorder.messagesWritten()
         );
     }
 }

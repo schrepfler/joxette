@@ -1,14 +1,18 @@
 import { createFileRoute } from '@tanstack/react-router'
+import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { instancesApi, topicsApi, type RecorderStatus, type InstanceRecord, type MemberView } from '../../api/client'
 import { Layout } from '../../components/Layout'
 import { LoadingSpinner } from '../../components/LoadingSpinner'
 import { ErrorMessage } from '../../components/ErrorMessage'
+import { ClusterFlowMap } from '../../components/ClusterFlowMap'
 import { pageTitle, cardStyle } from '../../styles/shared'
 
 export const Route = createFileRoute('/cluster/')({
   component: ClusterPage,
 })
+
+type Tab = 'map' | 'detail'
 
 function pekkoStatusTone(status: string | null): { bg: string; text: string } {
   if (status === 'up') return { bg: '#dcfce7', text: 'var(--signal-live-ink)' }
@@ -26,6 +30,7 @@ function timeAgo(ts: string | null): string {
 
 function ClusterPage() {
   const queryClient = useQueryClient()
+  const [tab, setTab] = useState<Tab>('map')
 
   const { data, isLoading, error } = useQuery({
     queryKey: ['cluster-state'],
@@ -45,13 +50,37 @@ function ClusterPage() {
 
   return (
     <Layout>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 24 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20 }}>
         <h1 style={pageTitle}>Cluster</h1>
-        <span style={{ fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)' }}>
-          auto-refresh every 10 s
-        </span>
+        <div style={{ display: 'flex', gap: 2, marginLeft: 8 }}>
+          {(['map', 'detail'] as Tab[]).map(t => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              style={{
+                background: tab === t ? 'var(--accent)' : 'none',
+                color: tab === t ? '#fff' : 'var(--ink-secondary)',
+                border: '1px solid',
+                borderColor: tab === t ? 'var(--accent)' : 'var(--rule)',
+                borderRadius: 'var(--radius-sm)',
+                padding: '4px 14px',
+                fontSize: 'var(--type-caption-size)',
+                cursor: 'pointer',
+                fontFamily: 'var(--font-body)',
+                fontWeight: tab === t ? 600 : 400,
+                transition: 'all var(--duration-quick)',
+              }}
+            >
+              {t === 'map' ? 'Flow Map' : 'Detail'}
+            </button>
+          ))}
+        </div>
       </div>
 
+      {tab === 'map' && <ClusterFlowMap />}
+
+      {tab === 'detail' && (
+        <>
       {isLoading && <LoadingSpinner />}
       {error && <ErrorMessage message={(error as Error).message} />}
 
@@ -205,6 +234,8 @@ function ClusterPage() {
               </table>
             )}
           </div>
+        </>
+      )}
         </>
       )}
     </Layout>

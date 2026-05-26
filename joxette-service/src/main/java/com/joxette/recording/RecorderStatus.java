@@ -30,5 +30,9 @@ public record RecorderStatus(
          * Currently assigned partition IDs for this topic; empty when the consumer is not yet running
          * or all partitions have been revoked.
          */
-        Set<Integer> assignedPartitions
+        Set<Integer> assignedPartitions,
+        /** Total messages consumed from Kafka since this recorder started. */
+        long messagesConsumed,
+        /** Total messages successfully written to DuckLake since this recorder started. */
+        long messagesWritten
 ) {}

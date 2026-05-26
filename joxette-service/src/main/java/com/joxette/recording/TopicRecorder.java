@@ -92,6 +92,8 @@ public class TopicRecorder {
 
     private volatile Instant lastBatchAt;
     private final AtomicLong consumerLag = new AtomicLong(-1);
+    private final AtomicLong messagesConsumed = new AtomicLong(0);
+    private final AtomicLong messagesWritten  = new AtomicLong(0);
 
     /** Negotiated Kafka group protocol — set when the first rebalance fires. */
     private volatile String negotiatedProtocol = "unknown";
@@ -220,6 +222,9 @@ public class TopicRecorder {
     /** Negotiated Kafka group protocol ({@code consumer} or {@code classic}). */
     public String negotiatedProtocol() { return negotiatedProtocol; }
 
+    public long messagesConsumed() { return messagesConsumed.get(); }
+    public long messagesWritten()  { return messagesWritten.get(); }
+
     // -----------------------------------------------------------------------
     // Batch write
     // -----------------------------------------------------------------------
@@ -253,8 +258,10 @@ public class TopicRecorder {
             }
         }
 
+        messagesConsumed.addAndGet(batch.size());
         WriteBatch wb = WriteBatch.of(topic, generalRecords, generalMessageTypes, entityItems);
         writeChannel.submit(wb);
+        messagesWritten.addAndGet(batch.size());
         lastBatchAt = Instant.now();
 
         if (!allRoutes.isEmpty()) {

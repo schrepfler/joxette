@@ -929,6 +929,8 @@ export interface RecorderStatus {
   lastError: string | null
   protocol: string
   assignedPartitions: number[]
+  messagesConsumed: number
+  messagesWritten: number
 }
 
 export interface InstanceRecord {
@@ -967,6 +969,7 @@ export interface ClusterStateView {
 
 export const instancesApi = {
   clusterState: () => request<ClusterStateView>('/instances/cluster-state'),
+  liveMetricsUrl: () => `${API_BASE}/instances/live-metrics`,
 }
 
 // ---- Brokers ----

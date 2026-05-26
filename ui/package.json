@@ -37,6 +37,7 @@
     "@tanstack/react-table": "^8.21.3",
     "@tanstack/router-plugin": "^1.167.28",
     "@tanstack/store": "^0.9.3",
+    "@xyflow/react": "^12.10.2",
     "d3-hierarchy": "^3.1.2",
     "d3-interpolate": "^3.0.1",
     "d3-selection": "^3.0.0",
