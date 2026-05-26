@@ -29,6 +29,9 @@ public class RecordingCoordinator {
 
     private static final Logger log = LoggerFactory.getLogger(RecordingCoordinator.class);
 
+    /** Longer timeout for stop: must exceed the child actor's internal stop ask (10 s) plus drain time. */
+    private static final java.time.Duration STOP_TIMEOUT = java.time.Duration.ofSeconds(30);
+
     private final ActorRef<RecordingCoordinatorActor.CoordinatorCommand> coordinatorActor;
     private final ActorSystem<?> system;
 
@@ -54,8 +57,8 @@ public class RecordingCoordinator {
     }
 
     public boolean stopTopic(String topic) {
-        RecordingCoordinatorActor.StopReply reply = ask(
-                ref -> new RecordingCoordinatorActor.StopTopic(topic, ref));
+        RecordingCoordinatorActor.StopReply reply = askWithTimeout(
+                ref -> new RecordingCoordinatorActor.StopTopic(topic, ref), STOP_TIMEOUT);
         return reply instanceof RecordingCoordinatorActor.StopComplete sc && sc.wasStopped();
     }
 
@@ -88,10 +91,17 @@ public class RecordingCoordinator {
 
     @SuppressWarnings("unchecked")
     private <R> R ask(java.util.function.Function<ActorRef<R>, RecordingCoordinatorActor.CoordinatorCommand> msgFactory) {
+        return askWithTimeout(msgFactory, RecordingCoordinatorActor.ASK_TIMEOUT);
+    }
+
+    @SuppressWarnings("unchecked")
+    private <R> R askWithTimeout(
+            java.util.function.Function<ActorRef<R>, RecordingCoordinatorActor.CoordinatorCommand> msgFactory,
+            java.time.Duration timeout) {
         return (R) AskPattern.ask(
                 coordinatorActor,
                 msgFactory::apply,
-                RecordingCoordinatorActor.ASK_TIMEOUT,
+                timeout,
                 system.scheduler()
         ).toCompletableFuture().join();
     }

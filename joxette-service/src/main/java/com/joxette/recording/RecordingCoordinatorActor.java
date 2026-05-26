@@ -71,8 +71,12 @@ public class RecordingCoordinatorActor {
             ActorRef<Set<String>> replyTo
     ) implements CoordinatorCommand {}
 
-    /** Sent by TopicLifecycleActor.Stop reply handler when a child finishes stopping. */
-    private record ChildStopped(String topic) implements CoordinatorCommand {}
+    /**
+     * Sent internally when a child actor's stop sequence completes.
+     * Carries the original caller's replyTo so we can acknowledge only after
+     * the recorder VT has actually exited.
+     */
+    private record ChildStopped(String topic, ActorRef<StopReply> callerReplyTo) implements CoordinatorCommand {}
 
     public sealed interface StartReply {}
     public record Started(boolean newScope) implements StartReply {}
@@ -128,7 +132,7 @@ public class RecordingCoordinatorActor {
                                     props, brokerFactory, brokerId,
                                     writeChannel, router, knownEntities, vtExecutor),
                             "topic-" + sanitizeName(msg.topic()));
-                    ctx.watchWith(child, new ChildStopped(msg.topic()));
+                    ctx.watchWith(child, new ChildStopped(msg.topic(), null));
                     children.put(msg.topic(), child);
                     startedAts.put(msg.topic(), Instant.now());
                     log.info("Started recorder actor for topic '{}'", msg.topic());
@@ -144,21 +148,24 @@ public class RecordingCoordinatorActor {
                     }
                     children.remove(msg.topic());
                     startedAts.remove(msg.topic());
-                    // Ask the child to stop, then reply to our caller
-                    ActorRef<TopicLifecycleActor.StopReply> stopAdapter =
-                            ctx.messageAdapter(TopicLifecycleActor.StopReply.class,
-                                    r -> new ChildStopped(msg.topic()));
-                    child.tell(new TopicLifecycleActor.Stop(stopAdapter));
-                    msg.replyTo().tell(new StopComplete(true));
+                    // Ask the child to stop; reply to our caller only after the recorder VT exits.
+                    ctx.ask(
+                            TopicLifecycleActor.StopReply.class,
+                            child,
+                            ASK_TIMEOUT,
+                            TopicLifecycleActor.Stop::new,
+                            (reply, ex) -> new ChildStopped(msg.topic(), msg.replyTo())
+                    );
                     return Behaviors.same();
                 })
                 .onMessage(RestartTopic.class, msg -> {
                     ActorRef<TopicLifecycleActor.Cmd> existing = children.remove(msg.topic());
                     startedAts.remove(msg.topic());
                     if (existing != null) {
+                        // Fire-and-forget stop of old child; no caller waiting on it.
                         existing.tell(new TopicLifecycleActor.Stop(
                                 ctx.messageAdapter(TopicLifecycleActor.StopReply.class,
-                                        r -> new ChildStopped(msg.topic()))));
+                                        r -> new ChildStopped(msg.topic(), null))));
                     }
                     // Re-use the same startFrom stored in topic config
                     String brokerId = lookupBrokerId(msg.topic(), configRepo);
@@ -169,7 +176,7 @@ public class RecordingCoordinatorActor {
                                     props, brokerFactory, brokerId,
                                     writeChannel, router, knownEntities, vtExecutor),
                             "topic-" + sanitizeName(msg.topic()) + "-r" + System.nanoTime());
-                    ctx.watchWith(child, new ChildStopped(msg.topic()));
+                    ctx.watchWith(child, new ChildStopped(msg.topic(), null));
                     children.put(msg.topic(), child);
                     startedAts.put(msg.topic(), Instant.now());
                     msg.replyTo().tell(new Started(true));
@@ -196,10 +203,14 @@ public class RecordingCoordinatorActor {
                     return Behaviors.same();
                 })
                 .onMessage(ChildStopped.class, msg -> {
-                    // Child terminated — clean up any residual ref (already removed on explicit stop)
+                    // Child terminated — clean up any residual ref (already removed on explicit stop).
                     children.remove(msg.topic());
                     startedAts.remove(msg.topic());
                     log.info("RecordingCoordinatorActor: child for topic '{}' terminated", msg.topic());
+                    // Reply to the original StopTopic caller now that the recorder VT has exited.
+                    if (msg.callerReplyTo() != null) {
+                        msg.callerReplyTo().tell(new StopComplete(true));
+                    }
                     return Behaviors.same();
                 })
                 .build();

@@ -504,8 +504,8 @@ joxette/
 
 **Ordered graceful shutdown (SIGTERM)** — On SIGTERM (K8s pod termination, `docker stop`, normal `kill`), Spring's JVM shutdown hook drives the teardown in a fixed order:
 1. HTTP — Tomcat drains in-flight requests (`server.shutdown: graceful`, 30 s timeout).
-2. Recorders — `RecordingCoordinator.stopAll()` stops every active topic actor via ask-pattern (actor system still alive at this point).
-3. Write channel — `DuckLakeWriteChannel.stop()` signals `done()` and waits for the drain virtual thread to flush remaining DuckDB batches.
+2. Recorders — `RecordingCoordinator.stopAll()` stops every active topic actor and **waits** for each one to confirm shutdown. `StopTopic` replies only after the underlying `TopicRecorder` VT exits: `recorder.stop()` calls `consumer.wakeup()`, the poll loop breaks, `writeChannel.awaitDrain()` flushes any in-flight DuckDB batches, the final Kafka offset commit fires, and only then does `TopicLifecycleActor` send `Stopped` back to the coordinator.
+3. Write channel — `DuckLakeWriteChannel.stop()` signals `done()` and joins the drain virtual thread (10 s). All recorder VTs have already exited at this point, so the channel is quiescent.
 4. Actor system — `actorSystem.terminate()` awaits clean Pekko shutdown (10 s timeout).
 
 Pekko's own JVM shutdown hook is disabled (`pekko.coordinated-shutdown.run-by-jvm-shutdown-hook = off` in `pekko.conf`) so it cannot race with Spring's hook and kill actors before step 2 completes. SIGKILL (`kill -9`) cannot be intercepted by any JVM process; K8s always sends SIGTERM first with a configurable grace period before escalating.
