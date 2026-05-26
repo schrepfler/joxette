@@ -146,6 +146,7 @@ function useAnimationLoop(store: ParticleStore) {
 interface ParticleEdgeData extends Record<string, unknown> {
   active: boolean
   rateLabel?: string
+  dashed?: boolean  // passive edges (e.g. async tiering to object storage)
 }
 
 function ParticleEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data, markerEnd }: EdgeProps<Edge<ParticleEdgeData>>) {
@@ -160,7 +161,7 @@ function ParticleEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
   return (
     <>
       <BaseEdge id={id} path={edgePath} markerEnd={markerEnd}
-        style={{ stroke: data?.active ? 'var(--accent)' : 'var(--rule-strong)', strokeWidth: 1.5 }} />
+        style={{ stroke: data?.active ? 'var(--accent)' : 'var(--rule-strong)', strokeWidth: 1.5, strokeDasharray: data?.dashed ? '5 4' : undefined, opacity: data?.dashed ? 0.55 : 1 }} />
       <path ref={pathRef} d={edgePath} fill="none" stroke="none" style={{ pointerEvents: 'none' }} />
       {edgeParticles.map(p => {
         const path = pathRef.current
@@ -197,7 +198,8 @@ interface RecordJobNodeData extends Record<string, unknown> {
 interface ReplayJobNodeData extends Record<string, unknown> {
   sourceTopic: string; targetTopic: string; sentCount: number; status: ActiveReplay['status']
 }
-interface DuckLakeNodeData extends Record<string, unknown> { label: string; totalWritten: number }
+interface DuckLakeNodeData extends Record<string, unknown> { label: string; totalWritten: number; embedded?: boolean }
+interface ObjectStorageNodeData extends Record<string, unknown> { label: string }
 interface ReplayTargetNodeData extends Record<string, unknown> { label: string }
 
 // ---------------------------------------------------------------------------
@@ -292,7 +294,7 @@ function ReplayJobNode({ data }: NodeProps<Node<ReplayJobNodeData>>) {
 
 function DuckLakeNode({ data }: NodeProps<Node<DuckLakeNodeData>>) {
   return (
-    <div style={{ ...nodeBase, background: 'var(--surface-sunken)', minWidth: 150 }}>
+    <div style={{ ...nodeBase, background: 'var(--surface-sunken)', minWidth: data.embedded ? LAKE_W_EMBED : 150, width: data.embedded ? LAKE_W_EMBED : undefined }}>
       <Handle type="target" position={Position.Left} style={handleStyle} />
       <div style={nodeHeader}>
         <img src="/DuckLake_icon-darkmode.svg" alt="DuckLake" style={{ width: 18, height: 18, flexShrink: 0 }} />
@@ -300,7 +302,7 @@ function DuckLakeNode({ data }: NodeProps<Node<DuckLakeNodeData>>) {
         <span style={nodeTitle}>{data.label}</span>
       </div>
       <div style={nodeMeta}>
-        <Stat label="TOTAL WRITTEN" value={data.totalWritten.toLocaleString()} />
+        <Stat label="WRITTEN" value={data.totalWritten.toLocaleString()} />
       </div>
       <Handle type="source" position={Position.Right} style={handleStyle} />
     </div>
@@ -319,6 +321,19 @@ function ReplayTargetNode({ data }: NodeProps<Node<ReplayTargetNodeData>>) {
   )
 }
 
+function ObjectStorageNode({ data }: NodeProps<Node<ObjectStorageNodeData>>) {
+  return (
+    <div style={{ ...nodeBase, minWidth: 150, borderStyle: 'dashed', borderColor: 'var(--ink-tertiary)', background: 'var(--surface-sunken)', opacity: 0.85 }}>
+      <Handle type="target" position={Position.Left} style={handleStyle} />
+      <div style={nodeHeader}>
+        <span style={{ fontSize: '1rem', lineHeight: 1 }}>🪣</span>
+        <span style={nodeTitle}>{data.label}</span>
+      </div>
+      <div style={{ fontSize: '0.5625rem', color: 'var(--ink-tertiary)', fontFamily: 'var(--font-mono)' }}>object storage</div>
+    </div>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Graph builder
 // ---------------------------------------------------------------------------
@@ -326,13 +341,16 @@ function ReplayTargetNode({ data }: NodeProps<Node<ReplayTargetNodeData>>) {
 const ROW_H          = 110
 const JOB_W          = 240
 const CONT_PAD_X     = 20
-const CONT_PAD_TOP   = 50   // header height
+const CONT_PAD_TOP   = 50
 const CONT_PAD_BOT   = 16
-const CONT_W         = JOB_W + CONT_PAD_X * 2
+const LAKE_W_EMBED   = 160
+const LAKE_GAP       = 24
+const LAKE_IN_X      = CONT_PAD_X + JOB_W + LAKE_GAP  // x of DuckLake inside container
+const CONT_W         = LAKE_IN_X + LAKE_W_EMBED + CONT_PAD_X
 const X_KAFKA        = 0
 const X_INSTANCE     = 220
-const X_DUCKLAKE     = X_INSTANCE + CONT_W + 70
-const X_REPLAY_TGT   = X_DUCKLAKE + 180 + 60
+const X_OBJ_STORE    = X_INSTANCE + CONT_W + 60
+const X_REPLAY_TGT   = X_OBJ_STORE + 220
 
 interface Rates { consumedPerSec: number; writtenPerSec: number }
 
@@ -443,17 +461,52 @@ function buildGraph(data: ClusterStateView, rates: Record<string, Rates>): { nod
     })
   })
 
-  // DuckLake node — centred vertically on the recorder rows
+  // DuckLake node — embedded inside the container, centred on recorder rows
   const totalWritten = recorderEntries.reduce((sum, [, rec]) => sum + rec.messagesWritten, 0)
-  const lakeY = recorderEntries.length > 0
-    ? startY + CONT_PAD_TOP + ((recorderEntries.length - 1) / 2) * ROW_H
-    : startY + CONT_H / 2 - 50
-  nodes.push({
-    id: 'sink-ducklake',
-    type: 'duckLakeNode',
-    position: { x: X_DUCKLAKE, y: lakeY },
-    data: { label: 'DuckLake', totalWritten } satisfies DuckLakeNodeData,
-  })
+  const isCatalog = data.self.roles.includes('catalog')
+  const lakeChildY = recorderEntries.length > 0
+    ? CONT_PAD_TOP + ((recorderEntries.length - 1) / 2) * ROW_H + (ROW_H / 2) - 50
+    : CONT_H / 2 - 50
+
+  if (isCatalog) {
+    nodes.push({
+      id: 'sink-ducklake',
+      type: 'duckLakeNode',
+      parentId: 'instance',
+      extent: 'parent' as const,
+      position: { x: LAKE_IN_X, y: lakeChildY },
+      zIndex: 1,
+      data: { label: 'DuckLake', totalWritten, embedded: true } satisfies DuckLakeNodeData,
+    })
+
+    // Object storage node — external, vertically centred on the container
+    nodes.push({
+      id: 'obj-store',
+      type: 'objectStorageNode',
+      position: { x: X_OBJ_STORE, y: startY + CONT_H / 2 - 50 },
+      data: { label: 'Object Storage' } satisfies ObjectStorageNodeData,
+    })
+
+    // Passive dashed tiering edge: DuckLake → Object Storage
+    edges.push({
+      id: 'e-lake-objstore',
+      source: 'sink-ducklake',
+      target: 'obj-store',
+      type: 'particleEdge',
+      data: { active: false, rateLabel: 'tier', dashed: true } satisfies ParticleEdgeData,
+    })
+  } else {
+    // Non-catalog node: DuckLake external (writes go to a remote catalog)
+    const lakeAbsY = recorderEntries.length > 0
+      ? startY + CONT_PAD_TOP + ((recorderEntries.length - 1) / 2) * ROW_H
+      : startY + CONT_H / 2 - 50
+    nodes.push({
+      id: 'sink-ducklake',
+      type: 'duckLakeNode',
+      position: { x: X_INSTANCE + CONT_W + 60, y: lakeAbsY },
+      data: { label: 'DuckLake', totalWritten } satisfies DuckLakeNodeData,
+    })
+  }
 
   return { nodes, edges }
 }
@@ -503,6 +556,7 @@ const nodeTypes = {
   recordJobNode:         RecordJobNode,
   replayJobNode:         ReplayJobNode,
   duckLakeNode:          DuckLakeNode,
+  objectStorageNode:     ObjectStorageNode,
   replayTargetNode:      ReplayTargetNode,
 }
 
@@ -563,6 +617,7 @@ function FlowInner({ store }: { store: ParticleStore }) {
           <span style={{ color: '#6E1C1C' }}>● consume</span>
           <span style={{ color: '#3E6A44' }}>● write</span>
           <span style={{ color: '#1E5A8A' }}>● replay</span>
+          <span style={{ opacity: 0.55 }}>╌ tier</span>
         </span>
       </div>
 

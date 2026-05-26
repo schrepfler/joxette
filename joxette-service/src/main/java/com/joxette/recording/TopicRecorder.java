@@ -158,11 +158,20 @@ public class TopicRecorder {
                         try {
                             var records = kc.poll(POLL_TIMEOUT);
                             updateLag(kc);
+                            if (records.isEmpty() && kc.assignment().isEmpty()) {
+                                // No partitions assigned yet (Kafka unreachable or rebalancing).
+                                // Sleep briefly so the poll loop does not spin at CPU speed while
+                                // the metadata background thread is retrying.
+                                Thread.sleep(POLL_TIMEOUT.toMillis());
+                            }
                             for (ConsumerRecord<String, byte[]> record : records) {
                                 emit.apply(record);
                             }
                         } catch (WakeupException e) {
                             log.debug("Kafka wakeup received for topic '{}'; stopping poll loop", topic);
+                            break;
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
                             break;
                         }
                     }

@@ -12,6 +12,8 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
+import org.springframework.context.SmartLifecycle;
+
 import java.io.BufferedWriter;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
@@ -21,6 +23,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 
 /**
@@ -62,9 +66,13 @@ import java.util.function.Consumer;
  * the full stack trace.
  */
 @Component
-public class SseReplayHandler {
+public class SseReplayHandler implements SmartLifecycle {
 
     private static final Logger log = LoggerFactory.getLogger(SseReplayHandler.class);
+
+    // Tracks all VTs currently running a streaming replay so we can interrupt them on shutdown.
+    private final Set<Thread> activeThreads = ConcurrentHashMap.newKeySet();
+    private volatile boolean running = true;
 
     /**
      * Checked streaming callback: implementations call {@code sink.accept(record)}
@@ -105,7 +113,9 @@ public class SseReplayHandler {
     public <T> SseEmitter streamSse(
             String preambleEventName, String preambleData, RecordStreamer<T> streamer) {
         SseEmitter emitter = new SseEmitter(0L); // no timeout
-        Thread.ofVirtual().start(() -> runStreamSse(emitter, preambleEventName, preambleData, streamer));
+        Thread vt = Thread.ofVirtual().unstarted(
+                () -> runTracked(emitter, () -> runStreamSse(emitter, preambleEventName, preambleData, streamer)));
+        vt.start();
         return emitter;
     }
 
@@ -224,7 +234,7 @@ public class SseReplayHandler {
         emitter.onError(t -> cleanup.run());
         emitter.onTimeout(cleanup);
 
-        Thread.ofVirtual().start(() -> {
+        Thread vt = Thread.ofVirtual().unstarted(() -> runTracked(emitter, () -> {
             try {
                 FollowHooks<T> hooks = new FollowHooks<>() {
                     @Override public Duration heartbeatInterval() { return heartbeat; }
@@ -273,7 +283,8 @@ public class SseReplayHandler {
             } finally {
                 cleanup.run();
             }
-        });
+        }));
+        vt.start();
         return emitter;
     }
 
@@ -373,7 +384,7 @@ public class SseReplayHandler {
             RecordStreamer<T> streamer) {
         SseEmitter emitter = new SseEmitter(0L);
         emitter.onError(t -> schedService.cancelIfPending(id));
-        Thread.ofVirtual().start(() -> {
+        Thread vt = Thread.ofVirtual().unstarted(() -> runTracked(emitter, () -> {
             try {
                 String scheduledJson = objectMapper.writeValueAsString(
                         Map.of("id", id, "scheduledAt", scheduledAt.toString()));
@@ -413,7 +424,8 @@ public class SseReplayHandler {
                 schedService.markFailed(id);
                 sendSseError(emitter, e);
             }
-        });
+        }));
+        vt.start();
         return emitter;
     }
 
@@ -474,6 +486,63 @@ public class SseReplayHandler {
                 writeNdjsonError(writer, e);
             }
         };
+    }
+
+    // =========================================================================
+    // Shutdown lifecycle — interrupts in-flight VTs before Tomcat closes
+    // =========================================================================
+
+    /**
+     * Registers the current thread, runs {@code body}, then deregisters.
+     * If the thread is interrupted while running (e.g. during shutdown) the
+     * emitter is completed so the HTTP response is closed before Tomcat times out.
+     */
+    private void runTracked(SseEmitter emitter, Runnable body) {
+        activeThreads.add(Thread.currentThread());
+        try {
+            body.run();
+        } finally {
+            activeThreads.remove(Thread.currentThread());
+            // Ensure the emitter is closed so Tomcat sees the request finish.
+            if (Thread.currentThread().isInterrupted()) {
+                try { emitter.complete(); } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    /**
+     * Phase must be lower than Tomcat's graceful-shutdown phase
+     * ({@code Integer.MAX_VALUE}) so this runs first and the replay VTs have
+     * a chance to exit before Tomcat stops accepting connections.
+     */
+    @Override
+    public int getPhase() {
+        return Integer.MAX_VALUE - 1024;
+    }
+
+    @Override
+    public boolean isAutoStartup() { return true; }
+
+    @Override
+    public void start() { running = true; }
+
+    @Override
+    public boolean isRunning() { return running; }
+
+    /**
+     * Interrupts all active replay VTs and marks this bean stopped so Spring
+     * does not call {@link #stop()} a second time.
+     */
+    @Override
+    public void stop() {
+        running = false;
+        int count = activeThreads.size();
+        if (count > 0) {
+            log.info("SseReplayHandler: interrupting {} in-flight replay VT(s) for shutdown", count);
+            for (Thread t : activeThreads) {
+                t.interrupt();
+            }
+        }
     }
 
     // =========================================================================

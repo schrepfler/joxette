@@ -59,8 +59,13 @@ public class BrokerConnectionFactory {
                 // causes thundering-herd reconnects. 1 s initial, 30 s ceiling.
                 .property("reconnect.backoff.ms",     "1000")
                 .property("reconnect.backoff.max.ms", "30000")
-                // Don't wait forever for metadata: fail fast so the Resilience4j retry
-                // in RecordingCoordinator can apply its own backoff.
+                // Throttle metadata/fetch retries when the broker is down — default 100 ms
+                // causes the client background thread to log "Rebootstrapping" thousands of
+                // times per minute. 1 s initial, 30 s ceiling matches the reconnect backoff.
+                .property("retry.backoff.ms",         "1000")
+                .property("retry.backoff.max.ms",     "30000")
+                // Don't wait forever for metadata: fail fast so the Pekko backoff supervisor
+                // in TopicLifecycleActor can apply its own backoff.
                 .property("request.timeout.ms",       "10000")
                 .property("default.api.timeout.ms",   "15000");
         settings = applySecurityProps(settings, cfg);

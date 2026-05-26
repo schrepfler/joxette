@@ -70,7 +70,15 @@ public class PekkoConfig {
 
     private ActorSystem<Void> actorSystem;
 
-    @Bean
+    /**
+     * {@code destroyMethod = ""} suppresses Spring's auto-detection of
+     * {@code ActorSystem.close()}.  Without this, Spring calls {@code close()}
+     * during context teardown, which triggers Pekko's {@code CoordinatedShutdown}
+     * BEFORE {@link #shutdown()} runs — leaving the recording-coordinator actor
+     * already terminated when step 1 tries to send it {@code StopAll}.
+     * {@link #shutdown()} handles the full ordered teardown explicitly.
+     */
+    @Bean(destroyMethod = "")
     public ActorSystem<Void> actorSystem() throws InterruptedException {
         Config base = ConfigFactory.load("pekko");
         Config overrides = remotePort > 0
