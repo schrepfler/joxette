@@ -502,6 +502,14 @@ joxette/
 
 **Supervised recorder lifecycle** — Each Kafka topic runs in a `TopicLifecycleActor` child spawned by `RecordingCoordinatorActor`. Pekko's built-in exponential-backoff supervisor restarts failed topic actors automatically, replacing the Resilience4j retry wrapper used previously. The public API of `RecordingCoordinator` (the Spring bean) is unchanged — it is now a thin adapter over the actor ask pattern.
 
+**Ordered graceful shutdown (SIGTERM)** — On SIGTERM (K8s pod termination, `docker stop`, normal `kill`), Spring's JVM shutdown hook drives the teardown in a fixed order:
+1. HTTP — Tomcat drains in-flight requests (`server.shutdown: graceful`, 30 s timeout).
+2. Recorders — `RecordingCoordinator.stopAll()` stops every active topic actor via ask-pattern (actor system still alive at this point).
+3. Write channel — `DuckLakeWriteChannel.stop()` signals `done()` and waits for the drain virtual thread to flush remaining DuckDB batches.
+4. Actor system — `actorSystem.terminate()` awaits clean Pekko shutdown (10 s timeout).
+
+Pekko's own JVM shutdown hook is disabled (`pekko.coordinated-shutdown.run-by-jvm-shutdown-hook = off` in `pekko.conf`) so it cannot race with Spring's hook and kill actors before step 2 completes. SIGKILL (`kill -9`) cannot be intercepted by any JVM process; K8s always sends SIGTERM first with a configurable grace period before escalating.
+
 **Storage delegation** — All object storage interaction (S3, GCS, Azure Blob) is handled by DuckDB's `httpfs` extension and DuckLake's storage management. There is no Java object-storage SDK in the dependency tree.
 
 ---
