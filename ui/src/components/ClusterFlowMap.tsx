@@ -208,7 +208,7 @@ function KafkaTopicNode({ data }: NodeProps<Node<KafkaTopicNodeData>>) {
   return (
     <div style={{ ...nodeBase, minWidth: 150 }}>
       <div style={nodeHeader}>
-        <span style={dotStyle('#3E6A44')} />
+        <img src="/Apache_Kafka_logo.svg" alt="Kafka" style={{ width: 14, height: 14, flexShrink: 0, filter: 'invert(1) brightness(0.7)' }} />
         <span style={nodeTitle}>{data.label}</span>
       </div>
       <div style={nodeMeta}>
