@@ -5,14 +5,19 @@ import com.softwaremill.jox.Channel;
 import com.softwaremill.jox.ChannelClosedException;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
+import org.apache.kafka.common.TopicPartition;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
 
 /**
  * Serializes all DuckDB writes through a single virtual thread.
@@ -40,6 +45,13 @@ public class DuckLakeWriteChannel {
 
     private Channel<WriteBatch> channel;
     private Thread drainThread;
+
+    /**
+     * Tracks in-flight {@link WriteBatch}es by their completion future.
+     * Used by {@link #awaitDrain(Set)} to block until batches for specific
+     * partitions have been written.
+     */
+    private final Set<WriteBatch> inFlight = ConcurrentHashMap.newKeySet();
 
     public DuckLakeWriteChannel(Connection duckDbConnection,
                                  JoxetteProperties properties,
@@ -85,9 +97,11 @@ public class DuckLakeWriteChannel {
      * pipeline so fast Kafka consumers do not outrun the DuckDB write path.
      */
     public WriteResult submit(WriteBatch batch) throws InterruptedException {
+        inFlight.add(batch);
         try {
             channel.send(batch);
         } catch (ChannelClosedException e) {
+            inFlight.remove(batch);
             throw new IllegalStateException(
                     "Write channel is closed; cannot accept batch for topic " + batch.topic(), e);
         }
@@ -98,6 +112,33 @@ public class DuckLakeWriteChannel {
             Throwable cause = e.getCause();
             if (cause instanceof RuntimeException re) throw re;
             throw new RuntimeException("Write failed for topic " + batch.topic(), cause);
+        } finally {
+            inFlight.remove(batch);
+        }
+    }
+
+    /**
+     * Blocks until all in-flight batches whose partition set intersects
+     * {@code revokedPartitions} have been written by the drain VT.
+     *
+     * <p>Pass {@code null} to drain all in-flight batches (classic protocol path,
+     * where all partitions are revoked at once).
+     *
+     * <p>Called from {@code ConsumerRebalanceListener.onPartitionsRevoked} on the
+     * Kafka consumer thread; must return before the rebalance completes so that
+     * offsets are safe to commit.
+     */
+    public void awaitDrain(Collection<TopicPartition> revokedPartitions) {
+        for (WriteBatch batch : inFlight) {
+            boolean relevant = revokedPartitions == null
+                    || batch.partitions().stream().anyMatch(revokedPartitions::contains);
+            if (relevant) {
+                try {
+                    batch.result().join();
+                } catch (Exception ignored) {
+                    // Write failure is already logged by processBatch; don't block shutdown.
+                }
+            }
         }
     }
 

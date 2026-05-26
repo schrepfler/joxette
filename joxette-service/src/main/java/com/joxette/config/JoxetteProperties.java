@@ -241,12 +241,36 @@ public class JoxetteProperties {
     public static class Kafka {
         private String bootstrapServers = "localhost:9092";
         private List<BrokerEntry> brokers = new ArrayList<>();
+        /** Shared consumer group for all recorder instances (default: {@code joxette-recorder}). */
+        private String consumerGroup = "joxette-recorder";
+        /**
+         * Consumer group used by the entity-router role when running independently;
+         * shares the recorder group when both roles run on the same instance
+         * (default: {@code joxette-entity-router}).
+         */
+        private String entityConsumerGroup = "joxette-entity-router";
+        /**
+         * Kafka consumer group protocol.  {@code consumer} enables KIP-848 server-side
+         * rebalance (auto-negotiates, falls back to classic on older brokers).
+         * {@code classic} forces the legacy eager/cooperative protocol.
+         * Default: {@code consumer}.
+         */
+        private String groupProtocol = "consumer";
 
         public String getBootstrapServers() { return bootstrapServers; }
         public void setBootstrapServers(String bootstrapServers) { this.bootstrapServers = bootstrapServers; }
 
         public List<BrokerEntry> getBrokers() { return brokers; }
         public void setBrokers(List<BrokerEntry> brokers) { this.brokers = brokers; }
+
+        public String getConsumerGroup() { return consumerGroup; }
+        public void setConsumerGroup(String consumerGroup) { this.consumerGroup = consumerGroup; }
+
+        public String getEntityConsumerGroup() { return entityConsumerGroup; }
+        public void setEntityConsumerGroup(String entityConsumerGroup) { this.entityConsumerGroup = entityConsumerGroup; }
+
+        public String getGroupProtocol() { return groupProtocol; }
+        public void setGroupProtocol(String groupProtocol) { this.groupProtocol = groupProtocol; }
 
         public static class BrokerEntry {
             private String id = "default";

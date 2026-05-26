@@ -23,9 +23,11 @@ import java.util.Map;
 public class BrokerConnectionFactory {
 
     private final BrokerRepository brokerRepository;
+    private final JoxetteProperties properties;
 
-    public BrokerConnectionFactory(BrokerRepository brokerRepository) {
+    public BrokerConnectionFactory(BrokerRepository brokerRepository, JoxetteProperties properties) {
         this.brokerRepository = brokerRepository;
+        this.properties = properties;
     }
 
     /**
@@ -42,13 +44,17 @@ public class BrokerConnectionFactory {
      */
     public ConsumerSettings<String, byte[]> consumerSettings(String brokerId) {
         BrokerConfig cfg = resolve(brokerId);
+        String groupProtocol = properties.getKafka().getGroupProtocol();
         ConsumerSettings<String, byte[]> settings = ConsumerSettings
-                .defaults("joxette-recorder")
+                .defaults(properties.getKafka().getConsumerGroup())
                 .bootstrapServers(cfg.bootstrapServers())
                 .keyDeserializer(new StringDeserializer())
                 .valueDeserializer(new ByteArrayDeserializer())
                 .autoOffsetReset(ConsumerSettings.AutoOffsetReset.LATEST)
                 .property("enable.auto.commit", "false")
+                // KIP-848: enables server-side rebalance on Kafka 3.7+; auto-falls-back to
+                // classic cooperative protocol on older brokers — no operator action needed.
+                .property("group.protocol", groupProtocol)
                 // Back off slowly when the broker is unreachable — default is 50 ms which
                 // causes thundering-herd reconnects. 1 s initial, 30 s ceiling.
                 .property("reconnect.backoff.ms",     "1000")

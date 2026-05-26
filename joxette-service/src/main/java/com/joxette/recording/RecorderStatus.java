@@ -1,6 +1,7 @@
 package com.joxette.recording;
 
 import java.time.Instant;
+import java.util.Set;
 
 /**
  * Live status snapshot for a topic recorder scope, returned by
@@ -19,5 +20,15 @@ public record RecorderStatus(
          */
         long consumerLag,
         /** Last error message from a failed recorder scope; {@code null} if healthy. */
-        String lastError
+        String lastError,
+        /**
+         * Negotiated Kafka group protocol ({@code consumer} for KIP-848, {@code classic} for legacy).
+         * {@code "unknown"} until the first rebalance fires.
+         */
+        String protocol,
+        /**
+         * Currently assigned partition IDs for this topic; empty when the consumer is not yet running
+         * or all partitions have been revoked.
+         */
+        Set<Integer> assignedPartitions
 ) {}

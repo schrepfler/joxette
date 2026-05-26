@@ -328,7 +328,21 @@ public class RecordingCoordinator {
                 totalLag = -1;
             }
 
-            return new RecorderStatus(topic, running, startedAt, lastBatch, totalLag, lastError);
+            // Protocol: use the first non-unknown value, or "unknown" if none reported yet.
+            String protocol = recorders.stream()
+                    .map(h -> h.recorder().negotiatedProtocol())
+                    .filter(p -> !"unknown".equals(p))
+                    .findFirst()
+                    .orElse("unknown");
+
+            // Union of assigned partition IDs across all parallel consumers.
+            java.util.Set<Integer> partitions = new java.util.HashSet<>();
+            for (RecorderHandle h : recorders) {
+                partitions.addAll(h.recorder().assignedPartitionIds());
+            }
+
+            return new RecorderStatus(topic, running, startedAt, lastBatch, totalLag, lastError,
+                    protocol, java.util.Set.copyOf(partitions));
         }
     }
 }

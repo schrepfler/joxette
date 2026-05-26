@@ -51,11 +51,14 @@ public class HealthController {
     /**
      * Consumer-lag summary for one active topic.
      *
-     * @param totalLag       sum of per-partition lag; {@code -1} if Kafka is unreachable
-     * @param lagByPartition per-partition lag values (empty when totalLag is -1)
+     * @param totalLag         sum of per-partition lag; {@code -1} if Kafka is unreachable
+     * @param lagByPartition   per-partition lag values (empty when totalLag is -1)
+     * @param protocol         negotiated Kafka group protocol ({@code consumer} or {@code classic});
+     *                         {@code "unknown"} until the first rebalance fires
+     * @param partitions       currently assigned partition IDs; empty before the first rebalance
      */
     @Schema(description = "Consumer-lag summary for one active Kafka topic",
-            example = "{\"topic\": \"orders\", \"totalLag\": 150, \"lagByPartition\": {\"0\": 80, \"1\": 70}}")
+            example = "{\"topic\": \"orders\", \"totalLag\": 150, \"lagByPartition\": {\"0\": 80, \"1\": 70}, \"protocol\": \"consumer\", \"partitions\": [0, 1, 2]}")
     public record TopicLag(
             @Schema(description = "Kafka topic name", example = "orders")
             String topic,
@@ -63,7 +66,13 @@ public class HealthController {
             long totalLag,
             @Schema(description = "Per-partition lag values; empty when totalLag is -1",
                     example = "{\"0\": 80, \"1\": 70}")
-            Map<Integer, Long> lagByPartition) {}
+            Map<Integer, Long> lagByPartition,
+            @Schema(description = "Negotiated Kafka group protocol; 'consumer' for KIP-848, 'classic' for legacy",
+                    example = "consumer")
+            String protocol,
+            @Schema(description = "Currently assigned partition IDs on this instance",
+                    example = "[0, 1, 2]")
+            List<Integer> partitions) {}
 
     /**
      * Cluster-level summary derived from the {@code joxette_instances} registry table.
@@ -184,13 +193,14 @@ public class HealthController {
     })
     @GetMapping(value = "/health", produces = MediaType.APPLICATION_JSON_VALUE)
     public HealthStatus health() {
-        List<String> active      = coordinator.activeTopics().stream().sorted().toList();
+        Map<String, com.joxette.recording.RecorderStatus> running = coordinator.listRunning();
+        List<String> active      = running.keySet().stream().sorted().toList();
         List<String> activeRoles = instanceRoles.resolvedRoles().stream().sorted().toList();
         ClusterSummary cluster   = buildClusterSummary();
         return new HealthStatus(
                 "UP",
                 active,
-                computeConsumerLag(active),
+                computeConsumerLag(active, running),
                 catalogSizeBytes(),
                 inlinedDataSizeBytes(),
                 properties.getCatalog().getPath(),
@@ -216,14 +226,17 @@ public class HealthController {
     // -------------------------------------------------------------------------
 
     /**
-     * Returns consumer lag for all active topics.
+     * Returns consumer lag for all active topics, enriched with protocol and
+     * partition assignment from live {@link com.joxette.recording.RecorderStatus} snapshots.
      *
      * <p>Uses a 15-second result cache. When the cache is stale, opens a
      * short-lived {@link AdminClient}, queries all topics, then closes it
      * immediately. There is no persistent AdminClient background thread — the
      * source of the reconnect storm when Kafka is down.
      */
-    private List<TopicLag> computeConsumerLag(List<String> topics) {
+    private List<TopicLag> computeConsumerLag(
+            List<String> topics,
+            Map<String, com.joxette.recording.RecorderStatus> running) {
         if (topics.isEmpty()) return List.of();
         long now = System.currentTimeMillis();
         if (now - lagCacheTime.get() < LAG_CACHE_TTL_MS) {
@@ -233,7 +246,7 @@ public class HealthController {
         try (AdminClient client = brokerConnectionFactory.adminClient(
                 com.joxette.management.BrokerConfig.DEFAULT_BROKER_ID)) {
             for (String topic : topics) {
-                result.add(lagForTopic(client, topic));
+                result.add(lagForTopic(client, topic, running.get(topic)));
             }
         } catch (Exception e) {
             // Kafka unreachable — return cached (possibly empty) values
@@ -244,15 +257,21 @@ public class HealthController {
         return result;
     }
 
-    private TopicLag lagForTopic(AdminClient client, String topic) {
-        String groupId = "joxette-recorder-" + topic;
+    private TopicLag lagForTopic(AdminClient client, String topic,
+            com.joxette.recording.RecorderStatus status) {
+        String protocol   = status != null ? status.protocol()           : "unknown";
+        List<Integer> pts = status != null
+                ? status.assignedPartitions().stream().sorted().toList()
+                : List.of();
+
+        String groupId = properties.getKafka().getConsumerGroup() + "-" + topic;
         try {
             var committed = client
                     .listConsumerGroupOffsets(groupId)
                     .partitionsToOffsetAndMetadata()
                     .get(5, TimeUnit.SECONDS);
             if (committed.isEmpty()) {
-                return new TopicLag(topic, -1, Map.of());
+                return new TopicLag(topic, -1, Map.of(), protocol, pts);
             }
             Map<TopicPartition, OffsetSpec> offsetRequest = new LinkedHashMap<>();
             for (TopicPartition tp : committed.keySet()) {
@@ -273,12 +292,12 @@ public class HealthController {
                 lagByPartition.put(tp.partition(), lag);
                 if (lag >= 0) total += lag;
             }
-            return new TopicLag(topic, total, lagByPartition);
+            return new TopicLag(topic, total, lagByPartition, protocol, pts);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            return new TopicLag(topic, -1, Map.of());
+            return new TopicLag(topic, -1, Map.of(), protocol, pts);
         } catch (ExecutionException | TimeoutException e) {
-            return new TopicLag(topic, -1, Map.of());
+            return new TopicLag(topic, -1, Map.of(), protocol, pts);
         }
     }
 

@@ -23,9 +23,12 @@ import java.time.Instant;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -44,6 +47,21 @@ import java.util.concurrent.atomic.AtomicReference;
  *   <li>After a successful write, entity routes are upserted into {@code known_entities}
  *       and Kafka offsets are committed synchronously on the next poll cycle.</li>
  * </ol>
+ *
+ * <h2>Rebalance handling</h2>
+ * <p>The {@link ConsumerRebalanceListener} is protocol-aware:
+ * <ul>
+ *   <li><b>KIP-848 ({@code group.protocol=consumer})</b>: {@code onPartitionsRevoked} fires with
+ *       only the specifically revoked partitions.  Only in-flight batches that overlap the revoked
+ *       set are drained; non-revoked partitions continue without a pause.</li>
+ *   <li><b>Classic protocol</b>: {@code onPartitionsRevoked} may receive all assigned partitions.
+ *       All in-flight batches for the topic are drained before returning.</li>
+ * </ul>
+ *
+ * <h2>Graceful shutdown</h2>
+ * <p>On {@link #stop()}, consumption is paused first, then all in-flight batches are drained,
+ * then pending offsets are committed, and finally the consumer is closed.  This ensures no
+ * in-flight writes are lost during K8s rolling restarts.
  */
 public class TopicRecorder {
 
@@ -63,6 +81,9 @@ public class TopicRecorder {
     /** The live consumer — set during {@link #run()}, cleared on exit. */
     private volatile KafkaConsumer<String, byte[]> consumer;
 
+    /** Currently assigned partitions (updated inside the rebalance listener). */
+    private final Set<TopicPartition> assignedPartitions = ConcurrentHashMap.newKeySet();
+
     /** Pending offsets to commit on the next poll iteration (thread-safe). */
     private final AtomicReference<Map<TopicPartition, OffsetAndMetadata>> pendingCommit =
             new AtomicReference<>();
@@ -71,6 +92,9 @@ public class TopicRecorder {
 
     private volatile Instant lastBatchAt;
     private final AtomicLong consumerLag = new AtomicLong(-1);
+
+    /** Negotiated Kafka group protocol — set when the first rebalance fires. */
+    private volatile String negotiatedProtocol = "unknown";
 
     public TopicRecorder(
             String topic,
@@ -99,7 +123,7 @@ public class TopicRecorder {
         }
         this.seekToTimestamp = ts;
 
-        ConsumerSettings<String, byte[]> s = baseSettings.groupId("joxette-recorder-" + topic);
+        ConsumerSettings<String, byte[]> s = baseSettings.groupId(baseSettings.groupId() + "-" + topic);
         if (seekToEarliest) {
             s = s.autoOffsetReset(ConsumerSettings.AutoOffsetReset.EARLIEST);
         }
@@ -117,23 +141,7 @@ public class TopicRecorder {
             Flows.<ConsumerRecord<String, byte[]>>usingEmit(emit -> {
                 try (KafkaConsumer<String, byte[]> kc = settings.toConsumer()) {
                     this.consumer = kc;
-                    kc.subscribe(List.of(topic), new ConsumerRebalanceListener() {
-                        @Override
-                        public void onPartitionsRevoked(Collection<TopicPartition> partitions) {}
-
-                        @Override
-                        public void onPartitionsAssigned(Collection<TopicPartition> partitions) {
-                            if (seekToEarliest) {
-                                kc.seekToBeginning(partitions);
-                                log.info("Seeked to beginning of {} partition(s) for topic '{}' (startFrom=earliest)",
-                                        partitions.size(), topic);
-                            } else if (seekToTimestamp != null) {
-                                seekToTimestamp(kc, partitions, seekToTimestamp);
-                                log.info("Seeked to timestamp {} on {} partition(s) for topic '{}'",
-                                        seekToTimestamp, partitions.size(), topic);
-                            }
-                        }
-                    });
+                    kc.subscribe(List.of(topic), new PartitionAwareRebalanceListener(kc));
 
                     while (!stopped && !Thread.currentThread().isInterrupted()) {
                         Map<TopicPartition, OffsetAndMetadata> toCommit = pendingCommit.getAndSet(null);
@@ -151,8 +159,20 @@ public class TopicRecorder {
                             break;
                         }
                     }
+
+                    // Graceful shutdown: drain in-flight batches, commit, then close.
+                    writeChannel.awaitDrain(null);
+                    Map<TopicPartition, OffsetAndMetadata> finalCommit = pendingCommit.getAndSet(null);
+                    if (finalCommit != null && !finalCommit.isEmpty()) {
+                        try {
+                            kc.commitSync(finalCommit);
+                        } catch (Exception e) {
+                            log.warn("Final offset commit failed for topic '{}': {}", topic, e.getMessage());
+                        }
+                    }
                 } finally {
                     this.consumer = null;
+                    assignedPartitions.clear();
                 }
             })
             .groupedWithin(batchSize, batchTimeout)
@@ -183,6 +203,16 @@ public class TopicRecorder {
     public Instant lastBatchAt() { return lastBatchAt; }
 
     public long consumerLag() { return consumerLag.get(); }
+
+    /** Currently assigned partition numbers; empty when the consumer is not running. */
+    public Set<Integer> assignedPartitionIds() {
+        Set<Integer> ids = ConcurrentHashMap.newKeySet();
+        for (TopicPartition tp : assignedPartitions) ids.add(tp.partition());
+        return Collections.unmodifiableSet(ids);
+    }
+
+    /** Negotiated Kafka group protocol ({@code consumer} or {@code classic}). */
+    public String negotiatedProtocol() { return negotiatedProtocol; }
 
     // -----------------------------------------------------------------------
     // Batch write
@@ -228,6 +258,135 @@ public class TopicRecorder {
                 log.warn("Failed to upsert known_entities batch: {}", e.getMessage());
                 // Non-fatal: entity registry is best-effort; don't abort the batch
             }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Rebalance listener
+    // -----------------------------------------------------------------------
+
+    /**
+     * Protocol-aware rebalance listener.
+     *
+     * <p>Under KIP-848 ({@code group.protocol=consumer}), {@code onPartitionsRevoked}
+     * fires with only the partitions being taken away.  We drain only the in-flight
+     * batches that overlap the revoked set — non-revoked partitions continue without
+     * interruption.
+     *
+     * <p>Under the classic protocol, {@code onPartitionsRevoked} may carry the full
+     * assignment.  We drain all in-flight batches for this topic to be safe.
+     */
+    private class PartitionAwareRebalanceListener implements ConsumerRebalanceListener {
+
+        private final KafkaConsumer<String, byte[]> kc;
+
+        PartitionAwareRebalanceListener(KafkaConsumer<String, byte[]> kc) {
+            this.kc = kc;
+        }
+
+        @Override
+        public void onPartitionsRevoked(Collection<TopicPartition> revoked) {
+            if (revoked.isEmpty()) return;
+
+            // Detect whether we are under KIP-848 (incremental revoke) or classic
+            // (full revoke = all currently assigned partitions handed back at once).
+            boolean isIncrementalRevoke = !assignedPartitions.isEmpty()
+                    && !assignedPartitions.equals(Set.copyOf(revoked));
+
+            if (isIncrementalRevoke) {
+                // KIP-848: drain only batches that overlap the revoked partitions.
+                log.info("KIP-848 incremental revoke on topic '{}': draining {} partition(s): {}",
+                        topic, revoked.size(), revoked);
+                writeChannel.awaitDrain(revoked);
+            } else {
+                // Classic protocol: drain all in-flight batches before returning.
+                log.info("Classic full revoke on topic '{}': draining all in-flight batches ({} partition(s))",
+                        topic, revoked.size());
+                writeChannel.awaitDrain(null);
+            }
+
+            // Commit offsets synchronously before releasing partitions.
+            Map<TopicPartition, OffsetAndMetadata> toCommit = pendingCommit.getAndSet(null);
+            if (toCommit != null) {
+                Map<TopicPartition, OffsetAndMetadata> revokedCommit = new HashMap<>();
+                for (TopicPartition tp : revoked) {
+                    OffsetAndMetadata om = toCommit.get(tp);
+                    if (om != null) revokedCommit.put(tp, om);
+                }
+                if (!revokedCommit.isEmpty()) {
+                    try {
+                        kc.commitSync(revokedCommit);
+                    } catch (Exception e) {
+                        log.warn("Offset commit on revoke failed for topic '{}': {}", topic, e.getMessage());
+                    }
+                }
+                // Keep the non-revoked entries for the next poll cycle.
+                if (!isIncrementalRevoke) {
+                    // All revoked — nothing to retain.
+                } else {
+                    Map<TopicPartition, OffsetAndMetadata> retained = new HashMap<>(toCommit);
+                    revoked.forEach(retained::remove);
+                    if (!retained.isEmpty()) pendingCommit.set(retained);
+                }
+            }
+
+            assignedPartitions.removeAll(revoked);
+        }
+
+        @Override
+        public void onPartitionsAssigned(Collection<TopicPartition> assigned) {
+            assignedPartitions.addAll(assigned);
+
+            // Detect negotiated protocol by inspecting the metric the Kafka client exposes.
+            // The metric is set before the first rebalance fires; we read it lazily here
+            // to avoid a dependency on the private metric name at construction time.
+            detectNegotiatedProtocol(kc);
+
+            log.info("Partitions assigned on topic '{}': {} (negotiated protocol: {})",
+                    topic, assigned, negotiatedProtocol);
+
+            if (seekToEarliest) {
+                kc.seekToBeginning(assigned);
+                log.info("Seeked to beginning of {} partition(s) for topic '{}' (startFrom=earliest)",
+                        assigned.size(), topic);
+            } else if (seekToTimestamp != null) {
+                seekToTimestamp(kc, assigned, seekToTimestamp);
+                log.info("Seeked to timestamp {} on {} partition(s) for topic '{}'",
+                        seekToTimestamp, assigned.size(), topic);
+            }
+        }
+    }
+
+    /**
+     * Reads the negotiated group protocol from the Kafka consumer metric
+     * {@code consumer-coordinator-metrics / group-protocol}.
+     *
+     * <p>The metric is available from Kafka client 3.7+ when {@code group.protocol=consumer}
+     * is set.  On older clients or classic-only brokers the metric is absent; in that case
+     * we fall back to reading the configured property.
+     */
+    private void detectNegotiatedProtocol(KafkaConsumer<String, byte[]> kc) {
+        try {
+            for (var entry : kc.metrics().entrySet()) {
+                if ("group-protocol".equals(entry.getKey().name())
+                        && "consumer-coordinator-metrics".equals(entry.getKey().group())) {
+                    Object val = entry.getValue().metricValue();
+                    if (val instanceof String s && !s.isBlank() && !"".equals(s)) {
+                        if (!s.equals(negotiatedProtocol)) {
+                            negotiatedProtocol = s;
+                            log.info("Kafka consumer group protocol for topic '{}': {}", topic, s);
+                        }
+                        return;
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+            // Metric lookup is best-effort; never fail a rebalance because of it.
+        }
+        // Metric not present — fall back to configured value.
+        String configured = settings.toProperties().getProperty("group.protocol", "classic");
+        if (!configured.equals(negotiatedProtocol)) {
+            negotiatedProtocol = configured;
         }
     }
 
