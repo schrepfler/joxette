@@ -4,7 +4,6 @@ import com.joxette.config.JoxetteProperties;
 import com.softwaremill.jox.Channel;
 import com.softwaremill.jox.ChannelClosedException;
 import jakarta.annotation.PostConstruct;
-import jakarta.annotation.PreDestroy;
 import org.apache.kafka.common.TopicPartition;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -71,8 +70,7 @@ public class DuckLakeWriteChannel {
         log.info("DuckLakeWriteChannel started (capacity={})", capacity);
     }
 
-    @PreDestroy
-    void stop() {
+    public void stop() {
         if (channel != null) {
             channel.done();
         }

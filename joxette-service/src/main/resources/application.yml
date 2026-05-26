@@ -10,8 +10,11 @@ spring:
   mvc:
     problemdetails:
       enabled: true
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
 server:
   port: 8080
+  shutdown: graceful
 
 springdoc:
   api-docs:

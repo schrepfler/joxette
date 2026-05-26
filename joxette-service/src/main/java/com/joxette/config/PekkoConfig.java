@@ -4,6 +4,7 @@ import com.joxette.compaction.CompactionService;
 import com.joxette.compaction.CompactionSingletonActor;
 import com.joxette.management.ConfigRepository;
 import com.joxette.recording.DuckLakeWriteChannel;
+import com.joxette.recording.RecordingCoordinator;
 import com.joxette.recording.RecordingCoordinatorActor;
 import com.joxette.replay.KnownEntitiesRepository;
 import com.joxette.replay.MessageRouter;
@@ -59,6 +60,7 @@ public class PekkoConfig {
     @Autowired @Lazy private DuckLakeWriteChannel writeChannel;
     @Autowired @Lazy private MessageRouter messageRouter;
     @Autowired @Lazy private KnownEntitiesRepository knownEntitiesRepository;
+    @Autowired @Lazy private RecordingCoordinator recordingCoordinator;
 
     private ActorSystem<Void> actorSystem;
 
@@ -130,8 +132,39 @@ public class PekkoConfig {
                 org.apache.pekko.actor.typed.Props.empty());
     }
 
+    /**
+     * Ordered shutdown: recorders → write channel → actor system.
+     *
+     * <p>The order matters:
+     * <ol>
+     *   <li>Stop all topic recorders first — each stop() ask goes to the coordinator actor,
+     *       so the actor system must still be alive at this point.</li>
+     *   <li>Drain the write channel — lets any in-flight DuckDB batches complete before
+     *       the catalog connection closes.</li>
+     *   <li>Terminate the actor system last — coordinator actor is no longer needed.</li>
+     * </ol>
+     *
+     * <p>Pekko's own JVM shutdown hook is disabled in {@code pekko.conf}
+     * ({@code coordinated-shutdown.run-by-jvm-shutdown-hook = off}) so it cannot
+     * race with Spring's hook and kill actors before step 1 completes.
+     */
     @PreDestroy
     void shutdown() {
+        // Step 1: stop all topic recorders (asks go to the recording-coordinator actor).
+        try {
+            recordingCoordinator.stopAll();
+        } catch (Exception e) {
+            log.warn("RecordingCoordinator.stopAll() failed during shutdown: {}", e.getMessage());
+        }
+
+        // Step 2: drain the write channel so in-flight DuckDB writes complete.
+        try {
+            writeChannel.stop();
+        } catch (Exception e) {
+            log.warn("DuckLakeWriteChannel.stop() failed during shutdown: {}", e.getMessage());
+        }
+
+        // Step 3: terminate the Pekko actor system.
         if (actorSystem != null) {
             log.info("Terminating Pekko ActorSystem 'joxette'…");
             actorSystem.terminate();

@@ -1,6 +1,5 @@
 package com.joxette.recording;
 
-import jakarta.annotation.PreDestroy;
 import org.apache.pekko.actor.typed.ActorRef;
 import org.apache.pekko.actor.typed.ActorSystem;
 import org.apache.pekko.actor.typed.javadsl.AskPattern;
@@ -74,7 +73,6 @@ public class RecordingCoordinator {
         return ask(RecordingCoordinatorActor.ListRunning::new);
     }
 
-    @PreDestroy
     public void stopAll() {
         log.info("RecordingCoordinator: stopping all active recorder scopes");
         Set<String> topics = activeTopics();
