@@ -366,6 +366,21 @@ public class TopicRecorder {
                 seekToTimestamp(kc, assigned, seekToTimestamp);
                 log.info("Seeked to timestamp {} on {} partition(s) for topic '{}'",
                         seekToTimestamp, assigned.size(), topic);
+            } else {
+                // For start_from=latest, explicitly seek uncommitted partitions to end.
+                // Partitions that already have a committed offset are left alone so the
+                // consumer resumes from where it left off.  This avoids the
+                // CommitRequestManager "Found no committed offset" log cycle — explicit
+                // positioning bypasses the committed-offset lookup entirely.
+                Map<TopicPartition, OffsetAndMetadata> committed = kc.committed(new java.util.HashSet<>(assigned));
+                List<TopicPartition> noOffset = assigned.stream()
+                        .filter(tp -> committed.get(tp) == null)
+                        .toList();
+                if (!noOffset.isEmpty()) {
+                    kc.seekToEnd(noOffset);
+                    log.info("Seeked to end of {} uncommitted partition(s) for topic '{}': {}",
+                            noOffset.size(), topic, noOffset);
+                }
             }
         }
     }

@@ -125,10 +125,9 @@ public class InstanceController {
     )
     @GetMapping(value = "/instances/live-metrics", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter liveMetrics() {
-        // Timeout 0 = no server-side timeout; client disconnects to end the stream.
         SseEmitter emitter = new SseEmitter(0L);
 
-        Thread.ofVirtual().name("live-metrics-sse").start(() -> {
+        Thread vt = Thread.ofVirtual().name("live-metrics-sse").unstarted(() -> {
             try {
                 while (!Thread.currentThread().isInterrupted()) {
                     ClusterStateView snapshot = buildClusterState();
@@ -142,7 +141,7 @@ public class InstanceController {
                     try {
                         emitter.send(SseEmitter.event().name("metrics").data(json, MediaType.APPLICATION_JSON));
                     } catch (IOException e) {
-                        // Client disconnected.
+                        // Client disconnected — exit cleanly without calling complete().
                         return;
                     }
                     Thread.sleep(2_000);
@@ -150,10 +149,19 @@ public class InstanceController {
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             } finally {
-                emitter.complete();
+                // Only complete if the emitter hasn't been closed externally already.
+                try { emitter.complete(); } catch (IllegalStateException ignored) {}
             }
         });
 
+        // Interrupt the VT when Tomcat closes the connection (client disconnect, graceful
+        // shutdown, or async timeout) so the thread exits promptly without blocking Tomcat.
+        Runnable interrupt = vt::interrupt;
+        emitter.onCompletion(interrupt);
+        emitter.onTimeout(interrupt);
+        emitter.onError(t -> interrupt.run());
+
+        vt.start();
         return emitter;
     }
 
