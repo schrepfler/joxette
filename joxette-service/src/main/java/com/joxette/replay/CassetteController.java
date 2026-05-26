@@ -25,6 +25,9 @@ import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBo
 
 import com.joxette.config.ConditionalOnRole;
 import com.joxette.config.JoxetteProperties;
+import com.joxette.management.ConfigRepository;
+import com.joxette.management.KafkaTopicAdmin;
+import com.joxette.replay.ActiveReplayTracker;
 import com.joxette.recording.CassetteRecordingBus;
 import com.joxette.replay.sink.RecordSink;
 import com.joxette.replay.sink.kafka.KafkaRecordSinkFactory;
@@ -110,6 +113,9 @@ public class CassetteController {
     private final SunburstService           sunburstService;
     private final FieldSuggestionsService   fieldSuggestionsService;
     private final CassetteRecordingBus      recordingBus;
+    private final KafkaTopicAdmin           kafkaTopicAdmin;
+    private final ConfigRepository          configRepository;
+    private final ActiveReplayTracker       replayTracker;
 
     public CassetteController(
             TopicReplayService topicService,
@@ -126,7 +132,10 @@ public class CassetteController {
             SolMatchService solMatchService,
             SunburstService sunburstService,
             FieldSuggestionsService fieldSuggestionsService,
-            CassetteRecordingBus recordingBus) {
+            CassetteRecordingBus recordingBus,
+            KafkaTopicAdmin kafkaTopicAdmin,
+            ConfigRepository configRepository,
+            ActiveReplayTracker replayTracker) {
         this.topicService             = topicService;
         this.entityService            = entityService;
         this.sseHandler               = sseHandler;
@@ -142,6 +151,9 @@ public class CassetteController {
         this.sunburstService          = sunburstService;
         this.fieldSuggestionsService  = fieldSuggestionsService;
         this.recordingBus             = recordingBus;
+        this.kafkaTopicAdmin          = kafkaTopicAdmin;
+        this.configRepository         = configRepository;
+        this.replayTracker            = replayTracker;
     }
 
     /**
@@ -188,6 +200,41 @@ public class CassetteController {
     private ReplayEngine engineFor(String brokerId) {
         RecordSink sink = sinkFactory.forBroker(brokerId);
         return new ReplayEngine(topicService, entityService, sink);
+    }
+
+    /**
+     * Creates the target Kafka topic on the default broker if it does not yet
+     * exist, using the same partition count as the source cassette topic.
+     *
+     * <p>Throws {@link com.joxette.api.error.ForbiddenException} (HTTP 403) if
+     * the broker credentials lack DESCRIBE or CREATE ACL — propagating through
+     * {@link com.joxette.api.error.GlobalExceptionHandler}, which aborts the
+     * replay before any records are sent.
+     *
+     * @param sourceTopic cassette topic whose partition count is mirrored
+     * @param targetTopic topic to create if absent
+     */
+    private void ensureTargetTopic(String sourceTopic, String targetTopic) {
+        if (!kafkaTopicAdmin.exists(null, targetTopic)) {
+            int partitions = kafkaTopicAdmin.partitionCount(null, sourceTopic);
+            kafkaTopicAdmin.createTopic(null, targetTopic, partitions, (short) 1);
+        }
+    }
+
+    /**
+     * Variant for entity replay: creates the target topic using the max
+     * partition count across all source Kafka topics for the entity type.
+     * Falls back to 1 if no sources are configured.
+     */
+    private void ensureTargetTopicForEntity(String entityType, String targetTopic)
+            throws java.sql.SQLException {
+        if (!kafkaTopicAdmin.exists(null, targetTopic)) {
+            int partitions = configRepository.listSources(entityType).stream()
+                    .mapToInt(s -> kafkaTopicAdmin.partitionCount(null, s.topic()))
+                    .max()
+                    .orElse(1);
+            kafkaTopicAdmin.createTopic(null, targetTopic, partitions, (short) 1);
+        }
     }
 
     // =========================================================================
@@ -1333,8 +1380,14 @@ public class CassetteController {
         if (speed <= 0) {
             throw ValidationException.field("speed", "must be greater than 0");
         }
+        ensureTargetTopic(topic, req.targetTopic());
         ReplayProgress[] result = {null};
-        engineFor(null).replayTopic(topic, req, speed, p -> result[0] = p);
+        try (ActiveReplayTracker.Handle h = replayTracker.start(topic, req.targetTopic())) {
+            engineFor(null).replayTopic(topic, req, speed, p -> {
+                h.accept(p);
+                result[0] = p;
+            });
+        }
         return result[0];
     }
 
@@ -1377,8 +1430,15 @@ public class CassetteController {
         if (speed <= 0) {
             throw ValidationException.field("speed", "must be greater than 0");
         }
-        return sseHandler.<ReplayProgress>streamSse(
-                sink -> engineFor(null).replayTopic(topic, req, speed, sink));
+        ensureTargetTopic(topic, req.targetTopic());
+        return sseHandler.<ReplayProgress>streamSse(sink -> {
+            try (ActiveReplayTracker.Handle h = replayTracker.start(topic, req.targetTopic())) {
+                engineFor(null).replayTopic(topic, req, speed, p -> {
+                    h.accept(p);
+                    sink.accept(p);
+                });
+            }
+        });
     }
 
     @Operation(
@@ -1430,8 +1490,14 @@ public class CassetteController {
         if (speed <= 0) {
             throw ValidationException.field("speed", "must be greater than 0");
         }
+        ensureTargetTopicForEntity(entityType, req.targetTopic());
         ReplayProgress[] result = {null};
-        engineFor(null).replayEntity(entityType, entityId, req, speed, p -> result[0] = p);
+        try (ActiveReplayTracker.Handle h = replayTracker.start(entityType + "/" + entityId, req.targetTopic())) {
+            engineFor(null).replayEntity(entityType, entityId, req, speed, p -> {
+                h.accept(p);
+                result[0] = p;
+            });
+        }
         return result[0];
     }
 
@@ -1474,12 +1540,19 @@ public class CassetteController {
                 description = "Target topic and optional timestamp filters",
                 content = @Content(schema = @Schema(implementation = ReplayToTopicRequest.class)))
             @Valid @RequestBody ReplayToTopicRequest req
-    ) {
+    ) throws java.sql.SQLException {
         if (speed <= 0) {
             throw ValidationException.field("speed", "must be greater than 0");
         }
-        return sseHandler.<ReplayProgress>streamSse(
-                sink -> engineFor(null).replayEntity(entityType, entityId, req, speed, sink));
+        ensureTargetTopicForEntity(entityType, req.targetTopic());
+        return sseHandler.<ReplayProgress>streamSse(sink -> {
+            try (ActiveReplayTracker.Handle h = replayTracker.start(entityType + "/" + entityId, req.targetTopic())) {
+                engineFor(null).replayEntity(entityType, entityId, req, speed, p -> {
+                    h.accept(p);
+                    sink.accept(p);
+                });
+            }
+        });
     }
 
     // =========================================================================

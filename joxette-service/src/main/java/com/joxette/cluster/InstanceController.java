@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.joxette.config.InstanceRoles;
 import com.joxette.recording.RecorderStatus;
 import com.joxette.recording.RecordingCoordinator;
+import com.joxette.replay.ActiveReplayTracker;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -44,18 +45,21 @@ public class InstanceController {
     private final InstanceRoles instanceRoles;
     private final RecordingCoordinator recordingCoordinator;
     private final ObjectMapper objectMapper;
+    private final ActiveReplayTracker replayTracker;
 
     public InstanceController(
             InstanceRegistry registry,
             ClusterEventListener clusterEventListener,
             InstanceRoles instanceRoles,
             @Lazy RecordingCoordinator recordingCoordinator,
-            ObjectMapper objectMapper) {
+            ObjectMapper objectMapper,
+            ActiveReplayTracker replayTracker) {
         this.registry = registry;
         this.clusterEventListener = clusterEventListener;
         this.instanceRoles = instanceRoles;
         this.recordingCoordinator = recordingCoordinator;
         this.objectMapper = objectMapper;
+        this.replayTracker = replayTracker;
     }
 
     @Operation(
@@ -130,7 +134,14 @@ public class InstanceController {
         Thread vt = Thread.ofVirtual().name("live-metrics-sse").unstarted(() -> {
             try {
                 while (!Thread.currentThread().isInterrupted()) {
-                    ClusterStateView snapshot = buildClusterState();
+                    ClusterStateView snapshot;
+                    try {
+                        snapshot = buildClusterState();
+                    } catch (RuntimeException e) {
+                        // Pekko actors terminated during shutdown, or DuckDB connection closed.
+                        // Exit the loop quietly — Tomcat will close the response.
+                        return;
+                    }
                     String json;
                     try {
                         json = objectMapper.writeValueAsString(snapshot);
@@ -198,6 +209,6 @@ public class InstanceController {
                 recorders
         );
 
-        return new ClusterStateView(self, instances, topology);
+        return new ClusterStateView(self, instances, topology, replayTracker.listActive());
     }
 }

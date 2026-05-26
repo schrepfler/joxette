@@ -1,6 +1,8 @@
 package com.joxette.api.error;
 
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.mock.web.MockHttpServletResponse;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
@@ -58,12 +60,13 @@ class GlobalExceptionHandlerTest {
     @Test
     void unhandledExceptionMapsToInternalServerError() {
         HttpServletRequest request = new MockHttpServletRequest("GET", "/boom");
+        HttpServletResponse response = new MockHttpServletResponse();
 
-        ResponseEntity<ProblemDetail> response =
-                handler.handleUnexpected(new RuntimeException("kaboom"), request);
+        ResponseEntity<ProblemDetail> result =
+                handler.handleUnexpected(new RuntimeException("kaboom"), request, response);
 
-        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
-        ProblemDetail body = response.getBody();
+        assertThat(result.getStatusCode()).isEqualTo(HttpStatus.INTERNAL_SERVER_ERROR);
+        ProblemDetail body = result.getBody();
         assertThat(body).isNotNull();
         assertThat(body.getType()).isEqualTo(ErrorTypes.INTERNAL);
         assertThat(body.getDetail()).doesNotContain("kaboom");

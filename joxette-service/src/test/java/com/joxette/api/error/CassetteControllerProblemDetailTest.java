@@ -2,7 +2,10 @@ package com.joxette.api.error;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.joxette.config.JoxetteProperties;
+import com.joxette.management.ConfigRepository;
+import com.joxette.management.KafkaTopicAdmin;
 import com.joxette.recording.CassetteRecordingBus;
+import com.joxette.replay.ActiveReplayTracker;
 import com.joxette.replay.CassetteController;
 import com.joxette.replay.CassetteLifecycleService;
 import com.joxette.replay.EntityReplayService;
@@ -56,6 +59,9 @@ class CassetteControllerProblemDetailTest {
     @Mock SequenceMatchService      sequenceMatchService;
     @Mock FieldSuggestionsService   fieldSuggestionsService;
     @Mock CassetteRecordingBus      recordingBus;
+    @Mock KafkaTopicAdmin           kafkaTopicAdmin;
+    @Mock ConfigRepository          configRepository;
+    @Mock ActiveReplayTracker       replayTracker;
 
     private MockMvc mvc;
     private final ObjectMapper mapper = new ObjectMapper();
@@ -65,7 +71,8 @@ class CassetteControllerProblemDetailTest {
         CassetteController controller = new CassetteController(
                 topicService, entityService, sseHandler, lifecycle, sinkFactory,
                 scheduledReplayService, metadataInjector, presetRepository, properties,
-                mapper, sequenceMatchService, null /* solMatchService */, null /* sunburstService */, fieldSuggestionsService, recordingBus);
+                mapper, sequenceMatchService, null /* solMatchService */, null /* sunburstService */,
+                fieldSuggestionsService, recordingBus, kafkaTopicAdmin, configRepository, replayTracker);
 
         // Register the Order converter so `?order=asc|desc` binding matches production.
         FormattingConversionService conversion = new FormattingConversionService();

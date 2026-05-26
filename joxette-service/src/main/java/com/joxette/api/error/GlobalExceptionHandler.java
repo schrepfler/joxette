@@ -1,6 +1,8 @@
 package com.joxette.api.error;
 
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import org.springframework.web.context.request.ServletWebRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
@@ -67,7 +69,13 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     }
 
     @ExceptionHandler(Exception.class)
-    public ResponseEntity<ProblemDetail> handleUnexpected(Exception ex, HttpServletRequest request) {
+    public ResponseEntity<ProblemDetail> handleUnexpected(
+            Exception ex, HttpServletRequest request, HttpServletResponse response) {
+        if (response.isCommitted()) {
+            // Response already written (e.g. mid-stream SSE); can't write ProblemDetail.
+            log.debug("Exception after response committed ({}): {}", request.getRequestURI(), ex.getMessage());
+            return null;
+        }
         log.error("Unhandled exception", ex);
         ProblemDetail body = ProblemDetail.forStatusAndDetail(
                 HttpStatus.INTERNAL_SERVER_ERROR,
@@ -141,6 +149,14 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     @Override
     protected ResponseEntity<Object> handleExceptionInternal(
             Exception ex, Object body, HttpHeaders headers, HttpStatusCode statusCode, WebRequest request) {
+        // SSE responses are committed before Tomcat fires AsyncRequestTimeoutException.
+        // Returning null tells Spring to skip response writing — the connection is already closed.
+        if (request instanceof ServletWebRequest swr && swr.getResponse() != null
+                && swr.getResponse().isCommitted()) {
+            log.debug("Framework exception after response committed ({}): {}",
+                    request.getDescription(false), ex.getMessage());
+            return null;
+        }
         HttpStatus status = HttpStatus.resolve(statusCode.value());
         if (status == null) {
             status = HttpStatus.INTERNAL_SERVER_ERROR;

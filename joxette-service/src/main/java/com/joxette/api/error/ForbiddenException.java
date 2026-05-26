@@ -12,4 +12,9 @@ public class ForbiddenException extends JoxetteException {
         return new ForbiddenException(
                 "Kafka credentials do not have permission to create topic '" + topic + "'", cause);
     }
+
+    public static ForbiddenException kafkaTopicDescribe(String topic, Throwable cause) {
+        return new ForbiddenException(
+                "Kafka credentials do not have permission to describe topic '" + topic + "'", cause);
+    }
 }

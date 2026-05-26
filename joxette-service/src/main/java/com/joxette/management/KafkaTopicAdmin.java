@@ -5,12 +5,14 @@ import com.joxette.api.error.UpstreamUnavailableException;
 import com.joxette.config.BrokerConnectionFactory;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.NewTopic;
+import org.apache.kafka.clients.admin.TopicDescription;
 import org.apache.kafka.common.errors.TopicAuthorizationException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ExecutionException;
@@ -41,6 +43,7 @@ public class KafkaTopicAdmin {
      *
      * @param brokerId broker ID (may be {@code null} for default)
      * @param topic    topic name
+     * @throws ForbiddenException if the broker credentials lack DESCRIBE ACL
      */
     public boolean exists(String brokerId, String topic) {
         try (AdminClient admin = connectionFactory.adminClient(brokerId)) {
@@ -51,7 +54,40 @@ public class KafkaTopicAdmin {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw UpstreamUnavailableException.broker(brokerId, e);
-        } catch (ExecutionException | TimeoutException e) {
+        } catch (ExecutionException e) {
+            if (e.getCause() instanceof TopicAuthorizationException) {
+                throw ForbiddenException.kafkaTopicDescribe(topic, e.getCause());
+            }
+            throw UpstreamUnavailableException.broker(brokerId, e);
+        } catch (TimeoutException e) {
+            throw UpstreamUnavailableException.broker(brokerId, e);
+        }
+    }
+
+    /**
+     * Returns the partition count of an existing Kafka topic.
+     *
+     * @param brokerId broker ID (may be {@code null} for default)
+     * @param topic    topic name (must exist)
+     * @throws ForbiddenException if the broker credentials lack DESCRIBE ACL
+     */
+    public int partitionCount(String brokerId, String topic) {
+        try (AdminClient admin = connectionFactory.adminClient(brokerId)) {
+            Map<String, TopicDescription> descriptions = admin
+                    .describeTopics(List.of(topic))
+                    .allTopicNames()
+                    .get(TIMEOUT_SEC, TimeUnit.SECONDS);
+            TopicDescription desc = descriptions.get(topic);
+            return desc != null ? desc.partitions().size() : 1;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw UpstreamUnavailableException.broker(brokerId, e);
+        } catch (ExecutionException e) {
+            if (e.getCause() instanceof TopicAuthorizationException) {
+                throw ForbiddenException.kafkaTopicDescribe(topic, e.getCause());
+            }
+            throw UpstreamUnavailableException.broker(brokerId, e);
+        } catch (TimeoutException e) {
             throw UpstreamUnavailableException.broker(brokerId, e);
         }
     }

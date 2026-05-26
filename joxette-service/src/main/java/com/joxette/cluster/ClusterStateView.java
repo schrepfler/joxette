@@ -1,6 +1,7 @@
 package com.joxette.cluster;
 
 import com.joxette.recording.RecorderStatus;
+import com.joxette.replay.ActiveReplayTracker;
 
 import java.time.Instant;
 import java.util.List;
@@ -23,7 +24,8 @@ import java.util.Map;
 public record ClusterStateView(
         SelfNodeView self,
         List<InstanceRecord> instances,
-        List<ClusterEventListener.MemberView> topology
+        List<ClusterEventListener.MemberView> topology,
+        List<ActiveReplayTracker.ActiveReplay> activeReplays
 ) {
 
     /**
