@@ -11,10 +11,14 @@ import com.joxette.replay.MessageRouter;
 import com.typesafe.config.Config;
 import com.typesafe.config.ConfigFactory;
 import jakarta.annotation.PreDestroy;
+import org.apache.pekko.actor.Address;
 import org.apache.pekko.actor.typed.ActorRef;
 import org.apache.pekko.actor.typed.ActorSystem;
 import org.apache.pekko.actor.typed.javadsl.Behaviors;
+import org.apache.pekko.cluster.MemberStatus;
+import org.apache.pekko.cluster.typed.Cluster;
 import org.apache.pekko.cluster.typed.ClusterSingleton;
+import org.apache.pekko.cluster.typed.Join;
 import org.apache.pekko.cluster.typed.SingletonActor;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -27,6 +31,7 @@ import org.springframework.context.annotation.Lazy;
 
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Bootstraps the Pekko {@link ActorSystem} and exposes it as a Spring bean.
@@ -65,7 +70,7 @@ public class PekkoConfig {
     private ActorSystem<Void> actorSystem;
 
     @Bean
-    public ActorSystem<Void> actorSystem() {
+    public ActorSystem<Void> actorSystem() throws InterruptedException {
         Config base = ConfigFactory.load("pekko");
         Config overrides = remotePort > 0
                 ? ConfigFactory.parseString(
@@ -76,6 +81,23 @@ public class PekkoConfig {
         actorSystem = ActorSystem.create(Behaviors.empty(), "joxette", config);
         log.info("Pekko ActorSystem 'joxette' started (remote port={})",
                 remotePort > 0 ? remotePort : "OS-assigned");
+
+        // Self-join so this node forms a single-node cluster immediately.
+        // pekko.conf has seed-nodes=[] so without this the node stays in
+        // Joining indefinitely, and every cluster-phase timeout fires on shutdown.
+        Cluster cluster = Cluster.get(actorSystem);
+        Address self = cluster.selfMember().address();
+        cluster.manager().tell(Join.create(self));
+        log.info("Pekko self-join issued for {}", self);
+
+        // Wait for self to reach Up so ClusterSingleton and coordinator actor see a live cluster.
+        long deadline = System.currentTimeMillis() + 5_000;
+        while (System.currentTimeMillis() < deadline) {
+            if (cluster.selfMember().status().equals(MemberStatus.up())) break;
+            Thread.sleep(100);
+        }
+        log.info("Pekko ActorSystem '{}' cluster Up at {}", actorSystem.name(), self);
+
         return actorSystem;
     }
 
@@ -150,30 +172,44 @@ public class PekkoConfig {
      */
     @PreDestroy
     void shutdown() {
+        long t = System.currentTimeMillis();
+        log.info("=== Joxette shutdown begin ===");
+
         // Step 1: stop all topic recorders (asks go to the recording-coordinator actor).
         try {
+            log.info("[shutdown 1/3] stopping all topic recorders...");
             recordingCoordinator.stopAll();
+            log.info("[shutdown 1/3] recorders stopped ({} ms)", elapsed(t));
         } catch (Exception e) {
-            log.warn("RecordingCoordinator.stopAll() failed during shutdown: {}", e.getMessage());
+            log.warn("[shutdown 1/3] stopAll failed: {}", e.getMessage());
         }
 
         // Step 2: drain the write channel so in-flight DuckDB writes complete.
         try {
+            log.info("[shutdown 2/3] draining write channel...");
             writeChannel.stop();
+            log.info("[shutdown 2/3] write channel drained ({} ms)", elapsed(t));
         } catch (Exception e) {
-            log.warn("DuckLakeWriteChannel.stop() failed during shutdown: {}", e.getMessage());
+            log.warn("[shutdown 2/3] write channel stop failed: {}", e.getMessage());
         }
 
         // Step 3: terminate the Pekko actor system.
         if (actorSystem != null) {
-            log.info("Terminating Pekko ActorSystem 'joxette'…");
+            log.info("[shutdown 3/3] terminating Pekko ActorSystem...");
             actorSystem.terminate();
             try {
                 actorSystem.getWhenTerminated().toCompletableFuture()
-                        .get(10, java.util.concurrent.TimeUnit.SECONDS);
+                        .get(10, TimeUnit.SECONDS);
+                log.info("[shutdown 3/3] ActorSystem terminated ({} ms)", elapsed(t));
             } catch (Exception e) {
-                log.warn("Pekko ActorSystem did not terminate cleanly within 10 s: {}", e.getMessage());
+                log.warn("[shutdown 3/3] ActorSystem did not terminate cleanly: {}", e.getMessage());
             }
         }
+
+        log.info("=== Joxette shutdown complete ({} ms) ===", elapsed(t));
+    }
+
+    private static long elapsed(long startMs) {
+        return System.currentTimeMillis() - startMs;
     }
 }

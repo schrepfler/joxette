@@ -17,6 +17,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * Serializes all DuckDB writes through a single virtual thread.
@@ -51,6 +52,7 @@ public class DuckLakeWriteChannel {
      * partitions have been written.
      */
     private final Set<WriteBatch> inFlight = ConcurrentHashMap.newKeySet();
+    private final AtomicBoolean stopped = new AtomicBoolean(false);
 
     public DuckLakeWriteChannel(Connection duckDbConnection,
                                  JoxetteProperties properties,
@@ -71,6 +73,9 @@ public class DuckLakeWriteChannel {
     }
 
     public void stop() {
+        if (!stopped.compareAndSet(false, true)) {
+            return;
+        }
         if (channel != null) {
             channel.done();
         }
