@@ -230,7 +230,7 @@ function InstanceContainerNode({ data }: NodeProps<Node<InstanceContainerNodeDat
       boxShadow: '0 2px 8px rgba(30,26,20,0.06)',
     }}>
       <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--rule)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <span style={dotStyle(statusColor)} />
+        <img src="/joxette logo.png" alt="Joxette" style={{ width: 20, height: 20, flexShrink: 0, filter: 'invert(1) brightness(0.8)' }} />
         <span style={{ ...nodeTitle, fontFamily: 'var(--font-mono)', fontSize: '0.6875rem' }}>{data.instanceId}</span>
         {data.roles.map(r => (
           <span key={r} style={{ ...pill, background: 'var(--surface-sunken)', color: 'var(--ink-secondary)' }}>{r}</span>
