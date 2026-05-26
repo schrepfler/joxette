@@ -105,8 +105,15 @@ public class PekkoConfig {
     /**
      * Virtual-thread executor for offloading blocking work (DuckDB, Kafka, S3)
      * from Pekko actor mailbox threads via {@code context.pipeToSelf}.
+     *
+     * <p>{@code destroyMethod = ""} suppresses Spring's auto-detection of
+     * {@code ExecutorService.close()}.  Java 21+ {@code close()} calls
+     * {@code awaitTermination(MAX_VALUE)} — it would block indefinitely while
+     * recorder VTs are still running, preventing {@link #shutdown()} from ever
+     * being called (deadlock).  PekkoConfig.shutdown() is responsible for
+     * orderly teardown; the executor itself does not need explicit shutdown.
      */
-    @Bean(name = "pekkoVtExecutor")
+    @Bean(name = "pekkoVtExecutor", destroyMethod = "")
     public Executor pekkoVtExecutor() {
         return Executors.newVirtualThreadPerTaskExecutor();
     }

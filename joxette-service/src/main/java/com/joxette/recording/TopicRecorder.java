@@ -139,7 +139,12 @@ public class TopicRecorder {
 
         try {
             Flows.<ConsumerRecord<String, byte[]>>usingEmit(emit -> {
-                try (KafkaConsumer<String, byte[]> kc = settings.toConsumer()) {
+                // Explicit try-finally instead of try-with-resources so we can pass a
+                // close timeout. The default kc.close() waits up to 30 s for a
+                // leave-group handshake — that blocks the recorder VT and keeps Kafka's
+                // non-daemon background threads alive, preventing JVM exit on shutdown.
+                KafkaConsumer<String, byte[]> kc = settings.toConsumer();
+                try {
                     this.consumer = kc;
                     kc.subscribe(List.of(topic), new PartitionAwareRebalanceListener(kc));
 
@@ -173,6 +178,7 @@ public class TopicRecorder {
                 } finally {
                     this.consumer = null;
                     assignedPartitions.clear();
+                    kc.close(Duration.ofSeconds(5));
                 }
             })
             .groupedWithin(batchSize, batchTimeout)
