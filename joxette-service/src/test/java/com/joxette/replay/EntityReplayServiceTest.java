@@ -19,6 +19,8 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.List;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -308,6 +310,29 @@ class EntityReplayServiceTest {
 
         assertThat(stats1.messageCount()).isEqualTo(1);
         assertThat(stats2.messageCount()).isEqualTo(1);
+    }
+
+    @Test
+    void getEntityStats_concurrentCallsDoNotCollide() throws Exception {
+        Instant ts = Instant.parse("2024-06-01T00:00:00Z");
+        for (int i = 1; i <= 4; i++) {
+            insertEntityRow("E-" + i, i, "orders.events", 0, (long) i, ts, null);
+            insertKnownEntity("order", "E-" + i, i, ts.toString());
+        }
+
+        // 4 concurrent calls on distinct entity IDs — each creates its own UUID-named temp
+        // table; none should interfere with each other or leave any temp table behind.
+        try (var pool = Executors.newFixedThreadPool(4)) {
+            List<Future<EntityStats>> futures = new ArrayList<>();
+            for (int i = 1; i <= 4; i++) {
+                final String id = "E-" + i;
+                futures.add(pool.submit(() -> service.getEntityStats(ENTITY_TYPE, id)));
+            }
+            for (Future<EntityStats> f : futures) {
+                EntityStats s = f.get();
+                assertThat(s.messageCount()).isEqualTo(1);
+            }
+        }
     }
 
     // -------------------------------------------------------------------------

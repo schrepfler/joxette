@@ -1,41 +1,42 @@
 # Active Context
 
-## Current Focus — Next phase planning
+## Current Focus — Multi-instance / cluster hardening complete
 
-Stability sprint is complete. The system has a clean TypeScript build (zero errors),
-error surfacing in all async panels, memoized render-path computations, two new test
-suites, and two bug fixes (topic SOL event names, Mac autocomplete). The only open
-stability item is runtime observation of the Kafka AdminClient reconnect noise.
+The cluster hardening sprint is complete. Joxette can now run as multiple coordinated
+instances with role-based subsystem gating, distributed compaction locking, shared
+instance observability, KIP-848 cooperative rebalance support, and an upgraded
+duckdb_jdbc (1.5.3.0) that confirmed VARIANT round-trips through DuckLake Parquet.
 
-### Completed this session (stability sprint)
+### Completed this sprint (cluster hardening + DuckDB 1.5.3 upgrade)
 
-**Bug fixes**
-- Topic SOL match: `message_type=NULL` general cassette records now resolve event names
-  from a `typeField` JSON path extracted from the value payload (`SolMatchRequest.typeField`,
-  `cassetteToEntity` fallback, "type field" input in topic `SolQueryPanel`)
-- Mac autocomplete suppressed: `autoComplete/autoCorrect/autoCapitalize/spellCheck` on all
-  code/field inputs (`SolQueryPanel`, `SunburstPanel`, `MultiEntityBarcodePanel`,
-  `SunburstDistributionPanel`)
+**DuckDB 1.5.3.0 upgrade**
+- `VariantProbeTest` — 18 tests covering 4 payload classes; decimal encoding fix + selection-vector indexing fix both verified; all pass
+- `value` column in all cassette tables switched from JSON → VARIANT (confirmed working)
+- `write_buffer_row_group_memory_limit` applied before entity merges; tunable via `joxette.compaction.entity.row-group-memory-limit-mb`
+- `TimestampSerializationIT` — 6 tests confirming TIMESTAMPTZ ISO-8601 (Z or ±HH:MM) across all 3 response formats for both cassette types
 
-**Tests**
-- `EntityReplayServiceTest`: 5 new tests — `lastActive` / `mostMessages` sort order,
-  compound cursor pagination across 2 pages, tie-break by entity_id
-- `SunburstServiceTest` (new): 9 Mockito unit tests — prefix-tree structure, SOL filter
-  all-match / none-match / partial-match / blank query, empty-sequence skip, maxEntities cap
+**Catalog backend detection**
+- `CatalogBackend` enum + `CatalogHealthIndicator`; backend selected from `catalog.path` URI prefix
+- `docs/catalog-scaling.md` rewritten with URI detection table and per-stage migration procedures
 
-**Error surfacing**
-- `MultiEntityBarcodePanel`: per-row SOL error count + hover tooltip with first error message
-- `SunburstDistributionPanel`: fetch error shown inline when any sequence load fails
+**Instance roles**
+- `InstanceRoles` + `@ConditionalOnRole` + `OnRoleCondition`; gating wired to recorder, replay, compaction, retention
+- `InstanceRolesTest` — 171 lines covering all combinations
 
-**TypeScript — zero errors build**
-- `CassetteRecord.messageType` added (was missing from interface)
-- `includeInternal` bool → string in `QueryParams`-typed call
-- `@types/d3-hierarchy` installed
-- Unused imports, `JsonValue` → `unknown`, implicit `any` D3 params, `setAnimating`/`prevRef` removed
+**Cluster instance registry**
+- `InstanceRegistry` — `joxette_instances` table, heartbeat scheduler, stale-row reaper
+- `GET /instances`, `/health` cluster counts; `InstanceRegistryIT` — 12 tests
 
-**Performance**
-- `extractNumeric`, `rowsWithTags`, `buildNumericDomain` wrapped in `useMemo`
-  in `MultiEntityBarcodePanel`
+**Distributed compaction lock**
+- `CompactionLockManager` — `compaction_locks` table; tryAcquire/release/cleanExpiredLocks/releaseOwnLocks
+- `CompactionDistributedLockTest` — full two-service integration scenario
+
+**KIP-848 cooperative rebalance**
+- `TopicRecorder` scoped partition drain on revocation; non-revoked partitions uninterrupted
+- `RebalanceIntegrationTest` — classic + KIP-848 scenarios on `apache/kafka-native:4.0.2`
+
+**Object storage docs**
+- `docs/object-storage.md` — EKS/IRSA guide (DuckDB ≥ 1.5.3 web-identity chain), HTTP_PROXY/HTTPS_PROXY/NO_PROXY support, 4 new troubleshooting rows
 
 ---
 
@@ -45,17 +46,17 @@ stability item is runtime observation of the Kafka AdminClient reconnect noise.
 - Topic SOL `typeField` extraction — IT: null message_type resolved from JSON value
 - Sort cursor correctness — IT: page through `lastActive` / `mostMessages` across real DuckDB
 - `SolMatchIT` expansion: `match split` + `combine`, `replace`, `set`, tag span assertions
+- Snapshot restore IT — `POST /cassettes/snapshots/{name}/restore`
 
 ### 2. UI polish (quick wins, user-facing)
 - Barcode `xMode` toggle — time-proportional vs fixed-width index modes not exposed in UI
 - `SequenceQueryPanel` — may still exist as dead code; verify and remove
 - Sunburst zoom animation — wire D3 tween on double-click (stubs already in place)
+- UI for `GET /instances` — cluster topology panel (could live under `/health`)
 
-### 3. Production readiness (before first real deployment)
-- DuckLake VARIANT probe — verify end-to-end through Parquet; fall back to JSON
-- Object storage config — S3/GCS/Azure setup documentation
-- Snapshot restore IT
-- Multi-topic entity ordering caveat documentation
+### 3. Production readiness
+- Multi-topic entity ordering — document clock-skew caveat; add warning to entity cassette replay docs
+- Quack server integration test (stub exists; activate when DuckDB 2.0 GA)
 
 ### 4. `sol` library
 - Group ID rename `com.joxette → com.sol` (deferred)
@@ -85,3 +86,12 @@ until the library is ready to publish independently.
 General cassette records may have `message_type=NULL` when no matchers are configured.
 The `typeField` param on `SolMatchRequest` lets the user specify a JSON path to extract
 the event name from the value payload at query time, without requiring permanent matcher setup.
+
+### Catalog backend auto-detected from URI prefix
+`catalog.path` URI prefix drives `CatalogBackend` selection. No separate config property needed. Embedded DuckDB is default (bare path). Quack and PostgreSQL backends need only the URI to change — no Java code or schema edits.
+
+### Distributed lock is advisory, not blocking
+When a compaction lock is held by another instance, the challenger skips rather than queues. This avoids lock contention pileup; the next cron cycle will retry. `cleanExpiredLocks()` guards against crash-orphaned locks.
+
+### Roles default to all-active
+All three roles (`recorder`, `replay`, `compaction`) default to `true`. Disabling a role is opt-in. This means a single-instance deployment needs zero config changes.

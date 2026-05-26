@@ -28,6 +28,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
 import java.util.function.Consumer;
 import java.util.regex.Pattern;
 
@@ -470,60 +471,69 @@ public class EntityReplayService implements EntityCassetteSource {
 
     public EntityStats getEntityStats(String entityType, String entityId) throws SQLException {
         validateEntityType(entityType);
-        Table<?> entityTable = entityTable(entityType);
 
-        // Deduplicated inner table used by both aggregation sub-queries.
-        // Alias kafka_timestamp -> timestamp so aggregate field references are simple.
-        Field<OffsetDateTime> tsAlias    = F_TIMESTAMP.as("ts");
-        Field<String>         topicAlias = F_TOPIC.as("topic");
-        Table<?> deduped = dsl
-                .select(tsAlias, topicAlias)
-                .from(entityTable)
-                .where(F_ENTITY_ID.eq(entityId))
-                .qualify(QUALIFY_DEDUP)
-                .asTable("deduped");
+        // Unique per-call name avoids collisions when concurrent requests hit the same
+        // shared DuckDB connection (temp tables are connection-scoped in DuckDB).
+        String tempName = "stats_deduped_" + UUID.randomUUID().toString().replace("-", "");
 
-        Field<OffsetDateTime> dedupedTs    = DSL.field(DSL.name("ts"),    OffsetDateTime.class);
-        Field<String>         dedupedTopic = DSL.field(DSL.name("topic"), String.class);
-        Field<Integer>        fCnt         = DSL.count().as("cnt");
-        Field<OffsetDateTime> fFirstMsg    = DSL.min(dedupedTs).as("first_msg");
-        Field<OffsetDateTime> fLastMsg     = DSL.max(dedupedTs).as("last_msg");
+        // Materialise the deduplicated (ts, topic) rows once via CTAS so the QUALIFY
+        // window function is evaluated a single time instead of once per aggregation query.
+        // entityType is validated above ([a-z][a-z0-9_]*); entityId is bound via ?.
+        String ctas = "CREATE TEMPORARY TABLE " + tempName
+                + " AS SELECT kafka_timestamp AS ts, topic"
+                + " FROM lake.main.entity_" + entityType
+                + " WHERE entity_id = ?"
+                + " QUALIFY ROW_NUMBER() OVER"
+                + "   (PARTITION BY topic, kafka_partition, kafka_offset"
+                + "    ORDER BY recorded_at DESC) = 1";
 
-        long count = 0;
-        Instant firstMsg = null;
-        Instant lastMsg  = null;
+        dsl.execute(ctas, entityId);
+        try {
+            Table<?>              tempTable    = DSL.table(DSL.name(tempName));
+            Field<OffsetDateTime> dedupedTs    = DSL.field(DSL.name("ts"),    OffsetDateTime.class);
+            Field<String>         dedupedTopic = DSL.field(DSL.name("topic"), String.class);
+            Field<Integer>        fCnt         = DSL.count().as("cnt");
+            Field<OffsetDateTime> fFirstMsg    = DSL.min(dedupedTs).as("first_msg");
+            Field<OffsetDateTime> fLastMsg     = DSL.max(dedupedTs).as("last_msg");
 
-        var aggRecord = dsl.select(fCnt, fFirstMsg, fLastMsg).from(deduped).fetchOne();
-        if (aggRecord != null) {
-            count = aggRecord.get(fCnt).longValue();
-            OffsetDateTime f = aggRecord.get(fFirstMsg);
-            OffsetDateTime l = aggRecord.get(fLastMsg);
-            if (f != null) firstMsg = f.toInstant();
-            if (l != null) lastMsg  = l.toInstant();
+            long count = 0;
+            Instant firstMsg = null;
+            Instant lastMsg  = null;
+
+            var aggRecord = dsl.select(fCnt, fFirstMsg, fLastMsg).from(tempTable).fetchOne();
+            if (aggRecord != null) {
+                count = aggRecord.get(fCnt).longValue();
+                OffsetDateTime f = aggRecord.get(fFirstMsg);
+                OffsetDateTime l = aggRecord.get(fLastMsg);
+                if (f != null) firstMsg = f.toInstant();
+                if (l != null) lastMsg  = l.toInstant();
+            }
+
+            Map<String, Long> countByTopic = new LinkedHashMap<>();
+            dsl.select(dedupedTopic, fCnt)
+                    .from(tempTable)
+                    .groupBy(dedupedTopic)
+                    .orderBy(dedupedTopic.asc())
+                    .forEach(r -> countByTopic.put(r.get(dedupedTopic), r.get(fCnt).longValue()));
+
+            Instant firstSeen = null;
+            Instant lastSeen  = null;
+
+            var regRecord = dsl
+                    .select(F_FIRST_SEEN, F_LAST_SEEN)
+                    .from(KNOWN_ENTITIES)
+                    .where(F_ENTITY_TYPE.eq(entityType).and(F_ENTITY_ID.eq(entityId)))
+                    .fetchOne();
+            if (regRecord != null) {
+                firstSeen = regRecord.get(F_FIRST_SEEN).toInstant();
+                lastSeen  = regRecord.get(F_LAST_SEEN).toInstant();
+            }
+
+            return new EntityStats(entityType, entityId, count, firstMsg, lastMsg,
+                    firstSeen, lastSeen, countByTopic);
+        } finally {
+            dsl.execute("DROP TABLE IF EXISTS " + tempName);
         }
-
-        Map<String, Long> countByTopic = new LinkedHashMap<>();
-        dsl.select(dedupedTopic, fCnt)
-                .from(deduped)
-                .groupBy(dedupedTopic)
-                .orderBy(dedupedTopic.asc())
-                .forEach(r -> countByTopic.put(r.get(dedupedTopic), r.get(fCnt).longValue()));
-
-        Instant firstSeen = null;
-        Instant lastSeen  = null;
-
-        var regRecord = dsl
-                .select(F_FIRST_SEEN, F_LAST_SEEN)
-                .from(KNOWN_ENTITIES)
-                .where(F_ENTITY_TYPE.eq(entityType).and(F_ENTITY_ID.eq(entityId)))
-                .fetchOne();
-        if (regRecord != null) {
-            firstSeen = regRecord.get(F_FIRST_SEEN).toInstant();
-            lastSeen  = regRecord.get(F_LAST_SEEN).toInstant();
-        }
-
-        return new EntityStats(entityType, entityId, count, firstMsg, lastMsg,
-                firstSeen, lastSeen, countByTopic);
     }
 
     // -------------------------------------------------------------------------

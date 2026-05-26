@@ -56,6 +56,9 @@
 - [x] `POST /compaction/trigger` — manual trigger, async, 202 response
 - [x] `GET /compaction/status` + `GET /compaction/history`
 - [x] `compaction_history` table tracks all runs with status, counts, error messages
+- [x] `CompactionLockManager` — distributed lock via `compaction_locks` DuckDB table; `tryAcquire` / `release` / `cleanExpiredLocks` / `releaseOwnLocks` / `listActiveLocks`
+- [x] Two-instance test: service-B skips while A holds lock, then compacts after A releases
+- [x] `write_buffer_row_group_memory_limit` SET before entity merge (DuckDB 1.5.3); skipped gracefully on older versions; tunable via `joxette.compaction.entity.row-group-memory-limit-mb` (default 256)
 
 ### Retention
 - [x] `RetentionService` — deletes rows older than `retention_days` from `lake.main.general_{topic}`, `lake.main.entity_{type}`, and `known_entities`
@@ -126,6 +129,8 @@
 - [x] DuckLake tables in `lake.main` schema
 - [x] `compaction_history` migration path for columns added after initial schema
 - [x] `retention_history` table
+- [x] `compaction_locks` table — distributed lock storage (instance_id, target, expires_at)
+- [x] `joxette_instances` table — cluster instance registry (instance_id, host, roles, last_heartbeat)
 
 ### Tests
 - [x] `MessageRouterTest` — full routing logic, DB-backed stub, reload test
@@ -140,6 +145,11 @@
 - [x] `SpringDocIT` — verifies OpenAPI spec loads
 - [x] `SolMatchIT` — 6 parameterised SOL match scenarios (entity cassette end-to-end)
 - [x] `NflDriveSolTest` (sol module, 17 tests) — real CHI@GB 2019 drive data; covers funnel, three-and-out, sack, filter, match split + combine, all-pass, timeout, no-run, field goal; 42 total sol tests green
+- [x] `VariantProbeTest` — 18 tests verifying VARIANT round-trip through DuckLake Parquet (4 payload classes: objects, strings, nested, arrays; decimal encoding; selection-vector indexing); all pass on duckdb_jdbc 1.5.3.0
+- [x] `TimestampSerializationIT` — 6 tests asserting TIMESTAMPTZ ISO-8601 serialization (Z or ±HH:MM) for `timestamp` and `recordedAt` across all three response formats (JSON, SSE, NDJSON) for both topic and entity replay
+- [x] `InstanceRegistryIT` — 12 tests: startup row insertion, stale-row reaping, heartbeat update, `GET /instances`, health cluster counts
+- [x] `CompactionDistributedLockTest` — 334 lines: tryAcquire first-caller-wins, second-caller-reject, idempotent, other-instance release safety, cleanExpiredLocks, releaseOwnLocks, listActiveLocks, two-service integration
+- [x] `RebalanceIntegrationTest` — classic-protocol test (two instances, 4 partitions, 1000 messages dedup'd) + KIP-848 test (non-revoked partitions continue without pause); both pass on `apache/kafka-native:4.0.2`
 
 ## What's Left / Known Gaps
 
@@ -216,14 +226,40 @@
 - [ ] `SolQueryPanel` recipe hints — show the recipe description on hover in the dropdown
 
 #### Production readiness
-- [ ] DuckLake VARIANT probe — verify VARIANT type works end-to-end through DuckLake Parquet serialisation; fall back to JSON if not
-- [ ] Object storage config walkthrough — document S3/GCS/Azure setup in README
+- [x] DuckLake VARIANT probe — 18-test evidence base confirms VARIANT works end-to-end through DuckLake Parquet on duckdb_jdbc 1.5.3.0; `probeVariant()` retained as runtime safety net
+- [x] Object storage config — `docs/object-storage.md` extended: EKS/IRSA guide (4-step, DuckDB ≥ 1.5.3 web-identity chain), HTTP_PROXY/HTTPS_PROXY/NO_PROXY support added in DuckDB 1.5.3 httpfs, troubleshooting table (4 new rows)
 - [ ] Snapshot restore path — integration test for `POST /cassettes/snapshots/{name}/restore`
 - [ ] Multi-topic entity ordering — document clock-skew caveat; add warning to entity cassette replay docs
 
 #### `sol` library
 - [ ] Group ID rename `com.joxette → com.sol` — deferred until ready to publish independently
 - [ ] `SolEngine` edge-case tests: tag span correctness after `replace`, `combine` output dims
+
+### Instance Roles
+- [x] `InstanceRoles` — `joxette.roles.{recorder,replay,compaction}` flags gate subsystems per instance
+- [x] `@ConditionalOnRole` + `OnRoleCondition` — Spring condition; beans/controllers conditionally registered
+- [x] `RecordingStartupRunner`, `CompactionScheduler`, `RetentionScheduler`, `CassetteController`, `MessageRouter` all respect their role flag
+- [x] `GET /health` includes active roles list
+- [x] `InstanceRolesTest` — 171 lines covering all combos (single role, multi-role, all-active, all-disabled, default)
+
+### Cluster Instance Registry
+- [x] `InstanceRegistry` — `joxette_instances` table; startup row, heartbeat scheduler, stale-row reaper
+- [x] `GET /instances` (`InstanceController`) — returns all alive instances with `instanceId`, `host`, `roles`, `lastHeartbeat`, `status`
+- [x] `GET /health` includes `cluster.instanceCount` and `cluster.aliveCount`
+
+### Catalog Backend Detection
+- [x] `CatalogBackend` enum — `EMBEDDED_DUCKDB`, `QUACK`, `POSTGRES` — selected from `catalog.path` URI prefix
+- [x] `CatalogHealthIndicator` — Spring Boot Actuator health indicator; shows backend type and catalog path in `/actuator/health`
+- [x] `DuckLakeManager` reads `CatalogBackend` and builds the correct ATTACH statement
+- [x] `docs/catalog-scaling.md` rewritten: URI detection table, unified ATTACH template, per-stage URI examples, migration procedures
+
+### Kafka Rebalance (KIP-848)
+- [x] `TopicRecorder` — scoped partition drain on cooperative rebalance; revoked partitions flushed before epoch increment; non-revoked partitions continue without pause
+- [x] `DuckLakeWriteChannel` — explicit write channel type extracted from `TopicRecorder`
+- [x] `WriteBatch` enhanced with partition metadata for drain scoping
+- [x] `RecorderStatus` — new fields for rebalance state tracking
+- [x] `BrokerConnectionFactory` — KIP-848 consumer group protocol config wired
+- [x] `HealthController` — rebalance state exposed in health response
 
 ### Kafka resilience
 - [x] `reconnect.backoff.ms` raised 50ms → 1s, `reconnect.backoff.max.ms` = 30s in `BrokerConnectionFactory`

@@ -32,6 +32,10 @@ Storage is powered by [DuckLake](https://ducklake.select/), using its **data inl
 - 🏗️ **Bootstrap config** — seed topics and entity types from YAML on first start; REST API takes over afterwards
 - 📊 **Observability** — Spring Actuator health endpoint, Prometheus metrics, Swagger UI at `/swagger-ui.html`
 - 🗑️ **GDPR support** — delete all data for a specific entity ID
+- 🏷️ **Instance roles** — gate subsystems (recorder, replay, compaction) per instance for role-based deployments
+- 🌐 **Cluster observability** — shared `joxette_instances` registry; `GET /instances` lists all alive instances; health endpoint includes cluster counts
+- 🔒 **Distributed compaction lock** — `compaction_locks` table prevents two instances from compacting the same target simultaneously
+- 🔄 **KIP-848 rebalance support** — scoped partition drain on cooperative rebalance; non-revoked partitions continue without pause (Kafka 4.x)
 
 ---
 
@@ -90,11 +94,11 @@ implementation (`KafkaRecordSink` + `KafkaRecordSinkFactory`) caches one
 | Component | Technology | Version |
 |---|---|---|
 | Language | Java (preview features enabled) | JDK 25 |
-| Framework | Spring Boot | 3.5.x |
+| Framework | Spring Boot | 4.0.5 |
 | Build | Maven | — |
 | Concurrency / Flows | [Jox](https://jox.softwaremill.com/) (softwaremill) | 0.5.x / 1.1.x |
 | Kafka | Apache Kafka clients (via Jox Kafka) | — |
-| Database / Catalog | DuckDB JDBC | 1.5.1.0 |
+| Database / Catalog | DuckDB JDBC | 1.5.3.0 |
 | Lakehouse storage | DuckLake extension | — |
 | SQL DSL | jOOQ (DDLDatabase codegen) | 3.19.x |
 | API docs | SpringDoc OpenAPI / Swagger UI | 2.8.x |
@@ -110,7 +114,7 @@ implementation (`KafkaRecordSink` + `KafkaRecordSinkFactory`) caches one
 
 ### Prerequisites
 
-- Java 25 (with `--enable-preview`)
+- Java 25+ (with `--enable-preview`; JDK 26 recommended)
 - Maven 3.9+
 - Docker + Docker Compose
 - Node 20+ and [pnpm](https://pnpm.io/) (for the UI)
@@ -161,7 +165,11 @@ All configuration lives in `src/main/resources/application.yml`. Override any va
 joxette:
 
   # DuckLake catalog – the DuckDB file is the lakehouse catalog.
-  # Leave object-storage-path blank for local dev (data stored next to catalog file).
+  # catalog.path URI prefix selects the backend automatically:
+  #   bare path / file://  → embedded DuckDB (default, single process)
+  #   quack://host:port    → Quack server (DuckDB 1.5.3+, beta, multi-process)
+  #   postgres://…         → PostgreSQL (multi-process, full HA)
+  # See docs/catalog-scaling.md for the three-stage migration runbook.
   catalog:
     path: "./data/joxette.ducklake"
     object-storage-path: ""           # e.g. s3://my-bucket/joxette/data
@@ -189,6 +197,13 @@ joxette:
       lookback-days: 30
     general:
       enabled: false
+
+  # Role-based subsystem gating (default: all roles active on every instance)
+  # Useful for running dedicated recorder vs. replay vs. compaction nodes.
+  roles:
+    recorder: true
+    replay: true
+    compaction: true
 
   # CORS origins allowed to call the REST API
   cors:
@@ -301,7 +316,14 @@ All replay endpoints support three response formats via the `Accept` header:
 | `GET` | `/compaction/status` | Running/idle, last run, next scheduled |
 | `POST` | `/compaction/trigger` | Trigger compaction (optional scope in body) |
 | `GET` | `/compaction/history` | Past compaction runs with stats |
-| `GET` | `/health` | Liveness, consumer lag, catalog size |
+| `GET` | `/compaction/locks` | Active distributed compaction locks |
+| `GET` | `/health` | Liveness, consumer lag, catalog size, cluster counts |
+
+**Cluster & instance registry:**
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/instances` | List all alive Joxette instances with roles and last heartbeat |
 
 ### Pagination
 
@@ -339,7 +361,8 @@ The `ui/` directory contains a React 19 single-page application built with:
 | `/entities/{entityType}/{entityId}` | Entity history replay |
 | `/snapshots` | DuckLake snapshot browser |
 | `/compaction` | Compaction status and history |
-| `/health` | Service health |
+| `/retention` | Retention status and history |
+| `/health` | Service health (includes cluster instance counts) |
 
 ### UI Development
 
@@ -362,7 +385,7 @@ export JAVA_25_HOME=$(/usr/libexec/java_home -v 25)
 mvn test
 ```
 
-Integration tests use Testcontainers to spin up a real Kafka broker (Redpanda-compatible image). A `JAVA_25_HOME` environment variable is required because the Surefire plugin needs the Java 25 JVM to support preview-compiled classes.
+Integration tests use Testcontainers with `apache/kafka-native:4.0.2` — a GraalVM-compiled native image that starts in ~1–2 s (vs ~10–15 s for the JVM-based Confluent image). Tests validate against the KIP-848 cooperative rebalance protocol used by Kafka 4.x. A `JAVA_25_HOME` environment variable is required because the Surefire plugin needs the Java 25+ JVM to support preview-compiled classes.
 
 ### Managing Kafka Topics with Jikkou
 
@@ -468,7 +491,7 @@ joxette/
 
 **Logical cursors** — Replay cursors encode timestamps and offsets, not file paths or row numbers. This means compaction and DuckLake inlining flushes never invalidate a client's cursor.
 
-**Single DuckDB connection** — DuckDB serialises concurrent writes internally. All Kafka consumer threads and the REST API share one JDBC connection. If multi-process writes are needed in future, the DuckLake catalog can be migrated to PostgreSQL with no code changes — only connection config differs.
+**Single DuckDB connection** — DuckDB serialises concurrent writes internally. All Kafka consumer threads and the REST API share one JDBC connection. The catalog backend is selected automatically from the `catalog.path` URI prefix: a bare file path or `file://` uses embedded DuckDB, `quack://` targets a Quack server (DuckDB 1.5.3+, beta), and `postgres://` uses PostgreSQL. The DuckLake schema is identical across all three — only the connection string changes. See **[docs/catalog-scaling.md](docs/catalog-scaling.md)** for the three-stage migration runbook.
 
 **Storage delegation** — All object storage interaction (S3, GCS, Azure Blob) is handled by DuckDB's `httpfs` extension and DuckLake's storage management. There is no Java object-storage SDK in the dependency tree.
 

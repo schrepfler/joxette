@@ -100,6 +100,38 @@ KafkaConsumer.poll() → emit → groupedWithin(batchSize, batchTimeout)
 - Guarded by `AtomicBoolean running` to prevent overlapping runs
 - `ducklake_flush_inlined_data('lake')` called after compaction to push inline buffer to S3; then `CHECKPOINT` to persist catalog
 
+### 10. Catalog Backend Detection
+- `CatalogBackend` enum (`EMBEDDED_DUCKDB`, `QUACK`, `POSTGRES`) derived from `catalog.path` URI prefix at startup in `DuckLakeManager`
+- `CatalogHealthIndicator` exposes the active backend type and path via Spring Boot Actuator `/actuator/health`
+- DuckLake `ATTACH` statement template is identical across all three backends — only the connection string differs
+- See `docs/catalog-scaling.md` for the three-stage migration runbook
+
+### 11. Instance Roles (`joxette.roles`)
+- `InstanceRoles` record holds `recorder`, `replay`, `compaction` booleans
+- `@ConditionalOnRole("recorder")` / `@ConditionalOnRole("replay")` / `@ConditionalOnRole("compaction")` — custom Spring `@Conditional` skips bean registration when the role is disabled
+- Applied to: `RecordingStartupRunner`, `MessageRouter`, `CompactionScheduler`, `RetentionScheduler`, `CompactionController`, `CassetteController`
+- Enables dedicated recorder vs. replay vs. compaction node topology
+
+### 12. Cluster Instance Registry
+- `InstanceRegistry` writes a row to `joxette_instances` on startup (instance_id UUID, host, roles JSON, started_at)
+- Sends a heartbeat every 30 s (configurable) via a scheduled virtual thread
+- `reapStaleInstances()` removes rows whose `last_heartbeat` is older than `staleness-threshold` (default 2 min)
+- `GET /instances` — returns all non-stale rows with `status=alive`
+- `GET /health` — includes `cluster.instanceCount` and `cluster.aliveCount` from the registry
+
+### 13. Distributed Compaction Lock
+- `CompactionLockManager` uses the `compaction_locks` DuckDB table as a mutex: `INSERT … ON CONFLICT DO NOTHING` + row count check
+- Lock scoped to `(instance_id, target)` with `expires_at` TTL
+- `cleanExpiredLocks()` runs at the start of each compaction trigger to remove stale locks
+- `releaseOwnLocks()` called at startup to clean up locks from a previous crash
+- Other instances skip (not fail) when the lock is held; they log at DEBUG and move on
+
+### 14. KIP-848 Cooperative Rebalance
+- `TopicRecorder` handles `onPartitionsRevoked` by draining only the revoked partitions through the write channel before incrementing the epoch
+- Non-revoked partitions continue recording without pause — critical for Kafka 4.x where the broker can assign/revoke individual partitions independently
+- `DuckLakeWriteChannel` extracted as an explicit type to carry partition metadata alongside write batches
+- `WriteBatch` carries a `revocationEpoch` so the drain loop can discard stale batches after epoch change
+
 ## Data Durability Split
 | Storage | Location | Lost if .ducklake deleted? |
 |---|---|---|

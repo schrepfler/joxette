@@ -9,7 +9,7 @@
 | Build | Maven | `pom.xml` at root |
 | Concurrency | Jox (softwaremill) | structured concurrency + Kafka module |
 | Kafka client | `com.softwaremill.jox:kafka:0.5.3` | published to Maven Central 18 Mar 2026 |
-| Database | DuckDB JDBC | `org.duckdb:duckdb_jdbc:1.5.1.0` |
+| Database | DuckDB JDBC | `org.duckdb:duckdb_jdbc:1.5.3.0` |
 | Storage format | DuckLake extension | Parquet on S3 via httpfs |
 | Object storage | S3-compatible (AWS S3 or MinIO/RustFS locally) | config: `joxette.s3.*` |
 | ORM / SQL builder | jOOQ | used in replay services for type-safe queries |
@@ -79,6 +79,12 @@ joxette:
     batch-timeout-ms: 1000
   compaction:
     schedule: "0 0 3 * * *"            # Spring 6-field cron
+    entity:
+      row-group-memory-limit-mb: 256    # DuckDB 1.5.3+; SET write_buffer_row_group_memory_limit
+  roles:
+    recorder: true
+    replay: true
+    compaction: true
 ```
 
 ## Integration Test Patterns
@@ -115,7 +121,7 @@ DockerImageName.parse("apache/kafka-native:4.0.2")
 
 - **Why**: GraalVM-compiled native binary; starts in ~1–2 s vs ~10–15 s for the JVM-based
   Confluent image. Significantly reduces CI wall-clock time.
-- **Current pinned version**: `4.0.2` (latest as of April 2026).
+- **Current pinned version**: `4.0.2` (latest as of April 2026; Kafka 4.x with KIP-848).
 - **Testcontainers support**: use `org.testcontainers.kafka.KafkaContainer` (the newer module-aware
   class), **not** `org.testcontainers.containers.KafkaContainer`. The new class natively supports
   `apache/kafka-native` without any `.asCompatibleSubstituteFor(...)` shim:
@@ -139,6 +145,7 @@ DockerImageName.parse("apache/kafka-native:4.0.2")
 - `SchemaManager.probeVariant()` tests VARIANT round-trip through DuckLake at startup
 - Falls back to JSON if VARIANT fails (DuckDB 1.5 supports VARIANT, older may not)
 - Flexible column (`metadata`) in all cassette tables uses whichever type is supported
+- **Confirmed**: 18-test evidence base (`VariantProbeTest`) verifies VARIANT round-trip through DuckLake Parquet on duckdb_jdbc 1.5.3.0 — decimal encoding fix + selection-vector indexing fix both included
 
 ### Headers column type
 - Stored as `STRUCT(key VARCHAR, value BLOB)[]` — NOT JSON string
