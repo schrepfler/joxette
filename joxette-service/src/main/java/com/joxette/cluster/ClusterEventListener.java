@@ -57,6 +57,7 @@ public class ClusterEventListener {
     record GetMembers(ActorRef<List<MemberView>> replyTo) implements ClusterListenerCommand {}
     private record MemberEvent(ClusterEvent.MemberEvent event)  implements ClusterListenerCommand {}
     private record ReachabilityEvent(ClusterEvent.ReachabilityEvent event) implements ClusterListenerCommand {}
+    private record Ignored() implements ClusterListenerCommand {}
 
     // -------------------------------------------------------------------------
     // Public view type
@@ -112,7 +113,7 @@ public class ClusterEventListener {
                     ctx.messageAdapter(ClusterEvent.ClusterDomainEvent.class, e -> {
                         if (e instanceof ClusterEvent.MemberEvent me) return new MemberEvent(me);
                         if (e instanceof ClusterEvent.ReachabilityEvent re) return new ReachabilityEvent(re);
-                        return null; // ignored
+                        return new Ignored();
                     });
 
             cluster.subscriptions().tell(
@@ -154,6 +155,7 @@ public class ClusterEventListener {
                         msg.replyTo().tell(List.copyOf(members.values()));
                         return Behaviors.same();
                     })
+                    .onMessage(Ignored.class, msg -> Behaviors.same())
                     .build();
         });
     }
