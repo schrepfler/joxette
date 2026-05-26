@@ -2,6 +2,7 @@ package com.joxette.api.error;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.joxette.management.ConfigRepository;
+import com.joxette.management.KafkaTopicAdmin;
 import com.joxette.management.TopicConfig;
 import com.joxette.management.TopicController;
 import com.joxette.recording.RecorderStatus;
@@ -44,13 +45,14 @@ class TopicControllerProblemDetailTest {
     @Mock ConfigRepository config;
     @Mock RecordingCoordinator coordinator;
     @Mock MessageRouter router;
+    @Mock KafkaTopicAdmin kafkaTopicAdmin;
 
     private MockMvc mvc;
     private final ObjectMapper mapper = new ObjectMapper();
 
     @BeforeEach
     void setUp() {
-        TopicController controller = new TopicController(config, coordinator, router);
+        TopicController controller = new TopicController(config, coordinator, router, kafkaTopicAdmin);
         mvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();

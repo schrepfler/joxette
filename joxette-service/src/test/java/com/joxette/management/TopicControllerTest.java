@@ -28,6 +28,7 @@ class TopicControllerTest {
     @Mock ConfigRepository config;
     @Mock RecordingCoordinator coordinator;
     @Mock MessageRouter router;
+    @Mock KafkaTopicAdmin kafkaTopicAdmin;
 
     @InjectMocks TopicController controller;
 
@@ -116,7 +117,7 @@ class TopicControllerTest {
         when(coordinator.activeTopics()).thenReturn(Set.of("payments"));
 
         ResponseEntity<TopicConfig> response =
-                controller.createTopic(new TopicController.CreateTopicRequest("payments", "both", "latest", null));
+                controller.createTopic(new TopicController.CreateTopicRequest("payments", "both", "latest", null, false, null, null));
 
         assertThat(response.getStatusCode().value()).isEqualTo(201);
         verify(router).reload();

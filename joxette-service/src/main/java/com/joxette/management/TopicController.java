@@ -49,7 +49,7 @@ public class TopicController {
             String startFrom,
             String brokerId,
             /** When {@code true}, create the Kafka topic if it does not yet exist. */
-            boolean createKafkaTopicIfAbsent,
+            Boolean createKafkaTopicIfAbsent,
             /** Number of partitions for the new Kafka topic. Ignored when {@code createKafkaTopicIfAbsent} is false. */
             Integer numPartitions,
             /** Replication factor for the new Kafka topic. Ignored when {@code createKafkaTopicIfAbsent} is false. */
@@ -91,7 +91,7 @@ public class TopicController {
         if (config.findTopic(body.topic()).isPresent()) {
             throw ConflictException.topicAlreadyExists(body.topic());
         }
-        if (body.createKafkaTopicIfAbsent()) {
+        if (Boolean.TRUE.equals(body.createKafkaTopicIfAbsent())) {
             String brokerId = body.brokerId();
             if (!kafkaTopicAdmin.exists(brokerId, body.topic())) {
                 // ForbiddenException propagates to GlobalExceptionHandler as 403 if ACLs deny CREATE.
