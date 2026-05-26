@@ -12,6 +12,7 @@ import com.typesafe.config.Config;
 import com.typesafe.config.ConfigFactory;
 import jakarta.annotation.PreDestroy;
 import org.apache.pekko.actor.Address;
+import org.apache.pekko.actor.CoordinatedShutdown;
 import org.apache.pekko.actor.typed.ActorRef;
 import org.apache.pekko.actor.typed.ActorSystem;
 import org.apache.pekko.actor.typed.javadsl.Behaviors;
@@ -193,16 +194,22 @@ public class PekkoConfig {
             log.warn("[shutdown 2/3] write channel stop failed: {}", e.getMessage());
         }
 
-        // Step 3: terminate the Pekko actor system.
+        // Step 3: run Pekko coordinated-shutdown and wait for it to complete.
+        // CoordinatedShutdown.runAll() runs every phase sequentially (cluster-leave →
+        // cluster-exiting → … → actor-system-terminate → after-actor-system-terminate)
+        // and blocks until all phases finish or their per-phase timeout fires.
+        // This is the only call that actually stops Artery transport threads; plain
+        // actorSystem.terminate() fires and returns immediately, leaving those threads alive.
         if (actorSystem != null) {
-            log.info("[shutdown 3/3] terminating Pekko ActorSystem...");
-            actorSystem.terminate();
+            log.info("[shutdown 3/3] running Pekko coordinated-shutdown...");
             try {
-                actorSystem.getWhenTerminated().toCompletableFuture()
-                        .get(10, TimeUnit.SECONDS);
-                log.info("[shutdown 3/3] ActorSystem terminated ({} ms)", elapsed(t));
+                CoordinatedShutdown.get(actorSystem)
+                        .runAll(CoordinatedShutdown.clusterLeavingReason())
+                        .toCompletableFuture()
+                        .get(20, TimeUnit.SECONDS);
+                log.info("[shutdown 3/3] coordinated-shutdown complete ({} ms)", elapsed(t));
             } catch (Exception e) {
-                log.warn("[shutdown 3/3] ActorSystem did not terminate cleanly: {}", e.getMessage());
+                log.warn("[shutdown 3/3] coordinated-shutdown did not finish cleanly: {}", e.getMessage());
             }
         }
 

@@ -50,8 +50,11 @@ public class SchedulingConfig implements SchedulingConfigurer {
         ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
         scheduler.setPoolSize(1);
         scheduler.setThreadNamePrefix("joxette-compaction-");
-        scheduler.setWaitForTasksToCompleteOnShutdown(true);
-        scheduler.setAwaitTerminationSeconds(60);
+        // Compaction runs are owned by CompactionSingletonActor (Pekko), not this pool.
+        // The scheduler thread only fires cron messages to the actor, so there is nothing
+        // meaningful to wait for here. 5 s is generous for the thread to acknowledge interrupt.
+        scheduler.setWaitForTasksToCompleteOnShutdown(false);
+        scheduler.setAwaitTerminationSeconds(5);
         return scheduler;
     }
 }
