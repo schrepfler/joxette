@@ -953,6 +953,15 @@ export interface MemberView {
   roles: string[]
 }
 
+export interface ActiveReplay {
+  id: string
+  sourceTopic: string
+  targetTopic: string
+  startedAt: string
+  sentCount: number
+  status: 'running' | 'completed' | 'failed'
+}
+
 export interface ClusterStateView {
   self: {
     instanceId: string
@@ -968,6 +977,7 @@ export interface ClusterStateView {
   }
   instances: InstanceRecord[]
   topology: MemberView[]
+  activeReplays: ActiveReplay[]
 }
 
 export const instancesApi = {
