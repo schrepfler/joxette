@@ -97,7 +97,7 @@ public class ActiveReplayTracker {
             if ("running".equals(entry.status)) entry.status = "failed";
             String id = entry.id;
             Thread.ofVirtual().name("replay-tracker-cleanup-" + id).start(() -> {
-                try { Thread.sleep(2_000); } catch (InterruptedException ie) {
+                try { Thread.sleep(30_000); } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
                 }
                 map.remove(id);

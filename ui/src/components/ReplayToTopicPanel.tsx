@@ -96,15 +96,20 @@ export function ReplayToTopicPanel({ mode, topic, entityType, entityId, from, to
   const pct = total > 0 ? Math.min(100, Math.round((sent / total) * 100)) : null
 
   const statusColor =
-    replayState === 'done' ? '#276749' :
+    replayState === 'done'   ? '#276749' :
     replayState === 'failed' ? '#e53e3e' :
     '#718096'
+
+  const statusBg =
+    replayState === 'done'   ? '#f0fff4' :
+    replayState === 'failed' ? '#fff5f5' :
+    undefined
 
   const isRunning = replayState === 'running'
   const stepCount = pipeline.steps.length
 
   return (
-    <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '1rem 1.25rem', marginBottom: '1.5rem' }}>
+    <div style={{ background: statusBg ?? '#fff', border: `1px solid ${replayState === 'done' ? '#9ae6b4' : replayState === 'failed' ? '#feb2b2' : '#e2e8f0'}`, borderRadius: 8, padding: '1rem 1.25rem', marginBottom: '1.5rem', transition: 'background 0.3s, border-color 0.3s' }}>
       <h3 style={{ margin: '0 0 0.75rem', fontSize: 15 }}>Replay to Topic</h3>
 
       {/* Transform pipeline builder */}
@@ -206,7 +211,7 @@ export function ReplayToTopicPanel({ mode, topic, entityType, entityId, from, to
             </button>
           )}
           {(replayState === 'done' || replayState === 'failed') && (
-            <button style={secondaryBtnStyle} onClick={reset}>Reset</button>
+            <button style={secondaryBtnStyle} onClick={reset}>New Replay</button>
           )}
         </div>
       </div>
@@ -232,7 +237,7 @@ export function ReplayToTopicPanel({ mode, topic, entityType, entityId, from, to
               </div>
             </div>
           )}
-          <div style={{ fontSize: 13, color: statusColor }}>
+          <div style={{ fontSize: 13, color: statusColor, fontWeight: replayState !== 'running' ? 600 : 400 }}>
             {replayState === 'running' && (
               `\u25cf Replaying to \u201c${progress?.targetTopic ?? targetTopic.trim()}\u201d\u2026 ${sent.toLocaleString()} sent`
             )}
