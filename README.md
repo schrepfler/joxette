@@ -33,8 +33,9 @@ Storage is powered by [DuckLake](https://ducklake.select/), using its **data inl
 - 📊 **Observability** — Spring Actuator health endpoint, Prometheus metrics, Swagger UI at `/swagger-ui.html`
 - 🗑️ **GDPR support** — delete all data for a specific entity ID
 - 🏷️ **Instance roles** — gate subsystems (recorder, replay, compaction) per instance for role-based deployments
-- 🌐 **Cluster observability** — shared `joxette_instances` registry; `GET /instances` lists all alive instances; health endpoint includes cluster counts
-- 🔒 **Distributed compaction lock** — `compaction_locks` table prevents two instances from compacting the same target simultaneously
+- 🌐 **Pekko cluster membership** — gossip-based cluster; `GET /instances` (DB heartbeat view) and `GET /instances/topology` (Pekko phi-accrual, ~10 s failure detection) for live membership
+- 🔒 **ClusterSingleton compaction** — Pekko `ClusterSingleton` guarantees exactly one compaction actor runs cluster-wide; replaces the `compaction_locks` DB table
+- 🎛️ **Supervised recorder lifecycle** — per-topic `TopicLifecycleActor` with Pekko exponential-backoff supervisor; replaces Resilience4j retry
 - 🔄 **KIP-848 rebalance support** — scoped partition drain on cooperative rebalance; non-revoked partitions continue without pause (Kafka 4.x)
 
 ---
@@ -97,6 +98,7 @@ implementation (`KafkaRecordSink` + `KafkaRecordSinkFactory`) caches one
 | Framework | Spring Boot | 4.0.5 |
 | Build | Maven | — |
 | Concurrency / Flows | [Jox](https://jox.softwaremill.com/) (softwaremill) | 0.5.x / 1.1.x |
+| Cluster / Supervision | [Apache Pekko](https://pekko.apache.org/) (actor system, ClusterSingleton) | 1.1.3 |
 | Kafka | Apache Kafka clients (via Jox Kafka) | — |
 | Database / Catalog | DuckDB JDBC | 1.5.3.0 |
 | Lakehouse storage | DuckLake extension | — |
@@ -316,14 +318,15 @@ All replay endpoints support three response formats via the `Accept` header:
 | `GET` | `/compaction/status` | Running/idle, last run, next scheduled |
 | `POST` | `/compaction/trigger` | Trigger compaction (optional scope in body) |
 | `GET` | `/compaction/history` | Past compaction runs with stats |
-| `GET` | `/compaction/locks` | Active distributed compaction locks |
+| `GET` | `/compaction/locks` | Always returns `[]` — locking is now handled by ClusterSingleton |
 | `GET` | `/health` | Liveness, consumer lag, catalog size, cluster counts |
 
 **Cluster & instance registry:**
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/instances` | List all alive Joxette instances with roles and last heartbeat |
+| `GET` | `/instances` | List instances from the DB heartbeat table (30 s resolution) |
+| `GET` | `/instances/topology` | Live Pekko cluster topology (~10 s phi-accrual failure detection) |
 
 ### Pagination
 
@@ -492,6 +495,12 @@ joxette/
 **Logical cursors** — Replay cursors encode timestamps and offsets, not file paths or row numbers. This means compaction and DuckLake inlining flushes never invalidate a client's cursor.
 
 **Single DuckDB connection** — DuckDB serialises concurrent writes internally. All Kafka consumer threads and the REST API share one JDBC connection. The catalog backend is selected automatically from the `catalog.path` URI prefix: a bare file path or `file://` uses embedded DuckDB, `quack://` targets a Quack server (DuckDB 1.5.3+, beta), and `postgres://` uses PostgreSQL. The DuckLake schema is identical across all three — only the connection string changes. See **[docs/catalog-scaling.md](docs/catalog-scaling.md)** for the three-stage migration runbook.
+
+**Pekko + Virtual Threads coexistence** — The Pekko actor dispatcher is a small fixed-pool (4 threads) used purely for message routing between actors. All heavy blocking work (DuckDB writes, Kafka polling, Jox pipeline) runs on virtual threads via `context.pipeToSelf(CompletableFuture.supplyAsync(…, vtExecutor), …)`. This keeps carrier-thread pinning pressure off the actor mailboxes.
+
+**Cluster singleton compaction** — `CompactionSingletonActor` is registered as a Pekko `ClusterSingleton`. Exactly one instance exists cluster-wide at any time; Pekko migrates it automatically on node failure. This replaces the `compaction_locks` DB table: the singleton's mailbox serialises all trigger requests, making a separate lock table unnecessary.
+
+**Supervised recorder lifecycle** — Each Kafka topic runs in a `TopicLifecycleActor` child spawned by `RecordingCoordinatorActor`. Pekko's built-in exponential-backoff supervisor restarts failed topic actors automatically, replacing the Resilience4j retry wrapper used previously. The public API of `RecordingCoordinator` (the Spring bean) is unchanged — it is now a thin adapter over the actor ask pattern.
 
 **Storage delegation** — All object storage interaction (S3, GCS, Azure Blob) is handled by DuckDB's `httpfs` extension and DuckLake's storage management. There is no Java object-storage SDK in the dependency tree.
 

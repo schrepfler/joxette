@@ -13,7 +13,6 @@ import java.sql.*;
 import java.time.*;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.Supplier;
 
 /**
  * Compacts entity and general cassette tables in DuckLake using
@@ -76,15 +75,12 @@ public class CompactionService {
     private final Connection           duckDB;
     private final JoxetteProperties    props;
     private final ConfigRepository     configRepo;
-    private final CompactionLockManager lockManager;
     private final AtomicBoolean        running = new AtomicBoolean(false);
 
-    public CompactionService(Connection duckDB, JoxetteProperties props,
-                             ConfigRepository configRepo, CompactionLockManager lockManager) {
-        this.duckDB      = duckDB;
-        this.props       = props;
-        this.configRepo  = configRepo;
-        this.lockManager = lockManager;
+    public CompactionService(Connection duckDB, JoxetteProperties props, ConfigRepository configRepo) {
+        this.duckDB     = duckDB;
+        this.props      = props;
+        this.configRepo = configRepo;
     }
 
     // =========================================================================
@@ -124,13 +120,6 @@ public class CompactionService {
         int generalTopics = 0;
         FileStats totalFileStats = FileStats.EMPTY;
         try {
-            // Reclaim expired locks from dead instances before processing our targets.
-            try {
-                lockManager.cleanExpiredLocks();
-            } catch (SQLException e) {
-                log.warn("Could not clean expired compaction locks: {}", e.getMessage());
-            }
-
             CompactionResult entityResult = compactEntityTypes(targets);
             entityTypes    = entityResult.unitsProcessed();
             totalFileStats = totalFileStats.add(entityResult.fileStats());
@@ -181,11 +170,6 @@ public class CompactionService {
         CompactionRun lastRun = queryLastRun();
         Instant nextScheduledRun = computeNextScheduledRun();
         return new CompactionStatus(lastRun, nextScheduledRun, running.get());
-    }
-
-    /** Returns all rows in {@code compaction_locks} — used by {@code GET /compaction/locks}. */
-    public List<CompactionLockInfo> getActiveLocks() throws SQLException {
-        return lockManager.listActiveLocks();
     }
 
     public List<CompactionRun> getHistory(int limit) throws SQLException {
@@ -249,13 +233,8 @@ public class CompactionService {
         return targets.stream().filter(t -> !t.equals("general")).toList();
     }
 
-    /**
-     * Acquires the distributed lock for {@code "entity:" + entityType} and delegates
-     * to {@link #doCompactEntityType}.  If the lock is held by another instance, the
-     * target is skipped and {@link CompactionResult#NONE} is returned.
-     */
     private CompactionResult compactEntityType(String entityType) {
-        return withLock("entity:" + entityType, () -> doCompactEntityType(entityType));
+        return doCompactEntityType(entityType);
     }
 
     /**
@@ -341,13 +320,8 @@ public class CompactionService {
         return total;
     }
 
-    /**
-     * Acquires the distributed lock for {@code "topic:" + normalizedTopicName} and
-     * delegates to {@link #doCompactGeneralTopic}.  If the lock is held by another
-     * instance, the target is skipped and {@link CompactionResult#NONE} is returned.
-     */
     private CompactionResult compactGeneralTopic(String topic) {
-        return withLock("topic:" + normalizeTopicName(topic), () -> doCompactGeneralTopic(topic));
+        return doCompactGeneralTopic(topic);
     }
 
     /**
@@ -389,77 +363,6 @@ public class CompactionService {
     /** Normalises a topic name to {@code [a-z0-9_]}, matching {@code SchemaManager.normalize}. */
     private static String normalizeTopicName(String topic) {
         return topic.toLowerCase().replaceAll("[^a-z0-9_]", "_");
-    }
-
-    // =========================================================================
-    // Distributed lock helpers
-    // =========================================================================
-
-    /**
-     * Wraps a compaction task with distributed lock acquire / heartbeat / release.
-     *
-     * <ol>
-     *   <li>Tries to acquire the lock for {@code target}; returns {@link CompactionResult#NONE}
-     *       immediately if another instance holds it.</li>
-     *   <li>Starts a heartbeat virtual thread that refreshes {@code expires_at} every
-     *       {@link CompactionLockManager#HEARTBEAT_INTERVAL_MINUTES} minutes so a
-     *       legitimately long merge never trips its own TTL.</li>
-     *   <li>Runs {@code task.get()} and returns its result.</li>
-     *   <li>Always stops the heartbeat and releases the lock in {@code finally}, even
-     *       when the task throws an unchecked exception.</li>
-     * </ol>
-     */
-    private CompactionResult withLock(String target, Supplier<CompactionResult> task) {
-        boolean owned;
-        try {
-            owned = lockManager.tryAcquire(target);
-        } catch (SQLException e) {
-            log.warn("Cannot acquire compaction lock for '{}': {}; skipping target", target, e.getMessage());
-            return CompactionResult.NONE;
-        }
-        if (!owned) {
-            log.info("Skipping compaction of '{}' — lock is held by another instance", target);
-            return CompactionResult.NONE;
-        }
-
-        // Heartbeat: refresh the lock expiry periodically while the merge is running.
-        AtomicBoolean heartbeatStop = new AtomicBoolean(false);
-        Thread heartbeatThread = Thread.ofVirtual()
-                .name("compaction-heartbeat-" + target)
-                .start(() -> runHeartbeat(target, heartbeatStop));
-        try {
-            return task.get();
-        } finally {
-            heartbeatStop.set(true);
-            heartbeatThread.interrupt();  // wake it from sleep immediately
-            lockManager.release(target);
-        }
-    }
-
-    /**
-     * Heartbeat loop: sleeps for {@link CompactionLockManager#HEARTBEAT_INTERVAL_MINUTES}
-     * minutes then refreshes the lock expiry.  Terminates when {@code stop} is set
-     * or the thread is interrupted (triggered from the {@code finally} block in
-     * {@link #withLock}).
-     */
-    private void runHeartbeat(String target, AtomicBoolean stop) {
-        long sleepMs = (long) CompactionLockManager.HEARTBEAT_INTERVAL_MINUTES * 60_000L;
-        while (!stop.get()) {
-            try {
-                Thread.sleep(sleepMs);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return;
-            }
-            if (!stop.get()) {
-                try {
-                    lockManager.refresh(target);
-                    log.debug("Refreshed compaction lock for '{}'", target);
-                } catch (SQLException e) {
-                    log.warn("Heartbeat refresh failed for '{}': {}", target, e.getMessage());
-                }
-            }
-        }
     }
 
     // =========================================================================

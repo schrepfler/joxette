@@ -14,23 +14,17 @@ import java.util.List;
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
- * Integration tests for distributed compaction locking.
+ * Integration tests for {@link CompactionLockManager}.
  *
- * <p>Two {@link CompactionLockManager} instances share the same in-memory DuckDB
- * connection, simulating two Joxette processes sharing a common catalog (e.g.
- * PostgreSQL at Stage 3 of the catalog scaling path, or Quack at Stage 2).
+ * <p>Two lock-manager instances share the same in-memory DuckDB connection.
+ * Covers lock acquisition, release, expiry cleanup, and startup cleanup.
  *
- * <h2>What is tested</h2>
- * <ul>
- *   <li>Optimistic lock acquisition: only one instance wins the INSERT race.</li>
- *   <li>Guard: a second {@link CompactionService} targeting the same entity type
- *       skips cleanly when the lock is held by the first.</li>
- *   <li>Lock release and re-acquisition after release.</li>
- *   <li>Expired lock cleanup ({@link CompactionLockManager#cleanExpiredLocks()}).</li>
- *   <li>Startup cleanup ({@link CompactionLockManager#releaseOwnLocks()}).</li>
- *   <li>{@code GET /compaction/locks} data:
- *       {@link CompactionLockManager#listActiveLocks()}.</li>
- * </ul>
+ * <p>Note: since Stage 2 of the Pekko integration, {@link CompactionService}
+ * no longer uses {@link CompactionLockManager} — the Pekko ClusterSingleton
+ * guarantee replaces DB-level locking.  Tests that created {@code CompactionService}
+ * with a lock manager have been removed; the remaining tests cover the lock
+ * manager's own contract (useful if the class is re-enabled for non-singleton
+ * deployments).
  */
 class CompactionDistributedLockTest {
 
@@ -227,76 +221,6 @@ class CompactionDistributedLockTest {
 
         // Clean up
         lockA.cleanExpiredLocks();
-    }
-
-    // -------------------------------------------------------------------------
-    // Key integration test: two CompactionService instances, same target
-    // -------------------------------------------------------------------------
-
-    /**
-     * Simulates two Joxette instances competing to compact the same entity type.
-     *
-     * <p>Instance A pre-seeds the lock for {@code entity:order} (simulating a
-     * long-running merge still in progress).  Instance B then runs a full
-     * compaction cycle: it should complete successfully but skip the locked target.
-     * After A releases its lock, B can compact successfully in a second run.
-     */
-    @Test
-    void twoServices_lockedTarget_secondServiceSkipsCleanly() throws Exception {
-        // Instance A acquires the lock — simulates A already running a long merge.
-        lockA.tryAcquire(LOCK_TARGET);
-
-        // Instance B runs a full compaction cycle with its own lock manager.
-        CompactionService serviceB = new CompactionService(conn, props, configRepo, lockB);
-        CompactionRun run = serviceB.beginRun("test-instance-B", null);
-        serviceB.executeRun(run.id(), null);
-
-        // B's run must complete without throwing.
-        CompactionRun result = serviceB.getRunById(run.id());
-        assertThat(result.status()).isEqualTo("completed");
-
-        // B did NOT acquire A's lock, so it must not have released it either.
-        List<CompactionLockInfo> locksAfterB = lockA.listActiveLocks();
-        assertThat(locksAfterB)
-                .as("Lock entity:order must still be held by instance-A after B skipped it")
-                .hasSize(1);
-        assertThat(locksAfterB.get(0).instanceId()).isEqualTo(INSTANCE_A);
-
-        // --- Release A's lock; B should now compact entity:order successfully. ---
-        lockA.release(LOCK_TARGET);
-
-        CompactionRun run2 = serviceB.beginRun("test-instance-B-round2", null);
-        serviceB.executeRun(run2.id(), null);
-
-        CompactionRun result2 = serviceB.getRunById(run2.id());
-        assertThat(result2.status()).isEqualTo("completed");
-
-        // All locks must be released after B's second run.
-        assertThat(lockB.listActiveLocks())
-                .as("All compaction locks must be released after B's run completes")
-                .isEmpty();
-    }
-
-    /**
-     * Verifies that when an expired lock exists, it is cleaned up at the start of
-     * the next {@link CompactionService#executeRun} call and the run can then
-     * acquire the lock and compact normally.
-     */
-    @Test
-    void executeRun_cleansExpiredLocksBeforeCompacting() throws Exception {
-        // Seed an expired lock (simulates a crash of instance A without cleanup).
-        insertExpiredLock(LOCK_TARGET, INSTANCE_A);
-
-        // Service B runs — it should clean the expired lock and compact successfully.
-        CompactionService serviceB = new CompactionService(conn, props, configRepo, lockB);
-        CompactionRun run = serviceB.beginRun("expiry-sweep-test", null);
-        serviceB.executeRun(run.id(), null);
-
-        CompactionRun result = serviceB.getRunById(run.id());
-        assertThat(result.status()).isEqualTo("completed");
-
-        // All locks released; no stale row remains.
-        assertThat(lockB.listActiveLocks()).isEmpty();
     }
 
     // -------------------------------------------------------------------------

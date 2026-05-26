@@ -11,14 +11,15 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
-import org.springframework.beans.factory.annotation.Qualifier;
+import org.apache.pekko.actor.typed.ActorRef;
+import org.apache.pekko.actor.typed.ActorSystem;
+import org.apache.pekko.actor.typed.javadsl.AskPattern;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.scheduling.TaskScheduler;
 import org.springframework.web.bind.annotation.*;
 
 import java.sql.SQLException;
-import java.time.Instant;
+import java.time.Duration;
 import java.util.List;
 
 /**
@@ -55,21 +56,25 @@ import java.util.List;
 public class CompactionController {
 
     private static final int DEFAULT_HISTORY_LIMIT = 20;
+    private static final Duration ASK_TIMEOUT = Duration.ofSeconds(10);
 
     private final CompactionService compactionService;
     private final RetentionService retentionService;
-    private final TaskScheduler compactionTaskScheduler;
+    private final ActorRef<CompactionSingletonActor.CompactionCommand> compactionSingleton;
+    private final ActorSystem<?> system;
     private final JoxetteProperties props;
 
     public CompactionController(
             CompactionService compactionService,
             RetentionService retentionService,
-            @Qualifier("compactionTaskScheduler") TaskScheduler compactionTaskScheduler,
+            ActorRef<CompactionSingletonActor.CompactionCommand> compactionSingleton,
+            ActorSystem<?> system,
             JoxetteProperties props) {
-        this.compactionService       = compactionService;
-        this.retentionService        = retentionService;
-        this.compactionTaskScheduler = compactionTaskScheduler;
-        this.props                   = props;
+        this.compactionService   = compactionService;
+        this.retentionService    = retentionService;
+        this.compactionSingleton = compactionSingleton;
+        this.system              = system;
+        this.props               = props;
     }
 
     // =========================================================================
@@ -151,13 +156,21 @@ public class CompactionController {
                 content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
                     schema = @Schema(implementation = TriggerRequest.class),
                     examples = @ExampleObject(value = "{\"targets\": [\"order\", \"payment\"]}")))
-            @Valid @RequestBody(required = false) TriggerRequest body) throws SQLException {
+            @Valid @RequestBody(required = false) TriggerRequest body) {
         List<String> targets = (body != null) ? body.targets() : null;
-        CompactionRun run = compactionService.beginRun("manual", targets);
-        compactionTaskScheduler.schedule(
-                () -> compactionService.executeRun(run.id(), targets),
-                Instant.now());
-        return ResponseEntity.accepted().body(run);
+        CompactionSingletonActor.TriggerReply reply = AskPattern.<CompactionSingletonActor.CompactionCommand, CompactionSingletonActor.TriggerReply>ask(
+                compactionSingleton,
+                replyTo -> new CompactionSingletonActor.TriggerCompaction(targets, "manual", replyTo),
+                ASK_TIMEOUT,
+                system.scheduler()
+        ).toCompletableFuture().join();
+
+        return switch (reply) {
+            case CompactionSingletonActor.CompactionAccepted accepted ->
+                    ResponseEntity.accepted().body(accepted.run());
+            case CompactionSingletonActor.CompactionBusy ignored ->
+                    throw com.joxette.api.error.ConflictException.compactionAlreadyRunning();
+        };
     }
 
     @Operation(
@@ -210,33 +223,20 @@ public class CompactionController {
 
     @Operation(
         operationId = "getCompactionLocks",
-        summary = "List active compaction distributed locks",
-        description = "Returns all rows in compaction_locks — the distributed lock table used to " +
-                      "prevent concurrent compaction of the same target by multiple Joxette instances. " +
-                      "Locks with a past expires_at are stale and will be removed at the start of the " +
-                      "next compaction run. Each lock carries a seconds_remaining field for quick " +
-                      "triage without parsing timestamps."
+        summary = "List active compaction distributed locks (deprecated)",
+        description = "Always returns an empty list. Distributed compaction locking via the " +
+                      "compaction_locks table has been superseded by the Pekko ClusterSingleton " +
+                      "guarantee — exactly one CompactionSingletonActor runs cluster-wide at any time, " +
+                      "making explicit DB-level locking unnecessary."
     )
     @ApiResponses({
-        @ApiResponse(responseCode = "200", description = "Active (and any stale) compaction locks",
+        @ApiResponse(responseCode = "200", description = "Empty list (locking is now handled by ClusterSingleton)",
             content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-                schema = @Schema(type = "array", implementation = CompactionLockInfo.class),
-                examples = @ExampleObject(name = "one lock", value = """
-                    [
-                      {
-                        "target": "entity:order",
-                        "instanceId": "worker-node-1:42",
-                        "acquiredAt": "2024-06-01T03:01:00Z",
-                        "expiresAt": "2024-06-01T05:01:00Z",
-                        "secondsRemaining": 7189
-                      }
-                    ]"""))),
-        @ApiResponse(responseCode = "500", description = "Database error",
-            content = @Content(schema = @Schema(type = "string")))
+                schema = @Schema(type = "array", implementation = CompactionLockInfo.class)))
     })
     @GetMapping(value = "/locks", produces = MediaType.APPLICATION_JSON_VALUE)
-    public List<CompactionLockInfo> getLocks() throws SQLException {
-        return compactionService.getActiveLocks();
+    public List<CompactionLockInfo> getLocks() {
+        return List.of();
     }
 
     @Operation(

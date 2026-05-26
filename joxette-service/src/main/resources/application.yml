@@ -70,6 +70,16 @@ joxette:
   # ---------------------------------------------------------------------------
   roles: [all]
 
+  # ---------------------------------------------------------------------------
+  # Pekko cluster configuration
+  # ---------------------------------------------------------------------------
+  # remote-port: 0 = OS-assigns a free port (default; suitable for local dev).
+  # Set an explicit port (e.g. 2551) for multi-node deployments so seed-node
+  # addresses in pekko.conf are stable.
+  # Override via env-var: JOXETTE_PEKKO_REMOTE-PORT=2551
+  pekko:
+    remote-port: 0
+
   catalog:
     path: "./data/joxette.ducklake"
     object-storage-path: "s3://joxette-data/"

@@ -127,6 +127,24 @@
             <artifactId>s3</artifactId>
         </dependency>
 
+        <!-- Pekko: typed actors, cluster membership, cluster singleton, SBR -->
+        <dependency>
+            <groupId>org.apache.pekko</groupId>
+            <artifactId>pekko-actor-typed_2.13</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.pekko</groupId>
+            <artifactId>pekko-cluster-typed_2.13</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.pekko</groupId>
+            <artifactId>pekko-cluster-tools_2.13</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.pekko</groupId>
+            <artifactId>pekko-slf4j_2.13</artifactId>
+        </dependency>
+
         <!-- Jackson for JSON handling in REST API -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
@@ -137,6 +155,13 @@
         <dependency>
             <groupId>com.jayway.jsonpath</groupId>
             <artifactId>json-path</artifactId>
+        </dependency>
+
+        <!-- Pekko ActorTestKit (unit-tests for actor behaviours) -->
+        <dependency>
+            <groupId>org.apache.pekko</groupId>
+            <artifactId>pekko-actor-testkit-typed_2.13</artifactId>
+            <scope>test</scope>
         </dependency>
 
         <!-- Spring Boot Test -->
