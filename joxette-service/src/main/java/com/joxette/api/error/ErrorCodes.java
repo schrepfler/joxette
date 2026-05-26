@@ -15,6 +15,7 @@ public final class ErrorCodes {
     public static final String MISSING_PARAMETER    = "ERR_MISSING_PARAMETER";
     public static final String TYPE_MISMATCH        = "ERR_TYPE_MISMATCH";
     public static final String INTERNAL             = "ERR_INTERNAL";
+    public static final String FORBIDDEN            = "ERR_FORBIDDEN";
 
     private ErrorCodes() {}
 }

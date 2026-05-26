@@ -22,6 +22,9 @@ export interface CreateTopicRequest {
   consumerGroup?: string
   startFrom?: string
   brokerId?: string
+  createKafkaTopicIfAbsent?: boolean
+  numPartitions?: number
+  replicationFactor?: number
 }
 
 export interface UpdateTopicRequest {

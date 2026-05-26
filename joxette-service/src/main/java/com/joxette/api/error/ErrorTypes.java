@@ -14,6 +14,7 @@ public final class ErrorTypes {
     public static final URI UPSTREAM_UNAVAILABLE = URI.create("https://joxette.dev/problems/upstream-unavailable");
     public static final URI INVALID_CURSOR       = URI.create("https://joxette.dev/problems/invalid-cursor");
     public static final URI INTERNAL             = URI.create("https://joxette.dev/problems/internal");
+    public static final URI FORBIDDEN            = URI.create("https://joxette.dev/problems/forbidden");
 
     private ErrorTypes() {}
 }

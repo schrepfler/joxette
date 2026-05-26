@@ -32,6 +32,9 @@ export function AddTopicModal({ onClose, defaultTopic = '', defaultBrokerId = ''
       consumerGroup: '',
       retentionDays: '',
       startFrom: '',
+      createKafkaTopic: false,
+      numPartitions: '1',
+      replicationFactor: '1',
     },
     onSubmit: async ({ value }) => {
       mutation.mutate({
@@ -41,6 +44,9 @@ export function AddTopicModal({ onClose, defaultTopic = '', defaultBrokerId = ''
         consumerGroup: value.consumerGroup || undefined,
         retentionDays: value.retentionDays ? Number(value.retentionDays) : undefined,
         startFrom: value.startFrom || undefined,
+        createKafkaTopicIfAbsent: value.createKafkaTopic || undefined,
+        numPartitions: value.createKafkaTopic && value.numPartitions ? Number(value.numPartitions) : undefined,
+        replicationFactor: value.createKafkaTopic && value.replicationFactor ? Number(value.replicationFactor) : undefined,
       })
     },
   })
@@ -105,13 +111,68 @@ export function AddTopicModal({ onClose, defaultTopic = '', defaultBrokerId = ''
           </form.Field>
           <form.Field name="startFrom">
             {(field) => (
-              <div style={{ ...fieldWrap, marginBottom: 20 }}>
+              <div style={fieldWrap}>
                 <label style={labelStyle}>Start From</label>
                 <input className="jx-input-box" value={field.state.value} onChange={e => field.handleChange(e.target.value)} placeholder="earliest / latest / ISO date" />
               </div>
             )}
           </form.Field>
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+
+          <form.Field name="createKafkaTopic">
+            {(field) => (
+              <div style={{ ...fieldWrap, borderTop: '1px solid var(--rule)', paddingTop: 12, marginTop: 4 }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={field.state.value}
+                    onChange={e => field.handleChange(e.target.checked)}
+                    style={{ width: 14, height: 14, accentColor: 'var(--accent)', cursor: 'pointer' }}
+                  />
+                  <span style={{ ...labelStyle, marginBottom: 0 }}>Create Kafka topic if it doesn't exist</span>
+                </label>
+                <p style={{ margin: '4px 0 0 22px', fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)' }}>
+                  Requires CREATE permission on the broker credentials.
+                </p>
+              </div>
+            )}
+          </form.Field>
+
+          <form.Subscribe selector={s => s.values.createKafkaTopic}>
+            {(createKafkaTopic) => createKafkaTopic && (
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 12, paddingLeft: 22 }}>
+                <form.Field name="numPartitions">
+                  {(field) => (
+                    <div>
+                      <label style={labelStyle}>Partitions</label>
+                      <input
+                        type="number"
+                        min={1}
+                        className="jx-input-box"
+                        value={field.state.value}
+                        onChange={e => field.handleChange(e.target.value)}
+                      />
+                    </div>
+                  )}
+                </form.Field>
+                <form.Field name="replicationFactor">
+                  {(field) => (
+                    <div>
+                      <label style={labelStyle}>Replication Factor</label>
+                      <input
+                        type="number"
+                        min={1}
+                        className="jx-input-box"
+                        value={field.state.value}
+                        onChange={e => field.handleChange(e.target.value)}
+                      />
+                    </div>
+                  )}
+                </form.Field>
+              </div>
+            )}
+          </form.Subscribe>
+
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 8 }}>
             <button type="button" onClick={onClose} style={cancelBtnStyle}>Cancel</button>
             <button type="submit" disabled={mutation.isPending} style={primaryBtnStyle}>
               {mutation.isPending ? 'Creating…' : 'Create'}

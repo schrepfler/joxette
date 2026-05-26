@@ -41,17 +41,30 @@ public class TopicController {
     private final ConfigRepository config;
     private final RecordingCoordinator coordinator;
     private final MessageRouter router;
+    private final KafkaTopicAdmin kafkaTopicAdmin;
 
-    public record CreateTopicRequest(@NotBlank String topic, String mode, String startFrom, String brokerId) {}
+    public record CreateTopicRequest(
+            @NotBlank String topic,
+            String mode,
+            String startFrom,
+            String brokerId,
+            /** When {@code true}, create the Kafka topic if it does not yet exist. */
+            boolean createKafkaTopicIfAbsent,
+            /** Number of partitions for the new Kafka topic. Ignored when {@code createKafkaTopicIfAbsent} is false. */
+            Integer numPartitions,
+            /** Replication factor for the new Kafka topic. Ignored when {@code createKafkaTopicIfAbsent} is false. */
+            Short replicationFactor
+    ) {}
     public record UpdateTopicRequest(String mode, String brokerId) {}
     public record SetRetentionRequest(Integer days) {}
     public record AddMatcherRequest(@NotBlank String messageType, String idSource, String idExpression) {}
 
     public TopicController(ConfigRepository config, @Lazy RecordingCoordinator coordinator,
-                           MessageRouter router) {
-        this.config      = config;
-        this.coordinator = coordinator;
-        this.router      = router;
+                           MessageRouter router, KafkaTopicAdmin kafkaTopicAdmin) {
+        this.config          = config;
+        this.coordinator     = coordinator;
+        this.router          = router;
+        this.kafkaTopicAdmin = kafkaTopicAdmin;
     }
 
     private void reloadRouter() {
@@ -77,6 +90,17 @@ public class TopicController {
             throws SQLException {
         if (config.findTopic(body.topic()).isPresent()) {
             throw ConflictException.topicAlreadyExists(body.topic());
+        }
+        if (body.createKafkaTopicIfAbsent()) {
+            String brokerId = body.brokerId();
+            if (!kafkaTopicAdmin.exists(brokerId, body.topic())) {
+                // ForbiddenException propagates to GlobalExceptionHandler as 403 if ACLs deny CREATE.
+                kafkaTopicAdmin.createTopic(brokerId, body.topic(),
+                        body.numPartitions(), body.replicationFactor());
+            } else {
+                log.info("Kafka topic '{}' already exists on broker '{}', skipping creation",
+                        body.topic(), brokerId);
+            }
         }
         String mode = body.mode() != null ? body.mode() : "general";
         String startFrom = body.startFrom() != null ? body.startFrom() : "latest";
