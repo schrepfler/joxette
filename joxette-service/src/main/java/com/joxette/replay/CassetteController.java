@@ -116,6 +116,7 @@ public class CassetteController {
     private final KafkaTopicAdmin           kafkaTopicAdmin;
     private final ConfigRepository          configRepository;
     private final ActiveReplayTracker       replayTracker;
+    private final StateFoldService          stateFoldService;
 
     public CassetteController(
             TopicReplayService topicService,
@@ -135,7 +136,8 @@ public class CassetteController {
             CassetteRecordingBus recordingBus,
             KafkaTopicAdmin kafkaTopicAdmin,
             ConfigRepository configRepository,
-            ActiveReplayTracker replayTracker) {
+            ActiveReplayTracker replayTracker,
+            StateFoldService stateFoldService) {
         this.topicService             = topicService;
         this.entityService            = entityService;
         this.sseHandler               = sseHandler;
@@ -154,6 +156,7 @@ public class CassetteController {
         this.kafkaTopicAdmin          = kafkaTopicAdmin;
         this.configRepository         = configRepository;
         this.replayTracker            = replayTracker;
+        this.stateFoldService         = stateFoldService;
     }
 
     /**
@@ -696,7 +699,15 @@ public class CassetteController {
             @RequestParam(name = "last_n", required = false) Integer lastN,
             @Parameter(description = "Deduplication policy: offset (default), value, or none.",
                        name = "dedup")
-            @RequestParam(name = "dedup", required = false) DedupPolicy dedup
+            @RequestParam(name = "dedup", required = false) DedupPolicy dedup,
+            @Parameter(description = "Output mode: `events` (default) = stream of EntityRecord; " +
+                                     "`state` = fold into a single current-state JSON object.",
+                       name = "output")
+            @RequestParam(name = "output", defaultValue = "events") ReplayOutputMode output,
+            @Parameter(description = "State fold strategy, only relevant when output=state: " +
+                                     "merge_patch (default), last_value, or last_per_topic.",
+                       name = "state_fold")
+            @RequestParam(name = "state_fold", required = false) StateFoldStrategy stateFold
     ) throws SQLException {
         Instant scheduledAt = resolveScheduledAt(startAt, startDelayMs);
         if (scheduledAt != null) {
@@ -710,6 +721,10 @@ public class CassetteController {
                 return ResponseEntity.ok(processed.summary());
             }
             return ResponseEntity.ok(new PagedResponse<>(processed.records(), null, false, null, processed.summary()));
+        }
+        if (output == ReplayOutputMode.STATE) {
+            return ResponseEntity.ok(applyStateFold(entityType, entityId, from, to,
+                    messageTypes, lastN, dedup, stateFold));
         }
         String replayId = newReplayId();
         List<TransformStep> userSteps = resolveTransformSteps(transform, transformPreset);
@@ -786,7 +801,13 @@ public class CassetteController {
             @RequestParam(name = "last_n", required = false) Integer lastN,
             @Parameter(description = "Deduplication policy: offset (default), value, or none.",
                        name = "dedup")
-            @RequestParam(name = "dedup", required = false) DedupPolicy dedup
+            @RequestParam(name = "dedup", required = false) DedupPolicy dedup,
+            @Parameter(description = "Output mode: events (default) or state.",
+                       name = "output")
+            @RequestParam(name = "output", defaultValue = "events") ReplayOutputMode output,
+            @Parameter(description = "State fold strategy, only relevant when output=state.",
+                       name = "state_fold")
+            @RequestParam(name = "state_fold", required = false) StateFoldStrategy stateFold
     ) throws SQLException {
         rejectFollowWithUpperBound(follow, to, null);
         if (sol != null && follow) {
@@ -805,6 +826,12 @@ public class CassetteController {
             List<EntityRecord> solRecords = processed.records();
             return sseHandler.<EntityRecord>streamSse("sol_summary", summaryJson,
                     sink -> solRecords.forEach(sink));
+        }
+        if (output == ReplayOutputMode.STATE) {
+            StateFoldService.StateResult result = applyStateFold(
+                    entityType, entityId, from, to, messageTypes, lastN, dedup, stateFold);
+            // For SSE: emit a single "state" event then close
+            return sseHandler.<EntityRecord>streamSse("state", toJson(result), sink -> {});
         }
         String replayId = newReplayId();
         List<TransformStep> userSteps = resolveTransformSteps(transform, transformPreset);
@@ -901,7 +928,13 @@ public class CassetteController {
             @RequestParam(name = "last_n", required = false) Integer lastN,
             @Parameter(description = "Deduplication policy: offset (default), value, or none.",
                        name = "dedup")
-            @RequestParam(name = "dedup", required = false) DedupPolicy dedup
+            @RequestParam(name = "dedup", required = false) DedupPolicy dedup,
+            @Parameter(description = "Output mode: events (default) or state.",
+                       name = "output")
+            @RequestParam(name = "output", defaultValue = "events") ReplayOutputMode output,
+            @Parameter(description = "State fold strategy, only relevant when output=state.",
+                       name = "state_fold")
+            @RequestParam(name = "state_fold", required = false) StateFoldStrategy stateFold
     ) throws SQLException {
         rejectFollowWithUpperBound(follow, to, null);
         if (sol != null && follow) {
@@ -919,6 +952,10 @@ public class CassetteController {
             String preamble = "{\"_sol_summary\":" + toJson(processed.summary()) + "}";
             List<EntityRecord> solRecords = processed.records();
             body = sseHandler.<EntityRecord>streamNdjson(preamble, sink -> solRecords.forEach(sink));
+        } else if (output == ReplayOutputMode.STATE) {
+            StateFoldService.StateResult result = applyStateFold(
+                    entityType, entityId, from, to, messageTypes, lastN, dedup, stateFold);
+            body = sseHandler.<EntityRecord>streamNdjson(toJson(result), sink -> {});
         } else if (follow) {
             String replayId = newReplayId();
             List<TransformStep> userSteps = resolveTransformSteps(transform, transformPreset);
@@ -1812,6 +1849,11 @@ public class CassetteController {
             }
             return ResponseEntity.ok(new PagedResponse<>(processed.records(), null, false, null, processed.summary()));
         }
+        if (body.output() == ReplayOutputMode.STATE) {
+            return ResponseEntity.ok(applyStateFold(entityType, entityId,
+                    body.from(), body.to(), body.messageTypes(), body.lastN(), body.dedup(),
+                    body.stateFold()));
+        }
         String replayId = newReplayId();
         List<TransformStep> userSteps = resolveTransformStepsFromBody(body.transform(), body.transformPreset());
         TransformPipeline pipeline = new TransformPipeline(userSteps, metadataInjector);
@@ -1853,6 +1895,12 @@ public class CassetteController {
             List<EntityRecord> solRecords = processed.records();
             return sseHandler.<EntityRecord>streamSse("sol_summary", summaryJson,
                     sink -> solRecords.forEach(sink));
+        }
+        if (body.output() == ReplayOutputMode.STATE) {
+            StateFoldService.StateResult result = applyStateFold(entityType, entityId,
+                    body.from(), body.to(), body.messageTypes(), body.lastN(), body.dedup(),
+                    body.stateFold());
+            return sseHandler.<EntityRecord>streamSse("state", toJson(result), sink -> {});
         }
         String replayId = newReplayId();
         List<TransformStep> userSteps = resolveTransformStepsFromBody(body.transform(), body.transformPreset());
@@ -1907,6 +1955,15 @@ public class CassetteController {
             return ResponseEntity.ok()
                     .contentType(MediaType.parseMediaType("application/x-ndjson"))
                     .body(stream);
+        }
+        if (body.output() == ReplayOutputMode.STATE) {
+            StateFoldService.StateResult result = applyStateFold(entityType, entityId,
+                    body.from(), body.to(), body.messageTypes(), body.lastN(), body.dedup(),
+                    body.stateFold());
+            StreamingResponseBody stateStream = sseHandler.<EntityRecord>streamNdjson(toJson(result), sink -> {});
+            return ResponseEntity.ok()
+                    .contentType(MediaType.parseMediaType("application/x-ndjson"))
+                    .body(stateStream);
         }
         String replayId = newReplayId();
         List<TransformStep> userSteps = resolveTransformStepsFromBody(body.transform(), body.transformPreset());
@@ -2126,6 +2183,31 @@ public class CassetteController {
     }
 
     private record SolProcessed(List<EntityRecord> records, PagedResponse.SolSummary summary) {}
+
+    /**
+     * Loads the entity's full event sequence (applying {@code lastN} / {@code dedup}
+     * if requested) and folds it into a {@link StateFoldService.StateResult}.
+     */
+    private StateFoldService.StateResult applyStateFold(
+            String entityType, String entityId,
+            Instant from, Instant to,
+            List<String> messageTypes,
+            Integer lastN, DedupPolicy dedup,
+            StateFoldStrategy stateFold
+    ) throws SQLException {
+        List<EntityRecord> records;
+        if (lastN != null) {
+            records = entityService.queryEntityEvents(
+                    entityType, entityId, null, null, lastN, null,
+                    TransformPipeline.IDENTITY, "", Order.ASC, messageTypes, lastN, dedup).data();
+        } else {
+            List<EntityRecord> all = new ArrayList<>();
+            entityService.streamEntityEvents(entityType, entityId, from, to,
+                    all::add, TransformPipeline.IDENTITY, "", Order.ASC);
+            records = all;
+        }
+        return stateFoldService.fold(records, stateFold);
+    }
 
     private static EntityRecord cassetteToEntity(CassetteRecord r, String entityId) {
         return cassetteToEntity(r, entityId, null);

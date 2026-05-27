@@ -72,7 +72,8 @@ class CassetteControllerProblemDetailTest {
                 topicService, entityService, sseHandler, lifecycle, sinkFactory,
                 scheduledReplayService, metadataInjector, presetRepository, properties,
                 mapper, sequenceMatchService, null /* solMatchService */, null /* sunburstService */,
-                fieldSuggestionsService, recordingBus, kafkaTopicAdmin, configRepository, replayTracker);
+                fieldSuggestionsService, recordingBus, kafkaTopicAdmin, configRepository, replayTracker,
+                new com.joxette.replay.StateFoldService(mapper));
 
         // Register the Order converter so `?order=asc|desc` binding matches production.
         FormattingConversionService conversion = new FormattingConversionService();

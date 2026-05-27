@@ -83,11 +83,24 @@ public record EntityReplayBody(
                               "`value` = one copy per (topic, value) — for idempotent producers; " +
                               "`none` = no deduplication, all rows including re-deliveries.",
                 defaultValue = "offset")
-        DedupPolicy dedup
+        DedupPolicy dedup,
+
+        @Schema(description = "Output mode: `events` (default) = stream of EntityRecord; " +
+                              "`state` = fold the event stream into a single current-state JSON object.",
+                defaultValue = "events")
+        ReplayOutputMode output,
+
+        @Schema(description = "State fold strategy, only relevant when `output=state`: " +
+                              "`merge_patch` (default) = RFC 7396 merge each event value; " +
+                              "`last_value` = final event value wins; " +
+                              "`last_per_topic` = last value per source topic, then merged.",
+                name = "state_fold")
+        StateFoldStrategy stateFold
 ) {
     /** Normalises null {@code limit} to the default page size and {@code solOutput} to EVENTS. */
     public EntityReplayBody {
         if (limit == null) limit = 100;
         if (solOutput == null) solOutput = SolOutput.EVENTS;
+        if (output == null) output = ReplayOutputMode.EVENTS;
     }
 }
