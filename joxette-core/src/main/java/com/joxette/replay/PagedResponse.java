@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * Cursor-paginated response wrapper.
@@ -34,5 +35,28 @@ public record PagedResponse<T>(
         @Schema(description = "Present and true when a user-supplied transform pipeline was applied to the records " +
                               "on this page. Omitted when no transform was active.",
                 example = "true")
-        Boolean transformApplied
-) {}
+        Boolean transformApplied,
+
+        @Schema(description = "SOL sequence match summary. Present only when a SOL query was supplied and " +
+                              "`sol_output` is `annotated` or `events`. Contains `matched`, `tags` (name → " +
+                              "{from,to} spans), `sequenceLength`, and any `unexpectedNulls`.")
+        SolSummary solSummary
+) {
+    /**
+     * Metadata returned alongside event records when a SOL query was applied.
+     *
+     * @param matched        whether the last MATCH found at least one occurrence
+     * @param tags           tag name → half-open index range in the original sequence
+     * @param sequenceLength total events in the pre-SOL sequence (denominator for coverage)
+     * @param unexpectedNulls expressions that were null-cast during evaluation
+     */
+    public record SolSummary(
+            boolean matched,
+            Map<String, TagSpan> tags,
+            int sequenceLength,
+            List<String> unexpectedNulls
+    ) {}
+
+    /** A tag's half-open index range within the original sequence. */
+    public record TagSpan(int from, int to) {}
+}

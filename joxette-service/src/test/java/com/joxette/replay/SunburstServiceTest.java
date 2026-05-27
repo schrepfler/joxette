@@ -186,7 +186,7 @@ class SunburstServiceTest {
                         Instant.parse("2024-01-01T00:00:00Z"),
                         1L, List.of(), null))
                 .toList();
-        PagedResponse<EntityInfo> page = new PagedResponse<>(infos, null, false, null);
+        PagedResponse<EntityInfo> page = new PagedResponse<>(infos, null, false, null, null);
         when(entityService.listEntities(eq(entityType), anyInt(), isNull(),
                 eq(EntityReplayService.EntitySortBy.id)))
                 .thenReturn(page);

@@ -674,13 +674,30 @@ public class CassetteController {
             @Parameter(description = "Relative delay in milliseconds before streaming begins (mutually exclusive with start_at)", name = "start_delay_ms")
             @RequestParam(name = "start_delay_ms", required = false) Long startDelayMs,
             @Parameter(description = "Sort direction: `asc` (oldest first, default) or `desc` (latest first).")
-            @RequestParam(name = "order", defaultValue = "asc") Order order
+            @RequestParam(name = "order", defaultValue = "asc") Order order,
+            @Parameter(description = "SOL (Sequence Operations Language) query to run over the entity's full " +
+                                     "event sequence. When present the full sequence is loaded and processed " +
+                                     "before pagination. Mutually exclusive with cursor-based paging.")
+            @RequestParam(name = "sol", required = false) String sol,
+            @Parameter(description = "Controls what is returned when `sol` is present: " +
+                                     "`events` (default) = only events surviving the pipeline; " +
+                                     "`annotated` = all events with SOL tag headers injected; " +
+                                     "`summary` = match metadata only, no events.",
+                       name = "sol_output")
+            @RequestParam(name = "sol_output", defaultValue = "events") SolOutput solOutput
     ) throws SQLException {
         Instant scheduledAt = resolveScheduledAt(startAt, startDelayMs);
         if (scheduledAt != null) {
             String id = scheduledReplayService.registerEntityReplay(
                     entityType, entityId, scheduledAt, from, to);
             return ResponseEntity.accepted().body(new ScheduledReplayResponse(id, scheduledAt));
+        }
+        if (sol != null) {
+            SolProcessed processed = applySol(entityType, entityId, sol, solOutput, from, to);
+            if (solOutput == SolOutput.SUMMARY) {
+                return ResponseEntity.ok(processed.summary());
+            }
+            return ResponseEntity.ok(new PagedResponse<>(processed.records(), null, false, null, processed.summary()));
         }
         String replayId = newReplayId();
         List<TransformStep> userSteps = resolveTransformSteps(transform, transformPreset);
@@ -740,15 +757,31 @@ public class CassetteController {
                                      "live records as they are recorded. Incompatible with `to`.")
             @RequestParam(name = "follow", defaultValue = "false") boolean follow,
             @Parameter(description = "Sort direction: `asc` (oldest first, default) or `desc` (latest first).")
-            @RequestParam(name = "order", defaultValue = "asc") Order order
-    ) {
+            @RequestParam(name = "order", defaultValue = "asc") Order order,
+            @Parameter(description = "SOL query to run over the entity's full event sequence. " +
+                                     "Incompatible with `follow`.")
+            @RequestParam(name = "sol", required = false) String sol,
+            @Parameter(description = "Controls SOL output: `events`, `annotated`, or `summary`.",
+                       name = "sol_output")
+            @RequestParam(name = "sol_output", defaultValue = "events") SolOutput solOutput
+    ) throws SQLException {
         rejectFollowWithUpperBound(follow, to, null);
+        if (sol != null && follow) {
+            throw new com.joxette.api.error.ValidationException("sol and follow are mutually exclusive");
+        }
         Instant scheduledAt = resolveScheduledAt(startAt, startDelayMs);
         if (scheduledAt != null) {
             String id = scheduledReplayService.registerEntityReplay(
                     entityType, entityId, scheduledAt, from, to);
             return sseHandler.<EntityRecord>streamSseScheduled(id, scheduledAt, scheduledReplayService,
                     sink -> entityService.streamEntityEvents(entityType, entityId, from, to, sink));
+        }
+        if (sol != null) {
+            SolProcessed processed = applySol(entityType, entityId, sol, solOutput, from, to);
+            String summaryJson = toJson(processed.summary());
+            List<EntityRecord> solRecords = processed.records();
+            return sseHandler.<EntityRecord>streamSse("sol_summary", summaryJson,
+                    sink -> solRecords.forEach(sink));
         }
         String replayId = newReplayId();
         List<TransformStep> userSteps = resolveTransformSteps(transform, transformPreset);
@@ -821,9 +854,18 @@ public class CassetteController {
                                      "live records as they are recorded. Incompatible with `to`.")
             @RequestParam(name = "follow", defaultValue = "false") boolean follow,
             @Parameter(description = "Sort direction: `asc` (oldest first, default) or `desc` (latest first).")
-            @RequestParam(name = "order", defaultValue = "asc") Order order
-    ) {
+            @RequestParam(name = "order", defaultValue = "asc") Order order,
+            @Parameter(description = "SOL query to run over the entity's full event sequence. " +
+                                     "Incompatible with `follow`.")
+            @RequestParam(name = "sol", required = false) String sol,
+            @Parameter(description = "Controls SOL output: `events`, `annotated`, or `summary`.",
+                       name = "sol_output")
+            @RequestParam(name = "sol_output", defaultValue = "events") SolOutput solOutput
+    ) throws SQLException {
         rejectFollowWithUpperBound(follow, to, null);
+        if (sol != null && follow) {
+            throw new com.joxette.api.error.ValidationException("sol and follow are mutually exclusive");
+        }
         Instant scheduledAt = resolveScheduledAt(startAt, startDelayMs);
         StreamingResponseBody body;
         if (scheduledAt != null) {
@@ -831,6 +873,11 @@ public class CassetteController {
                     entityType, entityId, scheduledAt, from, to);
             body = sseHandler.<EntityRecord>streamNdjsonScheduled(id, scheduledAt, scheduledReplayService,
                     sink -> entityService.streamEntityEvents(entityType, entityId, from, to, sink));
+        } else if (sol != null) {
+            SolProcessed processed = applySol(entityType, entityId, sol, solOutput, from, to);
+            String preamble = "{\"_sol_summary\":" + toJson(processed.summary()) + "}";
+            List<EntityRecord> solRecords = processed.records();
+            body = sseHandler.<EntityRecord>streamNdjson(preamble, sink -> solRecords.forEach(sink));
         } else if (follow) {
             String replayId = newReplayId();
             List<TransformStep> userSteps = resolveTransformSteps(transform, transformPreset);
@@ -1708,6 +1755,14 @@ public class CassetteController {
                     entityType, entityId, scheduledAt, body.from(), body.to());
             return ResponseEntity.accepted().body(new ScheduledReplayResponse(id, scheduledAt));
         }
+        if (body.sol() != null) {
+            SolProcessed processed = applySol(entityType, entityId, body.sol(), body.solOutput(),
+                    body.from(), body.to());
+            if (body.solOutput() == SolOutput.SUMMARY) {
+                return ResponseEntity.ok(processed.summary());
+            }
+            return ResponseEntity.ok(new PagedResponse<>(processed.records(), null, false, null, processed.summary()));
+        }
         String replayId = newReplayId();
         List<TransformStep> userSteps = resolveTransformStepsFromBody(body.transform(), body.transformPreset());
         TransformPipeline pipeline = new TransformPipeline(userSteps, metadataInjector);
@@ -1740,7 +1795,15 @@ public class CassetteController {
                 description = "Filter params and transform pipeline",
                 content = @Content(schema = @Schema(implementation = EntityReplayBody.class)))
             @Valid @RequestBody EntityReplayBody body
-    ) {
+    ) throws SQLException {
+        if (body.sol() != null) {
+            SolProcessed processed = applySol(entityType, entityId, body.sol(), body.solOutput(),
+                    body.from(), body.to());
+            String summaryJson = toJson(processed.summary());
+            List<EntityRecord> solRecords = processed.records();
+            return sseHandler.<EntityRecord>streamSse("sol_summary", summaryJson,
+                    sink -> solRecords.forEach(sink));
+        }
         String replayId = newReplayId();
         List<TransformStep> userSteps = resolveTransformStepsFromBody(body.transform(), body.transformPreset());
         TransformPipeline pipeline = new TransformPipeline(userSteps, metadataInjector);
@@ -1776,7 +1839,18 @@ public class CassetteController {
                 description = "Filter params and transform pipeline",
                 content = @Content(schema = @Schema(implementation = EntityReplayBody.class)))
             @Valid @RequestBody EntityReplayBody body
-    ) {
+    ) throws SQLException {
+        if (body.sol() != null) {
+            SolProcessed processed = applySol(entityType, entityId, body.sol(), body.solOutput(),
+                    body.from(), body.to());
+            String preamble = "{\"_sol_summary\":" + toJson(processed.summary()) + "}";
+            List<EntityRecord> solRecords = processed.records();
+            StreamingResponseBody stream = sseHandler.<EntityRecord>streamNdjson(preamble,
+                    sink -> solRecords.forEach(sink));
+            return ResponseEntity.ok()
+                    .contentType(MediaType.parseMediaType("application/x-ndjson"))
+                    .body(stream);
+        }
         String replayId = newReplayId();
         List<TransformStep> userSteps = resolveTransformStepsFromBody(body.transform(), body.transformPreset());
         TransformPipeline pipeline = new TransformPipeline(userSteps, metadataInjector);
@@ -1949,6 +2023,42 @@ public class CassetteController {
                 tagSpans,
                 sequence.size());
     }
+
+    // =========================================================================
+    // SOL wiring helpers
+    // =========================================================================
+
+    /**
+     * Applies a SOL query to the entity's event sequence and returns a
+     * {@link SolProcessed} result whose shape depends on {@code solOutput}.
+     *
+     * <ul>
+     *   <li>{@code EVENTS} — only the events surviving the SOL pipeline</li>
+     *   <li>{@code ANNOTATED} — all events with SOL match-tag headers injected</li>
+     *   <li>{@code SUMMARY} — match metadata only, no events (empty list)</li>
+     * </ul>
+     */
+    private SolProcessed applySol(
+            String entityType, String entityId,
+            String sol, SolOutput solOutput,
+            Instant from, Instant to
+    ) throws SQLException {
+        SolMatchService.SolMatchResult result = switch (solOutput) {
+            case ANNOTATED -> solMatchService.annotate(entityType, entityId, sol, from, to);
+            case EVENTS, SUMMARY -> solMatchService.match(entityType, entityId, sol, from, to);
+        };
+        PagedResponse.SolSummary summary = toSolSummary(result);
+        List<EntityRecord> records = solOutput == SolOutput.SUMMARY ? List.of() : result.records();
+        return new SolProcessed(records, summary);
+    }
+
+    private static PagedResponse.SolSummary toSolSummary(SolMatchService.SolMatchResult r) {
+        Map<String, PagedResponse.TagSpan> spans = new LinkedHashMap<>();
+        r.tags().forEach((name, span) -> spans.put(name, new PagedResponse.TagSpan(span.from(), span.to())));
+        return new PagedResponse.SolSummary(r.matched(), spans, r.sequenceLength(), r.unexpectedNulls());
+    }
+
+    private record SolProcessed(List<EntityRecord> records, PagedResponse.SolSummary summary) {}
 
     private static EntityRecord cassetteToEntity(CassetteRecord r, String entityId) {
         return cassetteToEntity(r, entityId, null);
@@ -2136,6 +2246,14 @@ public class CassetteController {
             return objectMapper.writeValueAsString(payload);
         } catch (JsonProcessingException e) {
             return "{\"stepCount\":" + steps.size() + "}";
+        }
+    }
+
+    private String toJson(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (JsonProcessingException e) {
+            return "{}";
         }
     }
 

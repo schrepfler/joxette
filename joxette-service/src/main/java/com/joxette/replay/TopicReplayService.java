@@ -510,6 +510,6 @@ public class TopicReplayService implements CassetteSource {
         boolean hasMore = fetched.size() > limit;
         List<T> data = hasMore ? new ArrayList<>(fetched.subList(0, limit)) : fetched;
         String nextCursor = hasMore ? cursorOf.apply(data.getLast()) : null;
-        return new PagedResponse<>(data, nextCursor, hasMore, transformApplied);
+        return new PagedResponse<>(data, nextCursor, hasMore, transformApplied, null);
     }
 }

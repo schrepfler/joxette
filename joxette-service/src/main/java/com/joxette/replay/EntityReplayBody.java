@@ -48,10 +48,25 @@ public record EntityReplayBody(
         @Schema(description = "Relative delay in milliseconds before streaming begins " +
                               "(mutually exclusive with `startAt`)",
                 name = "start_delay_ms")
-        Long startDelayMs
+        Long startDelayMs,
+
+        @Schema(description = "SOL (Sequence Operations Language) query to run over the entity's full event " +
+                              "sequence before returning results. When present the entire sequence is loaded, " +
+                              "processed by the SOL engine, then `solOutput` controls what is returned.",
+                example = "match OrderCreated(created) >> * >> OrderPaid(paid)\nif duration(created, paid) < 24h")
+        String sol,
+
+        @Schema(description = "Controls what is returned when `sol` is present. " +
+                              "`events` (default) = only the events surviving the SOL pipeline; " +
+                              "`annotated` = all events with SOL match tags injected as headers; " +
+                              "`summary` = only the match metadata, no events.",
+                name = "sol_output",
+                defaultValue = "events")
+        SolOutput solOutput
 ) {
-    /** Normalises null {@code limit} to the default page size. */
+    /** Normalises null {@code limit} to the default page size and {@code solOutput} to EVENTS. */
     public EntityReplayBody {
         if (limit == null) limit = 100;
+        if (solOutput == null) solOutput = SolOutput.EVENTS;
     }
 }
