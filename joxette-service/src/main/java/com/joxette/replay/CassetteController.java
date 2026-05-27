@@ -675,6 +675,11 @@ public class CassetteController {
             @RequestParam(name = "start_delay_ms", required = false) Long startDelayMs,
             @Parameter(description = "Sort direction: `asc` (oldest first, default) or `desc` (latest first).")
             @RequestParam(name = "order", defaultValue = "asc") Order order,
+            @Parameter(description = "Restrict to events whose message_type label matches one of these " +
+                                     "comma-separated values. Maps to SQL `WHERE message_type IN (...)`. " +
+                                     "Empty means no restriction.",
+                       name = "message_types")
+            @RequestParam(name = "message_types", required = false) List<String> messageTypes,
             @Parameter(description = "SOL (Sequence Operations Language) query to run over the entity's full " +
                                      "event sequence. When present the full sequence is loaded and processed " +
                                      "before pagination. Mutually exclusive with cursor-based paging.")
@@ -704,7 +709,7 @@ public class CassetteController {
         TransformPipeline pipeline = new TransformPipeline(userSteps, metadataInjector);
         return ResponseEntity.ok(
                 entityService.queryEntityEvents(entityType, entityId, from, to,
-                                                limit, cursor, pipeline, replayId, order));
+                                                limit, cursor, pipeline, replayId, order, messageTypes));
     }
 
     @Operation(
@@ -758,6 +763,9 @@ public class CassetteController {
             @RequestParam(name = "follow", defaultValue = "false") boolean follow,
             @Parameter(description = "Sort direction: `asc` (oldest first, default) or `desc` (latest first).")
             @RequestParam(name = "order", defaultValue = "asc") Order order,
+            @Parameter(description = "Restrict to events whose message_type label matches one of these values.",
+                       name = "message_types")
+            @RequestParam(name = "message_types", required = false) List<String> messageTypes,
             @Parameter(description = "SOL query to run over the entity's full event sequence. " +
                                      "Incompatible with `follow`.")
             @RequestParam(name = "sol", required = false) String sol,
@@ -794,14 +802,14 @@ public class CassetteController {
                     sub::close,
                     (sink, hooks) -> entityService.streamEntityEvents(
                             entityType, entityId, from, null,
-                            sink, pipeline, replayId, order, sub, hooks));
+                            sink, pipeline, replayId, order, sub, hooks, messageTypes));
         }
 
         String preambleName = userSteps.isEmpty() ? null : "transform";
         String preambleData = userSteps.isEmpty() ? null : buildTransformEventJson(userSteps, transformPreset);
         return sseHandler.<EntityRecord>streamSse(preambleName, preambleData,
                 sink -> entityService.streamEntityEvents(entityType, entityId, from, to,
-                                                        sink, pipeline, replayId, order));
+                                                        sink, pipeline, replayId, order, null, null, messageTypes));
     }
 
     @Operation(
@@ -855,6 +863,9 @@ public class CassetteController {
             @RequestParam(name = "follow", defaultValue = "false") boolean follow,
             @Parameter(description = "Sort direction: `asc` (oldest first, default) or `desc` (latest first).")
             @RequestParam(name = "order", defaultValue = "asc") Order order,
+            @Parameter(description = "Restrict to events whose message_type label matches one of these values.",
+                       name = "message_types")
+            @RequestParam(name = "message_types", required = false) List<String> messageTypes,
             @Parameter(description = "SOL query to run over the entity's full event sequence. " +
                                      "Incompatible with `follow`.")
             @RequestParam(name = "sol", required = false) String sol,
@@ -888,7 +899,7 @@ public class CassetteController {
                     sub::close,
                     (sink, hooks) -> entityService.streamEntityEvents(
                             entityType, entityId, from, null,
-                            sink, pipeline, replayId, order, sub, hooks));
+                            sink, pipeline, replayId, order, sub, hooks, messageTypes));
         } else {
             String replayId = newReplayId();
             List<TransformStep> userSteps = resolveTransformSteps(transform, transformPreset);
@@ -896,7 +907,7 @@ public class CassetteController {
             String preamble = userSteps.isEmpty() ? null : buildTransformNdjsonLine(userSteps, transformPreset);
             body = sseHandler.<EntityRecord>streamNdjson(preamble,
                     sink -> entityService.streamEntityEvents(entityType, entityId, from, to,
-                                                            sink, pipeline, replayId, order));
+                                                            sink, pipeline, replayId, order, null, null, messageTypes));
         }
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType("application/x-ndjson"))
@@ -1768,7 +1779,8 @@ public class CassetteController {
         TransformPipeline pipeline = new TransformPipeline(userSteps, metadataInjector);
         return ResponseEntity.ok(
                 entityService.queryEntityEvents(entityType, entityId,
-                        body.from(), body.to(), body.limit(), body.cursor(), pipeline, replayId));
+                        body.from(), body.to(), body.limit(), body.cursor(), pipeline, replayId,
+                        Order.ASC, body.messageTypes()));
     }
 
     @Operation(
@@ -1812,7 +1824,8 @@ public class CassetteController {
                 : buildTransformEventJson(userSteps, body.transformPreset());
         return sseHandler.<EntityRecord>streamSse(preambleName, preambleData,
                 sink -> entityService.streamEntityEvents(entityType, entityId,
-                        body.from(), body.to(), sink, pipeline, replayId));
+                        body.from(), body.to(), sink, pipeline, replayId,
+                        Order.ASC, null, null, body.messageTypes()));
     }
 
     @Operation(
@@ -1858,7 +1871,8 @@ public class CassetteController {
                 : buildTransformNdjsonLine(userSteps, body.transformPreset());
         StreamingResponseBody stream = sseHandler.<EntityRecord>streamNdjson(preamble,
                 sink -> entityService.streamEntityEvents(entityType, entityId,
-                        body.from(), body.to(), sink, pipeline, replayId));
+                        body.from(), body.to(), sink, pipeline, replayId,
+                        Order.ASC, null, null, body.messageTypes()));
         return ResponseEntity.ok()
                 .contentType(MediaType.parseMediaType("application/x-ndjson"))
                 .body(stream);

@@ -159,6 +159,21 @@ public class EntityReplayService implements EntityCassetteSource {
             String replayId,
             Order order
     ) throws SQLException {
+        return queryEntityEvents(entityType, entityId, from, to, limit, cursor,
+                                 pipeline, replayId, order, null);
+    }
+
+    public PagedResponse<EntityRecord> queryEntityEvents(
+            String entityType,
+            String entityId,
+            Instant from, Instant to,
+            int limit,
+            String cursor,
+            TransformPipeline pipeline,
+            String replayId,
+            Order order,
+            List<String> messageTypes
+    ) throws SQLException {
         validateEntityType(entityType);
 
         // Push eligible filter_drop steps down to SQL before materialising rows.
@@ -173,6 +188,8 @@ public class EntityReplayService implements EntityCassetteSource {
         Condition cond = pushdown.pushdownCondition().and(F_ENTITY_ID.eq(entityId));
         if (from != null) cond = cond.and(F_TIMESTAMP.ge(from.atOffset(ZoneOffset.UTC)));
         if (to != null)   cond = cond.and(F_TIMESTAMP.le(to.atOffset(ZoneOffset.UTC)));
+        if (messageTypes != null && !messageTypes.isEmpty())
+            cond = cond.and(F_MESSAGE_TYPE.in(messageTypes));
 
         boolean desc = order == Order.DESC;
         // kafka_timestamp is producer-assigned and subject to cross-host clock skew when
@@ -313,6 +330,21 @@ public class EntityReplayService implements EntityCassetteSource {
             FollowSubscription<EntityRecord, EntityCursor> follow,
             FollowHooks<EntityRecord> hooks
     ) throws SQLException {
+        streamEntityEvents(entityType, entityId, from, to, sink, pipeline, replayId,
+                           order, follow, hooks, null);
+    }
+
+    public void streamEntityEvents(
+            String entityType, String entityId,
+            Instant from, Instant to,
+            Consumer<EntityRecord> sink,
+            TransformPipeline pipeline,
+            String replayId,
+            Order order,
+            FollowSubscription<EntityRecord, EntityCursor> follow,
+            FollowHooks<EntityRecord> hooks,
+            List<String> messageTypes
+    ) throws SQLException {
         Consumer<EntityRecord> tracked = follow == null
                 ? sink
                 : r -> { sink.accept(r); follow.onEmitted(r); };
@@ -324,7 +356,7 @@ public class EntityReplayService implements EntityCassetteSource {
                 PagedResponse<EntityRecord> page =
                         queryEntityEvents(entityType, entityId, from, to,
                                           STREAM_PAGE_SIZE, pageCursor,
-                                          TransformPipeline.IDENTITY, "", order);
+                                          TransformPipeline.IDENTITY, "", order, messageTypes);
                 page.data().forEach(tracked);
                 pageCursor = page.nextCursor();
                 if (!page.hasMore()) break;
@@ -337,7 +369,7 @@ public class EntityReplayService implements EntityCassetteSource {
                 PagedResponse<EntityRecord> rawPage =
                         queryEntityEvents(entityType, entityId, from, to,
                                           STREAM_PAGE_SIZE, pageCursor,
-                                          TransformPipeline.IDENTITY, "", order);
+                                          TransformPipeline.IDENTITY, "", order, messageTypes);
                 for (EntityRecord r : rawPage.data()) {
                     Optional<ReplayMessage> result =
                             pipeline.apply(new ReplayMessage(r), replayId, ctx);

@@ -50,6 +50,13 @@ public record EntityReplayBody(
                 name = "start_delay_ms")
         Long startDelayMs,
 
+        @Schema(description = "Restrict to events with one of the given message type labels. " +
+                              "Maps directly to a SQL `WHERE message_type IN (...)` filter with no " +
+                              "post-materialisation overhead. Empty or null means no restriction.",
+                name = "message_types",
+                example = "[\"OrderCreated\", \"OrderPaid\"]")
+        List<String> messageTypes,
+
         @Schema(description = "SOL (Sequence Operations Language) query to run over the entity's full event " +
                               "sequence before returning results. When present the entire sequence is loaded, " +
                               "processed by the SOL engine, then `solOutput` controls what is returned.",
