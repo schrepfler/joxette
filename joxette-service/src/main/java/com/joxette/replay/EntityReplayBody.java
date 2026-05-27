@@ -69,7 +69,21 @@ public record EntityReplayBody(
                               "`summary` = only the match metadata, no events.",
                 name = "sol_output",
                 defaultValue = "events")
-        SolOutput solOutput
+        SolOutput solOutput,
+
+        @Schema(description = "Return only the last N events regardless of time window. " +
+                              "Mutually exclusive with `from`, `to`, and `cursor`. " +
+                              "Result is in chronological order.",
+                name = "last_n",
+                example = "50")
+        Integer lastN,
+
+        @Schema(description = "Deduplication policy: " +
+                              "`offset` (default) = one copy per (topic, partition, offset); " +
+                              "`value` = one copy per (topic, value) — for idempotent producers; " +
+                              "`none` = no deduplication, all rows including re-deliveries.",
+                defaultValue = "offset")
+        DedupPolicy dedup
 ) {
     /** Normalises null {@code limit} to the default page size and {@code solOutput} to EVENTS. */
     public EntityReplayBody {

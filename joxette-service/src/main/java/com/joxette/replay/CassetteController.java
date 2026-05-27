@@ -689,7 +689,14 @@ public class CassetteController {
                                      "`annotated` = all events with SOL tag headers injected; " +
                                      "`summary` = match metadata only, no events.",
                        name = "sol_output")
-            @RequestParam(name = "sol_output", defaultValue = "events") SolOutput solOutput
+            @RequestParam(name = "sol_output", defaultValue = "events") SolOutput solOutput,
+            @Parameter(description = "Return only the last N events (tail window). " +
+                                     "Mutually exclusive with from, to, and cursor.",
+                       name = "last_n")
+            @RequestParam(name = "last_n", required = false) Integer lastN,
+            @Parameter(description = "Deduplication policy: offset (default), value, or none.",
+                       name = "dedup")
+            @RequestParam(name = "dedup", required = false) DedupPolicy dedup
     ) throws SQLException {
         Instant scheduledAt = resolveScheduledAt(startAt, startDelayMs);
         if (scheduledAt != null) {
@@ -709,7 +716,8 @@ public class CassetteController {
         TransformPipeline pipeline = new TransformPipeline(userSteps, metadataInjector);
         return ResponseEntity.ok(
                 entityService.queryEntityEvents(entityType, entityId, from, to,
-                                                limit, cursor, pipeline, replayId, order, messageTypes));
+                                                limit, cursor, pipeline, replayId, order, messageTypes,
+                                                lastN, dedup));
     }
 
     @Operation(
@@ -771,7 +779,14 @@ public class CassetteController {
             @RequestParam(name = "sol", required = false) String sol,
             @Parameter(description = "Controls SOL output: `events`, `annotated`, or `summary`.",
                        name = "sol_output")
-            @RequestParam(name = "sol_output", defaultValue = "events") SolOutput solOutput
+            @RequestParam(name = "sol_output", defaultValue = "events") SolOutput solOutput,
+            @Parameter(description = "Return only the last N events (tail window). " +
+                                     "Mutually exclusive with from, to, and cursor. Incompatible with follow.",
+                       name = "last_n")
+            @RequestParam(name = "last_n", required = false) Integer lastN,
+            @Parameter(description = "Deduplication policy: offset (default), value, or none.",
+                       name = "dedup")
+            @RequestParam(name = "dedup", required = false) DedupPolicy dedup
     ) throws SQLException {
         rejectFollowWithUpperBound(follow, to, null);
         if (sol != null && follow) {
@@ -803,6 +818,14 @@ public class CassetteController {
                     (sink, hooks) -> entityService.streamEntityEvents(
                             entityType, entityId, from, null,
                             sink, pipeline, replayId, order, sub, hooks, messageTypes));
+        }
+
+        // last_n: eagerly query the tail window, then stream the results
+        if (lastN != null) {
+            List<EntityRecord> tail = entityService.queryEntityEvents(
+                    entityType, entityId, null, null, lastN, null,
+                    pipeline, replayId, order, messageTypes, lastN, dedup).data();
+            return sseHandler.<EntityRecord>streamSse(null, null, sink -> tail.forEach(sink));
         }
 
         String preambleName = userSteps.isEmpty() ? null : "transform";
@@ -871,7 +894,14 @@ public class CassetteController {
             @RequestParam(name = "sol", required = false) String sol,
             @Parameter(description = "Controls SOL output: `events`, `annotated`, or `summary`.",
                        name = "sol_output")
-            @RequestParam(name = "sol_output", defaultValue = "events") SolOutput solOutput
+            @RequestParam(name = "sol_output", defaultValue = "events") SolOutput solOutput,
+            @Parameter(description = "Return only the last N events (tail window). " +
+                                     "Mutually exclusive with from, to, and cursor. Incompatible with follow.",
+                       name = "last_n")
+            @RequestParam(name = "last_n", required = false) Integer lastN,
+            @Parameter(description = "Deduplication policy: offset (default), value, or none.",
+                       name = "dedup")
+            @RequestParam(name = "dedup", required = false) DedupPolicy dedup
     ) throws SQLException {
         rejectFollowWithUpperBound(follow, to, null);
         if (sol != null && follow) {
@@ -900,6 +930,14 @@ public class CassetteController {
                     (sink, hooks) -> entityService.streamEntityEvents(
                             entityType, entityId, from, null,
                             sink, pipeline, replayId, order, sub, hooks, messageTypes));
+        } else if (lastN != null) {
+            String replayId = newReplayId();
+            List<TransformStep> userSteps = resolveTransformSteps(transform, transformPreset);
+            TransformPipeline pipeline = new TransformPipeline(userSteps, metadataInjector);
+            List<EntityRecord> tail = entityService.queryEntityEvents(
+                    entityType, entityId, null, null, lastN, null,
+                    pipeline, replayId, order, messageTypes, lastN, dedup).data();
+            body = sseHandler.<EntityRecord>streamNdjson(null, sink -> tail.forEach(sink));
         } else {
             String replayId = newReplayId();
             List<TransformStep> userSteps = resolveTransformSteps(transform, transformPreset);
@@ -1780,7 +1818,7 @@ public class CassetteController {
         return ResponseEntity.ok(
                 entityService.queryEntityEvents(entityType, entityId,
                         body.from(), body.to(), body.limit(), body.cursor(), pipeline, replayId,
-                        Order.ASC, body.messageTypes()));
+                        Order.ASC, body.messageTypes(), body.lastN(), body.dedup()));
     }
 
     @Operation(
@@ -1819,6 +1857,12 @@ public class CassetteController {
         String replayId = newReplayId();
         List<TransformStep> userSteps = resolveTransformStepsFromBody(body.transform(), body.transformPreset());
         TransformPipeline pipeline = new TransformPipeline(userSteps, metadataInjector);
+        if (body.lastN() != null) {
+            List<EntityRecord> tail = entityService.queryEntityEvents(
+                    entityType, entityId, null, null, body.lastN(), null,
+                    pipeline, replayId, Order.ASC, body.messageTypes(), body.lastN(), body.dedup()).data();
+            return sseHandler.<EntityRecord>streamSse(null, null, sink -> tail.forEach(sink));
+        }
         String preambleName = userSteps.isEmpty() ? null : "transform";
         String preambleData = userSteps.isEmpty() ? null
                 : buildTransformEventJson(userSteps, body.transformPreset());
@@ -1867,6 +1911,15 @@ public class CassetteController {
         String replayId = newReplayId();
         List<TransformStep> userSteps = resolveTransformStepsFromBody(body.transform(), body.transformPreset());
         TransformPipeline pipeline = new TransformPipeline(userSteps, metadataInjector);
+        if (body.lastN() != null) {
+            List<EntityRecord> tail = entityService.queryEntityEvents(
+                    entityType, entityId, null, null, body.lastN(), null,
+                    pipeline, replayId, Order.ASC, body.messageTypes(), body.lastN(), body.dedup()).data();
+            StreamingResponseBody tailStream = sseHandler.<EntityRecord>streamNdjson(null, sink -> tail.forEach(sink));
+            return ResponseEntity.ok()
+                    .contentType(MediaType.parseMediaType("application/x-ndjson"))
+                    .body(tailStream);
+        }
         String preamble = userSteps.isEmpty() ? null
                 : buildTransformNdjsonLine(userSteps, body.transformPreset());
         StreamingResponseBody stream = sseHandler.<EntityRecord>streamNdjson(preamble,

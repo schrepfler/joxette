@@ -90,11 +90,20 @@ public class EntityReplayService implements EntityCassetteSource {
     private static final Field<String[]>       F_SOURCE_TOPICS     = DSL.field(DSL.name("source_topics"),     String[].class);
     private static final Field<String>         F_LAST_MESSAGE_TYPE = DSL.field(DSL.name("last_message_type"), String.class);
 
-    // QUALIFY deduplication for entity cassette rows
-    private static final Condition QUALIFY_DEDUP = DSL.rowNumber().over(
+    // QUALIFY deduplication clauses — chosen at query time based on DedupPolicy
+    private static final Condition QUALIFY_DEDUP_OFFSET = DSL.rowNumber().over(
             DSL.partitionBy(F_TOPIC, F_PARTITION.cast(SQLDataType.BIGINT), F_OFFSET)
                .orderBy(F_RECORDED_AT.desc())
     ).eq(1);
+
+    // Partition by (topic, value) — stronger dedup for idempotent producers
+    private static final Condition QUALIFY_DEDUP_VALUE = DSL.rowNumber().over(
+            DSL.partitionBy(F_TOPIC, F_VALUE)
+               .orderBy(F_RECORDED_AT.desc())
+    ).eq(1);
+
+    // Keep the old name as an alias so internal callers that don't pass a policy use OFFSET
+    private static final Condition QUALIFY_DEDUP = QUALIFY_DEDUP_OFFSET;
 
     private final DSLContext dsl;
 
@@ -174,6 +183,33 @@ public class EntityReplayService implements EntityCassetteSource {
             Order order,
             List<String> messageTypes
     ) throws SQLException {
+        return queryEntityEvents(entityType, entityId, from, to, limit, cursor,
+                                 pipeline, replayId, order, messageTypes, null, null);
+    }
+
+    /**
+     * Full-signature overload that adds {@code lastN} tail-window and {@code dedup} policy.
+     *
+     * <p>{@code lastN} is mutually exclusive with {@code from}/{@code to}/{@code cursor}.
+     * When set, the query runs DESC limited to {@code lastN}, then the result is reversed
+     * in Java to produce chronological order.
+     *
+     * @param lastN       when non-null, return the last N events (tail window); ignores from/to/cursor
+     * @param dedup       deduplication policy; null defaults to {@link DedupPolicy#OFFSET}
+     */
+    public PagedResponse<EntityRecord> queryEntityEvents(
+            String entityType,
+            String entityId,
+            Instant from, Instant to,
+            int limit,
+            String cursor,
+            TransformPipeline pipeline,
+            String replayId,
+            Order order,
+            List<String> messageTypes,
+            Integer lastN,
+            DedupPolicy dedup
+    ) throws SQLException {
         validateEntityType(entityType);
 
         // Push eligible filter_drop steps down to SQL before materialising rows.
@@ -181,32 +217,75 @@ public class EntityReplayService implements EntityCassetteSource {
                 SqlPushdownAnalyzer.analyze(pipeline.steps(), PUSHDOWN_ELIGIBLE);
         TransformPipeline prunedPipeline = pipeline.withSteps(pushdown.remainingSteps());
 
-        EntityCursor decoded = cursor != null ? EntityCursor.decode(cursor) : null;
-
         Table<?> entityTable = entityTable(entityType);
 
         Condition cond = pushdown.pushdownCondition().and(F_ENTITY_ID.eq(entityId));
-        if (from != null) cond = cond.and(F_TIMESTAMP.ge(from.atOffset(ZoneOffset.UTC)));
-        if (to != null)   cond = cond.and(F_TIMESTAMP.le(to.atOffset(ZoneOffset.UTC)));
         if (messageTypes != null && !messageTypes.isEmpty())
             cond = cond.and(F_MESSAGE_TYPE.in(messageTypes));
+
+        Condition qualifyClause = switch (dedup == null ? DedupPolicy.OFFSET : dedup) {
+            case OFFSET -> QUALIFY_DEDUP_OFFSET;
+            case VALUE  -> QUALIFY_DEDUP_VALUE;
+            case NONE   -> null;
+        };
+
+        // last_n: tail-window query — ignore from/to/cursor, query DESC, reverse result
+        if (lastN != null) {
+            var tailBase = dsl
+                    .select(F_ENTITY_ID, F_MESSAGE_TYPE, F_TOPIC, F_PARTITION, F_OFFSET,
+                            F_TIMESTAMP, F_RECORDED_AT, F_KEY, F_VALUE, F_HEADERS)
+                    .from(entityTable)
+                    .where(cond);
+            var qualified = qualifyClause != null ? tailBase.qualify(qualifyClause) : tailBase;
+            List<EntityRecord> tail = qualified
+                    .orderBy(F_TIMESTAMP.desc(), F_RECORDED_AT.desc(),
+                             F_TOPIC.desc(), F_PARTITION.desc(), F_OFFSET.desc())
+                    .limit(lastN)
+                    .fetch(EntityReplayService::mapEntityRecord);
+            // Reverse to chronological order
+            java.util.Collections.reverse(tail);
+
+            if (!prunedPipeline.isIdentity()) {
+                List<EntityRecord> transformed = new ArrayList<>();
+                for (EntityRecord r : tail) {
+                    prunedPipeline.apply(new ReplayMessage(r), replayId)
+                            .stream().map(ReplayMessage::toEntityRecord).forEach(transformed::add);
+                }
+                tail = transformed;
+            }
+            Boolean transformApplied = !pipeline.steps().isEmpty() ? Boolean.TRUE : null;
+            // last_n is single-shot — no cursor, hasMore always false
+            return new PagedResponse<>(tail, null, false, transformApplied, null);
+        }
+
+        EntityCursor decoded = cursor != null ? EntityCursor.decode(cursor) : null;
+
+        if (from != null) cond = cond.and(F_TIMESTAMP.ge(from.atOffset(ZoneOffset.UTC)));
+        if (to != null)   cond = cond.and(F_TIMESTAMP.le(to.atOffset(ZoneOffset.UTC)));
 
         boolean desc = order == Order.DESC;
         // kafka_timestamp is producer-assigned and subject to cross-host clock skew when
         // events originate from multiple topics / services. recorded_at is the tiebreaker
         // and provides a consistent single-clock view, but it is not the primary sort key.
         // See docs/entity-ordering.md for guidance on when to prefer recorded_at ordering.
-        var selectBase = dsl
+        var baseSelect = dsl
                 .select(F_ENTITY_ID, F_MESSAGE_TYPE, F_TOPIC, F_PARTITION, F_OFFSET,
                         F_TIMESTAMP, F_RECORDED_AT, F_KEY, F_VALUE, F_HEADERS)
                 .from(entityTable)
-                .where(cond)
-                .qualify(QUALIFY_DEDUP)
-                .orderBy(desc ? F_TIMESTAMP.desc()   : F_TIMESTAMP.asc(),
-                         desc ? F_RECORDED_AT.desc() : F_RECORDED_AT.asc(),
-                         desc ? F_TOPIC.desc()       : F_TOPIC.asc(),
-                         desc ? F_PARTITION.desc()   : F_PARTITION.asc(),
-                         desc ? F_OFFSET.desc()      : F_OFFSET.asc());
+                .where(cond);
+        var selectBase = qualifyClause != null
+                ? baseSelect.qualify(qualifyClause)
+                        .orderBy(desc ? F_TIMESTAMP.desc()   : F_TIMESTAMP.asc(),
+                                 desc ? F_RECORDED_AT.desc() : F_RECORDED_AT.asc(),
+                                 desc ? F_TOPIC.desc()       : F_TOPIC.asc(),
+                                 desc ? F_PARTITION.desc()   : F_PARTITION.asc(),
+                                 desc ? F_OFFSET.desc()      : F_OFFSET.asc())
+                : baseSelect
+                        .orderBy(desc ? F_TIMESTAMP.desc()   : F_TIMESTAMP.asc(),
+                                 desc ? F_RECORDED_AT.desc() : F_RECORDED_AT.asc(),
+                                 desc ? F_TOPIC.desc()       : F_TOPIC.asc(),
+                                 desc ? F_PARTITION.desc()   : F_PARTITION.asc(),
+                                 desc ? F_OFFSET.desc()      : F_OFFSET.asc());
 
         List<EntityRecord> records;
         if (decoded != null) {

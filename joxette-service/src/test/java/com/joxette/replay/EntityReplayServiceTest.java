@@ -401,6 +401,83 @@ class EntityReplayServiceTest {
     }
 
     // -------------------------------------------------------------------------
+    // last_n tail-window
+    // -------------------------------------------------------------------------
+
+    @Test
+    void queryEntityEvents_lastN_returnsLastNInChronologicalOrder() throws Exception {
+        Instant base = Instant.parse("2026-03-01T00:00:00Z");
+        for (int i = 0; i < 8; i++) {
+            insertEntityRow("ORD-LN", 1, "orders.events", 0, i, base.plusSeconds(i), b("v" + i));
+        }
+
+        PagedResponse<EntityRecord> page = service.queryEntityEvents(
+                ENTITY_TYPE, "ORD-LN", null, null, 100, null,
+                TransformPipeline.IDENTITY, "", Order.ASC, null, 3, null);
+
+        assertThat(page.data()).hasSize(3);
+        // last 3 are offsets 5, 6, 7 in chronological order
+        assertThat(page.data().stream().map(EntityRecord::offset).toList())
+                .containsExactly(5L, 6L, 7L);
+        assertThat(page.hasMore()).isFalse();
+        assertThat(page.nextCursor()).isNull();
+    }
+
+    @Test
+    void queryEntityEvents_lastN_greaterThanTotal_returnsAllInOrder() throws Exception {
+        Instant base = Instant.parse("2026-03-02T00:00:00Z");
+        for (int i = 0; i < 3; i++) {
+            insertEntityRow("ORD-LN2", 2, "orders.events", 0, i, base.plusSeconds(i), b("v" + i));
+        }
+
+        PagedResponse<EntityRecord> page = service.queryEntityEvents(
+                ENTITY_TYPE, "ORD-LN2", null, null, 100, null,
+                TransformPipeline.IDENTITY, "", Order.ASC, null, 100, null);
+
+        assertThat(page.data()).hasSize(3);
+        assertThat(page.data().stream().map(EntityRecord::offset).toList())
+                .containsExactly(0L, 1L, 2L);
+    }
+
+    // -------------------------------------------------------------------------
+    // dedup policy
+    // -------------------------------------------------------------------------
+
+    @Test
+    void queryEntityEvents_dedupNone_exposesAllDuplicates() throws Exception {
+        Instant ts = Instant.parse("2026-03-03T10:00:00Z");
+        // same (topic, partition, offset) recorded twice — two separate recorded_at values
+        insertEntityRowAt("ORD-DDP", 3, "orders.events", 0, 0L, ts,
+                ts.minusSeconds(2), b("{\"v\":1}"));
+        insertEntityRowAt("ORD-DDP", 3, "orders.events", 0, 0L, ts,
+                ts.minusSeconds(1), b("{\"v\":2}"));
+
+        PagedResponse<EntityRecord> page = service.queryEntityEvents(
+                ENTITY_TYPE, "ORD-DDP", null, null, 100, null,
+                TransformPipeline.IDENTITY, "", Order.ASC, null, null, DedupPolicy.NONE);
+
+        assertThat(page.data()).hasSize(2);
+    }
+
+    @Test
+    void queryEntityEvents_dedupOffset_deduplicatesByTopicPartitionOffset() throws Exception {
+        Instant ts = Instant.parse("2026-03-04T10:00:00Z");
+        insertEntityRowAt("ORD-DDP2", 4, "orders.events", 0, 0L, ts,
+                ts.minusSeconds(2), b("{\"v\":1}"));
+        insertEntityRowAt("ORD-DDP2", 4, "orders.events", 0, 0L, ts,
+                ts.minusSeconds(1), b("{\"v\":2}"));
+        // different offset — not a duplicate
+        insertEntityRowAt("ORD-DDP2", 4, "orders.events", 0, 1L, ts.plusSeconds(1),
+                ts, b("{\"v\":3}"));
+
+        PagedResponse<EntityRecord> page = service.queryEntityEvents(
+                ENTITY_TYPE, "ORD-DDP2", null, null, 100, null,
+                TransformPipeline.IDENTITY, "", Order.ASC, null, null, DedupPolicy.OFFSET);
+
+        assertThat(page.data()).hasSize(2);
+    }
+
+    // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
 
