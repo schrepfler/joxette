@@ -96,12 +96,25 @@ public record EntityReplayBody(
                               "`last_value` = final event value wins; " +
                               "`last_per_topic` = last value per source topic, then merged.",
                 name = "state_fold")
-        StateFoldStrategy stateFold
+        StateFoldStrategy stateFold,
+
+        @Schema(description = "Response shape for JSON: `events` (default) = cursor-paginated EntityRecord array; " +
+                              "`timeline` = events grouped into time buckets; " +
+                              "`portrait` = compact summary with counts, topic breakdown, and recent preview.",
+                name = "response_format",
+                defaultValue = "events")
+        ResponseFormat responseFormat,
+
+        @Schema(description = "Time-bucket granularity for `response_format=timeline`. " +
+                              "Auto-selected when absent: minute (<1h span), hour (<7d), day (≥7d).",
+                name = "timeline_bucket")
+        TimelineBucket timelineBucket
 ) {
     /** Normalises null {@code limit} to the default page size and {@code solOutput} to EVENTS. */
     public EntityReplayBody {
         if (limit == null) limit = 100;
         if (solOutput == null) solOutput = SolOutput.EVENTS;
         if (output == null) output = ReplayOutputMode.EVENTS;
+        if (responseFormat == null) responseFormat = ResponseFormat.EVENTS;
     }
 }

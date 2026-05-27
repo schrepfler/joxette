@@ -118,6 +118,8 @@ public class CassetteController {
     private final ActiveReplayTracker       replayTracker;
     private final StateFoldService          stateFoldService;
     private final DiffService               diffService;
+    private final TimelineService           timelineService;
+    private final PortraitService           portraitService;
 
     public CassetteController(
             TopicReplayService topicService,
@@ -139,7 +141,9 @@ public class CassetteController {
             ConfigRepository configRepository,
             ActiveReplayTracker replayTracker,
             StateFoldService stateFoldService,
-            DiffService diffService) {
+            DiffService diffService,
+            TimelineService timelineService,
+            PortraitService portraitService) {
         this.topicService             = topicService;
         this.entityService            = entityService;
         this.sseHandler               = sseHandler;
@@ -160,6 +164,8 @@ public class CassetteController {
         this.replayTracker            = replayTracker;
         this.stateFoldService         = stateFoldService;
         this.diffService              = diffService;
+        this.timelineService          = timelineService;
+        this.portraitService          = portraitService;
     }
 
     /**
@@ -710,7 +716,16 @@ public class CassetteController {
             @Parameter(description = "State fold strategy, only relevant when output=state: " +
                                      "merge_patch (default), last_value, or last_per_topic.",
                        name = "state_fold")
-            @RequestParam(name = "state_fold", required = false) StateFoldStrategy stateFold
+            @RequestParam(name = "state_fold", required = false) StateFoldStrategy stateFold,
+            @Parameter(description = "Response shape: `events` (default) = paginated EntityRecord array; " +
+                                     "`timeline` = events grouped into time buckets; " +
+                                     "`portrait` = compact summary.",
+                       name = "response_format")
+            @RequestParam(name = "response_format", defaultValue = "events") ResponseFormat responseFormat,
+            @Parameter(description = "Bucket granularity for response_format=timeline. " +
+                                     "Auto-selected when absent: minute (<1h), hour (<7d), day (≥7d).",
+                       name = "timeline_bucket")
+            @RequestParam(name = "timeline_bucket", required = false) TimelineBucket timelineBucket
     ) throws SQLException {
         Instant scheduledAt = resolveScheduledAt(startAt, startDelayMs);
         if (scheduledAt != null) {
@@ -732,6 +747,16 @@ public class CassetteController {
         if (output == ReplayOutputMode.DIFF) {
             return ResponseEntity.ok(applyDiff(entityType, entityId, from, to,
                     messageTypes, lastN, dedup));
+        }
+        if (responseFormat == ResponseFormat.TIMELINE) {
+            List<EntityRecord> records = loadAllRecords(entityType, entityId, from, to, messageTypes, lastN, dedup);
+            return ResponseEntity.ok(timelineService.timeline(entityType, entityId, records, timelineBucket));
+        }
+        if (responseFormat == ResponseFormat.PORTRAIT) {
+            List<EntityRecord> records = loadAllRecords(entityType, entityId, from, to, messageTypes, lastN, dedup);
+            StateFoldService.StateResult state = output == ReplayOutputMode.STATE
+                    ? stateFoldService.fold(records, stateFold) : null;
+            return ResponseEntity.ok(portraitService.portrait(entityType, entityId, records, state));
         }
         String replayId = newReplayId();
         List<TransformStep> userSteps = resolveTransformSteps(transform, transformPreset);
@@ -1874,6 +1899,19 @@ public class CassetteController {
             return ResponseEntity.ok(applyDiff(entityType, entityId,
                     body.from(), body.to(), body.messageTypes(), body.lastN(), body.dedup()));
         }
+        if (body.responseFormat() == ResponseFormat.TIMELINE) {
+            List<EntityRecord> records = loadAllRecords(entityType, entityId,
+                    body.from(), body.to(), body.messageTypes(), body.lastN(), body.dedup());
+            return ResponseEntity.ok(timelineService.timeline(entityType, entityId, records,
+                    body.timelineBucket()));
+        }
+        if (body.responseFormat() == ResponseFormat.PORTRAIT) {
+            List<EntityRecord> records = loadAllRecords(entityType, entityId,
+                    body.from(), body.to(), body.messageTypes(), body.lastN(), body.dedup());
+            StateFoldService.StateResult state = body.output() == ReplayOutputMode.STATE
+                    ? stateFoldService.fold(records, body.stateFold()) : null;
+            return ResponseEntity.ok(portraitService.portrait(entityType, entityId, records, state));
+        }
         String replayId = newReplayId();
         List<TransformStep> userSteps = resolveTransformStepsFromBody(body.transform(), body.transformPreset());
         TransformPipeline pipeline = new TransformPipeline(userSteps, metadataInjector);
@@ -2265,6 +2303,28 @@ public class CassetteController {
             records = all;
         }
         return diffService.diff(records);
+    }
+
+    /**
+     * Loads the full (unpagianted) event sequence for an entity, honouring
+     * {@code lastN} and {@code dedup} when set. Used by timeline and portrait
+     * paths that need the complete list before aggregating.
+     */
+    private List<EntityRecord> loadAllRecords(
+            String entityType, String entityId,
+            Instant from, Instant to,
+            List<String> messageTypes,
+            Integer lastN, DedupPolicy dedup
+    ) throws SQLException {
+        if (lastN != null) {
+            return entityService.queryEntityEvents(
+                    entityType, entityId, null, null, lastN, null,
+                    TransformPipeline.IDENTITY, "", Order.ASC, messageTypes, lastN, dedup).data();
+        }
+        List<EntityRecord> all = new ArrayList<>();
+        entityService.streamEntityEvents(entityType, entityId, from, to,
+                all::add, TransformPipeline.IDENTITY, "", Order.ASC);
+        return all;
     }
 
     private static EntityRecord cassetteToEntity(CassetteRecord r, String entityId) {
