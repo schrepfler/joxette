@@ -58,4 +58,8 @@ public class ResourceNotFoundException extends JoxetteException {
     public static ResourceNotFoundException retentionRun(long id) {
         return new ResourceNotFoundException("Retention run not found: " + id);
     }
+
+    public static ResourceNotFoundException stream(String id) {
+        return new ResourceNotFoundException("Stream definition not found: " + id);
+    }
 }

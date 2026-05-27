@@ -375,6 +375,22 @@ public class SchemaManager {
                 """);
             stmt.execute("ALTER TABLE transform_presets ADD COLUMN IF NOT EXISTS fragments JSON");
 
+            // Named derived stream definitions (plain DuckDB, not DuckLake).
+            // The full StreamDefinition is stored as a JSON blob in `definition`
+            // so the schema stays stable as new fields are added.
+            stmt.execute("""
+                CREATE TABLE IF NOT EXISTS stream_definitions (
+                    id          VARCHAR     NOT NULL PRIMARY KEY
+                                  CHECK (id ~ '^[a-z][a-z0-9_-]*$'),
+                    name        VARCHAR     NOT NULL,
+                    entity_type VARCHAR     NOT NULL,
+                    entity_id   VARCHAR,
+                    definition  JSON        NOT NULL,
+                    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+                )
+                """);
+
             stmt.execute("""
                 CREATE TABLE IF NOT EXISTS broker_configs (
                     broker_id               VARCHAR PRIMARY KEY

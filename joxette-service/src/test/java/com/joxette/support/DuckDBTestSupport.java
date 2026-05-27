@@ -221,6 +221,28 @@ public final class DuckDBTestSupport {
                         known_entities_deleted BIGINT      NOT NULL DEFAULT 0,
                         error_message          VARCHAR
                     )""");
+
+            st.execute("""
+                    CREATE TABLE IF NOT EXISTS transform_presets (
+                        name        VARCHAR     NOT NULL PRIMARY KEY,
+                        description VARCHAR,
+                        steps       JSON        NOT NULL,
+                        fragments   JSON,
+                        created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+                    )""");
+
+            st.execute("""
+                    CREATE TABLE IF NOT EXISTS stream_definitions (
+                        id          VARCHAR     NOT NULL PRIMARY KEY
+                                      CHECK (id ~ '^[a-z][a-z0-9_-]*$'),
+                        name        VARCHAR     NOT NULL,
+                        entity_type VARCHAR     NOT NULL,
+                        entity_id   VARCHAR,
+                        definition  JSON        NOT NULL,
+                        created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+                    )""");
         }
     }
 
