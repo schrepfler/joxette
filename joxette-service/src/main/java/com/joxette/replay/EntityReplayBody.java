@@ -86,7 +86,8 @@ public record EntityReplayBody(
         DedupPolicy dedup,
 
         @Schema(description = "Output mode: `events` (default) = stream of EntityRecord; " +
-                              "`state` = fold the event stream into a single current-state JSON object.",
+                              "`state` = fold the event stream into a single current-state JSON object; " +
+                              "`diff` = each event annotated with changed fields and prior values.",
                 defaultValue = "events")
         ReplayOutputMode output,
 

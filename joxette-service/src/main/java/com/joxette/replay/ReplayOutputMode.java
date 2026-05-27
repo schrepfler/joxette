@@ -12,11 +12,15 @@ import com.fasterxml.jackson.annotation.JsonValue;
  *   <dd>Folds the event stream into a single JSON object representing the
  *       entity's current (or point-in-time) state. The fold strategy is
  *       controlled by {@link StateFoldStrategy}.</dd>
+ *   <dt>{@code diff}</dt>
+ *   <dd>Returns each event annotated with the fields that changed relative
+ *       to the accumulated state, plus their prior values.</dd>
  * </dl>
  */
 public enum ReplayOutputMode {
     EVENTS("events"),
-    STATE("state");
+    STATE("state"),
+    DIFF("diff");
 
     private final String value;
 

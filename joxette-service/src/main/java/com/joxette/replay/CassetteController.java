@@ -117,6 +117,7 @@ public class CassetteController {
     private final ConfigRepository          configRepository;
     private final ActiveReplayTracker       replayTracker;
     private final StateFoldService          stateFoldService;
+    private final DiffService               diffService;
 
     public CassetteController(
             TopicReplayService topicService,
@@ -137,7 +138,8 @@ public class CassetteController {
             KafkaTopicAdmin kafkaTopicAdmin,
             ConfigRepository configRepository,
             ActiveReplayTracker replayTracker,
-            StateFoldService stateFoldService) {
+            StateFoldService stateFoldService,
+            DiffService diffService) {
         this.topicService             = topicService;
         this.entityService            = entityService;
         this.sseHandler               = sseHandler;
@@ -157,6 +159,7 @@ public class CassetteController {
         this.configRepository         = configRepository;
         this.replayTracker            = replayTracker;
         this.stateFoldService         = stateFoldService;
+        this.diffService              = diffService;
     }
 
     /**
@@ -726,6 +729,10 @@ public class CassetteController {
             return ResponseEntity.ok(applyStateFold(entityType, entityId, from, to,
                     messageTypes, lastN, dedup, stateFold));
         }
+        if (output == ReplayOutputMode.DIFF) {
+            return ResponseEntity.ok(applyDiff(entityType, entityId, from, to,
+                    messageTypes, lastN, dedup));
+        }
         String replayId = newReplayId();
         List<TransformStep> userSteps = resolveTransformSteps(transform, transformPreset);
         TransformPipeline pipeline = new TransformPipeline(userSteps, metadataInjector);
@@ -832,6 +839,11 @@ public class CassetteController {
                     entityType, entityId, from, to, messageTypes, lastN, dedup, stateFold);
             // For SSE: emit a single "state" event then close
             return sseHandler.<EntityRecord>streamSse("state", toJson(result), sink -> {});
+        }
+        if (output == ReplayOutputMode.DIFF) {
+            List<DiffRecord> diffs = applyDiff(entityType, entityId, from, to,
+                    messageTypes, lastN, dedup);
+            return sseHandler.<DiffRecord>streamSse(null, null, sink -> diffs.forEach(sink));
         }
         String replayId = newReplayId();
         List<TransformStep> userSteps = resolveTransformSteps(transform, transformPreset);
@@ -956,6 +968,10 @@ public class CassetteController {
             StateFoldService.StateResult result = applyStateFold(
                     entityType, entityId, from, to, messageTypes, lastN, dedup, stateFold);
             body = sseHandler.<EntityRecord>streamNdjson(toJson(result), sink -> {});
+        } else if (output == ReplayOutputMode.DIFF) {
+            List<DiffRecord> diffs = applyDiff(entityType, entityId, from, to,
+                    messageTypes, lastN, dedup);
+            body = sseHandler.<DiffRecord>streamNdjson(null, sink -> diffs.forEach(sink));
         } else if (follow) {
             String replayId = newReplayId();
             List<TransformStep> userSteps = resolveTransformSteps(transform, transformPreset);
@@ -1854,6 +1870,10 @@ public class CassetteController {
                     body.from(), body.to(), body.messageTypes(), body.lastN(), body.dedup(),
                     body.stateFold()));
         }
+        if (body.output() == ReplayOutputMode.DIFF) {
+            return ResponseEntity.ok(applyDiff(entityType, entityId,
+                    body.from(), body.to(), body.messageTypes(), body.lastN(), body.dedup()));
+        }
         String replayId = newReplayId();
         List<TransformStep> userSteps = resolveTransformStepsFromBody(body.transform(), body.transformPreset());
         TransformPipeline pipeline = new TransformPipeline(userSteps, metadataInjector);
@@ -1901,6 +1921,11 @@ public class CassetteController {
                     body.from(), body.to(), body.messageTypes(), body.lastN(), body.dedup(),
                     body.stateFold());
             return sseHandler.<EntityRecord>streamSse("state", toJson(result), sink -> {});
+        }
+        if (body.output() == ReplayOutputMode.DIFF) {
+            List<DiffRecord> diffs = applyDiff(entityType, entityId,
+                    body.from(), body.to(), body.messageTypes(), body.lastN(), body.dedup());
+            return sseHandler.<DiffRecord>streamSse(null, null, sink -> diffs.forEach(sink));
         }
         String replayId = newReplayId();
         List<TransformStep> userSteps = resolveTransformStepsFromBody(body.transform(), body.transformPreset());
@@ -1964,6 +1989,15 @@ public class CassetteController {
             return ResponseEntity.ok()
                     .contentType(MediaType.parseMediaType("application/x-ndjson"))
                     .body(stateStream);
+        }
+        if (body.output() == ReplayOutputMode.DIFF) {
+            List<DiffRecord> diffs = applyDiff(entityType, entityId,
+                    body.from(), body.to(), body.messageTypes(), body.lastN(), body.dedup());
+            StreamingResponseBody diffStream = sseHandler.<DiffRecord>streamNdjson(null,
+                    sink -> diffs.forEach(sink));
+            return ResponseEntity.ok()
+                    .contentType(MediaType.parseMediaType("application/x-ndjson"))
+                    .body(diffStream);
         }
         String replayId = newReplayId();
         List<TransformStep> userSteps = resolveTransformStepsFromBody(body.transform(), body.transformPreset());
@@ -2207,6 +2241,30 @@ public class CassetteController {
             records = all;
         }
         return stateFoldService.fold(records, stateFold);
+    }
+
+    /**
+     * Loads the entity's full event sequence (applying {@code lastN} / {@code dedup}
+     * if requested) and annotates each event with change metadata.
+     */
+    private List<DiffRecord> applyDiff(
+            String entityType, String entityId,
+            Instant from, Instant to,
+            List<String> messageTypes,
+            Integer lastN, DedupPolicy dedup
+    ) throws SQLException {
+        List<EntityRecord> records;
+        if (lastN != null) {
+            records = entityService.queryEntityEvents(
+                    entityType, entityId, null, null, lastN, null,
+                    TransformPipeline.IDENTITY, "", Order.ASC, messageTypes, lastN, dedup).data();
+        } else {
+            List<EntityRecord> all = new ArrayList<>();
+            entityService.streamEntityEvents(entityType, entityId, from, to,
+                    all::add, TransformPipeline.IDENTITY, "", Order.ASC);
+            records = all;
+        }
+        return diffService.diff(records);
     }
 
     private static EntityRecord cassetteToEntity(CassetteRecord r, String entityId) {
