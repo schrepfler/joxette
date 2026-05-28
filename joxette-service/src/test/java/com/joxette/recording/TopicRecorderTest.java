@@ -34,6 +34,7 @@ import com.joxette.replay.EntityIdExtractor;
 import com.joxette.replay.MessageRouter;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 /**
  * End-to-end test: records Kafka messages through {@link TopicRecorder} +
@@ -433,26 +434,22 @@ class TopicRecorderTest {
      * Polls {@code table} until it contains at least {@code expected} rows or
      * {@code timeout} elapses, then asserts the count.
      */
-    private void awaitRowCount(String table, long expected, Duration timeout) throws Exception {
-        long deadline = System.currentTimeMillis() + timeout.toMillis();
-        while (System.currentTimeMillis() < deadline) {
-            try (Statement st = duckDB.createStatement()) {
-                // Table may not exist yet if the recorder hasn't written its first batch.
-                try (ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM " + table)) {
-                    if (rs.next() && rs.getLong(1) >= expected) return;
-                }
-            } catch (SQLException ignored) {
-                // table doesn't exist yet — keep waiting
-            }
-            Thread.sleep(100);
-        }
-        // Final assert to produce a clear failure message.
+    private void awaitRowCount(String table, long expected, Duration timeout) {
+        await().atMost(timeout).pollInterval(Duration.ofMillis(100))
+                .untilAsserted(() ->
+                        assertThat(currentRowCount(table))
+                                .as("Expected %d rows in %s within %s", expected, table, timeout)
+                                .isGreaterThanOrEqualTo(expected));
+    }
+
+    /** Current row count, or 0 if the table does not exist yet. */
+    private long currentRowCount(String table) {
         try (Statement st = duckDB.createStatement();
              ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM " + table)) {
-            long actual = rs.next() ? rs.getLong(1) : 0;
-            assertThat(actual)
-                    .as("Expected %d rows in %s within %s", expected, table, timeout)
-                    .isGreaterThanOrEqualTo(expected);
+            return rs.next() ? rs.getLong(1) : 0;
+        } catch (SQLException e) {
+            // Table may not exist yet if the recorder hasn't written its first batch.
+            return 0;
         }
     }
 }

@@ -65,14 +65,26 @@ Back-pressure is natural: slow DuckLake writes → batch buffer fills → Kafka 
 
 ![Replay — Read](docs/replay-pipeline-read.png)
 
+![Replay — Batch](docs/replay-pipeline-batch.png)
+
 ![Replay — To Topic](docs/replay-pipeline-to-topic.png)
+
+The read path supports cursor pagination, SSE/NDJSON streaming, `follow=true`
+live-tail, and — for entity cassettes — alternate shapes: `output=state`
+(fold to current state), `output=diff` (per-event field deltas),
+`response_format=timeline` (time-bucketed), and `response_format=portrait`
+(compact summary).
 
 Replay-to-topic is built around a small `RecordSink` SPI
 (`com.joxette.replay.sink.RecordSink`). `ReplayEngine` is plain Java — no
 Spring, no Kafka imports — so the same engine can run inside the service or
 from a test-kit that wires it up with a capturing sink. The production
 implementation (`KafkaRecordSink` + `KafkaRecordSinkFactory`) caches one
-`KafkaProducer` per broker id and handles byte/header/timestamp encoding.
+`KafkaProducer` per broker id and handles byte/header/timestamp encoding. Per-
+record `topicMappings` route each source topic to its own target (default:
+the original name), and a `partitionStrategy` (`DEFAULT`/`PRESERVE`/`MODULO`)
+controls how source partitions map onto the target when partition counts
+differ.
 
 ### Compaction & Retention
 
@@ -288,16 +300,61 @@ All replay endpoints support three response formats via the `Accept` header:
 
 | Method | Path | Key Query Params |
 |---|---|---|
-| `GET` | `/cassettes/topics/{topic}` | `from`, `to`, `partition`, `offset_from`, `limit`, `cursor` |
+| `GET` | `/cassettes/topics/{topic}` | `from`, `to`, `partition`, `offset_from`, `offset_to`, `limit`, `cursor`, `order=asc\|desc`, `follow`, `transform`/`transform_preset`, `start_at`/`start_delay_ms` |
 
 **Entity cassettes:**
 
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/cassettes/entities/{entity_type}` | List known entity IDs |
-| `GET` | `/cassettes/entities/{entity_type}/{entity_id}` | Replay entity history |
+| `GET` | `/cassettes/entities/{entity_type}/{entity_id}` | Replay entity history (see params below) |
 | `GET` | `/cassettes/entities/{entity_type}/{entity_id}/stats` | Message count, time range, topics |
 | `GET` | `/cassettes/entities/{entity_type}/search` | Find entities matching criteria |
+| `POST` | `/cassettes/entities/{entity_type}/batch` | Replay up to 100 entity IDs in one NDJSON stream |
+
+Entity replay (`GET …/{entity_id}`) accepts, in addition to `from`/`to`/`limit`/`cursor`/`order`/`follow`:
+
+| Param | Values (default) | Effect |
+|---|---|---|
+| `last_n` | integer | Tail window — only the last N events (mutually exclusive with `from`/`to`/`cursor`) |
+| `dedup` | `offset` (default), `value`, `none` | Deduplication key for re-deliveries |
+| `message_types` | comma-separated | Restrict to these message-type labels |
+| `output` | `events` (default), `state`, `diff` | Stream events, fold to current-state JSON, or annotate each event with field deltas |
+| `state_fold` | `merge_patch` (default), `last_value`, `last_per_topic` | Fold strategy when `output=state` |
+| `response_format` | `events` (default), `timeline`, `portrait` | Raw events, time-bucketed timeline, or compact summary (JSON only) |
+| `timeline_bucket` | `MINUTE`, `HOUR`, `DAY` (auto) | Bucket granularity when `response_format=timeline` |
+| `sol` | SOL query string | Run a Sequence Operations Language query over the full sequence |
+| `sol_output` | `events` (default), `annotated`, `summary` | What a `sol` query returns |
+
+**Replay to Kafka:**
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/cassettes/topics/{topic}/replay-to-topic` | Stream a general cassette back into Kafka (immediate) |
+| `POST` | `/cassettes/entities/{entity_type}/{entity_id}/replay-to-topic` | Stream an entity cassette back into Kafka (immediate) |
+| `POST` | `/cassettes/topics/{topic}/replay` | Same as above but schedulable via `start_at`/`start_delay_ms` (returns `202` with a replay id) |
+| `POST` | `/cassettes/entities/{entity_type}/{entity_id}/replay` | Schedulable entity replay-to-topic |
+| `GET` | `/cassettes/scheduled` | List pending/running scheduled replays |
+| `DELETE` | `/cassettes/scheduled/{id}` | Cancel a pending scheduled replay |
+
+Replay-to-topic takes a `?speed=` multiplier (1.0 = real-time) and a `ReplayToTopicRequest` body:
+
+| Field | Type | Effect |
+|---|---|---|
+| `targetTopic` | string | Destination topic. Optional — omit (with no `topicMappings`) for **identity routing**: each record replays back to its original topic |
+| `topicMappings` | `{source: target}` | Per-source-topic routing overrides; topics absent from the map fall back to `targetTopic`, then to the original name |
+| `partitionStrategy` | `DEFAULT` / `PRESERVE` / `MODULO` | How source partitions map to the target. `DEFAULT` = Kafka partitioner; `PRESERVE` = verbatim (requires equal partition counts); `MODULO` = `source % target_count` |
+| `from`, `to`, `partition`, `offsetFrom`, `offsetTo` | filters | Restrict which recorded records are replayed (offset/partition filters apply to topic replay only) |
+| `transforms` | object | `restamp` (re-anchor timestamps to now) + JSONPath `fieldSubstitutions` |
+
+**SOL & sequence matching:**
+
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/cassettes/topics/{topic}/match-sequences` | NFA-style sequence match over a topic; returns match stats + examples |
+| `POST` | `/cassettes/entities/{entity_type}/match-sequences` | Sequence match over an entity (via `entityId` param) |
+| `POST` | `/cassettes/topics/{topic}/sol-match` | Run a SOL query over a topic's messages |
+| `POST` | `/cassettes/entities/{entity_type}/{entity_id}/sol-match` | Run a SOL query over an entity's event sequence |
 
 **Cassette lifecycle:**
 

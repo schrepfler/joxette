@@ -1,12 +1,32 @@
 # Active Context
 
-## Current Focus — Lifecycle hardening complete
+## Current Focus — Replay routing + docs/test hygiene
+
+Most recent sprint: per-request **topic mappings** and a **partition routing
+strategy** for replay-to-topic, plus a docs/diagram refresh and test-hygiene pass.
+
+### Completed this sprint (replay routing + hygiene)
+
+**Topic mappings + partition strategy (replay-to-topic)**
+- `ReplayToTopicRequest` gained `topicMappings` (`{source: target}`) and `partitionStrategy`.
+- `PartitionStrategy` enum: `DEFAULT` (Kafka partitioner) / `PRESERVE` (verbatim; equal counts required) / `MODULO` (`src % targetCount`).
+- Routing/partition resolution are pure static fns on `ReplayEngine` (`resolveTargetTopic`, `resolvePartition`); target partition count injected as `Function<String,Integer>` so `joxette-core` stays Spring/Kafka-free.
+- `RecordSink` got partition-aware `send(topic, partition, record)` overloads (default delegates to no-partition); only `KafkaRecordSink` honours the explicit partition (null → Kafka default partitioner).
+- Blank-everything request = identity routing (each record → original topic); no validation rejection. UI `ReplayToTopicPanel` exposes the mapping table + strategy toggle.
+
+**Docs + diagram refresh**
+- `docs/replay-pipeline.puml` rewritten: read path shows `order`/`follow`/`last_n`/`dedup`/`message_types`/`output`/`state_fold`/`response_format`/`timeline_bucket`/`sol`, the output-shaping switch, and the RFC 7807 mid-stream error frame; new `replay-pipeline-batch` diagram; to-topic diagram shows mapping + partition resolution + scheduled vs immediate. PNGs regenerated.
+- README + CLAUDE.md REST tables updated: replay-to-topic, scheduled replay, batch, SOL/sequence-match endpoints, and all entity-replay shaping params.
+
+**Test hygiene**
+- Flaky `while/Thread.sleep` poll loops in `TopicRecorderTest` + `RebalanceIntegrationTest` migrated to Awaitility `untilAsserted`; explicit `awaitility` dep added to `joxette-service/pom.xml`.
+- `.gitignore` now excludes runtime `joxette-service/snapshots/` and the 144 MB `motif-docs-wayback/` mirror.
+
+### Completed previously (lifecycle hardening)
 
 Two improvements shipped since cluster hardening: a case-insensitive enum binding
 fix for all replay `@RequestParam` enums, and a new `BackgroundTaskRegistry` that
 gives ad-hoc virtual threads a consistent lifecycle with ordered shutdown.
-
-### Completed this sprint (lifecycle hardening)
 
 **Case-insensitive enum `@RequestParam` binding**
 - Root cause: Spring's `Enum.valueOf()` is case-sensitive; `defaultValue = "events"` on `SolOutput` produced HTTP 400 because the constant is `EVENTS`.

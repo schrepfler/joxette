@@ -9,18 +9,18 @@ title Joxette — Replay Pipeline (Read)
 
 |REST Client|
 start
-:HTTP GET /cassettes/topics/{topic}\n  OR /cassettes/entities/{type}/{id}\n  Accept: application/json | text/event-stream | application/x-ndjson\n  params: from, to, cursor, limit, pipeline;
+:HTTP GET /cassettes/topics/{topic}\n  OR /cassettes/entities/{type}/{id}\n  Accept: application/json | text/event-stream | application/x-ndjson\n  params: from, to, cursor, limit, order=asc|desc,\n          follow, transform/transform_preset, start_at/start_delay_ms\n  entity-only: last_n, dedup, message_types, output,\n               state_fold, response_format, timeline_bucket, sol;
 
 |CassetteController|
 :parse Accept header\n-> response format: paginated JSON / SSE / NDJSON;
 
 if (general cassette?) then (yes)
   |TopicReplayService|
-  :jOOQ SELECT from lake.main.general_{topic}\nWHERE time range, partition, offset\nQUALIFY ROW_NUMBER() dedup\nORDER BY (timestamp, partition, offset)\nLIMIT limit+1;
+  :jOOQ SELECT from lake.main.general_{topic}\nWHERE time range, partition, offset\nQUALIFY ROW_NUMBER() dedup\nORDER BY (timestamp, partition, offset) [asc|desc]\nLIMIT limit+1;
   :decode cursor -> seekAfter(ts, partition, offset);
 else (entity cassette)
   |EntityReplayService|
-  :jOOQ SELECT from lake.main.entity_{type}\nWHERE entity_id = ?\nQUALIFY ROW_NUMBER() dedup\nORDER BY (timestamp, recorded_at, topic, partition, offset)\nLIMIT limit+1;
+  :jOOQ SELECT from lake.main.entity_{type}\nWHERE entity_id = ?, message_types?\ndedup policy: offset | value | none\nORDER BY (timestamp, recorded_at, topic, partition, offset) [asc|desc]\nlast_n tail-window OR LIMIT limit+1;
   :SqlPushdownAnalyzer push filter steps to SQL\ndecode cursor -> seekAfter(5-col key);
 endif
 
@@ -32,19 +32,41 @@ endif
 :map rows -> CassetteRecord / EntityRecord\n(base64url-encode value bytes\ndecode headers STRUCT -> List<Header>);
 
 if (TransformPipeline configured?) then (yes)
-  :per record: TransformPipeline.apply()\nfilter_drop / field_set / restamp\ntime_compress / add_header;
+  :per record: TransformPipeline.apply()\nfilter_drop / field_set / restamp\ntime_compress / gap_transform / add_header;
   note right
     Streaming: shared TransformContext
-    enables stateful steps (time_compress).
+    enables stateful steps (time_compress, gap).
     Paginated: per-message context.
   end note
 endif
 
+if (sol query present? — entity only) then (yes)
+  :SolEngine.run(sequence)\nsol_output = events | annotated | summary;
+endif
+
+partition "output / response shaping (entity replay)" {
+  switch (output / response_format?)
+  case (events)
+    :stream EntityRecord as-is;
+  case (output=state)
+    :StateFoldService fold ->\nmerge_patch | last_value | last_per_topic\n-> single current-state JSON;
+  case (output=diff)
+    :DiffService annotate each event\nwith changed fields + prior values;
+  case (response_format=timeline)
+    :TimelineService bucket events\nby MINUTE | HOUR | DAY (auto);
+  case (response_format=portrait)
+    :PortraitService compact summary\n(count, topics, first/last, preview);
+  endswitch
+}
+
 :buildPage(records, limit)\n-> PagedResponse { data, nextCursor, hasMore };
 
 |CassetteController|
+if (follow=true?) then (yes)
+  :after history drain, keep stream open\nlive-tail new records + heartbeats\n(SSE / NDJSON; incompatible with to / offset_to);
+endif
 if (SSE?) then (yes)
-  :write SSE events (data: JSON per record);
+  :write SSE events (data: JSON per record)\nmid-stream failure -> RFC 7807 error frame\n(streamed on dedicated VT; deregistered on completion);
 else if (NDJSON?) then (yes)
   :write NDJSON (one JSON object per line);
 else (JSON)
@@ -53,6 +75,35 @@ endif
 
 |REST Client|
 :receive response;
+stop
+
+@enduml
+
+
+@startuml replay-pipeline-batch
+!theme plain
+skinparam backgroundColor #FAFAFA
+skinparam defaultFontName monospaced
+skinparam ArrowColor #444444
+skinparam ActivityBorderColor #666666
+
+title Joxette — Batch Entity Replay
+
+|REST Client|
+start
+:POST /cassettes/entities/{type}/batch\n  { ids[<=100], from, to, messageTypes,\n    lastN, dedup, output, stateFold,\n    responseFormat, timelineBucket };
+
+|CassetteController|
+:validate ids (<= 100);
+
+|EntityReplayService|
+repeat :for each entity id (in request order);
+  :load + dedup + transform + shape\n(same pipeline as single-entity replay);
+  :emit NDJSON line\n{ "entityId": id, "event"|"state"|"timeline"|"portrait": ... };
+repeat while (more ids?)
+
+|REST Client|
+:receive NDJSON stream grouped by entity;
 stop
 
 @enduml
@@ -69,23 +120,34 @@ title Joxette — Replay-to-Topic Pipeline
 
 |REST Client|
 start
-:POST /cassettes/topics/{topic}/replay-to-topic\n  OR /cassettes/entities/{type}/{id}/replay-to-topic\n  { targetTopic, brokerId, pipeline, speedMultiplier };
+:POST /cassettes/topics/{topic}/replay-to-topic\n  OR /cassettes/entities/{type}/{id}/replay-to-topic\n  ?speed=1.0  (&start_delay_ms / start_at on .../replay)\n  body ReplayToTopicRequest {\n    targetTopic?, topicMappings?, partitionStrategy,\n    from, to, partition, offsetFrom, offsetTo, transforms };
 
 |CassetteController|
-:engineFor(brokerId)\n  -> KafkaRecordSinkFactory.forBroker(id)\n  -> new ReplayEngine(topicReplay, entityReplay, sink);
+if (start_at / start_delay_ms set? — /replay) then (yes)
+  :ScheduledReplayService.schedule(...)\n-> HTTP 202 { replayId, scheduledAt };
+  note right
+    /replay-to-topic = immediate
+    /replay          = schedulable
+    (same engine + sink underneath)
+  end note
+endif
+:engineFor(brokerId)\n  -> KafkaRecordSinkFactory.forBroker(id)\n  -> new ReplayEngine(topicReplay, entityReplay, sink,\n       partitionCountLookup);
+:ensureAllMappedTargets(...)\ncreate any missing target topics;
 
 |ReplayEngine|
 :stream records from DuckLake\n(TopicReplayService.streamAll /\nEntityReplayService.streamEntityEvents);
 repeat
-  :applyDelay(prev, current) / speedMultiplier;
-  :MessageTransformer.transform(record)\n-> restamp + field substitution;
-  :sink.send(targetTopic, record)\n(blocks — virtual-thread friendly);
+  :applyDelay(prev, current) / speed;
+  :MessageTransformer.transform(record)\n-> restamp + JSONPath field substitution;
+  :resolveTargetTopic(req, sourceTopic)\n  topicMappings -> targetTopic -> identity (orig topic);
+  :resolvePartition(strategy, srcPartition, targetCount)\n  DEFAULT=null | PRESERVE=src | MODULO=src % count;
+  :sink.send(effectiveTopic, partition, record)\n(blocks — virtual-thread friendly);
   :emit ReplayProgress event\n(every 100 records; final completed/failed);
 repeat while (more records?)
 
 |KafkaRecordSink|
 :decode value bytes from base64url;
-:ProducerRecord(targetTopic, timestamp, key, value, headers)\n-> producer.send(rec).get()  [acks=all, idempotent];
+:ProducerRecord(targetTopic, partition, timestamp, key, value, headers)\n-> producer.send(rec).get()  [acks=all, idempotent]\n(partition=null -> Kafka default partitioner);
 note right
   SPI: any RecordSink implementation
   can plug in here (e.g. capturing sink
@@ -93,7 +155,7 @@ note right
 end note
 
 |Apache Kafka|
-:records written to target topic;
+:records written to mapped target topic(s)\nat resolved partition;
 stop
 
 @enduml

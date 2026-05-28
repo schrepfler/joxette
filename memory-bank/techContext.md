@@ -106,7 +106,13 @@ await().atMost(Duration.ofSeconds(20))
        });
 ```
 
-Awaitility is a transitive dependency of `spring-boot-starter-test` — no extra `pom.xml` entry needed.
+Awaitility (4.3.0) arrives transitively via `spring-boot-starter-test` but is now
+declared explicitly in `joxette-service/pom.xml` for clarity. The hand-rolled
+`while (deadline) { …; Thread.sleep(n) }` helpers in `TopicRecorderTest` and
+`RebalanceIntegrationTest` were migrated to `await().atMost(...).untilAsserted(...)`;
+the only remaining `Thread.sleep` calls are deterministic timestamp-ordering setup,
+blocking-task stubs, and Kafka-admin retry-on-`marked for deletion` loops — none are
+assertion guards.
 
 The `it` profile sets `batch-timeout-ms: 100` so the recording pipeline flushes quickly
 enough that `atMost(20–30 s)` is comfortably safe.

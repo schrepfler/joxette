@@ -441,20 +441,63 @@ All replay endpoints support three response formats via `Accept` header:
 - `text/event-stream` — SSE streaming
 - `application/x-ndjson` — NDJSON streaming
 
+All read endpoints also accept `order=asc|desc`, `follow=true` (live-tail after
+history drain; SSE/NDJSON; incompatible with `to`/`offset_to`),
+`transform`/`transform_preset` (apply a transform pipeline on read), and
+`start_at`/`start_delay_ms` (delayed start).
+
 **General cassettes:**
 
 | Method | Path | Query Params | Description |
 |---|---|---|---|
-| GET | `/cassettes/topics/{topic}` | `from`, `to`, `partition`, `offset_from`, `offset_to`, `limit`, `cursor` | Replay general cassette |
+| GET | `/cassettes/topics/{topic}` | `from`, `to`, `partition`, `offset_from`, `offset_to`, `limit`, `cursor`, `order`, `follow` | Replay general cassette |
 
 **Entity cassettes:**
 
 | Method | Path | Query Params | Description |
 |---|---|---|---|
 | GET | `/cassettes/entities/{entity_type}` | `prefix`, `limit`, `cursor`, `active_since` | List known entity IDs |
-| GET | `/cassettes/entities/{entity_type}/{entity_id}` | `from`, `to`, `source_topic`, `limit`, `cursor` | Replay entity cassette |
+| GET | `/cassettes/entities/{entity_type}/{entity_id}` | `from`, `to`, `limit`, `cursor`, `order`, `follow`, `last_n`, `dedup`, `message_types`, `output`, `state_fold`, `response_format`, `timeline_bucket`, `sol`, `sol_output` | Replay entity cassette |
 | GET | `/cassettes/entities/{entity_type}/{entity_id}/stats` | — | Message count, time range, source topics |
 | GET | `/cassettes/entities/{entity_type}/search` | `from`, `to`, `source_topic`, `min_messages`, `limit` | Find entities matching criteria |
+| POST | `/cassettes/entities/{entity_type}/batch` | body: `{ids[≤100], from, to, messageTypes, lastN, dedup, output, stateFold, responseFormat, timelineBucket}` | Replay up to 100 entity IDs as one NDJSON stream, grouped by entity |
+
+Entity replay shaping params:
+- `output` = `events` (default) \| `state` (fold to current-state JSON; `state_fold` = `merge_patch` \| `last_value` \| `last_per_topic`) \| `diff` (per-event field deltas)
+- `response_format` = `events` (default) \| `timeline` (bucketed by `timeline_bucket` = `MINUTE`/`HOUR`/`DAY`, auto) \| `portrait` (compact summary) — JSON only
+- `dedup` = `offset` (default) \| `value` \| `none`
+- `sol` = SOL query over the full sequence; `sol_output` = `events` \| `annotated` \| `summary`
+
+### Replay to Kafka
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/cassettes/topics/{topic}/replay-to-topic` | Immediate general-cassette replay into Kafka |
+| POST | `/cassettes/entities/{entity_type}/{entity_id}/replay-to-topic` | Immediate entity-cassette replay into Kafka |
+| POST | `/cassettes/{...}/replay` | Same, but schedulable via `start_at`/`start_delay_ms` → `202` + replay id |
+| GET | `/cassettes/scheduled` | List pending/running scheduled replays |
+| DELETE | `/cassettes/scheduled/{id}` | Cancel a pending scheduled replay |
+
+`?speed=` is a real-time multiplier (1.0 = real-time). The `ReplayToTopicRequest` body:
+- `targetTopic` — destination; omit (with no `topicMappings`) for **identity routing** (each record → its original topic)
+- `topicMappings` — `{sourceTopic: targetTopic}` per-source overrides; absent topics fall back to `targetTopic` then to the original name
+- `partitionStrategy` — `DEFAULT` (Kafka partitioner) \| `PRESERVE` (verbatim source partition; requires equal counts) \| `MODULO` (`source % target_count`)
+- `from`/`to`/`partition`/`offsetFrom`/`offsetTo` — record filters (offset/partition filters apply to topic replay only)
+- `transforms` — `restamp` + JSONPath `fieldSubstitutions`
+
+Routing and partition resolution are pure functions on `ReplayEngine`
+(`resolveTargetTopic`, `resolvePartition`) and the partition count is supplied
+via an injected `Function<String,Integer>` lookup, so `joxette-core` stays free
+of Spring/Kafka. See [`docs/replay-pipeline.puml`](docs/replay-pipeline.puml).
+
+### SOL & Sequence Matching
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/cassettes/topics/{topic}/match-sequences` | NFA-style sequence match over a topic; returns stats + example matches |
+| POST | `/cassettes/entities/{entity_type}/match-sequences` | Sequence match over an entity (`entityId` param) |
+| POST | `/cassettes/topics/{topic}/sol-match` | Run a SOL query over a topic's messages |
+| POST | `/cassettes/entities/{entity_type}/{entity_id}/sol-match` | Run a SOL query over an entity's event sequence |
 
 ### Cassette Lifecycle Management
 

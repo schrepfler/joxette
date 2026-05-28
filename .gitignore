@@ -45,3 +45,9 @@ data/
 
 # DuckLake test artifact: written when inlining is disabled with DATA_PATH=':memory:'
 joxette-service/:memory:/
+
+# Runtime snapshot output (EXPORT DATABASE writes under <catalog-parent>/snapshots/)
+joxette-service/snapshots/
+
+# Local archived docs mirror — not source, large media
+motif-docs-wayback/

@@ -76,8 +76,13 @@
 - [x] Speed multiplier — inter-message delays scaled by `speedMultiplier` (x0.5 slow-down, x1 real-time, x2+ fast-forward)
 - [x] Progress reporting — `ReplayProgress` events emitted every 100 records, plus final `completed`/`failed`
 - [x] `ReplayToTopicRequest` — request DTO with `targetTopic`, time/offset filters, speed, transforms
+- [x] Per-source-topic routing — `topicMappings` (`{source: target}`), fall back to `targetTopic`, then identity (replay to original topic); `ReplayEngine.resolveTargetTopic`
+- [x] Partition routing strategy — `PartitionStrategy` enum `DEFAULT`/`PRESERVE`/`MODULO`; `ReplayEngine.resolvePartition`; PRESERVE validated upfront (topic) / per-source-topic (entity); partition count injected as `Function<String,Integer>` so `joxette-core` stays Spring/Kafka-free
+- [x] `RecordSink` partition-aware overloads (`send(topic, partition, record)`); `KafkaRecordSink` passes explicit partition to `ProducerRecord` (null → Kafka default partitioner)
+- [x] UI `ReplayToTopicPanel` — topic-mapping table + partition-strategy toggle; blank-everything = identity routing
 - [x] `ScheduledReplayService` — in-memory registry for pending/streaming scheduled replays (SSE-driven, cancel support)
 - [x] `ScheduledReplay` / `ScheduledReplayResponse` records
+- [x] `SseReplayHandler` VT lifecycle — `runTracked` registers/deregisters the streaming VT; `SseReplayHandlerLifecycleTest` verifies deregistration on normal completion, mid-stream failure, and shutdown interrupt
 
 ### Message Transformation Pipeline
 - [x] `MessageTransformer` — stateful per-replay transformer (restamp + field substitutions via JSONPath)

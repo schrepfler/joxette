@@ -42,6 +42,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 /**
  * Integration tests for consumer-group rebalance behaviour.
@@ -269,17 +270,13 @@ class RebalanceIntegrationTest {
         } catch (Exception ignored) {}
     }
 
-    private void awaitUniqueRows(String table, long expected, Duration timeout) throws Exception {
-        long deadline = System.currentTimeMillis() + timeout.toMillis();
-        while (System.currentTimeMillis() < deadline) {
-            long count = uniqueMessageCount(table);
-            if (count >= expected) return;
-            Thread.sleep(200);
-        }
-        long actual = uniqueMessageCount(table);
-        assertThat(actual)
-                .as("Expected %d unique (partition, offset) rows in %s within %s", expected, table, timeout)
-                .isGreaterThanOrEqualTo(expected);
+    private void awaitUniqueRows(String table, long expected, Duration timeout) {
+        await().atMost(timeout).pollInterval(Duration.ofMillis(200))
+                .untilAsserted(() ->
+                        assertThat(uniqueMessageCount(table))
+                                .as("Expected %d unique (partition, offset) rows in %s within %s",
+                                        expected, table, timeout)
+                                .isGreaterThanOrEqualTo(expected));
     }
 
     private void assertUniqueMessageCount(String table, long expected) throws Exception {
@@ -309,16 +306,14 @@ class RebalanceIntegrationTest {
         }
     }
 
-    private void waitForPartitionAssignment(List<TopicRecorder> recorders, Duration timeout)
-            throws InterruptedException {
-        long deadline = System.currentTimeMillis() + timeout.toMillis();
-        while (System.currentTimeMillis() < deadline) {
-            boolean allAssigned = recorders.stream()
-                    .allMatch(r -> !r.assignedPartitionIds().isEmpty());
-            if (allAssigned) return;
-            Thread.sleep(200);
+    private void waitForPartitionAssignment(List<TopicRecorder> recorders, Duration timeout) {
+        try {
+            await().atMost(timeout).pollInterval(Duration.ofMillis(200))
+                    .until(() -> recorders.stream()
+                            .allMatch(r -> !r.assignedPartitionIds().isEmpty()));
+        } catch (org.awaitility.core.ConditionTimeoutException ignored) {
+            // Soft wait — don't fail the test; the recorder may still be starting up.
         }
-        // Soft assertion — don't fail the test; the recorder may still be starting up.
     }
 
     /**
