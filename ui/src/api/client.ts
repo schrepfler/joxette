@@ -331,11 +331,17 @@ export interface PreviewTransformsResponse {
 
 export type ReplaySpeed = 0.5 | 1 | 2 | 5
 
+export type PartitionStrategy = 'DEFAULT' | 'PRESERVE' | 'MODULO'
+
 export interface ReplayToTopicRequest {
-  targetTopic: string
+  targetTopic?: string
   from?: string        // ISO-8601 Instant; topic replay only
   to?: string          // ISO-8601 Instant; topic replay only
   transforms?: { restamp?: boolean }
+  /** Per-source-topic routing overrides (entity replay). */
+  topicMappings?: Record<string, string>
+  /** Partition routing strategy. Defaults to DEFAULT on the server. */
+  partitionStrategy?: PartitionStrategy
 }
 
 export interface ReplayProgress {

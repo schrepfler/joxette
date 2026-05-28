@@ -8,7 +8,7 @@ import {
 } from '@tanstack/react-table'
 import { useState, useRef, useEffect } from 'react'
 import { JsonView } from '../../../components/JsonView'
-import { cassettesApi, entityOutputApi, streamEntityRecords, type EntityRecord, type Order, type StreamMode, type EntityStreamParams, type PortraitResult } from '../../../api/client'
+import { cassettesApi, entityOutputApi, entitiesApi, streamEntityRecords, type EntityRecord, type Order, type StreamMode, type EntityStreamParams, type PortraitResult } from '../../../api/client'
 import { Layout } from '../../../components/Layout'
 import { LoadingSpinner } from '../../../components/LoadingSpinner'
 import { ErrorMessage } from '../../../components/ErrorMessage'
@@ -192,6 +192,11 @@ function EntityInstancePage() {
   const statsQuery = useQuery({
     queryKey: ['cassettes', 'entities', entityType, entityId, 'stats'],
     queryFn: () => cassettesApi.getEntityStats(entityType, entityId),
+  })
+
+  const sourcesQuery = useQuery({
+    queryKey: ['entities', entityType, 'sources'],
+    queryFn: () => entitiesApi.getSources(entityType),
   })
 
   const recordsQuery = useQuery({
@@ -439,6 +444,7 @@ function EntityInstancePage() {
         entityType={entityType}
         entityId={entityId}
         totalCount={statsQuery.data?.messageCount}
+        sourceTopics={sourcesQuery.data?.map(s => s.topic)}
       />
 
       {/* View mode switcher */}

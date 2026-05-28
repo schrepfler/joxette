@@ -5,6 +5,7 @@ import {
   type ReplaySpeed,
   type ReplayToTopicRequest,
   type ReplayProgress,
+  type PartitionStrategy,
 } from '../api/client'
 import { TransformPipelineBuilder, emptyPipeline, serializeSteps } from './transforms/TransformPipelineBuilder'
 import type { TransformPipeline } from '../transforms/types'
@@ -20,44 +21,72 @@ interface ReplayToTopicPanelProps {
   to?: string
   /** stats.rowCount (topic) or stats.messageCount (entity) — progress bar denominator */
   totalCount?: number
+  /** Source topic names available for per-topic mapping (entity mode) */
+  sourceTopics?: string[]
 }
 
 const SPEEDS: ReplaySpeed[] = [0.5, 1, 2, 5]
+const PARTITION_STRATEGIES: { value: PartitionStrategy; label: string; title: string }[] = [
+  { value: 'DEFAULT',  label: 'Default',  title: 'Kafka default partitioner — key-hash when key present, round-robin otherwise' },
+  { value: 'PRESERVE', label: 'Preserve', title: 'Carry the exact source partition — requires source and target have the same partition count' },
+  { value: 'MODULO',   label: 'Modulo',   title: 'source_partition % target_partition_count — works across any partition count mismatch' },
+]
 
 type ReplayState = 'idle' | 'running' | 'done' | 'failed'
 
-export function ReplayToTopicPanel({ mode, topic, entityType, entityId, from, to, totalCount }: ReplayToTopicPanelProps) {
-  const [targetTopic, setTargetTopic] = useState('')
-  const [speed, setSpeed] = useState<ReplaySpeed>(1)
-  const [pipeline, setPipeline] = useState<TransformPipeline>(emptyPipeline)
-  const [replayState, setReplayState] = useState<ReplayState>('idle')
-  const [progress, setProgress] = useState<ReplayProgress | null>(null)
-  const [errorMsg, setErrorMsg] = useState<string | null>(null)
-  const [startDelayMs, setStartDelayMs] = useState('')
+export function ReplayToTopicPanel({
+  mode, topic, entityType, entityId, from, to, totalCount, sourceTopics = [],
+}: ReplayToTopicPanelProps) {
+  const [targetTopic, setTargetTopic]           = useState('')
+  const [speed, setSpeed]                       = useState<ReplaySpeed>(1)
+  const [pipeline, setPipeline]                 = useState<TransformPipeline>(emptyPipeline)
+  const [replayState, setReplayState]           = useState<ReplayState>('idle')
+  const [progress, setProgress]                 = useState<ReplayProgress | null>(null)
+  const [errorMsg, setErrorMsg]                 = useState<string | null>(null)
+  const [startDelayMs, setStartDelayMs]         = useState('')
+  const [partitionStrategy, setPartitionStrategy] = useState<PartitionStrategy>('DEFAULT')
+  // topicMappings: sourceTopic → targetTopic override (entity mode only)
+  const [topicMappings, setTopicMappings]       = useState<Record<string, string>>({})
   const abortRef = useRef<AbortController | null>(null)
 
   useEffect(() => () => { abortRef.current?.abort() }, [])
 
+  const isEntityMode = mode === 'entity'
+
+  // Validate: need either a non-empty targetTopic or at least one mapping entry
+  const hasMappings = Object.values(topicMappings).some(v => v.trim() !== '')
+  const canStart = targetTopic.trim() !== '' || hasMappings
+
+  function updateMapping(sourceTopic: string, value: string) {
+    setTopicMappings(prev => {
+      const next = { ...prev }
+      if (value.trim() === '') {
+        delete next[sourceTopic]
+      } else {
+        next[sourceTopic] = value.trim()
+      }
+      return next
+    })
+  }
+
   function startReplay() {
-    if (!targetTopic.trim()) return
+    if (!canStart) return
     abortRef.current?.abort()
     setReplayState('running')
     setProgress(null)
     setErrorMsg(null)
 
-    // Merge pipeline into transforms field.
-    // wall_time step → restamp: true for backward compat with replay-to-topic endpoint.
     const steps = serializeSteps(pipeline.steps)
     const hasWallTime = steps.some(s => s.type === 'wall_time')
-    const transforms = steps.length > 0
-      ? { restamp: hasWallTime }
-      : undefined
+    const transforms = steps.length > 0 ? { restamp: hasWallTime } : undefined
 
     const body: ReplayToTopicRequest = {
-      targetTopic: targetTopic.trim(),
+      targetTopic: targetTopic.trim() || undefined,
       from: from || undefined,
       to: to || undefined,
       transforms,
+      partitionStrategy: partitionStrategy !== 'DEFAULT' ? partitionStrategy : undefined,
+      topicMappings: hasMappings ? topicMappings : undefined,
     }
 
     const cbs = {
@@ -91,9 +120,9 @@ export function ReplayToTopicPanel({ mode, topic, entityType, entityId, from, to
     setErrorMsg(null)
   }
 
-  const sent = progress?.sentCount ?? 0
+  const sent  = progress?.sentCount ?? 0
   const total = totalCount ?? 0
-  const pct = total > 0 ? Math.min(100, Math.round((sent / total) * 100)) : null
+  const pct   = total > 0 ? Math.min(100, Math.round((sent / total) * 100)) : null
 
   const statusColor =
     replayState === 'done'   ? '#276749' :
@@ -105,8 +134,9 @@ export function ReplayToTopicPanel({ mode, topic, entityType, entityId, from, to
     replayState === 'failed' ? '#fff5f5' :
     undefined
 
-  const isRunning = replayState === 'running'
-  const stepCount = pipeline.steps.length
+  const isRunning  = replayState === 'running'
+  const stepCount  = pipeline.steps.length
+  const effectiveTarget = progress?.targetTopic ?? (targetTopic.trim() || '(mapped)')
 
   return (
     <div style={{ background: statusBg ?? '#fff', border: `1px solid ${replayState === 'done' ? '#9ae6b4' : replayState === 'failed' ? '#feb2b2' : '#e2e8f0'}`, borderRadius: 8, padding: '1rem 1.25rem', marginBottom: '1.5rem', transition: 'background 0.3s, border-color 0.3s' }}>
@@ -124,15 +154,17 @@ export function ReplayToTopicPanel({ mode, topic, entityType, entityId, from, to
       />
 
       {/* Controls row */}
-      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: replayState !== 'idle' || progress !== null ? '0.75rem' : 0 }}>
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: '0.75rem' }}>
 
         {/* Target topic input */}
         <div>
-          <label style={labelStyle}>Target Topic</label>
+          <label style={labelStyle}>
+            Target Topic{isEntityMode ? ' (fallback)' : ''}
+          </label>
           <input
             type="text"
-            placeholder="my-target-topic"
-            style={{ ...inputStyle, width: 240 }}
+            placeholder={isEntityMode ? 'fallback if not mapped' : 'my-target-topic'}
+            style={{ ...inputStyle, width: 220 }}
             value={targetTopic}
             onChange={e => setTargetTopic(e.target.value)}
             disabled={isRunning}
@@ -146,7 +178,7 @@ export function ReplayToTopicPanel({ mode, topic, entityType, entityId, from, to
             type="number"
             min="0"
             placeholder="0 = immediate"
-            style={{ ...inputStyle, width: 150 }}
+            style={{ ...inputStyle, width: 140 }}
             value={startDelayMs}
             onChange={e => setStartDelayMs(e.target.value)}
             disabled={isRunning}
@@ -179,6 +211,33 @@ export function ReplayToTopicPanel({ mode, topic, entityType, entityId, from, to
           </div>
         </div>
 
+        {/* Partition strategy */}
+        <div>
+          <label style={labelStyle}>Partition</label>
+          <div style={{ display: 'flex', border: '1px solid #cbd5e0', borderRadius: 4, overflow: 'hidden' }}>
+            {PARTITION_STRATEGIES.map((ps, i) => (
+              <button
+                key={ps.value}
+                onClick={() => setPartitionStrategy(ps.value)}
+                disabled={isRunning}
+                title={ps.title}
+                style={{
+                  padding: '0.3rem 0.65rem',
+                  background: partitionStrategy === ps.value ? '#3182ce' : '#fff',
+                  color: partitionStrategy === ps.value ? '#fff' : '#4a5568',
+                  border: 'none',
+                  borderRight: i < PARTITION_STRATEGIES.length - 1 ? '1px solid #cbd5e0' : 'none',
+                  cursor: isRunning ? 'not-allowed' : 'pointer',
+                  fontSize: 13,
+                  fontWeight: partitionStrategy === ps.value ? 600 : 400,
+                }}
+              >
+                {ps.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
         {/* Pipeline indicator */}
         {stepCount > 0 && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, paddingBottom: 3 }}>
@@ -197,11 +256,11 @@ export function ReplayToTopicPanel({ mode, topic, entityType, entityId, from, to
             <button
               style={{
                 ...primaryBtnStyle,
-                background: targetTopic.trim() ? '#3182ce' : '#a0aec0',
-                cursor: targetTopic.trim() ? 'pointer' : 'not-allowed',
+                background: canStart ? '#3182ce' : '#a0aec0',
+                cursor: canStart ? 'pointer' : 'not-allowed',
               }}
               onClick={startReplay}
-              disabled={!targetTopic.trim()}
+              disabled={!canStart}
             >
               Start Replay
             </button>
@@ -215,6 +274,42 @@ export function ReplayToTopicPanel({ mode, topic, entityType, entityId, from, to
           )}
         </div>
       </div>
+
+      {/* Per-topic mapping table (entity mode only) */}
+      {isEntityMode && sourceTopics.length > 0 && (
+        <div style={{ marginBottom: '0.75rem' }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: '#4a5568', marginBottom: 6 }}>
+            Per-topic routing overrides
+          </div>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead>
+              <tr>
+                <th style={thStyle}>Source topic</th>
+                <th style={thStyle}>Target topic (leave blank to use fallback)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sourceTopics.map(src => (
+                <tr key={src}>
+                  <td style={tdStyle}>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>{src}</span>
+                  </td>
+                  <td style={tdStyle}>
+                    <input
+                      type="text"
+                      placeholder={targetTopic.trim() || src}
+                      style={{ ...inputStyle, width: '100%' }}
+                      value={topicMappings[src] ?? ''}
+                      onChange={e => updateMapping(src, e.target.value)}
+                      disabled={isRunning}
+                    />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
 
       {/* Progress section */}
       {(replayState !== 'idle' || progress !== null) && (
@@ -239,13 +334,13 @@ export function ReplayToTopicPanel({ mode, topic, entityType, entityId, from, to
           )}
           <div style={{ fontSize: 13, color: statusColor, fontWeight: replayState !== 'running' ? 600 : 400 }}>
             {replayState === 'running' && (
-              `\u25cf Replaying to \u201c${progress?.targetTopic ?? targetTopic.trim()}\u201d\u2026 ${sent.toLocaleString()} sent`
+              `● Replaying to “${effectiveTarget}”… ${sent.toLocaleString()} sent`
             )}
             {replayState === 'done' && (
-              `\u2713 Completed \u2014 ${sent.toLocaleString()} messages sent to \u201c${progress?.targetTopic ?? targetTopic.trim()}\u201d${(progress?.errorCount ?? 0) > 0 ? ` (${progress!.errorCount} errors)` : ''}`
+              `✓ Completed — ${sent.toLocaleString()} messages sent to “${effectiveTarget}”${(progress?.errorCount ?? 0) > 0 ? ` (${progress!.errorCount} errors)` : ''}`
             )}
             {replayState === 'failed' && (
-              `\u2717 Failed: ${errorMsg ?? 'Unknown error'}`
+              `✗ Failed: ${errorMsg ?? 'Unknown error'}`
             )}
           </div>
         </div>
@@ -254,7 +349,9 @@ export function ReplayToTopicPanel({ mode, topic, entityType, entityId, from, to
   )
 }
 
-const labelStyle: React.CSSProperties = { display: 'block', marginBottom: 4, fontSize: 13, fontWeight: 600, color: '#4a5568' }
-const inputStyle: React.CSSProperties = { padding: '0.4rem 0.6rem', border: '1px solid #cbd5e0', borderRadius: 4, fontSize: 14 }
-const primaryBtnStyle: React.CSSProperties = { padding: '0.45rem 1rem', background: '#3182ce', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 14 }
+const labelStyle: React.CSSProperties   = { display: 'block', marginBottom: 4, fontSize: 13, fontWeight: 600, color: '#4a5568' }
+const inputStyle: React.CSSProperties   = { padding: '0.4rem 0.6rem', border: '1px solid #cbd5e0', borderRadius: 4, fontSize: 14 }
+const primaryBtnStyle: React.CSSProperties   = { padding: '0.45rem 1rem', background: '#3182ce', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 14 }
 const secondaryBtnStyle: React.CSSProperties = { padding: '0.35rem 0.8rem', background: '#fff', color: '#4a5568', border: '1px solid #cbd5e0', borderRadius: 4, cursor: 'pointer', fontSize: 13 }
+const thStyle: React.CSSProperties = { textAlign: 'left', padding: '4px 8px', background: '#f7fafc', borderBottom: '1px solid #e2e8f0', fontWeight: 600, color: '#4a5568' }
+const tdStyle: React.CSSProperties = { padding: '4px 8px', borderBottom: '1px solid #f0f4f8', verticalAlign: 'middle' }
