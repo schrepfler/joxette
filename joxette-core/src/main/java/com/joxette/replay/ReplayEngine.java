@@ -7,7 +7,10 @@ import org.slf4j.LoggerFactory;
 
 import java.sql.SQLException;
 import java.time.Instant;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 /**
  * Orchestrates replay-to-topic operations: pulls records from a
@@ -49,16 +52,25 @@ public class ReplayEngine {
     /** Emit a progress event after every N successfully sent records. */
     private static final int PROGRESS_INTERVAL = 100;
 
-    private final CassetteSource       cassetteSource;
-    private final EntityCassetteSource entitySource;
-    private final RecordSink           sink;
+    private final CassetteSource          cassetteSource;
+    private final EntityCassetteSource    entitySource;
+    private final RecordSink              sink;
+    private final Function<String, Integer> partitionCountLookup;
 
     public ReplayEngine(CassetteSource       cassetteSource,
                         EntityCassetteSource entitySource,
                         RecordSink           sink) {
-        this.cassetteSource = cassetteSource;
-        this.entitySource   = entitySource;
-        this.sink           = sink;
+        this(cassetteSource, entitySource, sink, topic -> 1);
+    }
+
+    public ReplayEngine(CassetteSource          cassetteSource,
+                        EntityCassetteSource    entitySource,
+                        RecordSink              sink,
+                        Function<String, Integer> partitionCountLookup) {
+        this.cassetteSource       = cassetteSource;
+        this.entitySource         = entitySource;
+        this.sink                 = sink;
+        this.partitionCountLookup = partitionCountLookup;
     }
 
     // =========================================================================
@@ -75,10 +87,21 @@ public class ReplayEngine {
         Instant[] lastTs = {null};
         Instant[] prevTs = {null};
 
+        String effectiveTopic = resolveTargetTopic(req, sourceTopic);
+        int targetCount = partitionCountLookup.apply(effectiveTopic);
+        if (req.partitionStrategy() == PartitionStrategy.PRESERVE) {
+            int sourceCount = partitionCountLookup.apply(sourceTopic);
+            if (sourceCount != targetCount) {
+                throw new IllegalArgumentException(
+                        "partitionStrategy=PRESERVE requires equal partition counts: source="
+                        + sourceCount + " target=" + targetCount + " topic=" + effectiveTopic);
+            }
+        }
+
         MessageTransformer transformer = transformerFor(req);
-        log.info("Starting topic replay: source='{}' target='{}' from={} to={} partition={} speed={}x transforms={}",
-                sourceTopic, req.targetTopic(), req.from(), req.to(), req.partition(),
-                speedMultiplier, transformer != null);
+        log.info("Starting topic replay: source='{}' target='{}' from={} to={} partition={} speed={}x transforms={} partitionStrategy={}",
+                sourceTopic, effectiveTopic, req.from(), req.to(), req.partition(),
+                speedMultiplier, transformer != null, req.partitionStrategy());
 
         try {
             cassetteSource.streamAll(
@@ -89,22 +112,23 @@ public class ReplayEngine {
                         prevTs[0] = record.timestamp();
                         CassetteRecord r = transformer != null ? transformer.transform(record) : record;
                         lastTs[0] = r.timestamp();
-                        doSend(() -> sink.send(req.targetTopic(), r), counts);
+                        Integer partition = resolvePartition(req.partitionStrategy(), r.partition(), targetCount);
+                        doSend(() -> sink.send(effectiveTopic, partition, r), counts);
                         if (counts[0] % PROGRESS_INTERVAL == 0) {
-                            progressSink.accept(inProgress(req.targetTopic(), counts, lastTs[0]));
+                            progressSink.accept(inProgress(effectiveTopic, counts, lastTs[0]));
                         }
                     }
             );
         } catch (RuntimeException ex) {
             log.warn("Topic replay failed: source='{}' target='{}' sent={} errors={} reason={}",
-                    sourceTopic, req.targetTopic(), counts[0], counts[1], ex.getMessage());
-            progressSink.accept(failed(req.targetTopic(), counts, lastTs[0], ex.getMessage()));
+                    sourceTopic, effectiveTopic, counts[0], counts[1], ex.getMessage());
+            progressSink.accept(failed(effectiveTopic, counts, lastTs[0], ex.getMessage()));
             return;
         }
 
         log.info("Topic replay completed: source='{}' target='{}' sent={} errors={}",
-                sourceTopic, req.targetTopic(), counts[0], counts[1]);
-        progressSink.accept(completed(req.targetTopic(), counts, lastTs[0]));
+                sourceTopic, effectiveTopic, counts[0], counts[1]);
+        progressSink.accept(completed(effectiveTopic, counts, lastTs[0]));
     }
 
     // =========================================================================
@@ -122,10 +146,15 @@ public class ReplayEngine {
         Instant[] lastTs = {null};
         Instant[] prevTs = {null};
 
+        // Cache partition counts per effective target to avoid repeated admin lookups.
+        // Also tracks which source→target pairs have passed PRESERVE validation.
+        Map<String, Integer> targetPartitionCounts = new HashMap<>();
+        Map<String, Boolean> preserveValidated = new HashMap<>();
+
         MessageTransformer transformer = transformerFor(req);
-        log.info("Starting entity replay: type='{}' id='{}' target='{}' from={} to={} speed={}x transforms={}",
+        log.info("Starting entity replay: type='{}' id='{}' target='{}' from={} to={} speed={}x transforms={} partitionStrategy={}",
                 entityType, entityId, req.targetTopic(), req.from(), req.to(),
-                speedMultiplier, transformer != null);
+                speedMultiplier, transformer != null, req.partitionStrategy());
 
         try {
             entitySource.streamEntityEvents(
@@ -135,22 +164,45 @@ public class ReplayEngine {
                         prevTs[0] = record.timestamp();
                         EntityRecord r = transformer != null ? transformer.transform(record) : record;
                         lastTs[0] = r.timestamp();
-                        doSend(() -> sink.send(req.targetTopic(), r), counts);
+
+                        String effectiveTopic = resolveTargetTopic(req, r.topic());
+                        int targetCount = targetPartitionCounts.computeIfAbsent(
+                                effectiveTopic, partitionCountLookup::apply);
+
+                        if (req.partitionStrategy() == PartitionStrategy.PRESERVE) {
+                            String cacheKey = r.topic() + "->" + effectiveTopic;
+                            if (!preserveValidated.containsKey(cacheKey)) {
+                                int sourceCount = partitionCountLookup.apply(r.topic());
+                                if (sourceCount != targetCount) {
+                                    throw new IllegalArgumentException(
+                                            "partitionStrategy=PRESERVE requires equal partition counts: source="
+                                            + sourceCount + " target=" + targetCount
+                                            + " sourceTopic=" + r.topic()
+                                            + " targetTopic=" + effectiveTopic);
+                                }
+                                preserveValidated.put(cacheKey, Boolean.TRUE);
+                            }
+                        }
+
+                        Integer partition = resolvePartition(req.partitionStrategy(), r.partition(), targetCount);
+                        doSend(() -> sink.send(effectiveTopic, partition, r), counts);
                         if (counts[0] % PROGRESS_INTERVAL == 0) {
-                            progressSink.accept(inProgress(req.targetTopic(), counts, lastTs[0]));
+                            progressSink.accept(inProgress(effectiveTopic, counts, lastTs[0]));
                         }
                     }
             );
         } catch (RuntimeException ex) {
+            String fallbackTarget = resolveTargetTopic(req, entityType);
             log.warn("Entity replay failed: type='{}' id='{}' target='{}' sent={} errors={} reason={}",
-                    entityType, entityId, req.targetTopic(), counts[0], counts[1], ex.getMessage());
-            progressSink.accept(failed(req.targetTopic(), counts, lastTs[0], ex.getMessage()));
+                    entityType, entityId, fallbackTarget, counts[0], counts[1], ex.getMessage());
+            progressSink.accept(failed(fallbackTarget, counts, lastTs[0], ex.getMessage()));
             return;
         }
 
+        String fallbackTarget = resolveTargetTopic(req, entityType);
         log.info("Entity replay completed: type='{}' id='{}' target='{}' sent={} errors={}",
-                entityType, entityId, req.targetTopic(), counts[0], counts[1]);
-        progressSink.accept(completed(req.targetTopic(), counts, lastTs[0]));
+                entityType, entityId, fallbackTarget, counts[0], counts[1]);
+        progressSink.accept(completed(fallbackTarget, counts, lastTs[0]));
     }
 
     // =========================================================================
@@ -175,6 +227,38 @@ public class ReplayEngine {
             Thread.currentThread().interrupt();
             throw new RuntimeException("Replay interrupted during inter-message delay", e);
         }
+    }
+
+    /**
+     * Resolves the effective target topic for a record from a given source topic.
+     * Checks {@code topicMappings} first; falls back to {@code targetTopic};
+     * falls back to the source topic name itself (identity routing, useful as
+     * the default for entity replays with no explicit target).
+     */
+    public static String resolveTargetTopic(ReplayToTopicRequest req, String sourceTopic) {
+        if (req.topicMappings() != null) {
+            String mapped = req.topicMappings().get(sourceTopic);
+            if (mapped != null) return mapped;
+        }
+        return req.targetTopic() != null ? req.targetTopic() : sourceTopic;
+    }
+
+    /**
+     * Resolves the effective target partition given the chosen strategy.
+     *
+     * @param strategy           the partition routing strategy
+     * @param sourcePartition    the partition number from the cassette record
+     * @param targetPartitionCount the partition count of the target topic
+     * @return the partition to pass to the sink, or {@code null} to let Kafka choose
+     */
+    public static Integer resolvePartition(PartitionStrategy strategy,
+                                           int sourcePartition,
+                                           int targetPartitionCount) {
+        return switch (strategy) {
+            case DEFAULT  -> null;
+            case PRESERVE -> sourcePartition;
+            case MODULO   -> sourcePartition % targetPartitionCount;
+        };
     }
 
     private static MessageTransformer transformerFor(ReplayToTopicRequest req) {

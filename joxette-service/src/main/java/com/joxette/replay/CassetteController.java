@@ -46,6 +46,8 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.Set;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -206,46 +208,55 @@ public class CassetteController {
 
     /**
      * Builds a {@link ReplayEngine} bound to the sink for the given broker id
-     * ({@code null} → default broker). Engines are cheap (three field
-     * assignments); the sink itself is cached in the factory.
+     * ({@code null} → default broker). Engines are cheap; the sink itself is
+     * cached in the factory. The partition-count lookup delegates to
+     * {@link KafkaTopicAdmin} so the engine can honour {@code PRESERVE} and
+     * {@code MODULO} partition strategies without a Kafka dependency.
      */
     private ReplayEngine engineFor(String brokerId) {
         RecordSink sink = sinkFactory.forBroker(brokerId);
-        return new ReplayEngine(topicService, entityService, sink);
+        return new ReplayEngine(topicService, entityService, sink,
+                topic -> kafkaTopicAdmin.partitionCount(brokerId, topic));
     }
 
     /**
-     * Creates the target Kafka topic on the default broker if it does not yet
-     * exist, using the same partition count as the source cassette topic.
+     * Creates every effective target topic derived from {@code req} and
+     * {@code sourceTopic} if it does not already exist, mirroring the source
+     * partition count. For a simple single-target request this is a single
+     * topic creation; for a request with {@code topicMappings} the mapped
+     * target is created.
      *
      * <p>Throws {@link com.joxette.api.error.ForbiddenException} (HTTP 403) if
-     * the broker credentials lack DESCRIBE or CREATE ACL — propagating through
-     * {@link com.joxette.api.error.GlobalExceptionHandler}, which aborts the
-     * replay before any records are sent.
-     *
-     * @param sourceTopic cassette topic whose partition count is mirrored
-     * @param targetTopic topic to create if absent
+     * the broker credentials lack DESCRIBE or CREATE ACL.
      */
-    private void ensureTargetTopic(String sourceTopic, String targetTopic) {
-        if (!kafkaTopicAdmin.exists(null, targetTopic)) {
+    private void ensureAllMappedTargets(ReplayToTopicRequest req, String sourceTopic) {
+        String target = ReplayEngine.resolveTargetTopic(req, sourceTopic);
+        if (!kafkaTopicAdmin.exists(null, target)) {
             int partitions = kafkaTopicAdmin.partitionCount(null, sourceTopic);
-            kafkaTopicAdmin.createTopic(null, targetTopic, partitions, (short) 1);
+            kafkaTopicAdmin.createTopic(null, target, partitions, (short) 1);
         }
     }
 
     /**
-     * Variant for entity replay: creates the target topic using the max
-     * partition count across all source Kafka topics for the entity type.
-     * Falls back to 1 if no sources are configured.
+     * Creates every effective target topic for an entity replay, one per
+     * distinct resolved target across all source topics for {@code entityType}.
+     * Each target is created with the max partition count across all source topics.
      */
-    private void ensureTargetTopicForEntity(String entityType, String targetTopic)
+    private void ensureAllMappedTargetsForEntity(ReplayToTopicRequest req, String entityType)
             throws java.sql.SQLException {
-        if (!kafkaTopicAdmin.exists(null, targetTopic)) {
-            int partitions = configRepository.listSources(entityType).stream()
-                    .mapToInt(s -> kafkaTopicAdmin.partitionCount(null, s.topic()))
-                    .max()
-                    .orElse(1);
-            kafkaTopicAdmin.createTopic(null, targetTopic, partitions, (short) 1);
+        var sources = configRepository.listSources(entityType);
+        Set<String> effectiveTargets = new LinkedHashSet<>();
+        for (var src : sources) {
+            effectiveTargets.add(ReplayEngine.resolveTargetTopic(req, src.topic()));
+        }
+        int maxPartitions = sources.stream()
+                .mapToInt(s -> kafkaTopicAdmin.partitionCount(null, s.topic()))
+                .max()
+                .orElse(1);
+        for (String target : effectiveTargets) {
+            if (!kafkaTopicAdmin.exists(null, target)) {
+                kafkaTopicAdmin.createTopic(null, target, maxPartitions, (short) 1);
+            }
         }
     }
 
@@ -1720,13 +1731,18 @@ public class CassetteController {
         if (speed <= 0) {
             throw ValidationException.field("speed", "must be greater than 0");
         }
-        ensureTargetTopic(topic, req.targetTopic());
+        ensureAllMappedTargets(req, topic);
         ReplayProgress[] result = {null};
-        try (ActiveReplayTracker.Handle h = replayTracker.start(topic, req.targetTopic())) {
-            engineFor(null).replayTopic(topic, req, speed, p -> {
-                h.accept(p);
-                result[0] = p;
-            });
+        String effectiveTopic = ReplayEngine.resolveTargetTopic(req, topic);
+        try (ActiveReplayTracker.Handle h = replayTracker.start(topic, effectiveTopic)) {
+            try {
+                engineFor(null).replayTopic(topic, req, speed, p -> {
+                    h.accept(p);
+                    result[0] = p;
+                });
+            } catch (IllegalArgumentException ex) {
+                throw com.joxette.api.error.ValidationException.field("partitionStrategy", ex.getMessage());
+            }
         }
         return result[0];
     }
@@ -1770,13 +1786,18 @@ public class CassetteController {
         if (speed <= 0) {
             throw ValidationException.field("speed", "must be greater than 0");
         }
-        ensureTargetTopic(topic, req.targetTopic());
+        ensureAllMappedTargets(req, topic);
+        String effectiveTopic = ReplayEngine.resolveTargetTopic(req, topic);
         return sseHandler.<ReplayProgress>streamSse(sink -> {
-            try (ActiveReplayTracker.Handle h = replayTracker.start(topic, req.targetTopic())) {
-                engineFor(null).replayTopic(topic, req, speed, p -> {
-                    h.accept(p);
-                    sink.accept(p);
-                });
+            try (ActiveReplayTracker.Handle h = replayTracker.start(topic, effectiveTopic)) {
+                try {
+                    engineFor(null).replayTopic(topic, req, speed, p -> {
+                        h.accept(p);
+                        sink.accept(p);
+                    });
+                } catch (IllegalArgumentException ex) {
+                    throw new RuntimeException(ex.getMessage(), ex);
+                }
             }
         });
     }
@@ -1830,13 +1851,18 @@ public class CassetteController {
         if (speed <= 0) {
             throw ValidationException.field("speed", "must be greater than 0");
         }
-        ensureTargetTopicForEntity(entityType, req.targetTopic());
+        ensureAllMappedTargetsForEntity(req, entityType);
+        String effectiveTopic = ReplayEngine.resolveTargetTopic(req, entityType);
         ReplayProgress[] result = {null};
-        try (ActiveReplayTracker.Handle h = replayTracker.start(entityType + "/" + entityId, req.targetTopic())) {
-            engineFor(null).replayEntity(entityType, entityId, req, speed, p -> {
-                h.accept(p);
-                result[0] = p;
-            });
+        try (ActiveReplayTracker.Handle h = replayTracker.start(entityType + "/" + entityId, effectiveTopic)) {
+            try {
+                engineFor(null).replayEntity(entityType, entityId, req, speed, p -> {
+                    h.accept(p);
+                    result[0] = p;
+                });
+            } catch (IllegalArgumentException ex) {
+                throw com.joxette.api.error.ValidationException.field("partitionStrategy", ex.getMessage());
+            }
         }
         return result[0];
     }
@@ -1884,13 +1910,18 @@ public class CassetteController {
         if (speed <= 0) {
             throw ValidationException.field("speed", "must be greater than 0");
         }
-        ensureTargetTopicForEntity(entityType, req.targetTopic());
+        ensureAllMappedTargetsForEntity(req, entityType);
+        String effectiveTopic = ReplayEngine.resolveTargetTopic(req, entityType);
         return sseHandler.<ReplayProgress>streamSse(sink -> {
-            try (ActiveReplayTracker.Handle h = replayTracker.start(entityType + "/" + entityId, req.targetTopic())) {
-                engineFor(null).replayEntity(entityType, entityId, req, speed, p -> {
-                    h.accept(p);
-                    sink.accept(p);
-                });
+            try (ActiveReplayTracker.Handle h = replayTracker.start(entityType + "/" + entityId, effectiveTopic)) {
+                try {
+                    engineFor(null).replayEntity(entityType, entityId, req, speed, p -> {
+                        h.accept(p);
+                        sink.accept(p);
+                    });
+                } catch (IllegalArgumentException ex) {
+                    throw new RuntimeException(ex.getMessage(), ex);
+                }
             }
         });
     }

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.time.Instant;
+import java.util.Map;
 
 /**
  * Request body for replay-to-topic operations.
@@ -60,12 +61,38 @@ public record ReplayToTopicRequest(
 
         @Schema(description = "Optional transforms applied to each message before producing. " +
                               "Omit or set to null to replay messages verbatim.")
-        ReplayTransformConfig transforms
+        ReplayTransformConfig transforms,
+
+        @Schema(description = """
+                Per-source-topic routing overrides. Keys are source topic names; values are
+                target topic names. Topics absent from this map fall back to `targetTopic`.
+                For entity replays, `targetTopic` may be omitted if every source topic has
+                an explicit entry here. For topic replays, at most one mapping key is relevant
+                (the source topic itself).
+                """,
+                name = "topic_mappings",
+                example = "{\"orders.events\":\"orders.events.staging\",\"payments.events\":\"payments.events.staging\"}")
+        Map<String, String> topicMappings,
+
+        @Schema(description = """
+                Controls how source partition numbers are mapped to the target topic.
+                DEFAULT (default) — Kafka default partitioner (key-hash or round-robin).
+                PRESERVE — carry the exact source partition; requires equal partition counts.
+                MODULO — source_partition % target_partition_count.
+                """,
+                defaultValue = "DEFAULT",
+                name = "partition_strategy")
+        PartitionStrategy partitionStrategy
 
 ) {
     public ReplayToTopicRequest {
-        if (targetTopic == null || targetTopic.isBlank()) {
-            throw new IllegalArgumentException("targetTopic is required and must not be blank");
+        if ((targetTopic == null || targetTopic.isBlank())
+                && (topicMappings == null || topicMappings.isEmpty())) {
+            throw new IllegalArgumentException(
+                    "Either targetTopic or topicMappings (with at least one entry) is required");
+        }
+        if (partitionStrategy == null) {
+            partitionStrategy = PartitionStrategy.DEFAULT;
         }
     }
 }

@@ -116,7 +116,7 @@ class ReplayToTopicIT {
                 "k2", "!".getBytes(StandardCharsets.UTF_8));
 
         ReplayToTopicRequest body = new ReplayToTopicRequest(
-                TARGET_TOPIC, null, null, null, null, null, null);
+                TARGET_TOPIC, null, null, null, null, null, null, null, null);
 
         double speed = 2.0;
         // Expected wall-clock gap between produced messages ≈ 300ms / 2 = 150ms.

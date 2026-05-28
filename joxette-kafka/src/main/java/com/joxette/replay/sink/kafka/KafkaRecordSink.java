@@ -52,13 +52,25 @@ public final class KafkaRecordSink implements RecordSink {
 
     @Override
     public SendResult send(String targetTopic, CassetteRecord record) {
-        return doSend(targetTopic, record.key(), record.value(), record.timestamp(),
+        return doSend(targetTopic, null, record.key(), record.value(), record.timestamp(),
                       toHeaderEntries(record.headers()));
     }
 
     @Override
     public SendResult send(String targetTopic, EntityRecord record) {
-        return doSend(targetTopic, record.key(), record.value(), record.timestamp(),
+        return doSend(targetTopic, null, record.key(), record.value(), record.timestamp(),
+                      toHeaderEntries(record.headers()));
+    }
+
+    @Override
+    public SendResult send(String targetTopic, Integer partition, CassetteRecord record) {
+        return doSend(targetTopic, partition, record.key(), record.value(), record.timestamp(),
+                      toHeaderEntries(record.headers()));
+    }
+
+    @Override
+    public SendResult send(String targetTopic, Integer partition, EntityRecord record) {
+        return doSend(targetTopic, partition, record.key(), record.value(), record.timestamp(),
                       toHeaderEntries(record.headers()));
     }
 
@@ -68,6 +80,7 @@ public final class KafkaRecordSink implements RecordSink {
     }
 
     private SendResult doSend(String targetTopic,
+                              Integer partition,
                               String key, String base64Value,
                               Instant timestamp, List<HeaderEntry> headers) {
         byte[] keyBytes   = key != null ? key.getBytes(StandardCharsets.UTF_8) : null;
@@ -75,7 +88,7 @@ public final class KafkaRecordSink implements RecordSink {
         Long   ts         = timestamp != null ? timestamp.toEpochMilli() : null;
 
         var record = new ProducerRecord<>(
-                targetTopic, null, ts, keyBytes, valueBytes, buildHeaders(headers));
+                targetTopic, partition, ts, keyBytes, valueBytes, buildHeaders(headers));
 
         try {
             RecordMetadata md = producer.send(record).get();

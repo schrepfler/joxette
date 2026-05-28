@@ -34,6 +34,29 @@ public interface RecordSink extends AutoCloseable {
 
     SendResult send(String targetTopic, EntityRecord record);
 
+    /**
+     * Sends a cassette record to the given topic and partition.
+     *
+     * <p>When {@code partition} is {@code null} the behaviour is identical to
+     * {@link #send(String, CassetteRecord)}: the transport chooses the partition
+     * (e.g. Kafka's default key-hash partitioner).  A non-null value requests
+     * that the record be placed in exactly that partition — implementations that
+     * do not support explicit partition assignment may ignore it and fall back to
+     * the no-partition overload.
+     */
+    default SendResult send(String targetTopic, Integer partition, CassetteRecord record) {
+        return send(targetTopic, record);
+    }
+
+    /**
+     * Sends an entity record to the given topic and partition.
+     *
+     * <p>Same semantics as {@link #send(String, Integer, CassetteRecord)}.
+     */
+    default SendResult send(String targetTopic, Integer partition, EntityRecord record) {
+        return send(targetTopic, record);
+    }
+
     default void flush() {}
 
     @Override
