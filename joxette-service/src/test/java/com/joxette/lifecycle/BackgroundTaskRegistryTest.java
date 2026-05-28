@@ -4,11 +4,13 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.List;
+import java.time.Duration;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.awaitility.Awaitility.await;
 
 class BackgroundTaskRegistryTest {
 
@@ -40,12 +42,8 @@ class BackgroundTaskRegistryTest {
         assertThat(registry.getRunningTasks().get(0).name()).isEqualTo("test-task");
 
         proceed.countDown();
-        // Give the VT time to exit and remove itself.
-        long deadline = System.currentTimeMillis() + 2_000;
-        while (!registry.getRunningTasks().isEmpty() && System.currentTimeMillis() < deadline) {
-            Thread.sleep(20);
-        }
-        assertThat(registry.getRunningTasks()).isEmpty();
+        await().atMost(Duration.ofSeconds(2))
+                .untilAsserted(() -> assertThat(registry.getRunningTasks()).isEmpty());
     }
 
     @Test
@@ -57,8 +55,8 @@ class BackgroundTaskRegistryTest {
         });
 
         assertThat(done.await(2, TimeUnit.SECONDS)).isTrue();
-        Thread.sleep(50); // allow finally to complete
-        assertThat(registry.getRunningTasks()).isEmpty();
+        await().atMost(Duration.ofSeconds(2))
+                .untilAsserted(() -> assertThat(registry.getRunningTasks()).isEmpty());
     }
 
     @Test

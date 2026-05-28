@@ -510,6 +510,11 @@ public class SseReplayHandler implements SmartLifecycle {
         }
     }
 
+    /** Package-private for tests: number of VTs currently tracked in-flight. */
+    int activeThreadCount() {
+        return activeThreads.size();
+    }
+
     /**
      * Phase must be higher than Tomcat's graceful-shutdown phase so this runs first
      * and all replay VTs have released their HTTP connections before Tomcat starts its

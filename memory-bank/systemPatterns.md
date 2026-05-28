@@ -159,6 +159,27 @@ Same 30 s visibility window; zero background threads.
 - `DuckLakeWriteChannel` extracted as an explicit type to carry partition metadata alongside write batches
 - `WriteBatch` carries a `revocationEpoch` so the drain loop can discard stale batches after epoch change
 
+### 17. Async Test Pattern — Awaitility
+
+Awaitility 4.3.0 comes transitively from `spring-boot-starter-test` (declared explicitly in `joxette-service/pom.xml` for clarity). Use it for all tests that assert on state driven by a background virtual thread:
+
+```java
+import static org.awaitility.Awaitility.await;
+
+// Preferred — replaces hand-rolled sleep loops or Thread.sleep(N) guards:
+await().atMost(Duration.ofSeconds(2))
+       .untilAsserted(() -> assertThat(someSharedState).isZero());
+```
+
+**Pattern:** use a `CountDownLatch` inside the background task to signal when it has *reached a checkpoint*, then assert the downstream side-effect with `await().atMost(...).untilAsserted(...)`. Latches are for synchronisation; Awaitility is for polling until convergence.
+
+**Do not use** raw `Thread.sleep` as a fixed wait before an assertion — it is fragile under load and obscures intent. The only acceptable `Thread.sleep` is *inside* a blocking stub (simulating a slow task), not in the assertion path.
+
+**Files that follow this pattern:**
+- `SseReplayHandlerLifecycleTest` — VT deregistration after normal/error/shutdown
+- `BackgroundTaskRegistryTest` — task self-removal on completion / exception
+- `FollowModeIntegrationTest`, `RecordReplayRoundTripIT`, `EntityReplayRoundTripIT` — integration-level async assertions
+
 ## Data Durability Split
 | Storage | Location | Lost if .ducklake deleted? |
 |---|---|---|
