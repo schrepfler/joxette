@@ -4,6 +4,7 @@ import com.joxette.cluster.InstanceRegistry;
 import com.joxette.config.BrokerConnectionFactory;
 import com.joxette.config.InstanceRoles;
 import com.joxette.config.JoxetteProperties;
+import com.joxette.lifecycle.BackgroundTaskRegistry;
 import com.joxette.management.HealthController;
 import com.joxette.recording.RecordingCoordinator;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
@@ -43,9 +44,11 @@ class HealthControllerProblemDetailTest {
 
     @BeforeEach
     void setUp() {
+        BackgroundTaskRegistry taskRegistry = new BackgroundTaskRegistry();
+        taskRegistry.start();
         HealthController controller = new HealthController(
                 coordinator, properties, new InstanceRoles(), adminClient, duckDB,
-                metricsRegistry, instanceRegistry);
+                metricsRegistry, instanceRegistry, taskRegistry);
         mvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();

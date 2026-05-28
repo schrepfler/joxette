@@ -3,6 +3,7 @@ package com.joxette.management;
 import com.joxette.cluster.InstanceRegistry;
 import com.joxette.config.InstanceRoles;
 import com.joxette.config.JoxetteProperties;
+import com.joxette.lifecycle.BackgroundTaskRegistry;
 import com.joxette.recording.RecordingCoordinator;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 import io.swagger.v3.oas.annotations.Operation;
@@ -129,16 +130,27 @@ public class HealthController {
             String instanceId,
             @Schema(description = "Cluster-level instance count derived from joxette_instances registry",
                     example = "{\"instanceCount\": 1, \"alive\": 1, \"stale\": 0}")
-            ClusterSummary cluster
+            ClusterSummary cluster,
+            @Schema(description = "Summary of background tasks managed by BackgroundTaskRegistry")
+            BackgroundTasksSummary backgroundTasks
     ) {}
 
-    private final RecordingCoordinator coordinator;
-    private final JoxetteProperties properties;
-    private final InstanceRoles instanceRoles;
+    public record BackgroundTasksSummary(
+            @Schema(description = "Number of background tasks currently running", example = "1")
+            int running,
+            @Schema(description = "Names of the running tasks, sorted alphabetically",
+                    example = "[\"export-abc123\"]")
+            List<String> names
+    ) {}
+
+    private final RecordingCoordinator   coordinator;
+    private final JoxetteProperties      properties;
+    private final InstanceRoles          instanceRoles;
     private final com.joxette.config.BrokerConnectionFactory brokerConnectionFactory;
-    private final Connection duckDB;
+    private final Connection             duckDB;
     private final PrometheusMeterRegistry metricsRegistry;
-    private final InstanceRegistry instanceRegistry;
+    private final InstanceRegistry       instanceRegistry;
+    private final BackgroundTaskRegistry taskRegistry;
 
     /**
      * Cached consumer lag result — refreshed at most once every 15 seconds
@@ -157,7 +169,8 @@ public class HealthController {
             com.joxette.config.BrokerConnectionFactory brokerConnectionFactory,
             Connection duckDB,
             PrometheusMeterRegistry metricsRegistry,
-            InstanceRegistry instanceRegistry) {
+            InstanceRegistry instanceRegistry,
+            BackgroundTaskRegistry taskRegistry) {
         this.coordinator              = coordinator;
         this.properties               = properties;
         this.instanceRoles            = instanceRoles;
@@ -165,6 +178,7 @@ public class HealthController {
         this.duckDB                   = duckDB;
         this.metricsRegistry          = metricsRegistry;
         this.instanceRegistry         = instanceRegistry;
+        this.taskRegistry             = taskRegistry;
     }
 
     @Operation(
@@ -197,6 +211,10 @@ public class HealthController {
         List<String> active      = running.keySet().stream().sorted().toList();
         List<String> activeRoles = instanceRoles.resolvedRoles().stream().sorted().toList();
         ClusterSummary cluster   = buildClusterSummary();
+        List<BackgroundTaskRegistry.TaskHandle> bgTaskList = taskRegistry.getRunningTasks();
+        BackgroundTasksSummary bgTasks = new BackgroundTasksSummary(
+                bgTaskList.size(),
+                bgTaskList.stream().map(BackgroundTaskRegistry.TaskHandle::name).sorted().toList());
         return new HealthStatus(
                 "UP",
                 active,
@@ -206,7 +224,8 @@ public class HealthController {
                 properties.getCatalog().getPath(),
                 activeRoles,
                 instanceRegistry.getInstanceId(),
-                cluster);
+                cluster,
+                bgTasks);
     }
 
     /** Reads the instance registry and computes alive/stale counts. */

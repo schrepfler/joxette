@@ -7,6 +7,7 @@ import com.joxette.compaction.CompactionService;
 import com.joxette.compaction.CompactionSingletonActor;
 import com.joxette.compaction.RetentionService;
 import com.joxette.config.JoxetteProperties;
+import com.joxette.lifecycle.BackgroundTaskRegistry;
 import org.apache.pekko.actor.typed.ActorRef;
 import org.apache.pekko.actor.typed.ActorSystem;
 import org.apache.pekko.actor.typed.javadsl.Behaviors;
@@ -105,7 +106,7 @@ class CompactionControllerProblemDetailTest {
     @Test
     void trigger_whileAlreadyRunning_returnsConflictProblem() throws Exception {
         CompactionController controller = new CompactionController(
-                compactionService, retentionService, busySingleton, actorSystem, props);
+                compactionService, retentionService, busySingleton, actorSystem, props, taskRegistry());
         mvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
@@ -128,7 +129,7 @@ class CompactionControllerProblemDetailTest {
     @Test
     void status_duckDbUnavailable_returnsUpstreamUnavailableProblem() throws Exception {
         CompactionController controller = new CompactionController(
-                compactionService, retentionService, acceptingSingleton, actorSystem, props);
+                compactionService, retentionService, acceptingSingleton, actorSystem, props, taskRegistry());
         mvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
@@ -150,7 +151,7 @@ class CompactionControllerProblemDetailTest {
     @Test
     void history_runtime_returnsInternalProblemWithoutDetails() throws Exception {
         CompactionController controller = new CompactionController(
-                compactionService, retentionService, acceptingSingleton, actorSystem, props);
+                compactionService, retentionService, acceptingSingleton, actorSystem, props, taskRegistry());
         mvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
@@ -163,5 +164,11 @@ class CompactionControllerProblemDetailTest {
                    ErrorCodes.INTERNAL,
                    "/compaction/history"))
            .andExpect(ProblemDetailAssertions.noStackTraceLeak());
+    }
+
+    private static BackgroundTaskRegistry taskRegistry() {
+        BackgroundTaskRegistry r = new BackgroundTaskRegistry();
+        r.start();
+        return r;
     }
 }

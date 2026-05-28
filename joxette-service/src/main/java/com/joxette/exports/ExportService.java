@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.joxette.api.error.ResourceNotFoundException;
 import com.joxette.api.error.ValidationException;
 import com.joxette.config.JoxetteProperties;
+import com.joxette.lifecycle.BackgroundTaskRegistry;
 import com.joxette.replay.EntityRecord;
 import com.joxette.replay.EntityReplayService;
 import com.joxette.replay.Order;
@@ -42,22 +43,25 @@ public class ExportService {
 
     static final int MAX_ENTITY_IDS = 10_000;
 
-    private final ExportJobRepository  repository;
-    private final EntityReplayService  entityReplayService;
-    private final Connection           duckDB;
-    private final JoxetteProperties    properties;
-    private final ObjectMapper         objectMapper;
+    private final ExportJobRepository    repository;
+    private final EntityReplayService    entityReplayService;
+    private final Connection             duckDB;
+    private final JoxetteProperties      properties;
+    private final ObjectMapper           objectMapper;
+    private final BackgroundTaskRegistry taskRegistry;
 
     public ExportService(ExportJobRepository repository,
                          EntityReplayService entityReplayService,
                          Connection duckDB,
                          JoxetteProperties properties,
-                         ObjectMapper objectMapper) {
+                         ObjectMapper objectMapper,
+                         BackgroundTaskRegistry taskRegistry) {
         this.repository          = repository;
         this.entityReplayService = entityReplayService;
         this.duckDB              = duckDB;
         this.properties          = properties;
         this.objectMapper        = objectMapper;
+        this.taskRegistry        = taskRegistry;
     }
 
     /**
@@ -77,9 +81,8 @@ public class ExportService {
         }
 
         ExportJob job = repository.create(entityType, entityIds, from, to, messageTypes, outputFormat);
-        Thread.ofVirtual()
-              .name("export-" + job.id())
-              .start(() -> execute(job.id(), entityType, entityIds, from, to, messageTypes, outputFormat));
+        taskRegistry.submit("export-" + job.id(),
+                () -> execute(job.id(), entityType, entityIds, from, to, messageTypes, outputFormat));
         return job;
     }
 

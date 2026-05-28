@@ -2,6 +2,7 @@ package com.joxette.compaction;
 
 import com.joxette.config.ConditionalOnRole;
 import com.joxette.config.JoxetteProperties;
+import com.joxette.lifecycle.BackgroundTaskRegistry;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Content;
@@ -58,23 +59,26 @@ public class CompactionController {
     private static final int DEFAULT_HISTORY_LIMIT = 20;
     private static final Duration ASK_TIMEOUT = Duration.ofSeconds(10);
 
-    private final CompactionService compactionService;
-    private final RetentionService retentionService;
+    private final CompactionService   compactionService;
+    private final RetentionService    retentionService;
     private final ActorRef<CompactionSingletonActor.CompactionCommand> compactionSingleton;
-    private final ActorSystem<?> system;
-    private final JoxetteProperties props;
+    private final ActorSystem<?>      system;
+    private final JoxetteProperties   props;
+    private final BackgroundTaskRegistry taskRegistry;
 
     public CompactionController(
             CompactionService compactionService,
             RetentionService retentionService,
             ActorRef<CompactionSingletonActor.CompactionCommand> compactionSingleton,
             ActorSystem<?> system,
-            JoxetteProperties props) {
+            JoxetteProperties props,
+            BackgroundTaskRegistry taskRegistry) {
         this.compactionService   = compactionService;
         this.retentionService    = retentionService;
         this.compactionSingleton = compactionSingleton;
         this.system              = system;
         this.props               = props;
+        this.taskRegistry        = taskRegistry;
     }
 
     // =========================================================================
@@ -290,7 +294,7 @@ public class CompactionController {
     @PostMapping(value = "/trigger-retention", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<RetentionRun> triggerRetention() throws SQLException {
         RetentionRun run = retentionService.beginRun("manual");
-        Thread.ofVirtual().name("retention-manual-" + run.id()).start(() -> retentionService.executeRun(run.id()));
+        taskRegistry.submit("retention-manual-" + run.id(), () -> retentionService.executeRun(run.id()));
         return ResponseEntity.accepted().body(run);
     }
 

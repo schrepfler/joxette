@@ -8,11 +8,13 @@ import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.Iterator;
 
 /**
  * Tracks in-progress replay-to-topic operations so they are surfaced on the
- * live flow map. Entries linger for 2 s after completion so the next SSE
- * snapshot can still show them as completed before they disappear.
+ * live flow map. Entries linger for 30 s after completion so the next SSE
+ * snapshot can still show them as completed/failed before they disappear.
+ * Eviction is pull-based: stale entries are removed lazily in {@link #listActive()}.
  */
 @Component
 public class ActiveReplayTracker {
@@ -28,13 +30,16 @@ public class ActiveReplayTracker {
 
     private final ConcurrentHashMap<String, Entry> entries = new ConcurrentHashMap<>();
 
+    private static final long LINGER_SECONDS = 30L;
+
     private static final class Entry {
         final String id;
         final String sourceTopic;
         final String targetTopic;
         final Instant startedAt;
         final AtomicLong sentCount = new AtomicLong();
-        volatile String status = "running";
+        volatile String  status      = "running";
+        volatile Instant completedAt = null;
 
         Entry(String id, String sourceTopic, String targetTopic) {
             this.id          = id;
@@ -60,8 +65,17 @@ public class ActiveReplayTracker {
     }
 
     public List<ActiveReplay> listActive() {
+        Instant evictBefore = Instant.now().minusSeconds(LINGER_SECONDS);
         List<ActiveReplay> out = new ArrayList<>(entries.size());
-        for (Entry e : entries.values()) out.add(e.snapshot());
+        Iterator<Entry> it = entries.values().iterator();
+        while (it.hasNext()) {
+            Entry e = it.next();
+            if (e.completedAt != null && e.completedAt.isBefore(evictBefore)) {
+                it.remove();
+            } else {
+                out.add(e.snapshot());
+            }
+        }
         return out;
     }
 
@@ -89,19 +103,15 @@ public class ActiveReplayTracker {
         }
 
         /**
-         * Marks the entry terminal if not already set, then schedules removal
-         * after a 2-second linger so the next SSE snapshot can show it.
+         * Marks the entry terminal if not already set and stamps {@code completedAt}.
+         * The entry lingers in the map for {@value ActiveReplayTracker#LINGER_SECONDS} s
+         * so subsequent SSE snapshots can show the terminal status, then it is evicted
+         * lazily on the next {@link #listActive()} call.
          */
         @Override
         public void close() {
             if ("running".equals(entry.status)) entry.status = "failed";
-            String id = entry.id;
-            Thread.ofVirtual().name("replay-tracker-cleanup-" + id).start(() -> {
-                try { Thread.sleep(30_000); } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                }
-                map.remove(id);
-            });
+            entry.completedAt = Instant.now();
         }
     }
 }

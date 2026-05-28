@@ -3,6 +3,7 @@ package com.joxette.cluster;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.joxette.config.InstanceRoles;
+import com.joxette.lifecycle.BackgroundTaskRegistry;
 import com.joxette.recording.RecorderStatus;
 import com.joxette.recording.RecordingCoordinator;
 import com.joxette.replay.ActiveReplayTracker;
@@ -40,12 +41,13 @@ import java.util.Map;
 @RestController
 public class InstanceController {
 
-    private final InstanceRegistry registry;
-    private final ClusterEventListener clusterEventListener;
-    private final InstanceRoles instanceRoles;
-    private final RecordingCoordinator recordingCoordinator;
-    private final ObjectMapper objectMapper;
-    private final ActiveReplayTracker replayTracker;
+    private final InstanceRegistry       registry;
+    private final ClusterEventListener   clusterEventListener;
+    private final InstanceRoles          instanceRoles;
+    private final RecordingCoordinator   recordingCoordinator;
+    private final ObjectMapper           objectMapper;
+    private final ActiveReplayTracker    replayTracker;
+    private final BackgroundTaskRegistry taskRegistry;
 
     public InstanceController(
             InstanceRegistry registry,
@@ -53,13 +55,15 @@ public class InstanceController {
             InstanceRoles instanceRoles,
             @Lazy RecordingCoordinator recordingCoordinator,
             ObjectMapper objectMapper,
-            ActiveReplayTracker replayTracker) {
-        this.registry = registry;
+            ActiveReplayTracker replayTracker,
+            BackgroundTaskRegistry taskRegistry) {
+        this.registry             = registry;
         this.clusterEventListener = clusterEventListener;
-        this.instanceRoles = instanceRoles;
+        this.instanceRoles        = instanceRoles;
         this.recordingCoordinator = recordingCoordinator;
-        this.objectMapper = objectMapper;
-        this.replayTracker = replayTracker;
+        this.objectMapper         = objectMapper;
+        this.replayTracker        = replayTracker;
+        this.taskRegistry         = taskRegistry;
     }
 
     @Operation(
@@ -131,7 +135,7 @@ public class InstanceController {
     public SseEmitter liveMetrics() {
         SseEmitter emitter = new SseEmitter(0L);
 
-        Thread vt = Thread.ofVirtual().name("live-metrics-sse").unstarted(() -> {
+        BackgroundTaskRegistry.TaskHandle handle = taskRegistry.submit("live-metrics-sse", () -> {
             try {
                 while (!Thread.currentThread().isInterrupted()) {
                     ClusterStateView snapshot;
@@ -167,12 +171,11 @@ public class InstanceController {
 
         // Interrupt the VT when Tomcat closes the connection (client disconnect, graceful
         // shutdown, or async timeout) so the thread exits promptly without blocking Tomcat.
-        Runnable interrupt = vt::interrupt;
+        Runnable interrupt = handle::cancel;
         emitter.onCompletion(interrupt);
         emitter.onTimeout(interrupt);
         emitter.onError(t -> interrupt.run());
 
-        vt.start();
         return emitter;
     }
 
