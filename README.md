@@ -213,12 +213,14 @@ joxette:
     general:
       enabled: false
 
-  # Role-based subsystem gating (default: all roles active on every instance)
+  # Role-based subsystem gating (default: [all] — every subsystem on every instance).
+  # A list of: recorder | entity-router | compaction | replay | all.
   # Useful for running dedicated recorder vs. replay vs. compaction nodes.
-  roles:
-    recorder: true
-    replay: true
-    compaction: true
+  # See docs/clustering-deployment.md for topologies.
+  roles: [all]
+  # e.g. dedicated write node:        roles: [recorder, entity-router]
+  #      single compaction node:      roles: [compaction]
+  #      stateless replay node:       roles: [replay]
 
   # CORS origins allowed to call the REST API
   cors:
@@ -557,7 +559,7 @@ joxette/
 
 **Pekko + Virtual Threads coexistence** — The Pekko actor dispatcher is a small fixed-pool (4 threads) used purely for message routing between actors. All heavy blocking work (DuckDB writes, Kafka polling, Jox pipeline) runs on virtual threads via `context.pipeToSelf(CompletableFuture.supplyAsync(…, vtExecutor), …)`. This keeps carrier-thread pinning pressure off the actor mailboxes.
 
-**Cluster singleton compaction** — `CompactionSingletonActor` is registered as a Pekko `ClusterSingleton`. Exactly one instance exists cluster-wide at any time; Pekko migrates it automatically on node failure. This replaces the `compaction_locks` DB table: the singleton's mailbox serialises all trigger requests, making a separate lock table unnecessary.
+**Compaction exclusivity** — `CompactionSingletonActor` is registered as a Pekko `ClusterSingleton` and serialises trigger requests *within a process*. Note that each Joxette process currently self-joins its own one-member Pekko cluster (`seed-nodes = []`), so the singleton is per-process, not cluster-wide. Cross-process safety — needed only on a shared Stage 2/3 catalog — comes from the `compaction_locks` table (`CompactionLockManager`), which guards each compaction target with a TTL'd row. The operational rule is therefore: **run exactly one `compaction`-role node**, with the lock table as the backstop. See **[docs/clustering-deployment.md](docs/clustering-deployment.md)**.
 
 **Supervised recorder lifecycle** — Each Kafka topic runs in a `TopicLifecycleActor` child spawned by `RecordingCoordinatorActor`. Pekko's built-in exponential-backoff supervisor restarts failed topic actors automatically, replacing the Resilience4j retry wrapper used previously. The public API of `RecordingCoordinator` (the Spring bean) is unchanged — it is now a thin adapter over the actor ask pattern.
 

@@ -107,10 +107,10 @@ KafkaConsumer.poll() → emit → groupedWithin(batchSize, batchTimeout)
 - See `docs/catalog-scaling.md` for the three-stage migration runbook
 
 ### 11. Instance Roles (`joxette.roles`)
-- `InstanceRoles` record holds `recorder`, `replay`, `compaction` booleans
-- `@ConditionalOnRole("recorder")` / `@ConditionalOnRole("replay")` / `@ConditionalOnRole("compaction")` — custom Spring `@Conditional` skips bean registration when the role is disabled
-- Applied to: `RecordingStartupRunner`, `MessageRouter`, `CompactionScheduler`, `RetentionScheduler`, `CompactionController`, `CassetteController`
-- Enables dedicated recorder vs. replay vs. compaction node topology
+- `InstanceRoles` is `@ConfigurationProperties(prefix="joxette")` binding a `List<String>` (default `[all]`); concrete roles: `recorder`, `entity-router`, `compaction`, `replay`; `all` expands to all four
+- `@ConditionalOnRole("…")` (backed by `OnRoleCondition`, a Spring `Condition` that binds `joxette.roles` from any property source) skips bean registration when the role is absent
+- Applied to: `RecordingStartupRunner` (recorder), `CompactionScheduler` + `RetentionScheduler` (compaction), replay controllers (replay)
+- Enables dedicated recorder vs. replay vs. compaction node topology — see `docs/clustering-deployment.md`
 
 ### 12. Cluster Instance Registry
 - `InstanceRegistry` writes a row to `joxette_instances` on startup (instance_id UUID, host, roles JSON, started_at)
@@ -121,10 +121,11 @@ KafkaConsumer.poll() → emit → groupedWithin(batchSize, batchTimeout)
 
 ### 13. Distributed Compaction Lock
 - `CompactionLockManager` uses the `compaction_locks` DuckDB table as a mutex: `INSERT … ON CONFLICT DO NOTHING` + row count check
-- Lock scoped to `(instance_id, target)` with `expires_at` TTL
+- Lock scoped to `(instance_id, target)` with `expires_at` TTL (`joxette.compaction.lock-ttl-minutes`, default 120; heartbeat every 10 min)
 - `cleanExpiredLocks()` runs at the start of each compaction trigger to remove stale locks
 - `releaseOwnLocks()` called at startup to clean up locks from a previous crash
 - Other instances skip (not fail) when the lock is held; they log at DEBUG and move on
+- **This is the real cross-process exclusivity mechanism.** The Pekko `ClusterSingleton` (`CompactionSingletonActor`) only serialises *within a process* because each process self-joins its own one-member cluster (`seed-nodes = []` + programmatic `Join` in `PekkoConfig`). So `compaction_locks` — not the singleton — is what makes multiple compaction nodes safe on a shared Stage 2/3 catalog. Operational rule: run exactly one `compaction` node. See `docs/clustering-deployment.md`.
 
 ### 14. BackgroundTaskRegistry — unified ad-hoc VT lifecycle
 
