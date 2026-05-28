@@ -250,12 +250,19 @@
 - [ ] Snapshot restore path — integration test for `POST /cassettes/snapshots/{name}/restore`
 - [ ] Multi-topic entity ordering — document clock-skew caveat; add warning to entity cassette replay docs
 
+#### Deployment / Kubernetes
+- [x] `docs/clustering-deployment.md` — concurrency, roles, coordination, K8s + non-K8s topologies, catalog single-writer guardrail
+- [x] `docs/operator-design.md` — JOSDK operator design: `JoxetteCluster` + `RecordedTopic` + `EntityType` CRDs, tier→workload map, catalog/scaling enforcement, two clustering tracks
+- [ ] **Phase 0 prerequisite — container image**: no `Dockerfile`/buildpacks config yet (JDK 25 + `--enable-preview`); the operator's `spec.image` depends on it
+- [ ] **Phase 0 prerequisite — Track B Pekko Management**: add `pekko-management-cluster-{http,bootstrap}` + `pekko-discovery-kubernetes-api`, start the extensions, drop the programmatic self-join, `kubernetes-api` discovery + `lease-majority` SBR + lease-backed singleton, expose mgmt port 7626. Turns per-process self-join into a real shared cluster.
+- [ ] Build the operator itself (Phases 1–3 in `operator-design.md`)
+
 #### `sol` library
 - [ ] Group ID rename `com.joxette → com.sol` — deferred until ready to publish independently
 - [ ] `SolEngine` edge-case tests: tag span correctness after `replace`, `combine` output dims
 
 ### Instance Roles
-- [x] `InstanceRoles` — `joxette.roles.{recorder,replay,compaction}` flags gate subsystems per instance
+- [x] `InstanceRoles` — `joxette.roles` is a `List<String>` (default `[all]`); concrete roles `recorder`/`entity-router`/`compaction`/`replay` gate subsystems per instance
 - [x] `@ConditionalOnRole` + `OnRoleCondition` — Spring condition; beans/controllers conditionally registered
 - [x] `RecordingStartupRunner`, `CompactionScheduler`, `RetentionScheduler`, `CassetteController`, `MessageRouter` all respect their role flag
 - [x] `GET /health` includes active roles list

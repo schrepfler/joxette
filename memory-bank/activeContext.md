@@ -1,9 +1,23 @@
 # Active Context
 
-## Current Focus — Replay routing + docs/test hygiene
+## Current Focus — Deployment docs & operator design
 
-Most recent sprint: per-request **topic mappings** and a **partition routing
-strategy** for replay-to-topic, plus a docs/diagram refresh and test-hygiene pass.
+Most recent work: authored `docs/clustering-deployment.md` and
+`docs/operator-design.md` (a JOSDK Kubernetes operator design — `JoxetteCluster`
++ `RecordedTopic` + `EntityType` CRDs, tier→workload mapping, catalog/scaling
+enforcement, and two clustering tracks). Key realisation driving both docs: each
+process currently self-joins a one-member Pekko cluster, so cross-process
+coordination runs through the shared catalog (`compaction_locks` + heartbeat
+registry), not Pekko. The operator's "Track B" prerequisite is wiring **Pekko
+Management** (Cluster Bootstrap + `kubernetes-api` discovery + a
+`coordination.k8s.io` Lease behind the SBR/singleton) to form a real shared
+cluster. Neither the operator nor a container image is built yet — both are
+Phase 0 prerequisites tracked in `progress.md`.
+
+### Previous sprint — Replay routing + docs/test hygiene
+
+Per-request **topic mappings** and a **partition routing strategy** for
+replay-to-topic, plus a docs/diagram refresh and test-hygiene pass.
 
 ### Completed this sprint (replay routing + hygiene)
 

@@ -263,7 +263,10 @@ A pure write-only recorder node should also set `joxette.replay.enabled=false`.
 ## 6. Kubernetes deployment
 
 There are no shipped manifests yet (see [Current limitations](#current-limitations));
-the following are the patterns to apply.
+the following are the patterns to apply. A **Kubernetes operator** that encodes
+and enforces these patterns (including the catalog single-writer guardrail and
+declarative topic/entity management) is designed in
+[`operator-design.md`](operator-design.md).
 
 ### Workload kinds
 
@@ -416,8 +419,12 @@ capabilities that aren't wired yet:
 1. **No shared Pekko cluster.** Processes self-join one-member clusters
    (`seed-nodes = []`). `ClusterSingleton` is per-process; cross-pod compaction
    safety relies on the `compaction_locks` table, so **run exactly one
-   `compaction` node**.
-2. **No shipped Kubernetes/Helm manifests.** §6 describes the intended patterns;
-   manifests are not yet in the repo.
+   `compaction` node**. Forming a real shared cluster (Pekko Management Cluster
+   Bootstrap + `kubernetes-api` discovery + a `coordination.k8s.io` Lease behind
+   the SBR/singleton) is the "Track B" prerequisite in
+   [`operator-design.md`](operator-design.md) §8.2.
+2. **No shipped Kubernetes/Helm manifests.** §6 describes the intended patterns
+   and [`operator-design.md`](operator-design.md) designs an operator around them;
+   neither manifests nor the operator are built yet.
 3. **Embedded catalog is single-instance.** Multi-instance requires the Stage 2
    (Quack, beta) or Stage 3 (PostgreSQL) catalog backend first.
