@@ -13,6 +13,7 @@ import { Layout } from '../../components/Layout'
 import { LoadingSpinner } from '../../components/LoadingSpinner'
 import { ErrorMessage } from '../../components/ErrorMessage'
 import { ConfirmDialog } from '../../components/ConfirmDialog'
+import { ModalDialog } from '../../components/ModalDialog'
 import { useToast } from '../../components/Toast'
 import { AddTopicModal } from '../../components/AddTopicModal'
 
@@ -87,10 +88,8 @@ function EditBrokerModal({ broker, onClose }: { broker: BrokerConfig; onClose: (
   const showSsl = SSL_PROTOCOLS.has(protocol)
 
   return (
-    <div style={overlayStyle} onClick={onClose}>
-      <div style={modalStyle} onClick={e => e.stopPropagation()}>
-        <h2 style={{ margin: '0 0 1.25rem', fontSize: 18 }}>Edit Broker</h2>
-        <form onSubmit={(e) => { e.preventDefault(); void form.handleSubmit() }}>
+    <ModalDialog title="Edit Broker" onClose={onClose}>
+      <form onSubmit={(e) => { e.preventDefault(); void form.handleSubmit() }}>
           <div style={{ marginBottom: '0.75rem' }}>
             <label style={labelStyle}>Broker ID</label>
             <input style={{ ...inputStyle, background: '#f7fafc' }} value={broker.brokerId} disabled />
@@ -191,8 +190,7 @@ function EditBrokerModal({ broker, onClose }: { broker: BrokerConfig; onClose: (
             </button>
           </div>
         </form>
-      </div>
-    </div>
+    </ModalDialog>
   )
 }
 
@@ -511,5 +509,3 @@ const warnBtnSmall: React.CSSProperties = { padding: '0.2rem 0.6rem', background
 const tableStyle: React.CSSProperties = { width: '100%', borderCollapse: 'collapse', background: '#fff', fontSize: 13 }
 const thStyle: React.CSSProperties = { textAlign: 'left', padding: '0.5rem 0.6rem', background: '#edf2f7', fontWeight: 600, color: '#4a5568', borderBottom: '1px solid #e2e8f0' }
 const tdStyle: React.CSSProperties = { padding: '0.45rem 0.6rem', borderBottom: '1px solid #e2e8f0' }
-const overlayStyle: React.CSSProperties = { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }
-const modalStyle: React.CSSProperties = { background: '#fff', borderRadius: 8, padding: '1.5rem 2rem', minWidth: 400, maxWidth: 520, maxHeight: '90vh', overflowY: 'auto', boxShadow: '0 10px 30px rgba(0,0,0,0.2)' }

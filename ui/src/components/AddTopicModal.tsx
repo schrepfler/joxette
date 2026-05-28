@@ -1,3 +1,4 @@
+import { useEffect, useId, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useForm } from '@tanstack/react-form'
 import { topicsApi, brokersApi, type CreateTopicRequest } from '../api/client'
@@ -13,6 +14,15 @@ interface AddTopicModalProps {
 export function AddTopicModal({ onClose, defaultTopic = '', defaultBrokerId = '' }: AddTopicModalProps) {
   const qc = useQueryClient()
   const { addToast } = useToast()
+  const titleId = useId()
+  const firstInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    firstInputRef.current?.focus()
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onClose])
   const { data: brokers = [] } = useQuery({ queryKey: ['brokers'], queryFn: brokersApi.list })
   const mutation = useMutation({
     mutationFn: (data: CreateTopicRequest) => topicsApi.create(data),
@@ -52,19 +62,22 @@ export function AddTopicModal({ onClose, defaultTopic = '', defaultBrokerId = ''
   })
 
   return (
-    <div className="jx-overlay" onClick={onClose}>
+    <div className="jx-overlay" onClick={onClose} aria-hidden="true">
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
         className="jx-modal"
         style={{ minWidth: 400, maxWidth: 520 }}
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 style={modalH2}>Add Topic</h2>
+        <h2 id={titleId} style={modalH2}>Add Topic</h2>
         <form onSubmit={(e) => { e.preventDefault(); void form.handleSubmit() }}>
           <form.Field name="topic">
             {(field) => (
               <div style={fieldWrap}>
                 <label style={labelStyle}>Topic *</label>
-                <input className="jx-input-box" value={field.state.value} onChange={e => field.handleChange(e.target.value)} required />
+                <input ref={firstInputRef} className="jx-input-box" value={field.state.value} onChange={e => field.handleChange(e.target.value)} required />
               </div>
             )}
           </form.Field>

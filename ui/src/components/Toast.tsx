@@ -54,6 +54,8 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     <ToastContext.Provider value={{ toasts, addToast }}>
       {children}
       <div
+        aria-live="polite"
+        aria-atomic="false"
         style={{
           position: 'fixed',
           bottom: 24,
@@ -67,6 +69,8 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
         {toasts.map((t) => (
           <div
             key={t.id}
+            role={t.type === 'error' ? 'alert' : 'status'}
+            aria-live={t.type === 'error' ? 'assertive' : 'polite'}
             style={{
               ...toastStyles[t.type],
               padding: '10px 16px',

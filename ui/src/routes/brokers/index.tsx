@@ -13,10 +13,11 @@ import { Layout } from '../../components/Layout'
 import { LoadingSpinner } from '../../components/LoadingSpinner'
 import { ErrorMessage } from '../../components/ErrorMessage'
 import { ConfirmDialog } from '../../components/ConfirmDialog'
+import { ModalDialog } from '../../components/ModalDialog'
 import { useToast } from '../../components/Toast'
 import {
   pageTitle, primaryBtnStyle, primaryBtnSmall, cancelBtnStyle, dangerBtnSmall,
-  labelStyle, modalH2, tableStyle, thStyle, tdStyle,
+  labelStyle, tableStyle, thStyle, tdStyle,
 } from '../../styles/shared'
 
 export const Route = createFileRoute('/brokers/')({
@@ -179,17 +180,14 @@ function AddBrokerModal({ onClose }: { onClose: () => void }) {
   })
 
   return (
-    <div className="jx-overlay" onClick={onClose}>
-      <div className="jx-modal" style={{ minWidth: 400, maxWidth: 520, maxHeight: '90vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
-        <h2 style={modalH2}>Add Broker</h2>
-        <BrokerForm
-          defaultValues={{ brokerId: '', bootstrapServers: '', securityProtocol: 'PLAINTEXT', saslMechanism: 'PLAIN', saslUsername: '', saslPassword: '', sslTruststorePath: '', sslTruststorePassword: '', sslKeystorePath: '', sslKeystorePassword: '' }}
-          onSubmit={(v) => mutation.mutate(v as unknown as CreateBrokerRequest)}
-          isPending={mutation.isPending}
-          onClose={onClose}
-        />
-      </div>
-    </div>
+    <ModalDialog title="Add Broker" onClose={onClose} style={{ minWidth: 400, maxWidth: 520, maxHeight: '90vh', overflowY: 'auto' }}>
+      <BrokerForm
+        defaultValues={{ brokerId: '', bootstrapServers: '', securityProtocol: 'PLAINTEXT', saslMechanism: 'PLAIN', saslUsername: '', saslPassword: '', sslTruststorePath: '', sslTruststorePassword: '', sslKeystorePath: '', sslKeystorePassword: '' }}
+        onSubmit={(v) => mutation.mutate(v as unknown as CreateBrokerRequest)}
+        isPending={mutation.isPending}
+        onClose={onClose}
+      />
+    </ModalDialog>
   )
 }
 
@@ -203,22 +201,19 @@ function EditBrokerModal({ broker, onClose }: { broker: BrokerConfig; onClose: (
   })
 
   return (
-    <div className="jx-overlay" onClick={onClose}>
-      <div className="jx-modal" style={{ minWidth: 400, maxWidth: 520, maxHeight: '90vh', overflowY: 'auto' }} onClick={e => e.stopPropagation()}>
-        <h2 style={modalH2}>Edit Broker</h2>
-        <div style={{ marginBottom: 12 }}>
-          <div style={{ fontSize: 'var(--type-micro-size)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--ink-tertiary)', marginBottom: 2 }}>Broker ID</div>
-          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--type-mono-size)', color: 'var(--ink-primary)' }}>{broker.brokerId}</div>
-        </div>
-        <BrokerForm
-          defaultValues={{ bootstrapServers: broker.bootstrapServers, securityProtocol: broker.securityProtocol ?? 'PLAINTEXT', saslMechanism: broker.saslMechanism ?? 'PLAIN', saslUsername: broker.saslUsername ?? '', saslPassword: '', sslTruststorePath: broker.sslTruststorePath ?? '', sslTruststorePassword: '', sslKeystorePath: broker.sslKeystorePath ?? '', sslKeystorePassword: '' }}
-          onSubmit={(v) => mutation.mutate(v as unknown as UpdateBrokerRequest)}
-          isPending={mutation.isPending}
-          onClose={onClose}
-          isEdit
-        />
+    <ModalDialog title="Edit Broker" onClose={onClose} style={{ minWidth: 400, maxWidth: 520, maxHeight: '90vh', overflowY: 'auto' }}>
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ fontSize: 'var(--type-micro-size)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', color: 'var(--ink-tertiary)', marginBottom: 2 }}>Broker ID</div>
+        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--type-mono-size)', color: 'var(--ink-primary)' }}>{broker.brokerId}</div>
       </div>
-    </div>
+      <BrokerForm
+        defaultValues={{ bootstrapServers: broker.bootstrapServers, securityProtocol: broker.securityProtocol ?? 'PLAINTEXT', saslMechanism: broker.saslMechanism ?? 'PLAIN', saslUsername: broker.saslUsername ?? '', saslPassword: '', sslTruststorePath: broker.sslTruststorePath ?? '', sslTruststorePassword: '', sslKeystorePath: broker.sslKeystorePath ?? '', sslKeystorePassword: '' }}
+        onSubmit={(v) => mutation.mutate(v as unknown as UpdateBrokerRequest)}
+        isPending={mutation.isPending}
+        onClose={onClose}
+        isEdit
+      />
+    </ModalDialog>
   )
 }
 

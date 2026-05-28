@@ -13,10 +13,11 @@ import { Layout } from '../../components/Layout'
 import { LoadingSpinner } from '../../components/LoadingSpinner'
 import { ErrorMessage } from '../../components/ErrorMessage'
 import { ConfirmDialog } from '../../components/ConfirmDialog'
+import { ModalDialog } from '../../components/ModalDialog'
 import { useToast } from '../../components/Toast'
 import {
   pageTitle, primaryBtnStyle, primaryBtnSmall, cancelBtnStyle, labelStyle,
-  modalH2, tableStyle, thStyle, tdStyle,
+  tableStyle, thStyle, tdStyle,
 } from '../../styles/shared'
 
 export const Route = createFileRoute('/snapshots/')({
@@ -44,25 +45,22 @@ function CreateSnapshotModal({ onClose }: { onClose: () => void }) {
     onSubmit: async ({ value }) => mutation.mutate(value.name || undefined),
   })
   return (
-    <div className="jx-overlay" onClick={onClose}>
-      <div className="jx-modal" style={{ minWidth: 380 }} onClick={e => e.stopPropagation()}>
-        <h2 style={modalH2}>Create Snapshot</h2>
-        <form onSubmit={e => { e.preventDefault(); void form.handleSubmit() }}>
-          <form.Field name="name">
-            {(f) => (
-              <div style={{ marginBottom: 20 }}>
-                <label style={labelStyle}>Name (optional)</label>
-                <input className="jx-input-box" value={f.state.value} onChange={e => f.handleChange(e.target.value)} placeholder="Auto-generated if empty" />
-              </div>
-            )}
-          </form.Field>
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-            <button type="button" onClick={onClose} style={cancelBtnStyle}>Cancel</button>
-            <button type="submit" disabled={mutation.isPending} style={primaryBtnStyle}>{mutation.isPending ? 'Creating…' : 'Create'}</button>
-          </div>
-        </form>
-      </div>
-    </div>
+    <ModalDialog title="Create Snapshot" onClose={onClose} style={{ minWidth: 380 }}>
+      <form onSubmit={e => { e.preventDefault(); void form.handleSubmit() }}>
+        <form.Field name="name">
+          {(f) => (
+            <div style={{ marginBottom: 20 }}>
+              <label style={labelStyle}>Name (optional)</label>
+              <input className="jx-input-box" value={f.state.value} onChange={e => f.handleChange(e.target.value)} placeholder="Auto-generated if empty" />
+            </div>
+          )}
+        </form.Field>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button type="button" onClick={onClose} style={cancelBtnStyle}>Cancel</button>
+          <button type="submit" disabled={mutation.isPending} style={primaryBtnStyle}>{mutation.isPending ? 'Creating…' : 'Create'}</button>
+        </div>
+      </form>
+    </ModalDialog>
   )
 }
 
@@ -83,38 +81,35 @@ function ExportToObjectStoreModal({ onClose }: { onClose: () => void }) {
     onSubmit: async ({ value }) => mutation.mutate(value.name || undefined),
   })
   return (
-    <div className="jx-overlay" onClick={onClose}>
-      <div className="jx-modal" style={{ minWidth: 380 }} onClick={e => e.stopPropagation()}>
-        <h2 style={modalH2}>Export to Object Storage</h2>
-        <p style={{ margin: '0 0 16px', fontSize: 'var(--type-body-sm-size)', color: 'var(--ink-secondary)', lineHeight: 1.6 }}>
-          Exports the full catalog (config tables, known_entities, DuckLake metadata) directly to the
-          configured S3 bucket. No local disk space is used. The snapshot is placed under{' '}
-          <code>&lt;bucket&gt;/snapshots/&lt;name&gt;/</code>.
-        </p>
-        <form onSubmit={e => { e.preventDefault(); void form.handleSubmit() }}>
-          <form.Field name="name">
-            {(f) => (
-              <div style={{ marginBottom: 16 }}>
-                <label style={labelStyle}>Name (optional)</label>
-                <input className="jx-input-box" value={f.state.value} onChange={e => f.handleChange(e.target.value)} placeholder="Auto-generated if empty" />
-              </div>
-            )}
-          </form.Field>
-          {mutation.isPending && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, background: '#dcfce7', border: '1px solid var(--signal-live)', borderRadius: 'var(--radius-sm)', padding: '10px 14px', marginBottom: 16 }}>
-              <span className="jx-spin" style={{ display: 'inline-block', width: 16, height: 16, border: '2px solid var(--signal-live)', borderTopColor: 'transparent', borderRadius: '50%', flexShrink: 0 }} />
-              <span style={{ fontSize: 'var(--type-body-sm-size)', color: 'var(--signal-live-ink)', fontWeight: 500 }}>Uploading snapshot to object storage…</span>
+    <ModalDialog title="Export to Object Storage" onClose={onClose} style={{ minWidth: 380 }}>
+      <p style={{ margin: '0 0 16px', fontSize: 'var(--type-body-sm-size)', color: 'var(--ink-secondary)', lineHeight: 1.6 }}>
+        Exports the full catalog (config tables, known_entities, DuckLake metadata) directly to the
+        configured S3 bucket. No local disk space is used. The snapshot is placed under{' '}
+        <code>&lt;bucket&gt;/snapshots/&lt;name&gt;/</code>.
+      </p>
+      <form onSubmit={e => { e.preventDefault(); void form.handleSubmit() }}>
+        <form.Field name="name">
+          {(f) => (
+            <div style={{ marginBottom: 16 }}>
+              <label style={labelStyle}>Name (optional)</label>
+              <input className="jx-input-box" value={f.state.value} onChange={e => f.handleChange(e.target.value)} placeholder="Auto-generated if empty" />
             </div>
           )}
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-            <button type="button" onClick={onClose} disabled={mutation.isPending} style={cancelBtnStyle}>Cancel</button>
-            <button type="submit" disabled={mutation.isPending} style={{ ...primaryBtnStyle, background: 'var(--signal-live)', borderColor: 'var(--signal-live)' }}>
-              {mutation.isPending ? 'Exporting…' : 'Export to Object Store'}
-            </button>
+        </form.Field>
+        {mutation.isPending && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, background: '#dcfce7', border: '1px solid var(--signal-live)', borderRadius: 'var(--radius-sm)', padding: '10px 14px', marginBottom: 16 }}>
+            <span aria-hidden="true" className="jx-spin" style={{ display: 'inline-block', width: 16, height: 16, border: '2px solid var(--signal-live)', borderTopColor: 'transparent', borderRadius: '50%', flexShrink: 0 }} />
+            <span style={{ fontSize: 'var(--type-body-sm-size)', color: 'var(--signal-live-ink)', fontWeight: 500 }}>Uploading snapshot to object storage…</span>
           </div>
-        </form>
-      </div>
-    </div>
+        )}
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button type="button" onClick={onClose} disabled={mutation.isPending} style={cancelBtnStyle}>Cancel</button>
+          <button type="submit" disabled={mutation.isPending} style={{ ...primaryBtnStyle, background: 'var(--signal-live)', borderColor: 'var(--signal-live)' }}>
+            {mutation.isPending ? 'Exporting…' : 'Export to Object Store'}
+          </button>
+        </div>
+      </form>
+    </ModalDialog>
   )
 }
 

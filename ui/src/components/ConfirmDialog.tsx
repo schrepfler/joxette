@@ -1,3 +1,5 @@
+import { useEffect, useId, useRef } from 'react'
+
 interface ConfirmDialogProps {
   message: string
   onConfirm: () => void
@@ -5,14 +7,28 @@ interface ConfirmDialogProps {
 }
 
 export function ConfirmDialog({ message, onConfirm, onCancel }: ConfirmDialogProps) {
+  const titleId = useId()
+  const cancelRef = useRef<HTMLButtonElement>(null)
+
+  useEffect(() => {
+    cancelRef.current?.focus()
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancel() }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onCancel])
+
   return (
-    <div className="jx-overlay" onClick={onCancel}>
+    <div className="jx-overlay" onClick={onCancel} aria-hidden="true">
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
         className="jx-modal"
         style={{ minWidth: 320, maxWidth: 480 }}
         onClick={(e) => e.stopPropagation()}
       >
         <p
+          id={titleId}
           style={{
             margin: '0 0 24px',
             fontFamily: 'var(--font-body)',
@@ -24,7 +40,7 @@ export function ConfirmDialog({ message, onConfirm, onCancel }: ConfirmDialogPro
           {message}
         </p>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-          <button onClick={onCancel} style={cancelBtn}>Cancel</button>
+          <button ref={cancelRef} onClick={onCancel} style={cancelBtn}>Cancel</button>
           <button onClick={onConfirm} style={confirmBtn}>Confirm</button>
         </div>
       </div>

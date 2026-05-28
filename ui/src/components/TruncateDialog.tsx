@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 
 interface TruncateDialogProps {
   label: string
@@ -8,6 +8,15 @@ interface TruncateDialogProps {
 
 export function TruncateDialog({ label, onConfirm, onCancel }: TruncateDialogProps) {
   const [before, setBefore] = useState('')
+  const titleId = useId()
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    inputRef.current?.focus()
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancel() }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onCancel])
 
   function handleConfirm() {
     if (!before) return
@@ -16,6 +25,7 @@ export function TruncateDialog({ label, onConfirm, onCancel }: TruncateDialogPro
 
   return (
     <div
+      aria-hidden="true"
       style={{
         position: 'fixed',
         inset: 0,
@@ -28,6 +38,9 @@ export function TruncateDialog({ label, onConfirm, onCancel }: TruncateDialogPro
       onClick={onCancel}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
         style={{
           background: '#fff',
           borderRadius: 8,
@@ -38,15 +51,17 @@ export function TruncateDialog({ label, onConfirm, onCancel }: TruncateDialogPro
         }}
         onClick={(e) => e.stopPropagation()}
       >
-        <h2 style={{ margin: '0 0 0.5rem', fontSize: 17, fontWeight: 700 }}>Truncate {label}</h2>
+        <h2 id={titleId} style={{ margin: '0 0 0.5rem', fontSize: 17, fontWeight: 700 }}>Truncate {label}</h2>
         <p style={{ margin: '0 0 1.25rem', fontSize: 14, color: '#718096' }}>
           Delete all records <strong>before</strong> the selected date. This cannot be undone.
         </p>
         <div style={{ marginBottom: '1.5rem' }}>
-          <label style={{ display: 'block', marginBottom: 4, fontSize: 13, fontWeight: 600, color: '#4a5568' }}>
+          <label htmlFor={`${titleId}-before`} style={{ display: 'block', marginBottom: 4, fontSize: 13, fontWeight: 600, color: '#4a5568' }}>
             Before
           </label>
           <input
+            ref={inputRef}
+            id={`${titleId}-before`}
             type="datetime-local"
             style={{
               padding: '0.4rem 0.6rem',

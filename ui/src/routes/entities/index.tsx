@@ -13,10 +13,11 @@ import { Layout } from '../../components/Layout'
 import { LoadingSpinner } from '../../components/LoadingSpinner'
 import { ErrorMessage } from '../../components/ErrorMessage'
 import { ConfirmDialog } from '../../components/ConfirmDialog'
+import { ModalDialog } from '../../components/ModalDialog'
 import { useToast } from '../../components/Toast'
 import {
   pageTitle, primaryBtnStyle, dangerBtnSmall, cancelBtnStyle, labelStyle,
-  modalH2, tableStyle, thStyle, tdStyle,
+  tableStyle, thStyle, tdStyle,
 } from '../../styles/shared'
 
 export const Route = createFileRoute('/entities/')({
@@ -45,43 +46,40 @@ function AddEntityModal({ onClose }: { onClose: () => void }) {
   })
 
   return (
-    <div className="jx-overlay" onClick={onClose}>
-      <div className="jx-modal" style={{ minWidth: 380 }} onClick={e => e.stopPropagation()}>
-        <h2 style={modalH2}>Add Entity Type</h2>
-        <form onSubmit={(e) => { e.preventDefault(); void form.handleSubmit() }}>
-          <form.Field name="type">
-            {(f) => (
-              <div style={fieldWrap}>
-                <label style={labelStyle}>Type *</label>
-                <input className="jx-input-box" value={f.state.value} onChange={e => f.handleChange(e.target.value)} required />
-              </div>
-            )}
-          </form.Field>
-          <form.Field name="buckets">
-            {(f) => (
-              <div style={fieldWrap}>
-                <label style={labelStyle}>Buckets</label>
-                <input type="number" className="jx-input-box" value={f.state.value} onChange={e => f.handleChange(e.target.value)} />
-              </div>
-            )}
-          </form.Field>
-          <form.Field name="retentionDays">
-            {(f) => (
-              <div style={{ ...fieldWrap, marginBottom: 20 }}>
-                <label style={labelStyle}>Retention Days</label>
-                <input type="number" className="jx-input-box" value={f.state.value} onChange={e => f.handleChange(e.target.value)} />
-              </div>
-            )}
-          </form.Field>
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-            <button type="button" onClick={onClose} style={cancelBtnStyle}>Cancel</button>
-            <button type="submit" disabled={mutation.isPending} style={primaryBtnStyle}>
-              {mutation.isPending ? 'Creating…' : 'Create'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+    <ModalDialog title="Add Entity Type" onClose={onClose} style={{ minWidth: 380 }}>
+      <form onSubmit={(e) => { e.preventDefault(); void form.handleSubmit() }}>
+        <form.Field name="type">
+          {(f) => (
+            <div style={fieldWrap}>
+              <label style={labelStyle}>Type *</label>
+              <input className="jx-input-box" value={f.state.value} onChange={e => f.handleChange(e.target.value)} required />
+            </div>
+          )}
+        </form.Field>
+        <form.Field name="buckets">
+          {(f) => (
+            <div style={fieldWrap}>
+              <label style={labelStyle}>Buckets</label>
+              <input type="number" className="jx-input-box" value={f.state.value} onChange={e => f.handleChange(e.target.value)} />
+            </div>
+          )}
+        </form.Field>
+        <form.Field name="retentionDays">
+          {(f) => (
+            <div style={{ ...fieldWrap, marginBottom: 20 }}>
+              <label style={labelStyle}>Retention Days</label>
+              <input type="number" className="jx-input-box" value={f.state.value} onChange={e => f.handleChange(e.target.value)} />
+            </div>
+          )}
+        </form.Field>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+          <button type="button" onClick={onClose} style={cancelBtnStyle}>Cancel</button>
+          <button type="submit" disabled={mutation.isPending} style={primaryBtnStyle}>
+            {mutation.isPending ? 'Creating…' : 'Create'}
+          </button>
+        </div>
+      </form>
+    </ModalDialog>
   )
 }
 

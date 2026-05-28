@@ -1,7 +1,8 @@
 export function LoadingSpinner() {
   return (
-    <div style={{ display: 'flex', justifyContent: 'center', padding: '48px 0' }}>
+    <div role="status" aria-label="Loading" style={{ display: 'flex', justifyContent: 'center', padding: '48px 0' }}>
       <span
+        aria-hidden="true"
         className="jx-spin"
         style={{
           display: 'inline-block',

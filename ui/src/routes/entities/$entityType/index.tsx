@@ -23,6 +23,7 @@ import { LoadingSpinner } from '../../../components/LoadingSpinner'
 import { ErrorMessage } from '../../../components/ErrorMessage'
 import { ConfirmDialog } from '../../../components/ConfirmDialog'
 import { TruncateDialog } from '../../../components/TruncateDialog'
+import { ModalDialog } from '../../../components/ModalDialog'
 import { useToast } from '../../../components/Toast'
 import { useDebounce } from '../../../hooks/useDebounce'
 import { FieldCombobox } from '../../../components/transforms/PredicateBuilder'
@@ -70,10 +71,8 @@ function AddSourceModal({ entityType, onClose }: { entityType: string; onClose: 
   }
 
   return (
-    <div style={overlayStyle} onClick={onClose}>
-      <div style={{ ...modalStyle, minWidth: 560 }} onClick={e => e.stopPropagation()}>
-        <h2 style={{ margin: '0 0 1.25rem', fontSize: 18 }}>Add Source</h2>
-        <form onSubmit={handleSubmit}>
+    <ModalDialog title="Add Source" onClose={onClose} style={{ minWidth: 560 }}>
+      <form onSubmit={handleSubmit}>
           <div style={fieldWrap}>
             <label style={labelStyle}>Topic *</label>
             <input style={inputStyleFull} value={topic} onChange={e => setTopic(e.target.value)} required />
@@ -132,8 +131,7 @@ function AddSourceModal({ entityType, onClose }: { entityType: string; onClose: 
             <button type="submit" disabled={mutation.isPending} style={primaryBtnStyle}>{mutation.isPending ? 'Adding…' : 'Add'}</button>
           </div>
         </form>
-      </div>
-    </div>
+    </ModalDialog>
   )
 }
 
@@ -1008,8 +1006,6 @@ function modeBadgeStyle(mode: string): React.CSSProperties {
   }
 }
 
-const overlayStyle: React.CSSProperties = { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }
-const modalStyle: React.CSSProperties = { background: '#fff', borderRadius: 8, padding: '1.5rem 2rem', minWidth: 420, boxShadow: '0 10px 30px rgba(0,0,0,0.2)' }
 const cardStyle: React.CSSProperties = { background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, padding: '1rem 1.25rem' }
 const cardTitle: React.CSSProperties = { margin: '0 0 0.75rem', fontSize: 15 }
 const sourceCardStyle: React.CSSProperties = { border: '1px solid #e2e8f0', borderRadius: 6, padding: '0.75rem 1rem', background: '#fafafa' }

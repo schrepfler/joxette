@@ -5,6 +5,8 @@ interface ErrorMessageProps {
 export function ErrorMessage({ message }: ErrorMessageProps) {
   return (
     <div
+      role="alert"
+      aria-live="assertive"
       style={{
         background: '#fee2e2',
         border: '1px solid var(--signal-error)',
