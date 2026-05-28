@@ -1076,6 +1076,172 @@ public class CassetteController {
     }
 
     // =========================================================================
+    // Batch / cohort replay
+    // =========================================================================
+
+    /** Maximum number of entity IDs accepted per batch request. */
+    private static final int BATCH_MAX_IDS = 100;
+
+    @Operation(
+        operationId = "batchReplayEntities",
+        summary     = "Batch-replay multiple entity histories (NDJSON)",
+        description = "Streams the event histories for a cohort of entity IDs as newline-delimited JSON. " +
+                      "Each line is a JSON object with an `entityId` field and an `event` field " +
+                      "containing the `EntityRecord`. " +
+                      "When `output=state` each line contains `entityId` and `state` instead. " +
+                      "When `output=diff` each line contains `entityId` and `event` (a `DiffRecord`). " +
+                      "When `response_format=portrait` or `response_format=timeline` each line " +
+                      "contains `entityId` and the aggregate result for that entity. " +
+                      "Events are grouped by entity (all events for entity 1, then entity 2, …) " +
+                      "in the order the IDs appear in the request. " +
+                      "Accepts at most " + BATCH_MAX_IDS + " entity IDs per request."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200",
+            description = "NDJSON stream: one JSON object per event (or aggregate) per entity",
+            content = @Content(mediaType = "application/x-ndjson",
+                schema = @Schema(type = "string",
+                    description = "One JSON object per line. Event lines: " +
+                                  "`{\"entityId\":\"…\",\"event\":{…EntityRecord…}}`. " +
+                                  "State lines: `{\"entityId\":\"…\",\"state\":{…}}`."))),
+        @ApiResponse(responseCode = "400",
+            description = "Invalid entity type, empty id list, or too many ids",
+            content = @Content(schema = @Schema(type = "string"))),
+        @ApiResponse(responseCode = "500", description = "Database error",
+            content = @Content(schema = @Schema(type = "string")))
+    })
+    @PostMapping(value = "/entities/{entityType}/batch",
+                 consumes = MediaType.APPLICATION_JSON_VALUE,
+                 produces = "application/x-ndjson")
+    public ResponseEntity<StreamingResponseBody> batchReplayEntities(
+            @Parameter(description = "Entity type name (must match `[a-z][a-z0-9_]*`)", required = true,
+                       example = "order")
+            @PathVariable String entityType,
+            @Valid @RequestBody BatchReplayRequest req
+    ) {
+        if (req.ids() == null || req.ids().isEmpty()) {
+            throw new ValidationException("ids must be a non-empty list");
+        }
+        if (req.ids().size() > BATCH_MAX_IDS) {
+            throw new ValidationException(
+                    "ids list exceeds the maximum of " + BATCH_MAX_IDS + " entries");
+        }
+
+        ReplayOutputMode output         = req.output()         != null ? req.output()         : ReplayOutputMode.EVENTS;
+        ResponseFormat   responseFormat = req.responseFormat() != null ? req.responseFormat() : ResponseFormat.EVENTS;
+
+        StreamingResponseBody stream = sseHandler.<Map<String, Object>>streamNdjson(null, sink -> {
+            for (String entityId : req.ids()) {
+                if (output == ReplayOutputMode.STATE) {
+                    List<EntityRecord> records = loadAllRecords(
+                            entityType, entityId, req.from(), req.to(),
+                            req.messageTypes(), req.lastN(), req.dedup());
+                    StateFoldService.StateResult result = stateFoldService.fold(records, req.stateFold());
+                    sink.accept(Map.of("entityId", entityId, "state", result));
+
+                } else if (output == ReplayOutputMode.DIFF) {
+                    List<EntityRecord> records = loadAllRecords(
+                            entityType, entityId, req.from(), req.to(),
+                            req.messageTypes(), req.lastN(), req.dedup());
+                    for (DiffRecord dr : diffService.diff(records)) {
+                        sink.accept(Map.of("entityId", entityId, "event", dr));
+                    }
+
+                } else if (responseFormat == ResponseFormat.TIMELINE) {
+                    List<EntityRecord> records = loadAllRecords(
+                            entityType, entityId, req.from(), req.to(),
+                            req.messageTypes(), req.lastN(), req.dedup());
+                    TimelineService.TimelineResult tl = timelineService.timeline(
+                            entityType, entityId, records, req.timelineBucket());
+                    sink.accept(Map.of("entityId", entityId, "timeline", tl));
+
+                } else if (responseFormat == ResponseFormat.PORTRAIT) {
+                    List<EntityRecord> records = loadAllRecords(
+                            entityType, entityId, req.from(), req.to(),
+                            req.messageTypes(), req.lastN(), req.dedup());
+                    PortraitService.PortraitResult portrait = portraitService.portrait(
+                            entityType, entityId, records, null);
+                    sink.accept(Map.of("entityId", entityId, "portrait", portrait));
+
+                } else {
+                    // Default: stream all events for this entity
+                    entityService.streamEntityEvents(
+                            entityType, entityId, req.from(), req.to(),
+                            record -> sink.accept(Map.of("entityId", entityId, "event", record)),
+                            TransformPipeline.IDENTITY, "", Order.ASC,
+                            null, null, req.messageTypes());
+                }
+            }
+        });
+
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType("application/x-ndjson"))
+                .body(stream);
+    }
+
+    /**
+     * Request body for {@code POST /cassettes/entities/{type}/batch}.
+     */
+    @com.fasterxml.jackson.annotation.JsonInclude(com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL)
+    @io.swagger.v3.oas.annotations.media.Schema(
+        description = "Request body for batch entity replay. Supports the same " +
+                      "filters and output modes as the single-entity replay endpoint.")
+    public record BatchReplayRequest(
+
+            @io.swagger.v3.oas.annotations.media.Schema(
+                description = "Entity IDs to replay (max " + BATCH_MAX_IDS + ")",
+                example = "[\"order-1\", \"order-2\", \"order-3\"]")
+            @jakarta.validation.constraints.NotEmpty
+            List<String> ids,
+
+            @io.swagger.v3.oas.annotations.media.Schema(
+                description = "Include only events with timestamp >= this value (ISO-8601 instant)")
+            Instant from,
+
+            @io.swagger.v3.oas.annotations.media.Schema(
+                description = "Include only events with timestamp <= this value (ISO-8601 instant)")
+            Instant to,
+
+            @io.swagger.v3.oas.annotations.media.Schema(
+                description = "Restrict to events with one of the given message type labels",
+                name = "message_types",
+                example = "[\"OrderCreated\", \"OrderPaid\"]")
+            List<String> messageTypes,
+
+            @io.swagger.v3.oas.annotations.media.Schema(
+                description = "Return only the last N events per entity",
+                name = "last_n",
+                example = "50")
+            Integer lastN,
+
+            @io.swagger.v3.oas.annotations.media.Schema(
+                description = "Deduplication policy: offset (default), value, or none",
+                defaultValue = "offset")
+            DedupPolicy dedup,
+
+            @io.swagger.v3.oas.annotations.media.Schema(
+                description = "Output mode: events | state | diff",
+                defaultValue = "events")
+            ReplayOutputMode output,
+
+            @io.swagger.v3.oas.annotations.media.Schema(
+                description = "State fold strategy, only relevant when output=state",
+                name = "state_fold")
+            StateFoldStrategy stateFold,
+
+            @io.swagger.v3.oas.annotations.media.Schema(
+                description = "Response shape per entity: events | timeline | portrait",
+                name = "response_format",
+                defaultValue = "events")
+            ResponseFormat responseFormat,
+
+            @io.swagger.v3.oas.annotations.media.Schema(
+                description = "Bucket granularity for response_format=timeline",
+                name = "timeline_bucket")
+            TimelineBucket timelineBucket
+    ) {}
+
+    // =========================================================================
     // Field suggestions
     // =========================================================================
 
