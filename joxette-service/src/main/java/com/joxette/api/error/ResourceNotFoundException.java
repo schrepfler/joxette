@@ -62,4 +62,8 @@ public class ResourceNotFoundException extends JoxetteException {
     public static ResourceNotFoundException stream(String id) {
         return new ResourceNotFoundException("Stream definition not found: " + id);
     }
+
+    public static ResourceNotFoundException exportJob(String id) {
+        return new ResourceNotFoundException("Export job not found: " + id);
+    }
 }

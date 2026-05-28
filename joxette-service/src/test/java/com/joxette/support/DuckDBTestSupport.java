@@ -243,6 +243,26 @@ public final class DuckDBTestSupport {
                         created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
                         updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
                     )""");
+
+            st.execute("""
+                    CREATE TABLE IF NOT EXISTS export_jobs (
+                        id              VARCHAR     NOT NULL PRIMARY KEY,
+                        entity_type     VARCHAR     NOT NULL,
+                        entity_ids      VARCHAR[]   NOT NULL,
+                        from_ts         TIMESTAMPTZ,
+                        to_ts           TIMESTAMPTZ,
+                        message_types   VARCHAR[],
+                        output_format   VARCHAR     NOT NULL
+                                          CHECK (output_format IN ('parquet', 'ndjson')),
+                        status          VARCHAR     NOT NULL DEFAULT 'pending'
+                                          CHECK (status IN ('pending', 'running', 'completed', 'failed')),
+                        output_path     VARCHAR,
+                        row_count       BIGINT,
+                        error_message   VARCHAR,
+                        created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+                        started_at      TIMESTAMPTZ,
+                        completed_at    TIMESTAMPTZ
+                    )""");
         }
     }
 
