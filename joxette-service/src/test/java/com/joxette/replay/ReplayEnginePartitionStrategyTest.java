@@ -83,11 +83,13 @@ class ReplayEnginePartitionStrategyTest {
     // =========================================================================
 
     @Test
-    void requestWithNeitherTargetNorMappings_throwsIllegalArgument() {
-        assertThatThrownBy(() -> new ReplayToTopicRequest(
-                null, null, null, null, null, null, null, null, null))
-                .isInstanceOf(IllegalArgumentException.class)
-                .hasMessageContaining("targetTopic or topicMappings");
+    void requestWithNeitherTargetNorMappings_isValidIdentityRouting() {
+        // All fields null/absent = identity routing: each source topic → itself
+        ReplayToTopicRequest req = new ReplayToTopicRequest(
+                null, null, null, null, null, null, null, null, null);
+        assertThat(req.targetTopic()).isNull();
+        assertThat(req.topicMappings()).isNull();
+        assertThat(req.partitionStrategy()).isEqualTo(PartitionStrategy.DEFAULT);
     }
 
     @Test

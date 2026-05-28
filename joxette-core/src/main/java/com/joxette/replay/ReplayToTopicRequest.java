@@ -9,7 +9,9 @@ import java.util.Map;
 /**
  * Request body for replay-to-topic operations.
  *
- * <p>The {@code targetTopic} is the only required field.  All filter fields
+ * <p>All fields are optional.  When neither {@code targetTopic} nor
+ * {@code topicMappings} is supplied, each message is produced back to its
+ * original source topic (identity routing).  All filter fields
  * ({@code from}, {@code to}, {@code partition}, {@code offsetFrom},
  * {@code offsetTo}) are optional and mirror the filter parameters available on
  * the corresponding cassette replay endpoints.  The {@code partition},
@@ -38,7 +40,9 @@ import java.util.Map;
 @JsonInclude(JsonInclude.Include.NON_NULL)
 public record ReplayToTopicRequest(
 
-        @Schema(description = "Target Kafka topic to produce messages into", required = true,
+        @Schema(description = "Target Kafka topic to produce messages into. " +
+                              "Optional when topicMappings covers all source topics; " +
+                              "omit entirely for identity routing (replay back to original topics).",
                 example = "orders-replay")
         String targetTopic,
 
@@ -86,11 +90,6 @@ public record ReplayToTopicRequest(
 
 ) {
     public ReplayToTopicRequest {
-        if ((targetTopic == null || targetTopic.isBlank())
-                && (topicMappings == null || topicMappings.isEmpty())) {
-            throw new IllegalArgumentException(
-                    "Either targetTopic or topicMappings (with at least one entry) is required");
-        }
         if (partitionStrategy == null) {
             partitionStrategy = PartitionStrategy.DEFAULT;
         }

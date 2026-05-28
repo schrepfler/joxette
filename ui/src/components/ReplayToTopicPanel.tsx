@@ -53,9 +53,10 @@ export function ReplayToTopicPanel({
 
   const isEntityMode = mode === 'entity'
 
-  // Validate: need either a non-empty targetTopic or at least one mapping entry
   const hasMappings = Object.values(topicMappings).some(v => v.trim() !== '')
-  const canStart = targetTopic.trim() !== '' || hasMappings
+  // Entity mode: always valid — blank = identity routing (each source topic → itself).
+  // Topic mode: require at least a targetTopic (replaying a cassette back to itself is rarely intentional).
+  const canStart = isEntityMode || targetTopic.trim() !== '' || hasMappings
 
   function updateMapping(sourceTopic: string, value: string) {
     setTopicMappings(prev => {
@@ -163,7 +164,7 @@ export function ReplayToTopicPanel({
           </label>
           <input
             type="text"
-            placeholder={isEntityMode ? 'fallback if not mapped' : 'my-target-topic'}
+            placeholder={isEntityMode ? 'blank = replay to original topics' : 'my-target-topic'}
             style={{ ...inputStyle, width: 220 }}
             value={targetTopic}
             onChange={e => setTargetTopic(e.target.value)}
@@ -258,6 +259,7 @@ export function ReplayToTopicPanel({
                 ...primaryBtnStyle,
                 background: canStart ? '#3182ce' : '#a0aec0',
                 cursor: canStart ? 'pointer' : 'not-allowed',
+                opacity: canStart ? 1 : 0.6,
               }}
               onClick={startReplay}
               disabled={!canStart}
