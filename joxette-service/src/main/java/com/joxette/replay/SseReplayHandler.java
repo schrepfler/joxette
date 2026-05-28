@@ -511,13 +511,14 @@ public class SseReplayHandler implements SmartLifecycle {
     }
 
     /**
-     * Phase must be lower than Tomcat's graceful-shutdown phase
-     * ({@code Integer.MAX_VALUE}) so this runs first and the replay VTs have
-     * a chance to exit before Tomcat stops accepting connections.
+     * Phase must be higher than Tomcat's graceful-shutdown phase so this runs first
+     * and all replay VTs have released their HTTP connections before Tomcat starts its
+     * 30 s drain clock.  Spring registers {@code webServerGracefulShutdown} at
+     * {@code MAX_VALUE - 1024}; we therefore use {@code MAX_VALUE - 512}.
      */
     @Override
     public int getPhase() {
-        return Integer.MAX_VALUE - 1024;
+        return Integer.MAX_VALUE - 512;
     }
 
     @Override

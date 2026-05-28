@@ -22,7 +22,7 @@ class BackgroundTaskRegistryTest {
 
     @Test
     void phaseIsCorrect() {
-        assertThat(registry.getPhase()).isEqualTo(Integer.MAX_VALUE - 2048);
+        assertThat(registry.getPhase()).isEqualTo(Integer.MAX_VALUE - 512);
     }
 
     @Test

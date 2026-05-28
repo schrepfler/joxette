@@ -21,17 +21,24 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * <p>Phase ordering relative to other {@link SmartLifecycle} beans:
  * <ol>
- *   <li>{@code Integer.MAX_VALUE - 1024} — {@code SseReplayHandler} (replay SSE streams)
- *   <li>{@code Integer.MAX_VALUE - 2048} — this registry (exports, retention, live-metrics)
+ *   <li>{@code Integer.MAX_VALUE - 512} — {@code SseReplayHandler} and this registry
+ *       (interrupt all SSE-holding VTs before Tomcat starts its graceful-drain clock)
+ *   <li>{@code Integer.MAX_VALUE - 1024} — Tomcat graceful shutdown ({@code webServerGracefulShutdown})
  *   <li>{@code @PreDestroy PekkoConfig} — recorders, write channel, Pekko shutdown
  * </ol>
+ *
+ * <p><b>Why not {@code MAX_VALUE - 1024}?</b> Spring's {@code webServerGracefulShutdown} bean is
+ * registered at {@code MAX_VALUE - 1024} (not {@code MAX_VALUE}).  Any SSE-holding VT that is still
+ * alive when that phase fires holds an open HTTP connection and forces Tomcat to wait the full
+ * 30 s drain timeout before declaring failure.  Interrupting at {@code MAX_VALUE - 512} ensures
+ * all tracked VTs are gone before Tomcat starts counting.
  */
 @Component
 public class BackgroundTaskRegistry implements SmartLifecycle {
 
     private static final Logger log = LoggerFactory.getLogger(BackgroundTaskRegistry.class);
 
-    static final int PHASE = Integer.MAX_VALUE - 2048;
+    static final int PHASE = Integer.MAX_VALUE - 512;
     private static final long STOP_TIMEOUT_MS = 30_000L;
 
     private final ConcurrentHashMap<UUID, TaskHandle> tasks = new ConcurrentHashMap<>();

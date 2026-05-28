@@ -505,9 +505,8 @@ joxette/
 **Supervised recorder lifecycle** — Each Kafka topic runs in a `TopicLifecycleActor` child spawned by `RecordingCoordinatorActor`. Pekko's built-in exponential-backoff supervisor restarts failed topic actors automatically, replacing the Resilience4j retry wrapper used previously. The public API of `RecordingCoordinator` (the Spring bean) is unchanged — it is now a thin adapter over the actor ask pattern.
 
 **Ordered graceful shutdown (SIGTERM)** — On SIGTERM (K8s pod termination, `docker stop`, normal `kill`), Spring's JVM shutdown hook drives the teardown in a fixed order:
-1. HTTP — Tomcat drains in-flight requests (`server.shutdown: graceful`, 30 s timeout). Phase `MAX_VALUE`.
-2. SSE replay streams — `SseReplayHandler` interrupts all in-flight replay SSE virtual threads. Phase `MAX_VALUE − 1024`.
-3. Background tasks — `BackgroundTaskRegistry` sets `accepting=false`, interrupts all tracked virtual threads (export jobs, live-metrics SSE, manual retention runs), and joins them with a 30 s shared deadline. Phase `MAX_VALUE − 2048`.
+1. SSE streams + background tasks — `SseReplayHandler` and `BackgroundTaskRegistry` fire together at phase `MAX_VALUE − 512`, interrupting all SSE-holding and export VTs before Tomcat starts its drain clock. (Tomcat's `webServerGracefulShutdown` bean is at `MAX_VALUE − 1024`, not `MAX_VALUE` as the Spring documentation implies.)
+2. HTTP — Tomcat drains in-flight requests (`server.shutdown: graceful`, 30 s timeout). Phase `MAX_VALUE − 1024`.
 4. Recorders — `RecordingCoordinator.stopAll()` stops every active topic actor and **waits** for each one to confirm shutdown. `StopTopic` replies only after the underlying `TopicRecorder` VT exits: `recorder.stop()` calls `consumer.wakeup()`, the poll loop breaks, `writeChannel.awaitDrain()` flushes any in-flight DuckDB batches, the final Kafka offset commit fires, and only then does `TopicLifecycleActor` send `Stopped` back to the coordinator.
 5. Write channel — `DuckLakeWriteChannel.stop()` signals `done()` and joins the drain virtual thread (10 s). All recorder VTs have already exited at this point, so the channel is quiescent.
 6. Actor system — `actorSystem.terminate()` awaits clean Pekko shutdown (10 s timeout).

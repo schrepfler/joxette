@@ -13,7 +13,7 @@ gives ad-hoc virtual threads a consistent lifecycle with ordered shutdown.
 - Fix: added `@JsonCreator parse()` + `Converter<String,X>` in `WebConfig.addFormatters()` for all five affected enums: `SolOutput`, `ReplayOutputMode`, `ResponseFormat`, `StateFoldStrategy`, `DedupPolicy`.
 
 **BackgroundTaskRegistry**
-- New `com.joxette.lifecycle.BackgroundTaskRegistry` (`SmartLifecycle`, phase `MAX_VALUE − 2048`).
+- New `com.joxette.lifecycle.BackgroundTaskRegistry` (`SmartLifecycle`, phase `MAX_VALUE − 512`, same as `SseReplayHandler`).
 - `submit(name, task)` wraps each runnable in `try/finally { tasks.remove(id) }` for self-cleanup.
 - `stop()` interrupts all tracked VTs and joins against a shared 30 s deadline.
 - Migrated: `ExportService` (export jobs), `CompactionController` (manual retention), `InstanceController` (live-metrics SSE).

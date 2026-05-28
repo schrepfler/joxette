@@ -135,7 +135,7 @@ Provides a single `submit(name, task)` entry-point for ad-hoc virtual threads th
 - `submit(name, task)` wraps the runnable in `try/finally { tasks.remove(id) }` so normally-completing tasks self-clean; each VT is stored in a `ConcurrentHashMap<UUID, TaskHandle>`.
 - `stop()` sets `accepting=false` (closes the submission window), interrupts all tracked VTs, then joins them against a **single shared 30 s deadline** (not per-task).
 - `getRunningTasks()` returns a snapshot — used by `GET /health` to expose a `backgroundTasks` summary (`running`, `names`).
-- Phase `MAX_VALUE - 2048` fires between `SseReplayHandler` (`MAX_VALUE - 1024`) and Pekko `@PreDestroy`, so exported jobs, live-metrics SSE streams, and manual retention VTs are always interrupted before the actor system shuts down.
+- Phase `MAX_VALUE - 512` — same phase as `SseReplayHandler` — fires **before** Tomcat's graceful-drain phase (`MAX_VALUE - 1024`). Spring's `webServerGracefulShutdown` bean is at `MAX_VALUE - 1024` (not `MAX_VALUE` as implied by the docs); any SSE-holding VT still alive when Tomcat starts draining holds an open connection and forces the full 30 s timeout. Interrupting at `MAX_VALUE - 512` ensures all tracked VTs release their connections before Tomcat starts counting.
 
 Migrated sites:
 - `ExportService` — export job VTs
