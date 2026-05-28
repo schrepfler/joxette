@@ -4,6 +4,7 @@ import { useHotkeySequences } from '@tanstack/react-hotkeys'
 const NAV_LINKS = [
   { to: '/topics',     label: 'Topics',     shortcut: 'g t' },
   { to: '/entities',   label: 'Entities',   shortcut: 'g e' },
+  { to: '/streams',    label: 'Streams',    shortcut: 'g m' },
   { to: '/brokers',    label: 'Brokers',    shortcut: 'g b' },
   { to: '/compaction', label: 'Compaction', shortcut: 'g c' },
   { to: '/retention',  label: 'Retention',  shortcut: 'g r' },
@@ -24,6 +25,7 @@ export function Layout({ children }: LayoutProps) {
   useHotkeySequences([
     { sequence: ['G', 'T'], callback: () => { void navigate({ to: '/topics' }) } },
     { sequence: ['G', 'E'], callback: () => { void navigate({ to: '/entities' }) } },
+    { sequence: ['G', 'M'], callback: () => { void navigate({ to: '/streams' }) } },
     { sequence: ['G', 'B'], callback: () => { void navigate({ to: '/brokers' }) } },
     { sequence: ['G', 'C'], callback: () => { void navigate({ to: '/compaction' }) } },
     { sequence: ['G', 'R'], callback: () => { void navigate({ to: '/retention' }) } },
@@ -38,6 +40,8 @@ export function Layout({ children }: LayoutProps) {
     <div style={{ display: 'flex', minHeight: '100vh' }}>
       {/* Sidebar — always navy, regardless of theme */}
       <nav
+        aria-label="Main navigation"
+        data-testid="sidebar-nav"
         style={{
           width: 216,
           flexShrink: 0,
@@ -72,11 +76,13 @@ export function Layout({ children }: LayoutProps) {
         </Link>
 
         {/* Navigation links */}
-        <ul style={{ listStyle: 'none', margin: 0, padding: '8px 0', flex: 1 }}>
+        <ul role="list" style={{ listStyle: 'none', margin: 0, padding: '8px 0', flex: 1 }}>
           {NAV_LINKS.map(({ to, label, shortcut }) => (
             <li key={to}>
               <Link
                 to={to}
+                data-testid={`nav-link-${label.toLowerCase()}`}
+                aria-label={`${label} (${shortcut})`}
                 style={{
                   display: 'flex',
                   alignItems: 'center',

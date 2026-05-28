@@ -167,6 +167,71 @@ export interface EntityStats {
   countByTopic: Record<string, number>
 }
 
+// ---- Entity output modes ----
+
+export interface StateResult {
+  state: Record<string, unknown> | null
+  asOf: string | null
+  eventCount: number
+}
+
+export interface DiffRecord {
+  event: EntityRecord
+  changedFields: string[] | null
+  before: Record<string, unknown> | null
+}
+
+export interface PortraitResult {
+  entityId: string
+  entityType: string
+  eventCount: number
+  firstSeen: string | null
+  lastSeen: string | null
+  topicBreakdown: Record<string, number>
+  recentEvents: EntityRecord[]
+  currentState: Record<string, unknown> | null
+}
+
+// ---- Named Derived Streams ----
+
+export interface StreamSourceOptions {
+  messageTypes?: string[]
+  from?: string
+  to?: string
+  lastN?: number
+  dedup?: 'offset' | 'value' | 'none'
+}
+
+export interface StreamDefinition {
+  id: string
+  name: string
+  entityType: string
+  entityId?: string | null
+  source?: StreamSourceOptions | null
+  sol?: string | null
+  solOutput?: 'events' | 'annotated' | 'summary'
+  output?: 'events' | 'state' | 'diff' | 'snapshot'
+  stateFold?: 'merge_patch' | 'last_value' | 'last_per_topic' | null
+  responseFormat?: 'events' | 'timeline' | 'portrait'
+  createdAt: string
+  updatedAt: string
+}
+
+export interface CreateStreamRequest {
+  id: string
+  name: string
+  entityType: string
+  entityId?: string | null
+  source?: StreamSourceOptions | null
+  sol?: string | null
+  solOutput?: string
+  output?: string
+  stateFold?: string | null
+  responseFormat?: string
+}
+
+export type UpdateStreamRequest = Omit<CreateStreamRequest, 'id'>
+
 export interface CompactionRun {
   id: number
   startedAt: string
@@ -520,6 +585,60 @@ export const cassettesApi = {
     }
     return Promise.reject(new Error('Invalid mode or missing topic/entity params'))
   },
+}
+
+// ---- Entity output-mode helpers ----
+
+export const entityOutputApi = {
+  getState: (entityType: string, entityId: string, params?: { from?: string; to?: string; stateFold?: string }) =>
+    request<StateResult>(
+      `/cassettes/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}/replay`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ output: 'state', stateFold: params?.stateFold ?? 'merge_patch', from: params?.from, to: params?.to }),
+      },
+    ),
+
+  getDiff: (entityType: string, entityId: string, params?: { from?: string; to?: string }) =>
+    request<PagedResponse<DiffRecord>>(
+      `/cassettes/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}/replay`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ output: 'diff', ...params }),
+      },
+    ).then(r => r.data),
+
+  getPortrait: (entityType: string, entityId: string, params?: { from?: string; to?: string }) =>
+    request<PortraitResult>(
+      `/cassettes/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}/replay`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ responseFormat: 'portrait', ...params }),
+      },
+    ),
+}
+
+// ---- Named Derived Streams API ----
+
+export const streamsApi = {
+  list: (entityType?: string) =>
+    request<StreamDefinition[]>(`/streams${entityType ? `?entity_type=${encodeURIComponent(entityType)}` : ''}`),
+  get: (id: string) =>
+    request<StreamDefinition>(`/streams/${encodeURIComponent(id)}`),
+  create: (req: CreateStreamRequest) =>
+    request<StreamDefinition>('/streams', { method: 'POST', body: JSON.stringify(req) }),
+  update: (id: string, req: UpdateStreamRequest) =>
+    request<StreamDefinition>(`/streams/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(req) }),
+  delete: (id: string) =>
+    request<void>(`/streams/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  /** Pull query: evaluates the stream against the given entityId and returns paged records/state/etc. */
+  pull: (id: string, entityId?: string) =>
+    request<PagedResponse<EntityRecord>>(
+      `/streams/${encodeURIComponent(id)}${entityId ? `?entity_id=${encodeURIComponent(entityId)}` : ''}`
+    ),
 }
 
 // ---- Field suggestions ----
