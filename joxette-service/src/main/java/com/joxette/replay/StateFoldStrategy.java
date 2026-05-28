@@ -1,5 +1,6 @@
 package com.joxette.replay;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonValue;
 
 /**
@@ -28,4 +29,11 @@ public enum StateFoldStrategy {
 
     @JsonValue
     public String getValue() { return value; }
+
+    @JsonCreator
+    public static StateFoldStrategy parse(String raw) {
+        if (raw == null) return MERGE_PATCH;
+        for (StateFoldStrategy v : values()) if (v.value.equalsIgnoreCase(raw.trim())) return v;
+        throw new IllegalArgumentException("Invalid state_fold '" + raw + "'");
+    }
 }

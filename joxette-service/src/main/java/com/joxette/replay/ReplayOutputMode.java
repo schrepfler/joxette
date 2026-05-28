@@ -1,5 +1,6 @@
 package com.joxette.replay;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonValue;
 
 /**
@@ -28,4 +29,11 @@ public enum ReplayOutputMode {
 
     @JsonValue
     public String getValue() { return value; }
+
+    @JsonCreator
+    public static ReplayOutputMode parse(String raw) {
+        if (raw == null) return EVENTS;
+        for (ReplayOutputMode v : values()) if (v.value.equalsIgnoreCase(raw.trim())) return v;
+        throw new IllegalArgumentException("Invalid output '" + raw + "'");
+    }
 }

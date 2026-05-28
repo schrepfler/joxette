@@ -1,6 +1,11 @@
 package com.joxette.config;
 
+import com.joxette.replay.DedupPolicy;
 import com.joxette.replay.Order;
+import com.joxette.replay.ReplayOutputMode;
+import com.joxette.replay.ResponseFormat;
+import com.joxette.replay.SolOutput;
+import com.joxette.replay.StateFoldStrategy;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.core.convert.converter.Converter;
@@ -44,9 +49,27 @@ public class WebConfig implements WebMvcConfigurer {
     public void addFormatters(FormatterRegistry registry) {
         registry.addConverter(new Converter<String, Order>() {
             @Override
-            public Order convert(String source) {
-                return Order.parse(source);
-            }
+            public Order convert(String source) { return Order.parse(source); }
+        });
+        registry.addConverter(new Converter<String, SolOutput>() {
+            @Override
+            public SolOutput convert(String source) { return SolOutput.parse(source); }
+        });
+        registry.addConverter(new Converter<String, ReplayOutputMode>() {
+            @Override
+            public ReplayOutputMode convert(String source) { return ReplayOutputMode.parse(source); }
+        });
+        registry.addConverter(new Converter<String, ResponseFormat>() {
+            @Override
+            public ResponseFormat convert(String source) { return ResponseFormat.parse(source); }
+        });
+        registry.addConverter(new Converter<String, StateFoldStrategy>() {
+            @Override
+            public StateFoldStrategy convert(String source) { return StateFoldStrategy.parse(source); }
+        });
+        registry.addConverter(new Converter<String, DedupPolicy>() {
+            @Override
+            public DedupPolicy convert(String source) { return DedupPolicy.parse(source); }
         });
     }
 }

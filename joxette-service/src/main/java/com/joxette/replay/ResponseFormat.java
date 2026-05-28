@@ -1,5 +1,6 @@
 package com.joxette.replay;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonValue;
 
 /**
@@ -32,4 +33,11 @@ public enum ResponseFormat {
 
     @JsonValue
     public String getValue() { return value; }
+
+    @JsonCreator
+    public static ResponseFormat parse(String raw) {
+        if (raw == null) return EVENTS;
+        for (ResponseFormat v : values()) if (v.value.equalsIgnoreCase(raw.trim())) return v;
+        throw new IllegalArgumentException("Invalid response_format '" + raw + "'");
+    }
 }
