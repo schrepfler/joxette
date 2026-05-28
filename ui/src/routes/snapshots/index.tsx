@@ -160,7 +160,7 @@ function SnapshotsPage() {
 
       {!isLoading && !error && (
         <div style={tableStyle}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <table aria-label="DuckLake snapshots" style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               {table.getHeaderGroups().map(hg => (
                 <tr key={hg.id}>{hg.headers.map(h => <th key={h.id} style={thStyle}>{flexRender(h.column.columnDef.header, h.getContext())}</th>)}</tr>

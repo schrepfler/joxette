@@ -717,7 +717,7 @@ function TopicDetailPage() {
                   body="Add a matcher to tag incoming messages. Matchers let you group records by a business identifier without changing their structure."
                 />
               ) : (
-                <RuledTable table={matcherTable} />
+                <RuledTable table={matcherTable} ariaLabel="Topic message matchers" />
               )
             )}
           </section>
@@ -930,7 +930,7 @@ function TopicDetailPage() {
                     />
                   ) : (
                     <>
-                      <RuledTable table={table} density="dense" />
+                      <RuledTable table={table} density="dense" ariaLabel="Topic cassette records" />
                       {streamMode === 'json' && (
                         <div style={{
                           display: 'flex',
@@ -1090,11 +1090,12 @@ function SegmentedControl<T extends string>({
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-function RuledTable({ table, density = 'regular' }: { table: any; density?: 'regular' | 'dense' }) {
+function RuledTable({ table, density = 'regular', ariaLabel }: { table: any; density?: 'regular' | 'dense'; ariaLabel?: string }) {
   const pad = density === 'dense' ? '10px 12px' : '14px 14px'
   return (
     <div style={{ overflowX: 'auto' }}>
       <table
+        aria-label={ariaLabel}
         style={{
           width: '100%',
           borderCollapse: 'collapse',

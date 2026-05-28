@@ -135,7 +135,12 @@ export function SolSequenceInspector({ tags, sequenceLength, selectedTags, onTag
         return (
           <div
             key={name}
-            onClick={() => onTagToggle?.(name)}
+            role={isFilterable ? 'button' : undefined}
+            tabIndex={isFilterable ? 0 : undefined}
+            aria-pressed={isFilterable ? isSelected : undefined}
+            aria-label={isFilterable ? `${isSelected ? 'Remove' : 'Add'} filter for tag ${name}` : undefined}
+            onClick={() => isFilterable && onTagToggle?.(name)}
+            onKeyDown={isFilterable ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onTagToggle?.(name) } } : undefined}
             style={{
               display: 'grid',
               gridTemplateColumns: '100px 1fr 60px 50px',

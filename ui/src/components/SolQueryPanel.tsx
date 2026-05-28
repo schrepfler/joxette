@@ -322,7 +322,7 @@ function SolResultTable({ records }: { records: EntityRecord[] }) {
 
   return (
     <div style={{ border: '1px solid var(--rule)', borderRadius: 'var(--radius-sm)', overflow: 'hidden' }}>
-      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--type-body-sm-size)' }}>
+      <table aria-label="SOL query results" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--type-body-sm-size)' }}>
         <thead>
           <tr style={{ background: 'var(--surface-raised)' }}>
             {['Timestamp', 'Type', 'Topic', 'Offset', 'Value'].map(h => (
@@ -335,8 +335,11 @@ function SolResultTable({ records }: { records: EntityRecord[] }) {
             <>
               <tr
                 key={`${r.partition}-${r.offset}`}
+                tabIndex={r.value ? 0 : undefined}
+                aria-expanded={r.value ? expandedIdx === i : undefined}
                 style={{ cursor: r.value ? 'pointer' : 'default', background: expandedIdx === i ? 'var(--accent-wash)' : undefined }}
-                onClick={() => setExpandedIdx(expandedIdx === i ? null : i)}
+                onClick={() => r.value && setExpandedIdx(expandedIdx === i ? null : i)}
+                onKeyDown={r.value ? (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setExpandedIdx(expandedIdx === i ? null : i) } } : undefined}
                 onMouseEnter={e => { if (expandedIdx !== i) e.currentTarget.style.background = 'var(--surface-raised)' }}
                 onMouseLeave={e => { if (expandedIdx !== i) e.currentTarget.style.background = '' }}
               >

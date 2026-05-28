@@ -150,7 +150,7 @@ function RetentionPage() {
       {historyQuery.error && <ErrorMessage message={(historyQuery.error as Error).message} />}
       {!historyQuery.isLoading && (
         <div style={tableStyle}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <table aria-label="Retention run history" style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               {table.getHeaderGroups().map(hg => (
                 <tr key={hg.id}>

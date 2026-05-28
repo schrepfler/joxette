@@ -405,7 +405,7 @@ function BrokerDetailPage() {
             {topicsForBroker.length === 0 ? (
               <p style={{ margin: 0, fontSize: 14, color: '#a0aec0', fontStyle: 'italic' }}>No topics are using this broker yet.</p>
             ) : (
-              <table style={tableStyle}>
+              <table aria-label="Topics using this broker" style={tableStyle}>
                 <thead>
                   {topicTable.getHeaderGroups().map(hg => (
                     <tr key={hg.id}>
@@ -452,7 +452,7 @@ function BrokerDetailPage() {
               <p style={{ margin: 0, fontSize: 14, color: '#a0aec0', fontStyle: 'italic' }}>No topics found.</p>
             )}
             {!topicsLoading && !topicsError && filteredTopics.length > 0 && (
-              <table style={tableStyle}>
+              <table aria-label="All topics on this broker" style={tableStyle}>
                 <thead>
                   {brokerTopicTable.getHeaderGroups().map(hg => (
                     <tr key={hg.id}>

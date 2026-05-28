@@ -275,7 +275,7 @@ function BrokersPage() {
 
       {!isLoading && !error && (
         <div style={tableStyle}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <table aria-label="Kafka brokers" style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               {table.getHeaderGroups().map(hg => (
                 <tr key={hg.id}>

@@ -160,7 +160,7 @@ function ClusterPage() {
             {Object.keys(data.self.recorders).length > 0 && (
               <div style={{ marginTop: 16 }}>
                 <div style={{ ...overline, marginBottom: 8 }}>Recorders</div>
-                <table style={tableStyle}>
+                <table aria-label="Active topic recorders" style={tableStyle}>
                   <thead>
                     <tr>
                       {['Topic', 'Status', 'Lag', 'Partitions', 'Protocol', 'Last Batch', 'Actions'].map(h => (
@@ -193,7 +193,7 @@ function ClusterPage() {
             {data.instances.length === 0 ? (
               <p style={{ margin: 0, color: 'var(--ink-tertiary)', fontSize: 'var(--type-body-sm-size)' }}>No instances registered</p>
             ) : (
-              <table style={tableStyle}>
+              <table aria-label="Cluster instances" style={tableStyle}>
                 <thead>
                   <tr>
                     {['Instance ID', 'Roles', 'Catalog', 'Status', 'Last Heartbeat', 'Topics'].map(h => (
@@ -218,7 +218,7 @@ function ClusterPage() {
             {data.topology.length === 0 ? (
               <p style={{ margin: 0, color: 'var(--ink-tertiary)', fontSize: 'var(--type-body-sm-size)' }}>No cluster members</p>
             ) : (
-              <table style={tableStyle}>
+              <table aria-label="Pekko cluster topology" style={tableStyle}>
                 <thead>
                   <tr>
                     {['Address', 'Status', 'Reachable', 'Pekko Roles'].map(h => (

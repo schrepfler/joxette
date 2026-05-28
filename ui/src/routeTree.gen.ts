@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as AboutRouteImport } from './routes/about'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as TopicsIndexRouteImport } from './routes/topics/index'
+import { Route as StreamsIndexRouteImport } from './routes/streams/index'
 import { Route as SnapshotsIndexRouteImport } from './routes/snapshots/index'
 import { Route as SettingsIndexRouteImport } from './routes/settings/index'
 import { Route as RetentionIndexRouteImport } from './routes/retention/index'
@@ -21,6 +22,7 @@ import { Route as CompactionIndexRouteImport } from './routes/compaction/index'
 import { Route as ClusterIndexRouteImport } from './routes/cluster/index'
 import { Route as BrokersIndexRouteImport } from './routes/brokers/index'
 import { Route as TopicsTopicRouteImport } from './routes/topics/$topic'
+import { Route as StreamsStreamIdRouteImport } from './routes/streams/$streamId'
 import { Route as BrokersBrokerIdRouteImport } from './routes/brokers/$brokerId'
 import { Route as EntitiesEntityTypeIndexRouteImport } from './routes/entities/$entityType/index'
 import { Route as TopicsTopicTimelineRouteImport } from './routes/topics/$topic_.timeline'
@@ -42,6 +44,11 @@ const IndexRoute = IndexRouteImport.update({
 const TopicsIndexRoute = TopicsIndexRouteImport.update({
   id: '/topics/',
   path: '/topics/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const StreamsIndexRoute = StreamsIndexRouteImport.update({
+  id: '/streams/',
+  path: '/streams/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SnapshotsIndexRoute = SnapshotsIndexRouteImport.update({
@@ -89,6 +96,11 @@ const TopicsTopicRoute = TopicsTopicRouteImport.update({
   path: '/topics/$topic',
   getParentRoute: () => rootRouteImport,
 } as any)
+const StreamsStreamIdRoute = StreamsStreamIdRouteImport.update({
+  id: '/streams/$streamId',
+  path: '/streams/$streamId',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const BrokersBrokerIdRoute = BrokersBrokerIdRouteImport.update({
   id: '/brokers/$brokerId',
   path: '/brokers/$brokerId',
@@ -133,6 +145,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/about': typeof AboutRoute
   '/brokers/$brokerId': typeof BrokersBrokerIdRoute
+  '/streams/$streamId': typeof StreamsStreamIdRoute
   '/topics/$topic': typeof TopicsTopicRoute
   '/brokers/': typeof BrokersIndexRoute
   '/cluster/': typeof ClusterIndexRoute
@@ -142,6 +155,7 @@ export interface FileRoutesByFullPath {
   '/retention/': typeof RetentionIndexRoute
   '/settings/': typeof SettingsIndexRoute
   '/snapshots/': typeof SnapshotsIndexRoute
+  '/streams/': typeof StreamsIndexRoute
   '/topics/': typeof TopicsIndexRoute
   '/entities/$entityType/$entityId': typeof EntitiesEntityTypeEntityIdRoute
   '/topics/$topic/timeline': typeof TopicsTopicTimelineRoute
@@ -154,6 +168,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/about': typeof AboutRoute
   '/brokers/$brokerId': typeof BrokersBrokerIdRoute
+  '/streams/$streamId': typeof StreamsStreamIdRoute
   '/topics/$topic': typeof TopicsTopicRoute
   '/brokers': typeof BrokersIndexRoute
   '/cluster': typeof ClusterIndexRoute
@@ -163,6 +178,7 @@ export interface FileRoutesByTo {
   '/retention': typeof RetentionIndexRoute
   '/settings': typeof SettingsIndexRoute
   '/snapshots': typeof SnapshotsIndexRoute
+  '/streams': typeof StreamsIndexRoute
   '/topics': typeof TopicsIndexRoute
   '/entities/$entityType/$entityId': typeof EntitiesEntityTypeEntityIdRoute
   '/topics/$topic/timeline': typeof TopicsTopicTimelineRoute
@@ -176,6 +192,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/about': typeof AboutRoute
   '/brokers/$brokerId': typeof BrokersBrokerIdRoute
+  '/streams/$streamId': typeof StreamsStreamIdRoute
   '/topics/$topic': typeof TopicsTopicRoute
   '/brokers/': typeof BrokersIndexRoute
   '/cluster/': typeof ClusterIndexRoute
@@ -185,6 +202,7 @@ export interface FileRoutesById {
   '/retention/': typeof RetentionIndexRoute
   '/settings/': typeof SettingsIndexRoute
   '/snapshots/': typeof SnapshotsIndexRoute
+  '/streams/': typeof StreamsIndexRoute
   '/topics/': typeof TopicsIndexRoute
   '/entities/$entityType/$entityId': typeof EntitiesEntityTypeEntityIdRoute
   '/topics/$topic_/timeline': typeof TopicsTopicTimelineRoute
@@ -199,6 +217,7 @@ export interface FileRouteTypes {
     | '/'
     | '/about'
     | '/brokers/$brokerId'
+    | '/streams/$streamId'
     | '/topics/$topic'
     | '/brokers/'
     | '/cluster/'
@@ -208,6 +227,7 @@ export interface FileRouteTypes {
     | '/retention/'
     | '/settings/'
     | '/snapshots/'
+    | '/streams/'
     | '/topics/'
     | '/entities/$entityType/$entityId'
     | '/topics/$topic/timeline'
@@ -220,6 +240,7 @@ export interface FileRouteTypes {
     | '/'
     | '/about'
     | '/brokers/$brokerId'
+    | '/streams/$streamId'
     | '/topics/$topic'
     | '/brokers'
     | '/cluster'
@@ -229,6 +250,7 @@ export interface FileRouteTypes {
     | '/retention'
     | '/settings'
     | '/snapshots'
+    | '/streams'
     | '/topics'
     | '/entities/$entityType/$entityId'
     | '/topics/$topic/timeline'
@@ -241,6 +263,7 @@ export interface FileRouteTypes {
     | '/'
     | '/about'
     | '/brokers/$brokerId'
+    | '/streams/$streamId'
     | '/topics/$topic'
     | '/brokers/'
     | '/cluster/'
@@ -250,6 +273,7 @@ export interface FileRouteTypes {
     | '/retention/'
     | '/settings/'
     | '/snapshots/'
+    | '/streams/'
     | '/topics/'
     | '/entities/$entityType/$entityId'
     | '/topics/$topic_/timeline'
@@ -263,6 +287,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AboutRoute: typeof AboutRoute
   BrokersBrokerIdRoute: typeof BrokersBrokerIdRoute
+  StreamsStreamIdRoute: typeof StreamsStreamIdRoute
   TopicsTopicRoute: typeof TopicsTopicRoute
   BrokersIndexRoute: typeof BrokersIndexRoute
   ClusterIndexRoute: typeof ClusterIndexRoute
@@ -272,6 +297,7 @@ export interface RootRouteChildren {
   RetentionIndexRoute: typeof RetentionIndexRoute
   SettingsIndexRoute: typeof SettingsIndexRoute
   SnapshotsIndexRoute: typeof SnapshotsIndexRoute
+  StreamsIndexRoute: typeof StreamsIndexRoute
   TopicsIndexRoute: typeof TopicsIndexRoute
   EntitiesEntityTypeEntityIdRoute: typeof EntitiesEntityTypeEntityIdRoute
   TopicsTopicTimelineRoute: typeof TopicsTopicTimelineRoute
@@ -302,6 +328,13 @@ declare module '@tanstack/react-router' {
       path: '/topics'
       fullPath: '/topics/'
       preLoaderRoute: typeof TopicsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/streams/': {
+      id: '/streams/'
+      path: '/streams'
+      fullPath: '/streams/'
+      preLoaderRoute: typeof StreamsIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/snapshots/': {
@@ -367,6 +400,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof TopicsTopicRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/streams/$streamId': {
+      id: '/streams/$streamId'
+      path: '/streams/$streamId'
+      fullPath: '/streams/$streamId'
+      preLoaderRoute: typeof StreamsStreamIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/brokers/$brokerId': {
       id: '/brokers/$brokerId'
       path: '/brokers/$brokerId'
@@ -423,6 +463,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AboutRoute: AboutRoute,
   BrokersBrokerIdRoute: BrokersBrokerIdRoute,
+  StreamsStreamIdRoute: StreamsStreamIdRoute,
   TopicsTopicRoute: TopicsTopicRoute,
   BrokersIndexRoute: BrokersIndexRoute,
   ClusterIndexRoute: ClusterIndexRoute,
@@ -432,6 +473,7 @@ const rootRouteChildren: RootRouteChildren = {
   RetentionIndexRoute: RetentionIndexRoute,
   SettingsIndexRoute: SettingsIndexRoute,
   SnapshotsIndexRoute: SnapshotsIndexRoute,
+  StreamsIndexRoute: StreamsIndexRoute,
   TopicsIndexRoute: TopicsIndexRoute,
   EntitiesEntityTypeEntityIdRoute: EntitiesEntityTypeEntityIdRoute,
   TopicsTopicTimelineRoute: TopicsTopicTimelineRoute,

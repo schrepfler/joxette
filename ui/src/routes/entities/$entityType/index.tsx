@@ -207,7 +207,7 @@ function SourceCard({
         )}
 
         {source.matchers.length > 0 && (
-          <table style={{ ...tableStyle, marginBottom: '0.5rem' }}>
+          <table aria-label="Entity ID matchers for this source" style={{ ...tableStyle, marginBottom: '0.5rem' }}>
             <thead>
               <tr>
                 <th style={thStyle}>Message Type</th>
@@ -534,7 +534,7 @@ function EntityTypeDetailPage() {
             {entitiesQuery.error && <ErrorMessage message={(entitiesQuery.error as Error).message} />}
             {!entitiesQuery.isLoading && knownEntitiesView === 'list' && (
               <>
-                <table style={tableStyle}>
+                <table aria-label="Known entities" style={tableStyle}>
                   <thead>
                     {entityTable.getHeaderGroups().map(hg => (
                       <tr key={hg.id}>{hg.headers.map(h => <th key={h.id} style={thStyle}>{flexRender(h.column.columnDef.header, h.getContext())}</th>)}</tr>

@@ -570,7 +570,7 @@ function EntityInstancePage() {
             <p style={{ color: '#a0aec0', fontSize: 13, margin: 0 }}>No events with parseable values in this range.</p>
           )}
           {diffQuery.data && diffQuery.data.length > 0 && (
-            <table data-testid="diff-table" style={tableStyle}>
+            <table data-testid="diff-table" aria-label="Entity event changelog" style={tableStyle}>
               <thead>
                 <tr>
                   <th style={thStyle}>Timestamp</th>
@@ -746,7 +746,7 @@ function EntityInstancePage() {
         {streamMode === 'json' && recordsQuery.error && <ErrorMessage message={(recordsQuery.error as Error).message} />}
         {(streamMode !== 'json' || !recordsQuery.isLoading) && (
           <>
-            <table data-testid="records-table" style={tableStyle}>
+            <table data-testid="records-table" aria-label="Entity cassette records" style={tableStyle}>
               <thead>
                 {table.getHeaderGroups().map(hg => (
                   <tr key={hg.id}>{hg.headers.map(h => <th key={h.id} style={thStyle}>{flexRender(h.column.columnDef.header, h.getContext())}</th>)}</tr>

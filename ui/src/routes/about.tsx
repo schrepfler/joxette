@@ -80,7 +80,7 @@ function AboutPage() {
 
       <section style={{ ...cardStyle, marginBottom: 24 }}>
         <h2 style={sectionTitle}>Tech stack</h2>
-        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+        <table aria-label="Tech stack" style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr>
               <th style={thStyle}>Component</th>

@@ -87,7 +87,7 @@ function TopicPeekPage() {
               No recent messages on this topic. The topic may be idle or have no messages.
             </p>
           ) : (
-            <table style={tableStyle}>
+            <table aria-label="Recent messages on this topic" style={tableStyle}>
               <thead>
                 <tr>
                   <th style={thStyle}>Timestamp</th>
