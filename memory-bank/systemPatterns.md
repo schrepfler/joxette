@@ -126,7 +126,34 @@ KafkaConsumer.poll() → emit → groupedWithin(batchSize, batchTimeout)
 - `releaseOwnLocks()` called at startup to clean up locks from a previous crash
 - Other instances skip (not fail) when the lock is held; they log at DEBUG and move on
 
-### 14. KIP-848 Cooperative Rebalance
+### 14. BackgroundTaskRegistry — unified ad-hoc VT lifecycle
+
+**File:** `com.joxette.lifecycle.BackgroundTaskRegistry` (`SmartLifecycle`, phase `Integer.MAX_VALUE - 2048`)
+
+Provides a single `submit(name, task)` entry-point for ad-hoc virtual threads that need ordered shutdown:
+
+- `submit(name, task)` wraps the runnable in `try/finally { tasks.remove(id) }` so normally-completing tasks self-clean; each VT is stored in a `ConcurrentHashMap<UUID, TaskHandle>`.
+- `stop()` sets `accepting=false` (closes the submission window), interrupts all tracked VTs, then joins them against a **single shared 30 s deadline** (not per-task).
+- `getRunningTasks()` returns a snapshot — used by `GET /health` to expose a `backgroundTasks` summary (`running`, `names`).
+- Phase `MAX_VALUE - 2048` fires between `SseReplayHandler` (`MAX_VALUE - 1024`) and Pekko `@PreDestroy`, so exported jobs, live-metrics SSE streams, and manual retention VTs are always interrupted before the actor system shuts down.
+
+Migrated sites:
+- `ExportService` — export job VTs
+- `CompactionController` — manual retention VTs
+- `InstanceController` — live-metrics SSE VTs
+- `SseReplayHandler` keeps its own tracking (pre-existing pattern, not merged).
+
+### 15. Pull-based eviction in ActiveReplayTracker
+
+`ActiveReplayTracker` used to spawn a cleanup VT (`Thread.ofVirtual().name("replay-tracker-cleanup-" + id)`) to remove completed entries after a 30 s sleep. This thread is now eliminated entirely:
+
+- `Entry` gained a `volatile Instant completedAt` field.
+- `Handle.close()` sets `entry.completedAt = Instant.now()` — no thread spawn.
+- `listActive()` uses an `Iterator`-based inline scan: entries where `completedAt != null && completedAt.isBefore(Instant.now().minusSeconds(30))` are removed via `it.remove()`.
+
+Same 30 s visibility window; zero background threads.
+
+### 16. KIP-848 Cooperative Rebalance
 - `TopicRecorder` handles `onPartitionsRevoked` by draining only the revoked partitions through the write channel before incrementing the epoch
 - Non-revoked partitions continue recording without pause — critical for Kafka 4.x where the broker can assign/revoke individual partitions independently
 - `DuckLakeWriteChannel` extracted as an explicit type to carry partition metadata alongside write batches

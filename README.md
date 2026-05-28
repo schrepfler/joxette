@@ -37,6 +37,7 @@ Storage is powered by [DuckLake](https://ducklake.select/), using its **data inl
 - 🔒 **ClusterSingleton compaction** — Pekko `ClusterSingleton` guarantees exactly one compaction actor runs cluster-wide; replaces the `compaction_locks` DB table
 - 🎛️ **Supervised recorder lifecycle** — per-topic `TopicLifecycleActor` with Pekko exponential-backoff supervisor; replaces Resilience4j retry
 - 🔄 **KIP-848 rebalance support** — scoped partition drain on cooperative rebalance; non-revoked partitions continue without pause (Kafka 4.x)
+- 🧵 **`BackgroundTaskRegistry`** — unified lifecycle manager for ad-hoc virtual threads (exports, live-metrics SSE, manual retention); `SmartLifecycle` phase `MAX_VALUE − 2048` ensures orderly interrupt + join before Pekko shutdown
 
 ---
 
@@ -445,6 +446,7 @@ joxette/
 │       │   ├── JoxetteApplication.java
 │       │   ├── config/              # Spring beans: DuckDB, Kafka, S3, Web, Scheduling, OpenAPI
 │       │   ├── db/                  # DuckLakeManager, SchemaManager
+│       │   ├── lifecycle/           # BackgroundTaskRegistry (SmartLifecycle, phase MAX_VALUE-2048)
 │       │   ├── management/          # Topic / Entity / Broker controllers, config repository
 │       │   ├── recording/           # Kafka consumer + batch writers (jox)
 │       │   ├── replay/              # TopicReplayService (CassetteSource impl),
@@ -503,10 +505,12 @@ joxette/
 **Supervised recorder lifecycle** — Each Kafka topic runs in a `TopicLifecycleActor` child spawned by `RecordingCoordinatorActor`. Pekko's built-in exponential-backoff supervisor restarts failed topic actors automatically, replacing the Resilience4j retry wrapper used previously. The public API of `RecordingCoordinator` (the Spring bean) is unchanged — it is now a thin adapter over the actor ask pattern.
 
 **Ordered graceful shutdown (SIGTERM)** — On SIGTERM (K8s pod termination, `docker stop`, normal `kill`), Spring's JVM shutdown hook drives the teardown in a fixed order:
-1. HTTP — Tomcat drains in-flight requests (`server.shutdown: graceful`, 30 s timeout).
-2. Recorders — `RecordingCoordinator.stopAll()` stops every active topic actor and **waits** for each one to confirm shutdown. `StopTopic` replies only after the underlying `TopicRecorder` VT exits: `recorder.stop()` calls `consumer.wakeup()`, the poll loop breaks, `writeChannel.awaitDrain()` flushes any in-flight DuckDB batches, the final Kafka offset commit fires, and only then does `TopicLifecycleActor` send `Stopped` back to the coordinator.
-3. Write channel — `DuckLakeWriteChannel.stop()` signals `done()` and joins the drain virtual thread (10 s). All recorder VTs have already exited at this point, so the channel is quiescent.
-4. Actor system — `actorSystem.terminate()` awaits clean Pekko shutdown (10 s timeout).
+1. HTTP — Tomcat drains in-flight requests (`server.shutdown: graceful`, 30 s timeout). Phase `MAX_VALUE`.
+2. SSE replay streams — `SseReplayHandler` interrupts all in-flight replay SSE virtual threads. Phase `MAX_VALUE − 1024`.
+3. Background tasks — `BackgroundTaskRegistry` sets `accepting=false`, interrupts all tracked virtual threads (export jobs, live-metrics SSE, manual retention runs), and joins them with a 30 s shared deadline. Phase `MAX_VALUE − 2048`.
+4. Recorders — `RecordingCoordinator.stopAll()` stops every active topic actor and **waits** for each one to confirm shutdown. `StopTopic` replies only after the underlying `TopicRecorder` VT exits: `recorder.stop()` calls `consumer.wakeup()`, the poll loop breaks, `writeChannel.awaitDrain()` flushes any in-flight DuckDB batches, the final Kafka offset commit fires, and only then does `TopicLifecycleActor` send `Stopped` back to the coordinator.
+5. Write channel — `DuckLakeWriteChannel.stop()` signals `done()` and joins the drain virtual thread (10 s). All recorder VTs have already exited at this point, so the channel is quiescent.
+6. Actor system — `actorSystem.terminate()` awaits clean Pekko shutdown (10 s timeout).
 
 Pekko's own JVM shutdown hook is disabled (`pekko.coordinated-shutdown.run-by-jvm-shutdown-hook = off` in `pekko.conf`) so it cannot race with Spring's hook and kill actors before step 2 completes. SIGKILL (`kill -9`) cannot be intercepted by any JVM process; K8s always sends SIGTERM first with a configurable grace period before escalating.
 

@@ -199,6 +199,8 @@ joxette/                              # parent POM: <modules>, dependencyManagem
 │       │                             SchedulingConfig, S3Config, BrokerConnectionFactory,
 │       │                             OpenApiConfig, JacksonConfig
 │       ├── db/                       DuckLakeManager, SchemaManager
+│       ├── lifecycle/                BackgroundTaskRegistry (SmartLifecycle, phase MAX_VALUE-2048;
+│       │                             unified submit/interrupt/join for ad-hoc VTs)
 │       ├── management/               TopicController, EntityController, BrokerController,
 │       │                             ConfigRepository, RecordingStartupRunner,
 │       │                             HealthController, MatcherPreviewController,

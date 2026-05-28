@@ -1,13 +1,27 @@
 # Active Context
 
-## Current Focus — Multi-instance / cluster hardening complete
+## Current Focus — Lifecycle hardening complete
 
-The cluster hardening sprint is complete. Joxette can now run as multiple coordinated
-instances with role-based subsystem gating, distributed compaction locking, shared
-instance observability, KIP-848 cooperative rebalance support, and an upgraded
-duckdb_jdbc (1.5.3.0) that confirmed VARIANT round-trips through DuckLake Parquet.
+Two improvements shipped since cluster hardening: a case-insensitive enum binding
+fix for all replay `@RequestParam` enums, and a new `BackgroundTaskRegistry` that
+gives ad-hoc virtual threads a consistent lifecycle with ordered shutdown.
 
-### Completed this sprint (cluster hardening + DuckDB 1.5.3 upgrade)
+### Completed this sprint (lifecycle hardening)
+
+**Case-insensitive enum `@RequestParam` binding**
+- Root cause: Spring's `Enum.valueOf()` is case-sensitive; `defaultValue = "events"` on `SolOutput` produced HTTP 400 because the constant is `EVENTS`.
+- Fix: added `@JsonCreator parse()` + `Converter<String,X>` in `WebConfig.addFormatters()` for all five affected enums: `SolOutput`, `ReplayOutputMode`, `ResponseFormat`, `StateFoldStrategy`, `DedupPolicy`.
+
+**BackgroundTaskRegistry**
+- New `com.joxette.lifecycle.BackgroundTaskRegistry` (`SmartLifecycle`, phase `MAX_VALUE − 2048`).
+- `submit(name, task)` wraps each runnable in `try/finally { tasks.remove(id) }` for self-cleanup.
+- `stop()` interrupts all tracked VTs and joins against a shared 30 s deadline.
+- Migrated: `ExportService` (export jobs), `CompactionController` (manual retention), `InstanceController` (live-metrics SSE).
+- `ActiveReplayTracker` refactored to pull-based eviction — the 30 s sleep cleanup thread is gone entirely.
+- `GET /health` now includes `backgroundTasks: { running, names }` summary.
+- 8 new `BackgroundTaskRegistryTest` + 5 new `ActiveReplayTrackerTest` tests; all 836 tests green.
+
+### Completed previously (cluster hardening + DuckDB 1.5.3 upgrade)
 
 **DuckDB 1.5.3.0 upgrade**
 - `VariantProbeTest` — 18 tests covering 4 payload classes; decimal encoding fix + selection-vector indexing fix both verified; all pass

@@ -132,7 +132,21 @@
 - [x] `compaction_locks` table — distributed lock storage (instance_id, target, expires_at)
 - [x] `joxette_instances` table — cluster instance registry (instance_id, host, roles, last_heartbeat)
 
+### Lifecycle / Shutdown Hardening
+- [x] `BackgroundTaskRegistry` — `SmartLifecycle` at phase `MAX_VALUE − 2048`; `submit(name, task)` wraps runnable with `finally { tasks.remove(id) }`; `stop()` interrupts all tracked VTs with shared 30 s deadline
+- [x] `ExportService` — migrated from raw `Thread.ofVirtual()` to `registry.submit("export-" + job.id(), …)`
+- [x] `CompactionController` — manual retention VTs migrated to `registry.submit("retention-manual-" + run.id(), …)`
+- [x] `InstanceController` — live-metrics SSE VTs migrated to `registry.submit("live-metrics-sse", …)`; emitter callbacks use `handle.cancel()`
+- [x] `ActiveReplayTracker` — cleanup VT eliminated; pull-based eviction via `completedAt` + iterator in `listActive()`
+- [x] `GET /health` — new `backgroundTasks: { running, names }` field added to `HealthStatus`
+
+### Enum `@RequestParam` case-insensitive binding
+- [x] `SolOutput`, `ReplayOutputMode`, `ResponseFormat`, `StateFoldStrategy`, `DedupPolicy` — each has `@JsonCreator parse()` for case-insensitive match
+- [x] `WebConfig.addFormatters()` — `Converter<String,X>` registered for all five enums; fixes HTTP 400 on lowercase `defaultValue` strings
+
 ### Tests
+- [x] `BackgroundTaskRegistryTest` — 8 tests: phase, submit/self-remove, exception self-remove, stop-interrupts, stop-after-stop-throws, multi-task deadline, isRunning lifecycle, TaskHandle fields
+- [x] `ActiveReplayTrackerTest` — 5 tests: running-always-present, completed-lingers-then-evicted, failed-lingers-then-evicted, no-eviction-before-window, sentCount-updated-via-accept
 - [x] `MessageRouterTest` — full routing logic, DB-backed stub, reload test
 - [x] `TopicReplayServiceTest`
 - [x] `EntityReplayServiceTest`
