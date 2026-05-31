@@ -20,16 +20,17 @@ flowchart TB
         W    --> DB
         API  --> DB
         CRON -->|compact trigger| DB
-    end
 
-    subgraph storage ["Persistent Storage"]
-        CAT[("DuckDB Catalog\n.ducklake file")]
-        S3[("Object Storage\nS3 / GCS / Azure\nParquet files")]
+        subgraph storage ["Persistent Storage"]
+            CAT[("DuckDB Catalog\n.ducklake file")]
+            S3[("Object Storage\nS3 / GCS / Azure\nParquet files")]
+        end
+
+        DB -->|catalog ops| CAT
+        DB -->|"Parquet flush (httpfs + DuckLake)"| S3
     end
 
     K -->|consume| C
-    DB -->|catalog ops| CAT
-    DB -->|"Parquet flush (httpfs + DuckLake)"| S3
 
     style joxette   fill:#f0f4ff,stroke:#6674cc,stroke-width:2px
     style recording fill:#e8f5e9,stroke:#43a047,stroke-width:1px

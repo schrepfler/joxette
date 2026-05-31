@@ -1,6 +1,7 @@
 package com.joxette.testkit;
 
 import com.joxette.replay.CassetteRecord;
+import com.joxette.replay.PartitionStrategy;
 import com.joxette.replay.ReplayProgress;
 import com.joxette.replay.ReplayToTopicRequest;
 import org.junit.jupiter.params.ParameterizedTest;
@@ -55,7 +56,7 @@ class ReplayEngineBuilderTest {
 
         var sink = new CapturingRecordSink();
         var engine = ReplayEngineBuilder.create().cassetteSource(cassette).sink(sink).build();
-        var req = new ReplayToTopicRequest("out", null, null, null, null, null, null);
+        var req = new ReplayToTopicRequest("out", null, null, null, null, null, null, null, PartitionStrategy.DEFAULT);
 
         long startedAt = System.nanoTime();
         List<ReplayProgress> progressEvents = new ArrayList<>();
@@ -107,7 +108,7 @@ class ReplayEngineBuilderTest {
         var cassette = new InMemoryCassetteSource().addAll(records);
         var sink = new CapturingRecordSink();
         var engine = ReplayEngineBuilder.create().cassetteSource(cassette).sink(sink).build();
-        var req = new ReplayToTopicRequest("out", null, null, null, null, null, null);
+        var req = new ReplayToTopicRequest("out", null, null, null, null, null, null, null, PartitionStrategy.DEFAULT);
 
         List<ReplayProgress> progressEvents = new ArrayList<>();
         engine.replayTopic("topic", req, 2.0, progressEvents::add);

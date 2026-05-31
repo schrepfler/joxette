@@ -144,7 +144,15 @@ public class SseReplayHandler implements SmartLifecycle {
             });
             emitter.complete();
         } catch (java.io.UncheckedIOException e) {
-            sendSseError(emitter, e.getCause());
+            if (isClientDisconnect(e.getCause())) {
+                log.debug("SSE client disconnected mid-stream: {}", e.getCause().getMessage());
+                try { emitter.complete(); } catch (Exception ignored) {}
+            } else {
+                sendSseError(emitter, e.getCause());
+            }
+        } catch (IllegalStateException e) {
+            // Emitter already completed (e.g. broken-pipe callback raced us) — nothing to do.
+            log.debug("SSE emitter already completed: {}", e.getMessage());
         } catch (Exception e) {
             sendSseError(emitter, e);
         }
@@ -277,7 +285,14 @@ public class SseReplayHandler implements SmartLifecycle {
                 }, hooks);
                 emitter.complete();
             } catch (java.io.UncheckedIOException e) {
-                sendSseError(emitter, e.getCause());
+                if (isClientDisconnect(e.getCause())) {
+                    log.debug("SSE follow client disconnected mid-stream: {}", e.getCause().getMessage());
+                    try { emitter.complete(); } catch (Exception ignored) {}
+                } else {
+                    sendSseError(emitter, e.getCause());
+                }
+            } catch (IllegalStateException e) {
+                log.debug("SSE follow emitter already completed: {}", e.getMessage());
             } catch (Exception e) {
                 sendSseError(emitter, e);
             } finally {
@@ -582,18 +597,41 @@ public class SseReplayHandler implements SmartLifecycle {
     }
 
     /**
+     * Returns true when the exception represents a client-side disconnect:
+     * broken pipe, reset by peer, or Spring's AsyncRequestNotUsableException.
+     * These are not server errors and should not be logged at ERROR.
+     */
+    private static boolean isClientDisconnect(Throwable t) {
+        if (t == null) return false;
+        String name = t.getClass().getName();
+        if (name.contains("AsyncRequestNotUsableException")) return true;
+        String msg = t.getMessage();
+        if (msg == null) return false;
+        String lower = msg.toLowerCase();
+        return lower.contains("broken pipe")
+                || lower.contains("connection reset")
+                || lower.contains("closed")
+                || lower.contains("reset by peer");
+    }
+
+    /**
      * Emits a terminal {@code event: error} SSE frame carrying a ProblemDetail-shaped
      * payload, then completes the emitter normally. The underlying cause is logged
-     * at ERROR. Swallows any {@link IOException} from the emitter (the client may
-     * have already disconnected).
+     * at ERROR. Client-disconnect causes are demoted to DEBUG. Swallows any
+     * {@link IOException} or {@link IllegalStateException} from the emitter
+     * (the client may have already disconnected).
      */
     private void sendSseError(SseEmitter emitter, Throwable cause) {
-        log.error("Mid-stream SSE replay failure", cause);
-        try {
-            String payload = objectMapper.writeValueAsString(problemPayload(cause));
-            emitter.send(SseEmitter.event().name("error").data(payload).build());
-        } catch (Exception ignored) {
-            // Client may have disconnected; nothing we can do.
+        if (isClientDisconnect(cause)) {
+            log.debug("SSE client disconnected, stream terminated: {}", cause.getMessage());
+        } else {
+            log.error("Mid-stream SSE replay failure", cause);
+            try {
+                String payload = objectMapper.writeValueAsString(problemPayload(cause));
+                emitter.send(SseEmitter.event().name("error").data(payload).build());
+            } catch (Exception ignored) {
+                // Client may have disconnected; nothing we can do.
+            }
         }
         try { emitter.complete(); } catch (Exception ignored) {}
     }

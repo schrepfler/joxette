@@ -146,9 +146,12 @@ public class RecordingCoordinatorActor {
                         msg.replyTo().tell(new StopComplete(false));
                         return Behaviors.same();
                     }
+                    // Remove before asking — the watchWith fallback fires only for unexpected
+                    // terminations. The ask callback below is the authoritative "stopped" signal
+                    // for explicit StopTopic requests, preventing a double ChildStopped log.
                     children.remove(msg.topic());
                     startedAts.remove(msg.topic());
-                    // Ask the child to stop; reply to our caller only after the recorder VT exits.
+                    ctx.unwatch(child);
                     ctx.ask(
                             TopicLifecycleActor.StopReply.class,
                             child,

@@ -8,6 +8,7 @@ import com.joxette.recording.RecordingCoordinator;
 import com.joxette.recording.RecordingCoordinatorActor;
 import com.joxette.replay.KnownEntitiesRepository;
 import com.joxette.replay.MessageRouter;
+import com.joxette.replay.ReplayCoordinatorActor;
 import com.typesafe.config.Config;
 import com.typesafe.config.ConfigFactory;
 import jakarta.annotation.PreDestroy;
@@ -69,6 +70,8 @@ public class PekkoConfig {
     @Autowired @Lazy private RecordingCoordinator recordingCoordinator;
 
     private ActorSystem<Void> actorSystem;
+    // Stored directly (not via @Lazy) so shutdown() holds the real ActorRef, not a Spring proxy.
+    private ActorRef<com.joxette.replay.ReplayCoordinatorActor.Cmd> replayCoordinatorRef;
 
     /**
      * {@code destroyMethod = ""} suppresses Spring's auto-detection of
@@ -171,15 +174,31 @@ public class PekkoConfig {
     }
 
     /**
-     * Ordered shutdown: recorders → write channel → actor system.
+     * Spawns the replay coordinator actor and exposes it as a Spring bean.
+     *
+     * <p>Manages per-request {@link com.joxette.replay.ReplayActor} children,
+     * replacing the old {@code ActiveReplayTracker} ConcurrentHashMap with a
+     * proper actor hierarchy that supports proactive cancellation.
+     */
+    @Bean
+    public ActorRef<ReplayCoordinatorActor.Cmd> replayCoordinatorActor(ActorSystem<Void> system) {
+        replayCoordinatorRef = system.systemActorOf(
+                ReplayCoordinatorActor.create(),
+                "replay-coordinator",
+                org.apache.pekko.actor.typed.Props.empty());
+        return replayCoordinatorRef;
+    }
+
+    /**
+     * Ordered shutdown: recorders → replays → write channel → actor system.
      *
      * <p>The order matters:
      * <ol>
-     *   <li>Stop all topic recorders first — each stop() ask goes to the coordinator actor,
-     *       so the actor system must still be alive at this point.</li>
+     *   <li>Stop all topic recorders — each stop() ask goes to the recording-coordinator actor.</li>
+     *   <li>Cancel all active replays — interrupts VTs via the replay-coordinator actor.</li>
      *   <li>Drain the write channel — lets any in-flight DuckDB batches complete before
      *       the catalog connection closes.</li>
-     *   <li>Terminate the actor system last — coordinator actor is no longer needed.</li>
+     *   <li>Terminate the actor system last.</li>
      * </ol>
      *
      * <p>Pekko's own JVM shutdown hook is disabled in {@code pekko.conf}
@@ -193,20 +212,34 @@ public class PekkoConfig {
 
         // Step 1: stop all topic recorders (asks go to the recording-coordinator actor).
         try {
-            log.info("[shutdown 1/3] stopping all topic recorders...");
+            log.info("[shutdown 1/4] stopping all topic recorders...");
             recordingCoordinator.stopAll();
-            log.info("[shutdown 1/3] recorders stopped ({} ms)", elapsed(t));
+            log.info("[shutdown 1/4] recorders stopped ({} ms)", elapsed(t));
         } catch (Exception e) {
-            log.warn("[shutdown 1/3] stopAll failed: {}", e.getMessage());
+            log.warn("[shutdown 1/4] stopAll failed: {}", e.getMessage());
         }
 
-        // Step 2: drain the write channel so in-flight DuckDB writes complete.
+        // Step 2: cancel any active replay-to-topic VTs so they release the DuckDB connection.
         try {
-            log.info("[shutdown 2/3] draining write channel...");
-            writeChannel.stop();
-            log.info("[shutdown 2/3] write channel drained ({} ms)", elapsed(t));
+            log.info("[shutdown 2/4] cancelling active replays...");
+            int cancelled = org.apache.pekko.actor.typed.javadsl.AskPattern.<com.joxette.replay.ReplayCoordinatorActor.Cmd, Integer>ask(
+                    replayCoordinatorRef,
+                    com.joxette.replay.ReplayCoordinatorActor.CancelAll::new,
+                    java.time.Duration.ofSeconds(5),
+                    actorSystem.scheduler()
+            ).toCompletableFuture().join();
+            log.info("[shutdown 2/4] {} replay(s) cancelled ({} ms)", cancelled, elapsed(t));
         } catch (Exception e) {
-            log.warn("[shutdown 2/3] write channel stop failed: {}", e.getMessage());
+            log.warn("[shutdown 2/4] replay cancel failed: {}", e.getMessage());
+        }
+
+        // Step 3: drain the write channel so in-flight DuckDB writes complete.
+        try {
+            log.info("[shutdown 3/4] draining write channel...");
+            writeChannel.stop();
+            log.info("[shutdown 3/4] write channel drained ({} ms)", elapsed(t));
+        } catch (Exception e) {
+            log.warn("[shutdown 3/4] write channel stop failed: {}", e.getMessage());
         }
 
         // Step 3: run Pekko coordinated-shutdown and wait for it to complete.
@@ -216,15 +249,15 @@ public class PekkoConfig {
         // This is the only call that actually stops Artery transport threads; plain
         // actorSystem.terminate() fires and returns immediately, leaving those threads alive.
         if (actorSystem != null) {
-            log.info("[shutdown 3/3] running Pekko coordinated-shutdown...");
+            log.info("[shutdown 4/4] running Pekko coordinated-shutdown...");
             try {
                 CoordinatedShutdown.get(actorSystem)
                         .runAll(CoordinatedShutdown.clusterLeavingReason())
                         .toCompletableFuture()
                         .get(20, TimeUnit.SECONDS);
-                log.info("[shutdown 3/3] coordinated-shutdown complete ({} ms)", elapsed(t));
+                log.info("[shutdown 4/4] coordinated-shutdown complete ({} ms)", elapsed(t));
             } catch (Exception e) {
-                log.warn("[shutdown 3/3] coordinated-shutdown did not finish cleanly: {}", e.getMessage());
+                log.warn("[shutdown 4/4] coordinated-shutdown did not finish cleanly: {}", e.getMessage());
             }
         }
 

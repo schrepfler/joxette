@@ -583,68 +583,63 @@ public class EntityReplayService implements EntityCassetteSource {
     public EntityStats getEntityStats(String entityType, String entityId) throws SQLException {
         validateEntityType(entityType);
 
-        // Unique per-call name avoids collisions when concurrent requests hit the same
-        // shared DuckDB connection (temp tables are connection-scoped in DuckDB).
-        String tempName = "stats_deduped_" + UUID.randomUUID().toString().replace("-", "");
+        // Pure-read CTE — no temp table writes, safe for concurrent callers on any
+        // catalog backend (embedded DuckDB, Quack, PostgreSQL).
+        // entityType is validated above ([a-z][a-z0-9_]*); entityId is a bind param.
+        String tableName = "lake.main.entity_" + entityType;
+        String dedupCte =
+                "WITH deduped AS ("
+                + "  SELECT kafka_timestamp AS ts, topic"
+                + "  FROM " + tableName
+                + "  WHERE entity_id = {0}"
+                + "  QUALIFY ROW_NUMBER() OVER"
+                + "    (PARTITION BY topic, kafka_partition, kafka_offset"
+                + "     ORDER BY recorded_at DESC) = 1"
+                + ") ";
 
-        // Materialise the deduplicated (ts, topic) rows once via CTAS so the QUALIFY
-        // window function is evaluated a single time instead of once per aggregation query.
-        // entityType is validated above ([a-z][a-z0-9_]*); entityId is bound via ?.
-        String ctas = "CREATE TEMPORARY TABLE " + tempName
-                + " AS SELECT kafka_timestamp AS ts, topic"
-                + " FROM lake.main.entity_" + entityType
-                + " WHERE entity_id = ?"
-                + " QUALIFY ROW_NUMBER() OVER"
-                + "   (PARTITION BY topic, kafka_partition, kafka_offset"
-                + "    ORDER BY recorded_at DESC) = 1";
+        org.jooq.Param<String> idParam = DSL.val(entityId);
 
-        dsl.execute(ctas, entityId);
-        try {
-            Table<?>              tempTable    = DSL.table(DSL.name(tempName));
-            Field<OffsetDateTime> dedupedTs    = DSL.field(DSL.name("ts"),    OffsetDateTime.class);
-            Field<String>         dedupedTopic = DSL.field(DSL.name("topic"), String.class);
-            Field<Integer>        fCnt         = DSL.count().as("cnt");
-            Field<OffsetDateTime> fFirstMsg    = DSL.min(dedupedTs).as("first_msg");
-            Field<OffsetDateTime> fLastMsg     = DSL.max(dedupedTs).as("last_msg");
+        long count = 0;
+        Instant firstMsg = null;
+        Instant lastMsg  = null;
 
-            long count = 0;
-            Instant firstMsg = null;
-            Instant lastMsg  = null;
-
-            var aggRecord = dsl.select(fCnt, fFirstMsg, fLastMsg).from(tempTable).fetchOne();
-            if (aggRecord != null) {
-                count = aggRecord.get(fCnt).longValue();
-                OffsetDateTime f = aggRecord.get(fFirstMsg);
-                OffsetDateTime l = aggRecord.get(fLastMsg);
-                if (f != null) firstMsg = f.toInstant();
-                if (l != null) lastMsg  = l.toInstant();
-            }
-
-            Map<String, Long> countByTopic = new LinkedHashMap<>();
-            dsl.select(dedupedTopic, fCnt)
-                    .from(tempTable)
-                    .groupBy(dedupedTopic)
-                    .orderBy(dedupedTopic.asc())
-                    .forEach(r -> countByTopic.put(r.get(dedupedTopic), r.get(fCnt).longValue()));
-
-            Instant firstSeen = null;
-            Instant lastSeen  = null;
-
-            var regRecord = dsl
-                    .select(F_FIRST_SEEN, F_LAST_SEEN)
-                    .from(KNOWN_ENTITIES)
-                    .where(F_ENTITY_TYPE.eq(entityType).and(F_ENTITY_ID.eq(entityId)))
-                    .fetchOne();
-            if (regRecord != null) {
-                firstSeen = regRecord.get(F_FIRST_SEEN).toInstant();
-                lastSeen  = regRecord.get(F_LAST_SEEN).toInstant();
-            }
-
-            return new EntityStats(entityType, entityId, count, firstMsg, lastMsg,
-                    firstSeen, lastSeen, countByTopic);
-        } finally {
-            dsl.execute("DROP TABLE IF EXISTS " + tempName);
+        var aggRecord = dsl.fetchOne(
+                DSL.resultQuery(dedupCte
+                        + "SELECT COUNT(*) AS cnt, MIN(ts) AS first_msg, MAX(ts) AS last_msg"
+                        + " FROM deduped",
+                        idParam));
+        if (aggRecord != null) {
+            count = ((Number) aggRecord.get("cnt")).longValue();
+            var f = aggRecord.get("first_msg", java.time.OffsetDateTime.class);
+            var l = aggRecord.get("last_msg",  java.time.OffsetDateTime.class);
+            if (f != null) firstMsg = f.toInstant();
+            if (l != null) lastMsg  = l.toInstant();
         }
+
+        Map<String, Long> countByTopic = new LinkedHashMap<>();
+        dsl.fetch(
+                DSL.resultQuery(dedupCte
+                        + "SELECT topic, COUNT(*) AS cnt FROM deduped"
+                        + " GROUP BY topic ORDER BY topic",
+                        idParam))
+           .forEach(r -> countByTopic.put(
+                   r.get("topic", String.class),
+                   ((Number) r.get("cnt")).longValue()));
+
+        Instant firstSeen = null;
+        Instant lastSeen  = null;
+        var regRecord = dsl
+                .select(F_FIRST_SEEN, F_LAST_SEEN)
+                .from(KNOWN_ENTITIES)
+                .where(F_ENTITY_TYPE.eq(entityType).and(F_ENTITY_ID.eq(entityId)))
+                .fetchOne();
+        if (regRecord != null) {
+            firstSeen = regRecord.get(F_FIRST_SEEN).toInstant();
+            lastSeen  = regRecord.get(F_LAST_SEEN).toInstant();
+        }
+
+        return new EntityStats(entityType, entityId, count, firstMsg, lastMsg,
+                firstSeen, lastSeen, countByTopic);
     }
 
     // -------------------------------------------------------------------------

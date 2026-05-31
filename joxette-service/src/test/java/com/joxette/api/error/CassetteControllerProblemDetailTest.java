@@ -5,8 +5,10 @@ import com.joxette.config.JoxetteProperties;
 import com.joxette.management.ConfigRepository;
 import com.joxette.management.KafkaTopicAdmin;
 import com.joxette.recording.CassetteRecordingBus;
-import com.joxette.replay.ActiveReplayTracker;
 import com.joxette.replay.CassetteController;
+import com.joxette.replay.ReplayCoordinatorActor;
+import org.apache.pekko.actor.typed.ActorRef;
+import org.apache.pekko.actor.typed.ActorSystem;
 import com.joxette.replay.CassetteLifecycleService;
 import com.joxette.replay.EntityReplayService;
 import com.joxette.replay.FieldSuggestionsService;
@@ -61,7 +63,10 @@ class CassetteControllerProblemDetailTest {
     @Mock CassetteRecordingBus      recordingBus;
     @Mock KafkaTopicAdmin           kafkaTopicAdmin;
     @Mock ConfigRepository          configRepository;
-    @Mock ActiveReplayTracker       replayTracker;
+    @SuppressWarnings("unchecked")
+    @Mock ActorRef<ReplayCoordinatorActor.Cmd> replayCoordinator;
+    @SuppressWarnings("unchecked")
+    @Mock ActorSystem<Void>         actorSystem;
 
     private MockMvc mvc;
     private final ObjectMapper mapper = new ObjectMapper();
@@ -72,7 +77,9 @@ class CassetteControllerProblemDetailTest {
                 topicService, entityService, sseHandler, lifecycle, sinkFactory,
                 scheduledReplayService, metadataInjector, presetRepository, properties,
                 mapper, sequenceMatchService, null /* solMatchService */, null /* sunburstService */,
-                fieldSuggestionsService, recordingBus, kafkaTopicAdmin, configRepository, replayTracker,
+                fieldSuggestionsService, recordingBus, kafkaTopicAdmin, configRepository,
+                replayCoordinator, actorSystem,
+                java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor(),
                 new com.joxette.replay.StateFoldService(mapper),
                 new com.joxette.replay.DiffService(mapper),
                 new com.joxette.replay.TimelineService(),

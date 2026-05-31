@@ -12,6 +12,8 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 public class JoxetteApplication {
 
     public static void main(String[] args) {
+        System.setProperty("org.jooq.no-logo", "true");
+        System.setProperty("org.jooq.no-tips",  "true");
         SpringApplication.run(JoxetteApplication.class, args);
     }
 }

@@ -79,8 +79,19 @@ Pekko actors are used for **supervision and lifecycle**, not throughput. The
 actor dispatcher is intentionally tiny (`fixed-pool-size = 4`) because actors
 only route messages; all heavy work is offloaded to virtual threads via
 `context.pipeToSelf(CompletableFuture.supplyAsync(…, pekkoVtExecutor), …)`.
-`RecordingCoordinatorActor` supervises one `TopicLifecycleActor` per topic with
-exponential backoff restart.
+
+Two coordinator actors run under the system guardian:
+
+- **`RecordingCoordinatorActor`** — manages one `TopicLifecycleActor` child per
+  topic. Each child runs `TopicRecorder` on a VT with Pekko exponential-backoff
+  restart on failure.
+- **`ReplayCoordinatorActor`** — manages one `ReplayActor` child per active
+  replay-to-topic SSE request. Each child runs `FlowReplayEngine` (Jox supervised
+  scope) on a VT. When the SSE client disconnects, `SseEmitter.onCompletion` tells
+  the coordinator `CancelReplay(id)`, which interrupts the VT — the Jox scope
+  propagates cancellation to the DuckDB read immediately. Completed/cancelled
+  entries linger in the coordinator for 30 s (visible in the live flow map) then
+  are evicted.
 
 ---
 
@@ -301,11 +312,19 @@ startupProbe:
 
 ### Graceful shutdown
 
-Joxette drives an ordered shutdown on `SIGTERM`
-(`PekkoConfig.shutdown()` plus `SseReplayHandler`/`BackgroundTaskRegistry`
-lifecycle): in-flight SSE/background VTs are interrupted, recorders stop, the
-write channel drains so buffered batches reach DuckLake, then the actor system
-runs coordinated shutdown (≤20 s). Give pods enough grace:
+Joxette drives an ordered 4-step shutdown on `SIGTERM` via `PekkoConfig.shutdown()`:
+
+1. **Stop recorders** — `RecordingCoordinator.stopAll()` asks every
+   `TopicLifecycleActor` to stop; waits for each recorder VT to exit and offsets
+   to commit before proceeding.
+2. **Cancel active replays** — `ReplayCoordinatorActor.CancelAll` interrupts every
+   in-flight replay VT so the DuckDB connection is released before it closes.
+3. **Drain write channel** — lets any in-flight DuckDB batches reach DuckLake
+   before the catalog connection closes.
+4. **Pekko coordinated shutdown** — cluster leave → exiting → actor-system
+   terminate → Artery transport shutdown (≤20 s timeout).
+
+Give pods enough grace to complete all four steps:
 
 ```yaml
 terminationGracePeriodSeconds: 45

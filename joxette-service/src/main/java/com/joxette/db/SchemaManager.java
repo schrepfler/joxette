@@ -172,6 +172,15 @@ public class SchemaManager {
             } catch (SQLException e) {
                 log.debug("Could not drop VARIANT probe table on cleanup: {}", e.getMessage());
             }
+            // Vacuum to physically delete the probe's Parquet files from object storage.
+            // Without this, DROP TABLE only removes the catalog entry; the files accumulate
+            // across restarts until the next scheduled compaction/vacuum run.
+            try {
+                exec(conn, "CALL " + catalog + ".ducklake_vacuum()");
+                log.debug("VARIANT probe: vacuum complete, Parquet files removed");
+            } catch (SQLException e) {
+                log.debug("Could not vacuum after VARIANT probe drop ({}); files will be cleaned by next compaction", e.getMessage());
+            }
             // Restore inlining to the user-configured limit (or DuckLake's default of 10).
             if (inliningDisabled) {
                 restoreInliningAfterProbe(conn, catalog);

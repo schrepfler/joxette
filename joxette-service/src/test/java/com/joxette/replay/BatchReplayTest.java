@@ -33,6 +33,9 @@ import java.time.Instant;
 import java.util.List;
 import java.util.stream.IntStream;
 
+import com.joxette.replay.ReplayCoordinatorActor;
+import org.apache.pekko.actor.typed.ActorRef;
+import org.apache.pekko.actor.typed.ActorSystem;
 import static org.hamcrest.Matchers.containsString;
 import static org.mockito.Mockito.mock;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
@@ -64,7 +67,10 @@ class BatchReplayTest {
     @Mock CassetteRecordingBus      recordingBus;
     @Mock KafkaTopicAdmin           kafkaTopicAdmin;
     @Mock ConfigRepository          configRepository;
-    @Mock ActiveReplayTracker       replayTracker;
+    @SuppressWarnings("unchecked")
+    @Mock ActorRef<ReplayCoordinatorActor.Cmd> replayCoordinator;
+    @SuppressWarnings("unchecked")
+    @Mock ActorSystem<Void>         actorSystem;
 
     private Connection conn;
     private MockMvc    mvc;
@@ -95,7 +101,9 @@ class BatchReplayTest {
                 topicService, entityService, realSseHandler, lifecycle, sinkFactory,
                 scheduledReplayService, metadataInjector, presetRepository, properties,
                 objectMapper, sequenceMatchService, null, null,
-                fieldSuggestionsService, recordingBus, kafkaTopicAdmin, configRepository, replayTracker,
+                fieldSuggestionsService, recordingBus, kafkaTopicAdmin, configRepository,
+                replayCoordinator, actorSystem,
+                java.util.concurrent.Executors.newVirtualThreadPerTaskExecutor(),
                 new StateFoldService(objectMapper),
                 new DiffService(objectMapper),
                 new TimelineService(),

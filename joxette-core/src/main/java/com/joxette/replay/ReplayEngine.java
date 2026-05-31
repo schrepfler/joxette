@@ -213,7 +213,7 @@ public class ReplayEngine {
      * Sleeps for the scaled inter-message delay if {@code prev} is not null and
      * {@code current} is strictly after {@code prev}.
      */
-    private static void applyDelay(Instant prev, Instant current, double speedMultiplier) {
+    public static void applyDelay(Instant prev, Instant current, double speedMultiplier) {
         if (prev == null || !current.isAfter(prev)) {
             return;
         }

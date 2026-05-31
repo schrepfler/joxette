@@ -36,6 +36,7 @@ interface ParticleStore {
   particles: Particle[]
   subscribe: (cb: () => void) => () => void
   spawn: (edgeId: string, count: number, color: string) => void
+  clear: (edgeId: string) => void
   tick: (dt: number) => void
 }
 
@@ -53,6 +54,11 @@ function makeParticleStore(): ParticleStore {
         particles = [...particles, { id: nextId++, edgeId, progress: Math.random() * 0.15, speed: 0.0004 + Math.random() * 0.0003, color }]
       }
       notify()
+    },
+    clear(edgeId) {
+      const before = particles.length
+      particles = particles.filter(p => p.edgeId !== edgeId)
+      if (particles.length !== before) notify()
     },
     tick(dt) {
       const before = particles.length
@@ -93,7 +99,11 @@ function useLiveMetrics(): { data: ClusterStateView | null; connected: boolean }
 // Particle spawner — tracks counter deltas, one dot per message (capped)
 // ---------------------------------------------------------------------------
 
-const MAX_PARTICLES_PER_TICK = 12
+// Particle cap per metrics tick — visual ceiling so bursts don't flood the edge
+const MAX_PARTICLES_PER_TICK = 8
+
+// 1 tier particle per this many writes — represents async batched Parquet flush
+const TIER_WRITE_RATIO = 100
 
 function useParticleSpawner(
   recorders: Record<string, RecorderStatus>,
@@ -103,25 +113,47 @@ function useParticleSpawner(
   const prevConsumed   = useRef<Record<string, number>>({})
   const prevWritten    = useRef<Record<string, number>>({})
   const prevReplaySent = useRef<Record<string, number>>({})
+  const tierAccum      = useRef(0)
 
   useEffect(() => {
+    let totalWrittenDelta = 0
+
     for (const [topic, rec] of Object.entries(recorders)) {
       const prevC = prevConsumed.current[topic] ?? rec.messagesConsumed
       const prevW = prevWritten.current[topic]  ?? rec.messagesWritten
       const dC = Math.max(0, rec.messagesConsumed - prevC)
       const dW = Math.max(0, rec.messagesWritten  - prevW)
-      if (dC > 0 && rec.running) store.spawn(`e-kafka-rec-${topic}`, Math.min(dC, MAX_PARTICLES_PER_TICK), '#6E1C1C')
-      if (dW > 0 && rec.running) store.spawn(`e-rec-lake-${topic}`,  Math.min(dW, MAX_PARTICLES_PER_TICK), '#3E6A44')
+
+      if (rec.running && dC > 0) store.spawn(`e-kafka-rec-${topic}`, Math.min(dC, MAX_PARTICLES_PER_TICK), '#6E1C1C')
+      else if (!rec.running)     store.clear(`e-kafka-rec-${topic}`)
+
+      if (rec.running && dW > 0) store.spawn(`e-rec-lake-${topic}`, Math.min(dW, MAX_PARTICLES_PER_TICK), '#3E6A44')
+      else if (!rec.running)     store.clear(`e-rec-lake-${topic}`)
+
+      totalWrittenDelta += dW
       prevConsumed.current[topic] = rec.messagesConsumed
       prevWritten.current[topic]  = rec.messagesWritten
     }
+
+    // Tier particles only when real writes happened this tick; reset accum when idle
+    if (totalWrittenDelta > 0) {
+      tierAccum.current += totalWrittenDelta
+      const n = Math.floor(tierAccum.current / TIER_WRITE_RATIO)
+      if (n > 0) {
+        store.spawn('e-lake-objstore', Math.min(n, 3), '#6B46A0')
+        tierAccum.current -= n * TIER_WRITE_RATIO
+      }
+    } else {
+      tierAccum.current = 0
+    }
+
     for (const replay of replays) {
-      if (replay.status !== 'running') continue
-      const prev = prevReplaySent.current[replay.id] ?? replay.sentCount
+      const prev  = prevReplaySent.current[replay.id] ?? replay.sentCount
       const delta = Math.max(0, replay.sentCount - prev)
-      if (delta > 0) {
-        store.spawn(`e-lake-replay-${replay.id}`,   Math.min(delta, MAX_PARTICLES_PER_TICK), '#1E5A8A')
-        store.spawn(`e-replay-target-${replay.id}`, Math.min(delta, MAX_PARTICLES_PER_TICK), '#1E5A8A')
+      if (replay.status === 'running' && delta > 0) {
+        store.spawn(`e-lake-replay-${replay.id}`,              Math.min(delta, MAX_PARTICLES_PER_TICK), '#1E5A8A')
+        store.spawn(`e-replay-target-${replay.id}`,            Math.min(delta, MAX_PARTICLES_PER_TICK), '#1E5A8A')
+        store.spawn(`e-replay-target-topic-${replay.targetTopic}`, Math.min(delta, MAX_PARTICLES_PER_TICK), '#1E5A8A')
       }
       prevReplaySent.current[replay.id] = replay.sentCount
     }
@@ -153,6 +185,13 @@ function ParticleEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
   const store = useParticleStore()
   const [, forceRender] = useState(0)
   useEffect(() => store.subscribe(() => forceRender(n => n + 1)), [store])
+
+  // Evict in-flight particles immediately when the edge goes inactive
+  const wasActive = useRef(data?.active ?? false)
+  useEffect(() => {
+    if (wasActive.current && !data?.active) store.clear(id)
+    wasActive.current = data?.active ?? false
+  }, [data?.active, id, store])
 
   const [edgePath, labelX, labelY] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition })
   const pathRef = useRef<SVGPathElement | null>(null)
@@ -191,6 +230,8 @@ function ParticleEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
 interface KafkaTopicNodeData extends Record<string, unknown> { label: string; partitions: number }
 interface InstanceContainerNodeData extends Record<string, unknown> {
   instanceId: string; roles: string[]; pekkoStatus: string | null; reachable: boolean; width: number; height: number
+  hasRecorders: boolean; hasCatalog: boolean; hasReplays: boolean
+  lakeColX: number; rplColX: number   // -1 when panel absent
 }
 interface RecordJobNodeData extends Record<string, unknown> {
   topic: string; running: boolean; lag: number; consumedPerSec: number; writtenPerSec: number; partitions: number[]; error: string | null
@@ -198,7 +239,8 @@ interface RecordJobNodeData extends Record<string, unknown> {
 interface ReplayJobNodeData extends Record<string, unknown> {
   sourceTopic: string; targetTopic: string; sentCount: number; status: ActiveReplay['status']
 }
-interface DuckLakeNodeData extends Record<string, unknown> { label: string; totalWritten: number; embedded?: boolean }
+interface DuckDbEngineNodeData extends Record<string, unknown> { totalWritten: number; nodeWidth: number }
+interface DuckLakeNodeData extends Record<string, unknown> { label: string; totalWritten: number }
 interface ObjectStorageNodeData extends Record<string, unknown> { label: string }
 interface ReplayTargetNodeData extends Record<string, unknown> { label: string }
 
@@ -223,6 +265,16 @@ function KafkaTopicNode({ data }: NodeProps<Node<KafkaTopicNodeData>>) {
 
 function InstanceContainerNode({ data }: NodeProps<Node<InstanceContainerNodeData>>) {
   const statusColor = data.pekkoStatus === 'up' ? '#3E6A44' : data.pekkoStatus ? '#A26612' : 'var(--rule-strong)'
+  const HEADER_H = 44
+  const colLabelTop = HEADER_H + 6
+  const colLabelStyle: React.CSSProperties = {
+    position: 'absolute', top: colLabelTop,
+    fontSize: '0.5625rem', fontWeight: 700, letterSpacing: '0.1em',
+    textTransform: 'uppercase', color: 'var(--ink-tertiary)',
+  }
+  const dividerStyle = (left: number): React.CSSProperties => ({
+    position: 'absolute', left: left - 1, top: HEADER_H, bottom: 0, width: 1, background: 'var(--rule)',
+  })
   return (
     <div style={{
       width: data.width, height: data.height,
@@ -230,8 +282,9 @@ function InstanceContainerNode({ data }: NodeProps<Node<InstanceContainerNodeDat
       borderRadius: 'var(--radius-md)',
       background: 'var(--surface)',
       boxShadow: '0 2px 8px rgba(30,26,20,0.06)',
+      position: 'relative',
     }}>
-      <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--rule)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+      <div style={{ height: HEADER_H, padding: '8px 12px', borderBottom: '1px solid var(--rule)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <img src="/joxette logo.png" alt="Joxette" style={{ width: 20, height: 20, flexShrink: 0, filter: 'invert(1) brightness(0.8)' }} />
         <span style={{ ...nodeTitle, fontFamily: 'var(--font-mono)', fontSize: '0.6875rem' }}>{data.instanceId}</span>
         {data.roles.map(r => (
@@ -241,6 +294,38 @@ function InstanceContainerNode({ data }: NodeProps<Node<InstanceContainerNodeDat
           {data.pekkoStatus ?? 'unknown'}
           {data.reachable ? '' : ' ✗'}
         </span>
+      </div>
+      {/* Panel labels + dividers — only rendered when the adjacent panel is present */}
+      {data.hasRecorders && <span style={{ ...colLabelStyle, left: 12 }}>Recording</span>}
+      {data.hasCatalog && data.lakeColX >= 0 && (
+        <>
+          <div style={dividerStyle(data.lakeColX)} />
+          <span style={{ ...colLabelStyle, left: data.lakeColX + 10 }}>Catalog</span>
+        </>
+      )}
+      {data.hasReplays && data.rplColX >= 0 && (
+        <>
+          <div style={dividerStyle(data.rplColX)} />
+          <span style={{ ...colLabelStyle, left: data.rplColX + 10 }}>Replay</span>
+        </>
+      )}
+    </div>
+  )
+}
+
+function DuckDbEngineNode({ data }: NodeProps<Node<DuckDbEngineNodeData>>) {
+  return (
+    <div style={{ ...nodeBase, background: 'var(--surface-sunken)', width: data.nodeWidth, boxSizing: 'border-box' }}>
+      <Handle type="target" position={Position.Left}   style={handleStyle} />
+      <Handle type="source" position={Position.Right}  style={handleStyle} id="right" />
+      <Handle type="source" position={Position.Bottom} style={handleStyle} id="bottom" />
+      <div style={nodeHeader}>
+        <img src="/DuckLake_icon-darkmode.svg" alt="DuckLake" style={{ width: 18, height: 18, flexShrink: 0 }} />
+        <img src="/DuckDB_icon-darkmode.svg"   alt="DuckDB"   style={{ width: 14, height: 14, flexShrink: 0, opacity: 0.6 }} />
+        <span style={nodeTitle}>DuckLake</span>
+      </div>
+      <div style={nodeMeta}>
+        <Stat label="WRITTEN" value={data.totalWritten.toLocaleString()} />
       </div>
     </div>
   )
@@ -273,10 +358,11 @@ function RecordJobNode({ data }: NodeProps<Node<RecordJobNodeData>>) {
 }
 
 function ReplayJobNode({ data }: NodeProps<Node<ReplayJobNodeData>>) {
-  const statusColor = data.status === 'running' ? '#1E5A8A' : data.status === 'completed' ? '#3E6A44' : '#8B2121'
-  const statusBg    = data.status === 'running' ? '#dbeafe'  : data.status === 'completed' ? '#dcfce7'  : '#fee2e2'
+  const running = data.status === 'running'
+  const statusColor = running ? '#1E5A8A' : 'var(--ink-tertiary)'
+  const statusBg    = running ? '#dbeafe'  : 'var(--surface-sunken)'
   return (
-    <div style={{ ...nodeBase, minWidth: 220, borderColor: statusColor }}>
+    <div style={{ ...nodeBase, minWidth: 220, borderColor: statusColor, opacity: running ? 1 : 0.45 }}>
       <Handle type="target" position={Position.Left} style={handleStyle} />
       <div style={nodeHeader}>
         <span style={jobTypeLabel}>REPLAY</span>
@@ -284,7 +370,7 @@ function ReplayJobNode({ data }: NodeProps<Node<ReplayJobNodeData>>) {
         <span style={{ ...pill, background: statusBg, color: statusColor, marginLeft: 'auto' }}>{data.status}</span>
       </div>
       <div style={nodeMeta}>
-        <Stat label="SENT" value={data.sentCount.toLocaleString()} color={statusColor} />
+        <Stat label="SENT" value={data.sentCount.toLocaleString()} color={running ? statusColor : undefined} />
         <Stat label="→" value={data.targetTopic} />
       </div>
       <Handle type="source" position={Position.Right} style={handleStyle} />
@@ -292,10 +378,11 @@ function ReplayJobNode({ data }: NodeProps<Node<ReplayJobNodeData>>) {
   )
 }
 
+// Used only when catalog is NOT on this node (remote DuckLake)
 function DuckLakeNode({ data }: NodeProps<Node<DuckLakeNodeData>>) {
   return (
-    <div style={{ ...nodeBase, background: 'var(--surface-sunken)', minWidth: data.embedded ? LAKE_W_EMBED : 150, width: data.embedded ? LAKE_W_EMBED : undefined }}>
-      <Handle type="target" position={Position.Left} style={handleStyle} />
+    <div style={{ ...nodeBase, background: 'var(--surface-sunken)', minWidth: 150 }}>
+      <Handle type="target" position={Position.Left}  style={handleStyle} />
       <div style={nodeHeader}>
         <img src="/DuckLake_icon-darkmode.svg" alt="DuckLake" style={{ width: 18, height: 18, flexShrink: 0 }} />
         <img src="/DuckDB_icon-darkmode.svg"   alt="DuckDB"   style={{ width: 14, height: 14, flexShrink: 0, opacity: 0.6 }} />
@@ -324,7 +411,7 @@ function ReplayTargetNode({ data }: NodeProps<Node<ReplayTargetNodeData>>) {
 function ObjectStorageNode({ data }: NodeProps<Node<ObjectStorageNodeData>>) {
   return (
     <div style={{ ...nodeBase, minWidth: 150, borderStyle: 'dashed', borderColor: 'var(--ink-tertiary)', background: 'var(--surface-sunken)', opacity: 0.85 }}>
-      <Handle type="target" position={Position.Left} style={handleStyle} />
+      <Handle type="target" position={Position.Top} style={handleStyle} />
       <div style={nodeHeader}>
         <span style={{ fontSize: '1rem', lineHeight: 1 }}>🪣</span>
         <span style={nodeTitle}>{data.label}</span>
@@ -338,19 +425,15 @@ function ObjectStorageNode({ data }: NodeProps<Node<ObjectStorageNodeData>>) {
 // Graph builder
 // ---------------------------------------------------------------------------
 
-const ROW_H          = 110
-const JOB_W          = 240
-const CONT_PAD_X     = 20
-const CONT_PAD_TOP   = 50
-const CONT_PAD_BOT   = 16
-const LAKE_W_EMBED   = 160
-const LAKE_GAP       = 24
-const LAKE_IN_X      = CONT_PAD_X + JOB_W + LAKE_GAP  // x of DuckLake inside container
-const CONT_W         = LAKE_IN_X + LAKE_W_EMBED + CONT_PAD_X
-const X_KAFKA        = 0
-const X_INSTANCE     = 220
-const X_OBJ_STORE    = X_INSTANCE + CONT_W + 60
-const X_REPLAY_TGT   = X_OBJ_STORE + 220
+const ROW_H        = 110
+const JOB_W        = 240
+const CONT_PAD_X   = 20
+const CONT_PAD_TOP = 64   // header (44) + col-label row (20)
+const CONT_PAD_BOT = 16
+const LAKE_W       = 180
+const COL_GAP      = 24
+const X_KAFKA      = 0
+const X_INSTANCE   = 220
 
 interface Rates { consumedPerSec: number; writtenPerSec: number }
 
@@ -359,11 +442,43 @@ function buildGraph(data: ClusterStateView, rates: Record<string, Rates>): { nod
   const edges: Edge[] = []
 
   const recorderEntries = Object.entries(data.self.recorders)
+  // Include completed/failed/cancelled replays so they linger (server evicts after 30 s)
   const activeReplays   = data.activeReplays ?? []
-  const totalJobs       = Math.max(recorderEntries.length + activeReplays.length, 1)
-  const CONT_H          = CONT_PAD_TOP + totalJobs * ROW_H + CONT_PAD_BOT
+  const roles           = data.self.roles
 
+  const hasRecorders = recorderEntries.length > 0
+  // Catalog panel is shown whenever the catalog backend is known; embedded means it lives inside the container
+  const hasCatalog   = !!data.self.catalogBackend
+  const hasReplays   = activeReplays.length > 0
+
+  // Build column x-offsets dynamically — only present panels take space
+  let curX = CONT_PAD_X
+  const recColX  = hasRecorders ? curX : -1
+  if (hasRecorders) curX += JOB_W + COL_GAP
+  const lakeColX = hasCatalog   ? curX : -1
+  if (hasCatalog)   curX += LAKE_W + COL_GAP
+  const rplColX  = hasReplays   ? curX : -1
+  if (hasReplays)   curX += JOB_W
+  const CONT_W = curX + CONT_PAD_X
+
+  const tallestCol = Math.max(
+    hasRecorders ? recorderEntries.length : 0,
+    hasReplays   ? activeReplays.length   : 0,
+    1,
+  )
+  const CONT_H = CONT_PAD_TOP + tallestCol * ROW_H + CONT_PAD_BOT
   const startY = -(CONT_H / 2)
+
+  // Object store sits below the container, x-centred on the catalog column
+  const OBJ_STORE_NODE_W = 160
+  // lakeColX is relative to the container's left edge (X_INSTANCE)
+  const X_OBJ_STORE = hasCatalog
+    ? X_INSTANCE + lakeColX + Math.round((LAKE_W - OBJ_STORE_NODE_W) / 2)
+    : 0
+  const Y_OBJ_STORE = startY + CONT_H + 40
+
+  // Replay targets sit directly to the right of the container
+  const X_REPLAY_TGT = X_INSTANCE + CONT_W + 60
 
   // Instance container
   nodes.push({
@@ -372,139 +487,150 @@ function buildGraph(data: ClusterStateView, rates: Record<string, Rates>): { nod
     position: { x: X_INSTANCE, y: startY },
     data: {
       instanceId: data.self.instanceId,
-      roles: data.self.roles,
+      roles,
       pekkoStatus: data.self.pekkoStatus,
       reachable: data.self.pekkoReachable,
       width: CONT_W,
       height: CONT_H,
+      hasRecorders, hasCatalog, hasReplays,
+      lakeColX, rplColX,
     } satisfies InstanceContainerNodeData,
     style: { width: CONT_W, height: CONT_H },
     zIndex: 0,
+    draggable: false, selectable: false, focusable: false,
   })
 
-  // Recorder job nodes (children of instance)
-  recorderEntries.forEach(([topic, rec], i) => {
-    const r = rates[topic] ?? { consumedPerSec: 0, writtenPerSec: 0 }
-    const childY  = CONT_PAD_TOP + i * ROW_H
-    const absJobY = startY + childY
+  // Recorder job nodes — left column
+  if (hasRecorders) {
+    recorderEntries.forEach(([topic, rec], i) => {
+      const r = rates[topic] ?? { consumedPerSec: 0, writtenPerSec: 0 }
+      const childY  = CONT_PAD_TOP + i * ROW_H
+      const absJobY = startY + childY
 
-    nodes.push({
-      id: `recorder-${topic}`,
-      type: 'recordJobNode',
-      parentId: 'instance',
-      extent: 'parent' as const,
-      position: { x: CONT_PAD_X, y: childY },
-      zIndex: 1,
-      data: {
-        topic, running: rec.running, lag: rec.consumerLag,
-        consumedPerSec: r.consumedPerSec, writtenPerSec: r.writtenPerSec,
-        partitions: Array.from(rec.assignedPartitions), error: rec.lastError,
-      } satisfies RecordJobNodeData,
-    })
+      nodes.push({
+        id: `recorder-${topic}`,
+        type: 'recordJobNode',
+        parentId: 'instance',
+        extent: 'parent' as const,
+        position: { x: recColX, y: childY },
+        zIndex: 1,
+        draggable: false, selectable: false, focusable: false,
+        data: {
+          topic, running: rec.running, lag: rec.consumerLag,
+          consumedPerSec: r.consumedPerSec, writtenPerSec: r.writtenPerSec,
+          partitions: Array.from(rec.assignedPartitions), error: rec.lastError,
+        } satisfies RecordJobNodeData,
+      })
 
-    // Source Kafka topic (external, y-aligned with this recorder)
-    nodes.push({
-      id: `kafka-${topic}`,
-      type: 'kafkaTopicNode',
-      position: { x: X_KAFKA, y: absJobY },
-      data: { label: topic, partitions: rec.assignedPartitions.length } satisfies KafkaTopicNodeData,
-    })
+      nodes.push({
+        id: `kafka-${topic}`,
+        type: 'kafkaTopicNode',
+        position: { x: X_KAFKA, y: absJobY },
+        data: { label: topic, partitions: rec.assignedPartitions.length } satisfies KafkaTopicNodeData,
+      })
 
-    edges.push({
-      id: `e-kafka-rec-${topic}`,
-      source: `kafka-${topic}`, target: `recorder-${topic}`,
-      type: 'particleEdge',
-      data: { active: rec.running, rateLabel: r.consumedPerSec > 0 ? `${fmt(r.consumedPerSec)}/s` : undefined } satisfies ParticleEdgeData,
+      edges.push({
+        id: `e-kafka-rec-${topic}`,
+        source: `kafka-${topic}`, target: `recorder-${topic}`,
+        type: 'particleEdge',
+        data: { active: rec.running, rateLabel: r.consumedPerSec > 0 ? `${fmt(r.consumedPerSec)}/s` : undefined } satisfies ParticleEdgeData,
+      })
+      edges.push({
+        id: `e-rec-lake-${topic}`,
+        source: `recorder-${topic}`, target: 'sink-ducklake',
+        type: 'particleEdge',
+        data: { active: rec.running, rateLabel: r.writtenPerSec > 0 ? `${fmt(r.writtenPerSec)}/s` : undefined } satisfies ParticleEdgeData,
+      })
     })
-    edges.push({
-      id: `e-rec-lake-${topic}`,
-      source: `recorder-${topic}`, target: 'sink-ducklake',
-      type: 'particleEdge',
-      data: { active: rec.running, rateLabel: r.writtenPerSec > 0 ? `${fmt(r.writtenPerSec)}/s` : undefined } satisfies ParticleEdgeData,
-    })
-  })
+  }
 
-  // Replay job nodes (children of instance)
-  activeReplays.forEach((replay, j) => {
-    const childY  = CONT_PAD_TOP + (recorderEntries.length + j) * ROW_H
-    const absJobY = startY + childY
-
-    nodes.push({
-      id: `replay-job-${replay.id}`,
-      type: 'replayJobNode',
-      parentId: 'instance',
-      extent: 'parent' as const,
-      position: { x: CONT_PAD_X, y: childY },
-      zIndex: 1,
-      data: { sourceTopic: replay.sourceTopic, targetTopic: replay.targetTopic, sentCount: replay.sentCount, status: replay.status } satisfies ReplayJobNodeData,
-    })
-
-    // Replay target Kafka topic (external)
-    nodes.push({
-      id: `replay-target-${replay.id}`,
-      type: 'replayTargetNode',
-      position: { x: X_REPLAY_TGT, y: absJobY },
-      data: { label: replay.targetTopic } satisfies ReplayTargetNodeData,
-    })
-
-    edges.push({
-      id: `e-lake-replay-${replay.id}`,
-      source: 'sink-ducklake', target: `replay-job-${replay.id}`,
-      type: 'particleEdge',
-      data: { active: replay.status === 'running' } satisfies ParticleEdgeData,
-    })
-    edges.push({
-      id: `e-replay-target-${replay.id}`,
-      source: `replay-job-${replay.id}`, target: `replay-target-${replay.id}`,
-      type: 'particleEdge',
-      data: { active: replay.status === 'running', rateLabel: replay.sentCount > 0 ? replay.sentCount.toLocaleString() : undefined } satisfies ParticleEdgeData,
-    })
-  })
-
-  // DuckLake node — embedded inside the container, centred on recorder rows
+  // DuckDB engine node — centre catalog panel
   const totalWritten = recorderEntries.reduce((sum, [, rec]) => sum + rec.messagesWritten, 0)
-  const isCatalog = data.self.roles.includes('catalog')
-  const lakeChildY = recorderEntries.length > 0
-    ? CONT_PAD_TOP + ((recorderEntries.length - 1) / 2) * ROW_H + (ROW_H / 2) - 50
-    : CONT_H / 2 - 50
+  const lakeNodeY = Math.max(
+    CONT_PAD_TOP,
+    CONT_PAD_TOP + ((tallestCol - 1) / 2) * ROW_H + ROW_H / 2 - 50,
+  )
 
-  if (isCatalog) {
+  if (hasCatalog) {
     nodes.push({
       id: 'sink-ducklake',
-      type: 'duckLakeNode',
+      type: 'duckDbEngineNode',
       parentId: 'instance',
       extent: 'parent' as const,
-      position: { x: LAKE_IN_X, y: lakeChildY },
+      position: { x: lakeColX, y: lakeNodeY },
       zIndex: 1,
-      data: { label: 'DuckLake', totalWritten, embedded: true } satisfies DuckLakeNodeData,
+      draggable: false, selectable: false, focusable: false,
+      data: { totalWritten, nodeWidth: LAKE_W } satisfies DuckDbEngineNodeData,
     })
 
-    // Object storage node — external, vertically centred on the container
+    // Object storage — below the container, x-centred on the catalog column
     nodes.push({
       id: 'obj-store',
       type: 'objectStorageNode',
-      position: { x: X_OBJ_STORE, y: startY + CONT_H / 2 - 50 },
+      position: { x: X_OBJ_STORE, y: Y_OBJ_STORE },
       data: { label: 'Object Storage' } satisfies ObjectStorageNodeData,
     })
 
-    // Passive dashed tiering edge: DuckLake → Object Storage
+    // Tier edge: DuckLake bottom → object store top (downward)
     edges.push({
       id: 'e-lake-objstore',
-      source: 'sink-ducklake',
+      source: 'sink-ducklake', sourceHandle: 'bottom',
       target: 'obj-store',
       type: 'particleEdge',
-      data: { active: false, rateLabel: 'tier', dashed: true } satisfies ParticleEdgeData,
+      data: { active: totalWritten > 0, rateLabel: 'Parquet', dashed: true } satisfies ParticleEdgeData,
     })
   } else {
-    // Non-catalog node: DuckLake external (writes go to a remote catalog)
-    const lakeAbsY = recorderEntries.length > 0
-      ? startY + CONT_PAD_TOP + ((recorderEntries.length - 1) / 2) * ROW_H
-      : startY + CONT_H / 2 - 50
+    // Remote catalog — DuckLake shown as external node
+    const lakeAbsY = startY + lakeNodeY
     nodes.push({
       id: 'sink-ducklake',
       type: 'duckLakeNode',
       position: { x: X_INSTANCE + CONT_W + 60, y: lakeAbsY },
       data: { label: 'DuckLake', totalWritten } satisfies DuckLakeNodeData,
+    })
+  }
+
+  // Replay job nodes — right column
+  if (hasReplays) {
+    // Deduplicate target topics — one output node per unique targetTopic
+    const uniqueTargets = [...new Set(activeReplays.map(r => r.targetTopic))]
+    uniqueTargets.forEach((topic, k) => {
+      nodes.push({
+        id: `replay-target-topic-${topic}`,
+        type: 'replayTargetNode',
+        position: { x: X_REPLAY_TGT, y: startY + CONT_PAD_TOP + k * ROW_H },
+        data: { label: topic } satisfies ReplayTargetNodeData,
+      })
+    })
+
+    activeReplays.forEach((replay, j) => {
+      const childY = CONT_PAD_TOP + j * ROW_H
+
+      nodes.push({
+        id: `replay-job-${replay.id}`,
+        type: 'replayJobNode',
+        parentId: 'instance',
+        extent: 'parent' as const,
+        position: { x: rplColX, y: childY },
+        zIndex: 1,
+        draggable: false, selectable: false, focusable: false,
+        data: { sourceTopic: replay.sourceTopic, targetTopic: replay.targetTopic, sentCount: replay.sentCount, status: replay.status } satisfies ReplayJobNodeData,
+      })
+
+      edges.push({
+        id: `e-lake-replay-${replay.id}`,
+        source: 'sink-ducklake', sourceHandle: 'right',
+        target: `replay-job-${replay.id}`,
+        type: 'particleEdge',
+        data: { active: replay.status === 'running' } satisfies ParticleEdgeData,
+      })
+      edges.push({
+        id: `e-replay-target-${replay.id}`,
+        source: `replay-job-${replay.id}`,
+        target: `replay-target-topic-${replay.targetTopic}`,
+        type: 'particleEdge',
+        data: { active: replay.status === 'running', rateLabel: replay.sentCount > 0 ? replay.sentCount.toLocaleString() : undefined } satisfies ParticleEdgeData,
+      })
     })
   }
 
@@ -555,6 +681,7 @@ const nodeTypes = {
   instanceContainerNode: InstanceContainerNode,
   recordJobNode:         RecordJobNode,
   replayJobNode:         ReplayJobNode,
+  duckDbEngineNode:      DuckDbEngineNode,
   duckLakeNode:          DuckLakeNode,
   objectStorageNode:     ObjectStorageNode,
   replayTargetNode:      ReplayTargetNode,
@@ -617,7 +744,7 @@ function FlowInner({ store }: { store: ParticleStore }) {
           <span style={{ color: '#6E1C1C' }}>● consume</span>
           <span style={{ color: '#3E6A44' }}>● write</span>
           <span style={{ color: '#1E5A8A' }}>● replay</span>
-          <span style={{ opacity: 0.55 }}>╌ tier</span>
+          <span style={{ color: '#6B46A0' }}>╌ tier</span>
         </span>
       </div>
 

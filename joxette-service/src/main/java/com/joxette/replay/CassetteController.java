@@ -40,6 +40,8 @@ import com.joxette.replay.transform.steps.FilterDropStep;
 
 import com.joxette.sol.EntityRecordAdapter;
 import com.joxette.sol.SolResultMapper;
+import org.apache.pekko.actor.typed.ActorRef;
+import org.apache.pekko.actor.typed.javadsl.AskPattern;
 
 import java.sql.SQLException;
 import java.time.Duration;
@@ -117,7 +119,9 @@ public class CassetteController {
     private final CassetteRecordingBus      recordingBus;
     private final KafkaTopicAdmin           kafkaTopicAdmin;
     private final ConfigRepository          configRepository;
-    private final ActiveReplayTracker       replayTracker;
+    private final ActorRef<ReplayCoordinatorActor.Cmd> replayCoordinator;
+    private final org.apache.pekko.actor.typed.ActorSystem<Void> actorSystem;
+    private final java.util.concurrent.Executor        vtExecutor;
     private final StateFoldService          stateFoldService;
     private final DiffService               diffService;
     private final TimelineService           timelineService;
@@ -141,7 +145,9 @@ public class CassetteController {
             CassetteRecordingBus recordingBus,
             KafkaTopicAdmin kafkaTopicAdmin,
             ConfigRepository configRepository,
-            ActiveReplayTracker replayTracker,
+            ActorRef<ReplayCoordinatorActor.Cmd> replayCoordinator,
+            org.apache.pekko.actor.typed.ActorSystem<Void> actorSystem,
+            @org.springframework.beans.factory.annotation.Qualifier("pekkoVtExecutor") java.util.concurrent.Executor vtExecutor,
             StateFoldService stateFoldService,
             DiffService diffService,
             TimelineService timelineService,
@@ -163,7 +169,9 @@ public class CassetteController {
         this.recordingBus             = recordingBus;
         this.kafkaTopicAdmin          = kafkaTopicAdmin;
         this.configRepository         = configRepository;
-        this.replayTracker            = replayTracker;
+        this.replayCoordinator        = replayCoordinator;
+        this.actorSystem              = actorSystem;
+        this.vtExecutor               = vtExecutor;
         this.stateFoldService         = stateFoldService;
         this.diffService              = diffService;
         this.timelineService          = timelineService;
@@ -217,6 +225,58 @@ public class CassetteController {
         RecordSink sink = sinkFactory.forBroker(brokerId);
         return new ReplayEngine(topicService, entityService, sink,
                 topic -> kafkaTopicAdmin.partitionCount(brokerId, topic));
+    }
+
+    private FlowReplayEngine flowEngineFor(String brokerId) {
+        RecordSink sink = sinkFactory.forBroker(brokerId);
+        return new FlowReplayEngine(topicService, entityService, sink,
+                topic -> kafkaTopicAdmin.partitionCount(brokerId, topic));
+    }
+
+    /**
+     * Starts a replay via {@link ReplayCoordinatorActor}, streams progress as SSE,
+     * and wires {@code SseEmitter.onCompletion} → {@code CancelReplay} so that a
+     * client disconnect interrupts the VT through the actor hierarchy.
+     */
+    private org.springframework.web.servlet.mvc.method.annotation.SseEmitter replayViaSse(
+            String sourceTopic,
+            String targetTopic,
+            ReplayCoordinatorActor.ReplayWork work) {
+
+        org.springframework.web.servlet.mvc.method.annotation.SseEmitter emitter =
+                new org.springframework.web.servlet.mvc.method.annotation.SseEmitter(0L);
+
+        // Ask the coordinator to start; it assigns the id and replies.
+        String replayId = org.apache.pekko.actor.typed.javadsl.AskPattern.<ReplayCoordinatorActor.Cmd, String>ask(
+                replayCoordinator,
+                replyTo -> new ReplayCoordinatorActor.StartReplay(
+                        sourceTopic, targetTopic, null,
+                        // Wrap the work so progress also feeds the SSE emitter
+                        progressSink -> {
+                            work.run(p -> {
+                                progressSink.accept(p);
+                                try {
+                                    emitter.send(org.springframework.web.servlet.mvc.method.annotation.SseEmitter.event()
+                                            .data(p)
+                                            .build());
+                                } catch (java.io.IOException e) {
+                                    throw new java.io.UncheckedIOException(e);
+                                }
+                            });
+                            emitter.complete();
+                        },
+                        vtExecutor, replyTo),
+                ReplayCoordinatorActor.ASK_TIMEOUT,
+                actorSystem.scheduler()
+        ).toCompletableFuture().join();
+
+        // Client disconnect → cancel the VT via the coordinator
+        Runnable cancel = () -> replayCoordinator.tell(new ReplayCoordinatorActor.CancelReplay(replayId));
+        emitter.onCompletion(cancel);
+        emitter.onError(t -> cancel.run());
+        emitter.onTimeout(cancel);
+
+        return emitter;
     }
 
     /**
@@ -1733,16 +1793,10 @@ public class CassetteController {
         }
         ensureAllMappedTargets(req, topic);
         ReplayProgress[] result = {null};
-        String effectiveTopic = ReplayEngine.resolveTargetTopic(req, topic);
-        try (ActiveReplayTracker.Handle h = replayTracker.start(topic, effectiveTopic)) {
-            try {
-                engineFor(null).replayTopic(topic, req, speed, p -> {
-                    h.accept(p);
-                    result[0] = p;
-                });
-            } catch (IllegalArgumentException ex) {
-                throw com.joxette.api.error.ValidationException.field("partitionStrategy", ex.getMessage());
-            }
+        try {
+            engineFor(null).replayTopic(topic, req, speed, p -> result[0] = p);
+        } catch (IllegalArgumentException ex) {
+            throw com.joxette.api.error.ValidationException.field("partitionStrategy", ex.getMessage());
         }
         return result[0];
     }
@@ -1788,18 +1842,9 @@ public class CassetteController {
         }
         ensureAllMappedTargets(req, topic);
         String effectiveTopic = ReplayEngine.resolveTargetTopic(req, topic);
-        return sseHandler.<ReplayProgress>streamSse(sink -> {
-            try (ActiveReplayTracker.Handle h = replayTracker.start(topic, effectiveTopic)) {
-                try {
-                    engineFor(null).replayTopic(topic, req, speed, p -> {
-                        h.accept(p);
-                        sink.accept(p);
-                    });
-                } catch (IllegalArgumentException ex) {
-                    throw new RuntimeException(ex.getMessage(), ex);
-                }
-            }
-        });
+        FlowReplayEngine fre = flowEngineFor(null);
+        return replayViaSse(topic, effectiveTopic,
+                sink -> fre.replayTopic(topic, req, speed, sink));
     }
 
     @Operation(
@@ -1852,17 +1897,11 @@ public class CassetteController {
             throw ValidationException.field("speed", "must be greater than 0");
         }
         ensureAllMappedTargetsForEntity(req, entityType);
-        String effectiveTopic = ReplayEngine.resolveTargetTopic(req, entityType);
         ReplayProgress[] result = {null};
-        try (ActiveReplayTracker.Handle h = replayTracker.start(entityType + "/" + entityId, effectiveTopic)) {
-            try {
-                engineFor(null).replayEntity(entityType, entityId, req, speed, p -> {
-                    h.accept(p);
-                    result[0] = p;
-                });
-            } catch (IllegalArgumentException ex) {
-                throw com.joxette.api.error.ValidationException.field("partitionStrategy", ex.getMessage());
-            }
+        try {
+            engineFor(null).replayEntity(entityType, entityId, req, speed, p -> result[0] = p);
+        } catch (IllegalArgumentException ex) {
+            throw com.joxette.api.error.ValidationException.field("partitionStrategy", ex.getMessage());
         }
         return result[0];
     }
@@ -1912,18 +1951,9 @@ public class CassetteController {
         }
         ensureAllMappedTargetsForEntity(req, entityType);
         String effectiveTopic = ReplayEngine.resolveTargetTopic(req, entityType);
-        return sseHandler.<ReplayProgress>streamSse(sink -> {
-            try (ActiveReplayTracker.Handle h = replayTracker.start(entityType + "/" + entityId, effectiveTopic)) {
-                try {
-                    engineFor(null).replayEntity(entityType, entityId, req, speed, p -> {
-                        h.accept(p);
-                        sink.accept(p);
-                    });
-                } catch (IllegalArgumentException ex) {
-                    throw new RuntimeException(ex.getMessage(), ex);
-                }
-            }
-        });
+        FlowReplayEngine fre = flowEngineFor(null);
+        return replayViaSse(entityType + "/" + entityId, effectiveTopic,
+                sink -> fre.replayEntity(entityType, entityId, req, speed, sink));
     }
 
     // =========================================================================

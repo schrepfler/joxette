@@ -123,26 +123,44 @@ start
 :POST /cassettes/topics/{topic}/replay-to-topic\n  OR /cassettes/entities/{type}/{id}/replay-to-topic\n  ?speed=1.0  (&start_delay_ms / start_at on .../replay)\n  body ReplayToTopicRequest {\n    targetTopic?, topicMappings?, partitionStrategy,\n    from, to, partition, offsetFrom, offsetTo, transforms };
 
 |CassetteController|
-if (start_at / start_delay_ms set? — /replay) then (yes)
-  :ScheduledReplayService.schedule(...)\n-> HTTP 202 { replayId, scheduledAt };
+if (Accept: text/event-stream?) then (SSE)
+  if (start_at / start_delay_ms set? — /replay) then (yes)
+    :ScheduledReplayService.schedule(...)\n-> HTTP 202 { replayId, scheduledAt };
+  endif
+  :ensureAllMappedTargets(...)\ncreate any missing target topics;
+  :ReplayCoordinatorActor.StartReplay\n  (ask — returns assigned replay id);
   note right
-    /replay-to-topic = immediate
-    /replay          = schedulable
-    (same engine + sink underneath)
+    ReplayCoordinatorActor spawns a
+    ReplayActor child; registers
+    SseEmitter.onCompletion callback
+    -> CancelReplay(id) on disconnect.
   end note
+  :return SseEmitter (HTTP 200 streaming);
+else (JSON — blocking)
+  :ensureAllMappedTargets(...);
+  :engineFor(brokerId)\n  -> new ReplayEngine(sources, sink, partitionCountLookup);
+  :ReplayEngine.replayTopic / replayEntity\n  (blocks until complete);
+  :return final ReplayProgress JSON;
 endif
-:engineFor(brokerId)\n  -> KafkaRecordSinkFactory.forBroker(id)\n  -> new ReplayEngine(topicReplay, entityReplay, sink,\n       partitionCountLookup);
-:ensureAllMappedTargets(...)\ncreate any missing target topics;
 
-|ReplayEngine|
-:stream records from DuckLake\n(TopicReplayService.streamAll /\nEntityReplayService.streamEntityEvents);
+|ReplayActor (Pekko)|
+:spawn FlowReplayEngine.replayTopic/replayEntity\n  on virtual thread via pipeToSelf;
+note right
+  On Cancel (client disconnect):
+  VT interrupted -> Jox supervised
+  scope cancels DuckDB read.
+  Entry lingers 30 s in coordinator.
+end note
+
+|FlowReplayEngine (Jox supervised scope)|
+:Flows.usingEmit wraps DuckLake source\n(TopicReplayService.streamAll /\nEntityReplayService.streamEntityEvents);
 repeat
   :applyDelay(prev, current) / speed;
   :MessageTransformer.transform(record)\n-> restamp + JSONPath field substitution;
-  :resolveTargetTopic(req, sourceTopic)\n  topicMappings -> targetTopic -> identity (orig topic);
+  :resolveTargetTopic(req, sourceTopic)\n  topicMappings -> targetTopic -> identity;
   :resolvePartition(strategy, srcPartition, targetCount)\n  DEFAULT=null | PRESERVE=src | MODULO=src % count;
   :sink.send(effectiveTopic, partition, record)\n(blocks — virtual-thread friendly);
-  :emit ReplayProgress event\n(every 100 records; final completed/failed);
+  :emit ReplayProgress to SSE sink\n(every 100 records; final completed/failed);
 repeat while (more records?)
 
 |KafkaRecordSink|

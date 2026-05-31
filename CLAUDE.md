@@ -316,9 +316,10 @@ Reads (replay API) bypass the channel entirely: each request opens a separate `S
 
 | Subsystem | Concurrency unit | Parallelism | Notes |
 |---|---|---|---|
-| Kafka consumers | One Jox supervised scope per topic | Dynamic (one VT per source by default) | Managed by `RecordingCoordinator` |
+| Kafka consumers | One `TopicLifecycleActor` + VT per topic | Dynamic (one VT per source by default) | Supervised by `RecordingCoordinatorActor`; exponential-backoff restart |
 | DuckDB writes | Single VT draining `Channel<WriteBatch>` | 1 always | Serializes all INSERTs; natural backpressure via channel capacity |
 | DuckDB reads (replay) | Virtual thread per HTTP request | Unbounded (VT) | Separate `Statement` per request; concurrent reads safe |
+| Replay-to-topic (SSE) | One `ReplayActor` + VT per request | Unbounded (one per active replay) | Supervised by `ReplayCoordinatorActor`; `FlowReplayEngine` runs in Jox supervised scope; cancelled on client disconnect |
 | Compaction | Dedicated Jox scope, cron-triggered | 1 (isolated lifecycle) | Reads and writes; holds write channel slot during merge |
 | REST API | Spring Boot 4 virtual thread executor | Unbounded (VT) | Default; no configuration needed |
 
