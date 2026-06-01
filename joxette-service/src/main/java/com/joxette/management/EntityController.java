@@ -5,6 +5,7 @@ import com.joxette.api.error.ResourceNotFoundException;
 import com.joxette.config.events.ConfigEventBus;
 import com.joxette.config.events.EntityConfigChanged;
 import com.joxette.db.SchemaManager;
+import com.joxette.management.IdSource;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import org.slf4j.Logger;
@@ -173,7 +174,8 @@ public class EntityController {
         config.findEntityType(type).orElseThrow(() -> ResourceNotFoundException.entityType(type));
         EntitySourceConfig.MatcherConfig matcher = config.addEntityMatcher(
                 type, topic,
-                new EntitySourceConfig.MatcherConfig(body.messageType(), body.idSource(), body.idExpression()));
+                new EntitySourceConfig.MatcherConfig(body.messageType(),
+                        IdSource.fromValue(body.idSource()), body.idExpression()));
         publish(type, "source_added");
         return ResponseEntity.status(201).body(matcher);
     }

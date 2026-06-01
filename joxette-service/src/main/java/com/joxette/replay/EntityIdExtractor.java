@@ -37,17 +37,18 @@ public class EntityIdExtractor {
      * {@code source} discriminant and {@code expression}.
      *
      * @param message    the Kafka message to inspect
-     * @param source     one of {@code "key"}, {@code "value"}, {@code "header"}
+     * @param source     where to evaluate the expression
      * @param expression JSONPath for {@code "value"} source; header name for
      *                   {@code "header"} source; ignored for {@code "key"} source
      * @return the extracted entity ID, or empty if extraction is not possible
      */
-    public Optional<String> extract(KafkaMessage message, String source, String expression) {
+    public Optional<String> extract(KafkaMessage message,
+                                     com.joxette.management.IdSource source,
+                                     String expression) {
         return switch (source) {
-            case "key"    -> extractFromKey(message.key());
-            case "value"  -> extractFromJson(message.value(), expression);
-            case "header" -> extractFromHeaders(message.headers(), expression);
-            default       -> Optional.empty();
+            case KEY    -> extractFromKey(message.key());
+            case VALUE  -> extractFromJson(message.value(), expression);
+            case HEADER -> extractFromHeaders(message.headers(), expression);
         };
     }
 

@@ -42,7 +42,7 @@ public class ScheduledReplayService {
         final ScheduledReplay meta;
         /** Counted down to 1→0 when the replay is cancelled; used to unblock {@link #awaitStart}. */
         final CountDownLatch cancelLatch = new CountDownLatch(1);
-        volatile String status = "pending";
+        volatile ScheduledReplayStatus status = ScheduledReplayStatus.PENDING;
 
         ReplayEntry(ScheduledReplay meta) {
             this.meta = meta;
@@ -55,10 +55,10 @@ public class ScheduledReplayService {
          *         {@code false} if the replay was cancelled before the scheduled time.
          */
         boolean awaitStart(long delayMs) throws InterruptedException {
-            if (delayMs <= 0) return !"cancelled".equals(status);
+            if (delayMs <= 0) return status != ScheduledReplayStatus.CANCELLED;
             // await() returns true when latch hits 0 (cancelled), false on timeout
             boolean cancelled = cancelLatch.await(delayMs, TimeUnit.MILLISECONDS);
-            return !cancelled && !"cancelled".equals(status);
+            return !cancelled && status != ScheduledReplayStatus.CANCELLED;
         }
 
         ScheduledReplay snapshot() {
@@ -88,7 +88,7 @@ public class ScheduledReplayService {
         ScheduledReplay meta = new ScheduledReplay(
                 id, "topic", topic, null, null,
                 from, to, partition, offsetFrom, offsetTo,
-                scheduledAt, Instant.now(), "pending");
+                scheduledAt, Instant.now(), ScheduledReplayStatus.PENDING);
         checkCapacity();
         entries.put(id, new ReplayEntry(meta));
         log.info("Registered scheduled topic replay [{}] topic={} at {}", id, topic, scheduledAt);
@@ -101,7 +101,7 @@ public class ScheduledReplayService {
         ScheduledReplay meta = new ScheduledReplay(
                 id, "entity", null, entityType, entityId,
                 from, to, null, null, null,
-                scheduledAt, Instant.now(), "pending");
+                scheduledAt, Instant.now(), ScheduledReplayStatus.PENDING);
         checkCapacity();
         entries.put(id, new ReplayEntry(meta));
         log.info("Registered scheduled entity replay [{}] {}:{} at {}", id, entityType, entityId, scheduledAt);
@@ -110,7 +110,7 @@ public class ScheduledReplayService {
 
     private void checkCapacity() {
         long active = entries.values().stream()
-                .filter(e -> "pending".equals(e.status) || "streaming".equals(e.status))
+                .filter(e -> e.status.isCancellable())
                 .count();
         if (active >= maxScheduled) {
             log.warn("Scheduled replay capacity reached: {} active out of max {}", active, maxScheduled);
@@ -145,10 +145,10 @@ public class ScheduledReplayService {
     public void cancel(String id) {
         ReplayEntry entry = entries.get(id);
         if (entry == null) throw com.joxette.api.error.ResourceNotFoundException.scheduledReplay(id);
-        if (!"pending".equals(entry.status) && !"streaming".equals(entry.status)) {
-            throw com.joxette.api.error.ConflictException.scheduledReplayCannotCancel(entry.status);
+        if (!entry.status.isCancellable()) {
+            throw com.joxette.api.error.ConflictException.scheduledReplayCannotCancel(entry.status.getValue());
         }
-        entry.status = "cancelled";
+        entry.status = ScheduledReplayStatus.CANCELLED;
         entry.cancelLatch.countDown();
         entries.remove(id);
         log.info("Cancelled scheduled replay [{}]", id);
@@ -160,8 +160,8 @@ public class ScheduledReplayService {
      */
     public void cancelIfPending(String id) {
         ReplayEntry entry = entries.get(id);
-        if (entry != null && "pending".equals(entry.status)) {
-            entry.status = "cancelled";
+        if (entry != null && entry.status == ScheduledReplayStatus.PENDING) {
+            entry.status = ScheduledReplayStatus.CANCELLED;
             entry.cancelLatch.countDown();
             entries.remove(id);
             log.debug("Auto-cancelled pending scheduled replay [{}] (client disconnected)", id);
@@ -175,7 +175,7 @@ public class ScheduledReplayService {
     public void markStreaming(String id) {
         ReplayEntry entry = entries.get(id);
         if (entry != null) {
-            entry.status = "streaming";
+            entry.status = ScheduledReplayStatus.STREAMING;
             log.debug("Scheduled replay [{}] transitioned to streaming", id);
         }
     }

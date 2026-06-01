@@ -162,7 +162,7 @@ public class CompactionController {
         List<String> targets = (body != null) ? body.targets() : null;
         CompactionSingletonActor.TriggerReply reply = AskPattern.<CompactionSingletonActor.CompactionCommand, CompactionSingletonActor.TriggerReply>ask(
                 compactionSingleton,
-                replyTo -> new CompactionSingletonActor.TriggerCompaction(targets, "manual", replyTo),
+                replyTo -> new CompactionSingletonActor.TriggerCompaction(targets, TriggerSource.MANUAL, replyTo),
                 ASK_TIMEOUT,
                 system.scheduler()
         ).toCompletableFuture().join();
@@ -291,7 +291,7 @@ public class CompactionController {
     })
     @PostMapping(value = "/trigger-retention", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<RetentionRun> triggerRetention() throws SQLException {
-        RetentionRun run = retentionService.beginRun("manual");
+        RetentionRun run = retentionService.beginRun(TriggerSource.MANUAL);
         taskRegistry.submit("retention-manual-" + run.id(), () -> retentionService.executeRun(run.id()));
         return ResponseEntity.accepted().body(run);
     }

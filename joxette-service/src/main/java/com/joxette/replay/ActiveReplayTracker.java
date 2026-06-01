@@ -25,7 +25,7 @@ public class ActiveReplayTracker {
             String targetTopic,
             Instant startedAt,
             long sentCount,
-            String status   // "running" | "completed" | "failed" | "cancelled"
+            ReplayStatus status
     ) {}
 
     private final ActorRef<ReplayCoordinatorActor.Cmd> coordinator;
@@ -39,7 +39,7 @@ public class ActiveReplayTracker {
     }
 
     public List<ActiveReplay> listActive() {
-        List<ReplayCoordinatorActor.ReplayStatus> statuses = AskPattern.ask(
+        List<ReplayCoordinatorActor.ReplaySnapshot> statuses = AskPattern.ask(
                 coordinator,
                 ReplayCoordinatorActor.ListActive::new,
                 ReplayCoordinatorActor.ASK_TIMEOUT,

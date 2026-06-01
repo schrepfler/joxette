@@ -3,7 +3,9 @@ package com.joxette.replay;
 import com.joxette.management.ConfigRepository;
 import com.joxette.management.EntitySourceConfig;
 import com.joxette.management.EntityTypeConfig;
+import com.joxette.management.IdSource;
 import com.joxette.management.TopicMatcherConfig;
+import com.joxette.management.TopicMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.DependsOn;
@@ -82,7 +84,7 @@ public class MessageRouter {
      */
     public void reload() throws SQLException {
         // 1. Topic modes
-        Map<String, String> topicModes = new HashMap<>();
+        Map<String, TopicMode> topicModes = new HashMap<>();
         for (var tc : configRepo.listTopics()) {
             topicModes.put(tc.topic(), tc.mode());
         }
@@ -139,11 +141,11 @@ public class MessageRouter {
     public RouteDecision route(KafkaMessage message) {
         RoutingTables t = this.tables;
 
-        String topicMode = t.topicModes().getOrDefault(message.topic(), "general");
-        boolean routeToGeneral = !"entity_only".equals(topicMode);
+        TopicMode topicMode = t.topicModes().getOrDefault(message.topic(), TopicMode.GENERAL);
+        boolean routeToGeneral = topicMode.writesGeneral();
 
         List<EntityRoute> entityRoutes = new ArrayList<>();
-        if (!"general".equals(topicMode)) {
+        if (topicMode.writesEntities()) {
             List<EntitySourceEntry> entries =
                     t.topicSourceEntries().getOrDefault(message.topic(), List.of());
 
@@ -165,7 +167,7 @@ public class MessageRouter {
                     }
                 }
                 // Per-mapping mode promotion
-                if ("both".equals(entry.mappingMode())) {
+                if (entry.mappingMode() == TopicMode.BOTH) {
                     routeToGeneral = true;
                 }
             }
@@ -203,15 +205,15 @@ public class MessageRouter {
     /** Internal transfer object grouping matchers for one (entity_type, topic) pair. */
     private record EntitySourceEntry(
             String entityType,
-            String mappingMode,
+            TopicMode mappingMode,
             List<EntitySourceConfig.MatcherConfig> matchers) {}
 
     /** Internal transfer object for one topic_message_type_matchers row. */
-    private record TopicMatcherEntry(String messageType, String idSource, String idExpression) {}
+    private record TopicMatcherEntry(String messageType, IdSource idSource, String idExpression) {}
 
     /** Immutable snapshot of all routing tables, swapped atomically on reload. */
     private record RoutingTables(
-            Map<String, String> topicModes,
+            Map<String, TopicMode> topicModes,
             Map<String, Integer> entityBuckets,
             Map<String, List<EntitySourceEntry>> topicSourceEntries,
             Map<String, List<TopicMatcherEntry>> topicMatchers) {}

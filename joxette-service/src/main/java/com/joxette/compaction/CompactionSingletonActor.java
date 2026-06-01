@@ -52,7 +52,7 @@ public class CompactionSingletonActor {
 
     public record TriggerCompaction(
             List<String> targets,
-            String triggeredBy,
+            TriggerSource triggeredBy,
             ActorRef<TriggerReply> replyTo
     ) implements CompactionCommand {}
 
@@ -95,7 +95,7 @@ public class CompactionSingletonActor {
         return Behaviors.receive(CompactionCommand.class)
                 .onMessage(ScheduledRun.class, msg -> {
                     scheduleNext(timers, props);
-                    return beginRun(ctx, timers, "scheduled", null, null, service, props, vtExecutor);
+                    return beginRun(ctx, timers, TriggerSource.SCHEDULED, null, null, service, props, vtExecutor);
                 })
                 .onMessage(TriggerCompaction.class, msg ->
                         beginRun(ctx, timers, msg.triggeredBy(), msg.targets(), msg.replyTo(),
@@ -146,7 +146,7 @@ public class CompactionSingletonActor {
     private static Behavior<CompactionCommand> beginRun(
             ActorContext<CompactionCommand> ctx,
             TimerScheduler<CompactionCommand> timers,
-            String triggeredBy,
+            TriggerSource triggeredBy,
             List<String> targets,
             ActorRef<TriggerReply> replyTo,
             CompactionService service,

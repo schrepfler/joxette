@@ -24,20 +24,19 @@ import java.util.List;
 public record EntitySourceConfig(
         String entityType,
         String topic,
-        /** "entity_only" | "both" */
-        String mode,
+        TopicMode mode,
         List<MatcherConfig> matchers
 ) {
     /**
      * Configuration for one message-variant matcher.
      *
      * @param messageType  logical label stored in the cassette's {@code message_type} column
-     * @param idSource     "key" | "value" | "header"
+     * @param idSource     where to evaluate the expression (key, value, or header)
      * @param idExpression JSONPath (for value source) or header name (for headers source)
      */
     public record MatcherConfig(
             String messageType,
-            String idSource,
+            IdSource idSource,
             String idExpression
     ) {}
 
@@ -45,10 +44,10 @@ public record EntitySourceConfig(
     public static class Builder {
         private final String entityType;
         private final String topic;
-        private final String mode;
+        private final TopicMode mode;
         private final List<MatcherConfig> matchers = new ArrayList<>();
 
-        public Builder(String entityType, String topic, String mode) {
+        public Builder(String entityType, String topic, TopicMode mode) {
             this.entityType = entityType;
             this.topic      = topic;
             this.mode       = mode;

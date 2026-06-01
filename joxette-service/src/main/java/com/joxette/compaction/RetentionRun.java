@@ -7,10 +7,8 @@ public record RetentionRun(
         long id,
         Instant startedAt,
         Instant completedAt,
-        /** "running" | "completed" | "failed" */
-        String status,
-        /** "scheduled" | "manual" */
-        String triggeredBy,
+        RunStatus status,
+        TriggerSource triggeredBy,
         long entityRowsDeleted,
         long generalRowsDeleted,
         long knownEntitiesDeleted,

@@ -4,5 +4,5 @@ public record BrokerTopicInfo(
     String topicName,
     int partitionCount,
     boolean isRecorded,
-    String recordingMode   // null if not recorded
+    TopicMode recordingMode   // null if not recorded
 ) {}

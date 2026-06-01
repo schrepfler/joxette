@@ -2,6 +2,7 @@ package com.joxette.compaction;
 
 import com.joxette.config.JoxetteProperties;
 import com.joxette.management.ConfigRepository;
+import com.joxette.management.TopicMode;
 import com.joxette.db.SchemaManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -100,7 +101,7 @@ public class CompactionService {
      *
      * @throws com.joxette.api.error.ConflictException if a compaction is already in progress
      */
-    public CompactionRun beginRun(String triggeredBy, List<String> targets) throws SQLException {
+    public CompactionRun beginRun(TriggerSource triggeredBy, List<String> targets) throws SQLException {
         if (!running.compareAndSet(false, true)) {
             throw com.joxette.api.error.ConflictException.compactionAlreadyRunning();
         }
@@ -129,7 +130,7 @@ public class CompactionService {
             totalFileStats = totalFileStats.add(generalResult.fileStats());
 
             checkpoint();
-            updateRunRecord(runId, "completed", entityTypes, generalTopics, totalFileStats, null);
+            updateRunRecord(runId, RunStatus.COMPLETED, entityTypes, generalTopics, totalFileStats, null);
             log.info("Compaction run {} completed: {} entity types, {} general topics, "
                             + "files_processed={} files_created={}",
                     runId, entityTypes, generalTopics,
@@ -137,7 +138,7 @@ public class CompactionService {
         } catch (Exception e) {
             log.error("Compaction run {} failed", runId, e);
             try {
-                updateRunRecord(runId, "failed", entityTypes, generalTopics, totalFileStats, e.getMessage());
+                updateRunRecord(runId, RunStatus.FAILED, entityTypes, generalTopics, totalFileStats, e.getMessage());
             } catch (SQLException se) {
                 log.error("Failed to update compaction_history for run {}", runId, se);
             }
@@ -157,7 +158,7 @@ public class CompactionService {
         }
         long runId;
         try {
-            runId = insertRunRecord("scheduled", null);
+            runId = insertRunRecord(TriggerSource.SCHEDULED, null);
         } catch (SQLException e) {
             running.set(false);
             log.error("Failed to insert compaction run record", e);
@@ -309,7 +310,7 @@ public class CompactionService {
 
     private CompactionResult compactGeneralCassette() throws SQLException {
         List<String> topics = configRepo.listTopics().stream()
-                .filter(tc -> "general".equals(tc.mode()) || "both".equals(tc.mode()))
+                .filter(tc -> tc.mode() != null && tc.mode().writesGeneral())
                 .map(tc -> tc.topic())
                 .toList();
 
@@ -426,7 +427,7 @@ public class CompactionService {
     // compaction_history CRUD
     // =========================================================================
 
-    private long insertRunRecord(String triggeredBy, List<String> targets) throws SQLException {
+    private long insertRunRecord(TriggerSource triggeredBy, List<String> targets) throws SQLException {
         synchronized (duckDB) {
             try (PreparedStatement ps = duckDB.prepareStatement("""
                     INSERT INTO compaction_history
@@ -437,7 +438,7 @@ public class CompactionService {
                     RETURNING id
                     """)) {
                 ps.setTimestamp(1, Timestamp.from(Instant.now()));
-                ps.setString(2, triggeredBy);
+                ps.setString(2, triggeredBy.getValue());
                 if (targets == null) {
                     ps.setObject(3, null);
                 } else {
@@ -451,7 +452,7 @@ public class CompactionService {
         }
     }
 
-    private void updateRunRecord(long runId, String status,
+    private void updateRunRecord(long runId, RunStatus status,
                                   int entityTypes, int generalTopics,
                                   FileStats fileStats, String errorMessage) throws SQLException {
         synchronized (duckDB) {
@@ -467,7 +468,7 @@ public class CompactionService {
                     WHERE id = ?
                     """)) {
                 ps.setTimestamp(1, Timestamp.from(Instant.now()));
-                ps.setString(2, status);
+                ps.setString(2, status.getValue());
                 ps.setInt(3, entityTypes);
                 ps.setInt(4, generalTopics);
                 ps.setLong(5, fileStats.filesProcessed());
@@ -508,8 +509,8 @@ public class CompactionService {
                 rs.getLong("id"),
                 rs.getTimestamp("started_at").toInstant(),
                 completedTs != null ? completedTs.toInstant() : null,
-                rs.getString("status"),
-                rs.getString("triggered_by"),
+                RunStatus.fromValue(rs.getString("status")),
+                TriggerSource.fromValue(rs.getString("triggered_by")),
                 targets,
                 rs.getInt("entity_buckets_compacted"),
                 rs.getInt("general_partitions_compacted"),

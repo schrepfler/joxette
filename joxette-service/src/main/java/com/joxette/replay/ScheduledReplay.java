@@ -30,6 +30,5 @@ public record ScheduledReplay(
         Long offsetTo,
         Instant scheduledAt,
         Instant createdAt,
-        /** {@code "pending"}, {@code "streaming"}, {@code "cancelled"}, {@code "completed"}, or {@code "failed"} */
-        String status
+        ScheduledReplayStatus status
 ) {}

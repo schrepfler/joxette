@@ -83,11 +83,11 @@ class CompactionServiceTest {
     void beginRun_insertsRunningRecord() throws Exception {
         assertThat(service.isRunning()).isFalse();
 
-        CompactionRun run = service.beginRun("test", null);
+        CompactionRun run = service.beginRun(TriggerSource.MANUAL, null);
 
         assertThat(run).isNotNull();
-        assertThat(run.status()).isEqualTo("running");
-        assertThat(run.triggeredBy()).isEqualTo("test");
+        assertThat(run.status()).isEqualTo(RunStatus.RUNNING);
+        assertThat(run.triggeredBy()).isEqualTo(TriggerSource.MANUAL);
         assertThat(run.startedAt()).isNotNull();
         assertThat(run.completedAt()).isNull();
         assertThat(service.isRunning()).isTrue();
@@ -95,30 +95,30 @@ class CompactionServiceTest {
 
     @Test
     void beginRun_preventsOverlapping() throws Exception {
-        service.beginRun("first", null);
+        service.beginRun(TriggerSource.MANUAL, null);
 
-        assertThatThrownBy(() -> service.beginRun("second", null))
+        assertThatThrownBy(() -> service.beginRun(TriggerSource.MANUAL, null))
                 .isInstanceOf(com.joxette.api.error.ConflictException.class)
                 .hasMessageContaining("already in progress");
     }
 
     @Test
     void executeRun_completesSuccessfully() throws Exception {
-        CompactionRun started = service.beginRun("test", null);
+        CompactionRun started = service.beginRun(TriggerSource.MANUAL, null);
 
         service.executeRun(started.id(), null);
 
         assertThat(service.isRunning()).isFalse();
 
         CompactionRun completed = service.getRunById(started.id());
-        assertThat(completed.status()).isEqualTo("completed");
+        assertThat(completed.status()).isEqualTo(RunStatus.COMPLETED);
         assertThat(completed.completedAt()).isNotNull();
         assertThat(completed.errorMessage()).isNull();
     }
 
     @Test
     void executeRun_resetsRunningFlagOnCompletion() throws Exception {
-        CompactionRun run = service.beginRun("test", null);
+        CompactionRun run = service.beginRun(TriggerSource.MANUAL, null);
         assertThat(service.isRunning()).isTrue();
 
         service.executeRun(run.id(), null);
@@ -132,24 +132,24 @@ class CompactionServiceTest {
 
     @Test
     void getHistory_returnsRunsInDescendingOrder() throws Exception {
-        CompactionRun r1 = service.beginRun("run1", null);
+        CompactionRun r1 = service.beginRun(TriggerSource.MANUAL, null);
         service.executeRun(r1.id(), null);
 
-        CompactionRun r2 = service.beginRun("run2", null);
+        CompactionRun r2 = service.beginRun(TriggerSource.MANUAL, null);
         service.executeRun(r2.id(), null);
 
         List<CompactionRun> history = service.getHistory(10);
 
         assertThat(history).hasSize(2);
         // Most recent run comes first.
-        assertThat(history.get(0).triggeredBy()).isEqualTo("run2");
-        assertThat(history.get(1).triggeredBy()).isEqualTo("run1");
+        assertThat(history.get(0).triggeredBy()).isEqualTo(TriggerSource.MANUAL);
+        assertThat(history.get(1).triggeredBy()).isEqualTo(TriggerSource.MANUAL);
     }
 
     @Test
     void getHistory_limitsResults() throws Exception {
         for (int i = 0; i < 3; i++) {
-            CompactionRun r = service.beginRun("run" + i, null);
+            CompactionRun r = service.beginRun(TriggerSource.MANUAL, null);
             service.executeRun(r.id(), null);
         }
 
@@ -168,13 +168,13 @@ class CompactionServiceTest {
 
     @Test
     void getStatus_afterRun_showsLastRun() throws Exception {
-        CompactionRun run = service.beginRun("manual", null);
+        CompactionRun run = service.beginRun(TriggerSource.MANUAL, null);
         service.executeRun(run.id(), null);
 
         CompactionStatus status = service.getStatus();
 
         assertThat(status.lastRun()).isNotNull();
-        assertThat(status.lastRun().status()).isEqualTo("completed");
+        assertThat(status.lastRun().status()).isEqualTo(RunStatus.COMPLETED);
         assertThat(status.running()).isFalse();
     }
 
@@ -185,11 +185,11 @@ class CompactionServiceTest {
     @Test
     void executeRun_withEntityTarget_tracksCompactedBuckets() throws Exception {
         // Even if no buckets qualify (0 row groups), the run still succeeds.
-        CompactionRun run = service.beginRun("manual", List.of(ENTITY_TYPE));
+        CompactionRun run = service.beginRun(TriggerSource.MANUAL, List.of(ENTITY_TYPE));
         service.executeRun(run.id(), List.of(ENTITY_TYPE));
 
         CompactionRun result = service.getRunById(run.id());
-        assertThat(result.status()).isEqualTo("completed");
+        assertThat(result.status()).isEqualTo(RunStatus.COMPLETED);
         assertThat(result.targets()).containsExactly(ENTITY_TYPE);
     }
 
@@ -197,11 +197,11 @@ class CompactionServiceTest {
     void executeRun_withGeneralTarget_generalCompactionDisabledByDefault() throws Exception {
         insertCassetteRows(5);
 
-        CompactionRun run = service.beginRun("test", List.of("general"));
+        CompactionRun run = service.beginRun(TriggerSource.MANUAL, List.of("general"));
         service.executeRun(run.id(), List.of("general"));
 
         CompactionRun result = service.getRunById(run.id());
-        assertThat(result.status()).isEqualTo("completed");
+        assertThat(result.status()).isEqualTo(RunStatus.COMPLETED);
         // General compaction is disabled in testProperties(), so 0 partitions compacted.
         assertThat(result.generalPartitionsCompacted()).isEqualTo(0);
     }
@@ -218,7 +218,7 @@ class CompactionServiceTest {
         long countBefore = DuckDBTestSupport.countRows(duckDB, "lake.main.entity_" + ENTITY_TYPE);
         assertThat(countBefore).isEqualTo(rows);
 
-        CompactionRun run = service.beginRun("test", List.of(ENTITY_TYPE));
+        CompactionRun run = service.beginRun(TriggerSource.MANUAL, List.of(ENTITY_TYPE));
         service.executeRun(run.id(), List.of(ENTITY_TYPE));
 
         long countAfter = DuckDBTestSupport.countRows(duckDB, "lake.main.entity_" + ENTITY_TYPE);
@@ -234,7 +234,7 @@ class CompactionServiceTest {
         long countBefore = DuckDBTestSupport.countRows(duckDB, "lake.main.general_orders_events");
         assertThat(countBefore).isEqualTo(rows);
 
-        CompactionRun run = service.beginRun("test", null);
+        CompactionRun run = service.beginRun(TriggerSource.MANUAL, null);
         service.executeRun(run.id(), null);
 
         long countAfter = DuckDBTestSupport.countRows(duckDB, "lake.main.general_orders_events");
@@ -248,7 +248,7 @@ class CompactionServiceTest {
     @Test
     void runScheduled_skipsWhenAlreadyRunning() throws Exception {
         // Manually set running flag by beginning a run.
-        service.beginRun("blocking", null);
+        service.beginRun(TriggerSource.MANUAL, null);
         assertThat(service.isRunning()).isTrue();
 
         // runScheduled should silently skip — no exception.
@@ -285,7 +285,7 @@ class CompactionServiceTest {
         logger.setLevel(Level.DEBUG);
         logger.addAppender(appender);
         try {
-            CompactionRun run = service.beginRun("flush-log-test", null);
+            CompactionRun run = service.beginRun(TriggerSource.MANUAL, null);
             service.executeRun(run.id(), null);
 
             boolean hasFlushEvent = appender.list.stream().anyMatch(e -> {
@@ -323,11 +323,11 @@ class CompactionServiceTest {
         logger.setLevel(Level.DEBUG);
         logger.addAppender(appender);
         try {
-            CompactionRun run = service.beginRun("rowcount-test", null);
+            CompactionRun run = service.beginRun(TriggerSource.MANUAL, null);
             service.executeRun(run.id(), null);
 
             // Run must complete regardless of DuckLake availability.
-            assertThat(service.getRunById(run.id()).status()).isEqualTo("completed");
+            assertThat(service.getRunById(run.id()).status()).isEqualTo(RunStatus.COMPLETED);
 
             // If the DEBUG path was taken (DuckLake available), the embedded count must be ≥ 0.
             Pattern countPattern = Pattern.compile("(\\d+) inlined rows");
@@ -366,11 +366,11 @@ class CompactionServiceTest {
     @Test
     void compactionHistory_noOp_filesBeforeEqualsFilesAfter() throws Exception {
         // Entity table exists but has no rows — nothing to compact.
-        CompactionRun run = service.beginRun("noop-files-test", List.of(ENTITY_TYPE));
+        CompactionRun run = service.beginRun(TriggerSource.MANUAL, List.of(ENTITY_TYPE));
         service.executeRun(run.id(), List.of(ENTITY_TYPE));
 
         CompactionRun result = service.getRunById(run.id());
-        assertThat(result.status()).isEqualTo("completed");
+        assertThat(result.status()).isEqualTo(RunStatus.COMPLETED);
 
         // files_processed = "files_before": how many source files were merged.
         // files_created   = "files_after":  how many output files remain.
@@ -410,11 +410,11 @@ class CompactionServiceTest {
     void compactionHistory_productiveCompaction_fileCountsWrittenToHistory() throws Exception {
         insertEntityRows(20); // multiple rows → multiple small Parquet files in production
 
-        CompactionRun run = service.beginRun("productive-files-test", List.of(ENTITY_TYPE));
+        CompactionRun run = service.beginRun(TriggerSource.MANUAL, List.of(ENTITY_TYPE));
         service.executeRun(run.id(), List.of(ENTITY_TYPE));
 
         CompactionRun result = service.getRunById(run.id());
-        assertThat(result.status()).isEqualTo("completed");
+        assertThat(result.status()).isEqualTo(RunStatus.COMPLETED);
 
         // Both file counts must be persisted to compaction_history (never null / negative).
         assertThat(result.filesProcessed())
@@ -463,11 +463,11 @@ class CompactionServiceTest {
         logger.setLevel(Level.DEBUG);
         logger.addAppender(appender);
         try {
-            CompactionRun run = svc.beginRun("rwgml-test", List.of(ENTITY_TYPE));
+            CompactionRun run = svc.beginRun(TriggerSource.MANUAL, List.of(ENTITY_TYPE));
             svc.executeRun(run.id(), List.of(ENTITY_TYPE));
 
             // Run must complete regardless of the limit setting.
-            assertThat(svc.getRunById(run.id()).status()).isEqualTo("completed");
+            assertThat(svc.getRunById(run.id()).status()).isEqualTo(RunStatus.COMPLETED);
 
             // Check whether a DEBUG event mentioning the setting was emitted.
             boolean hasLog = appender.list.stream()

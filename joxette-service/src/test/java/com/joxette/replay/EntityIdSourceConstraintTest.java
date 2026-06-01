@@ -1,5 +1,6 @@
 package com.joxette.replay;
 
+import com.joxette.management.IdSource;
 import com.joxette.support.DuckDBTestSupport;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -106,25 +107,20 @@ class EntityIdSourceConstraintTest {
                 "t", 0, 0L, System.currentTimeMillis(), null, null,
                 List.of(new KafkaMessage.Header("x-id", "h-val".getBytes(StandardCharsets.UTF_8))));
 
-        // "key" source — should return the message key
-        assertThat(extractor.extract(keyMsg, "key", null)).hasValue("key-val");
+        // IdSource.KEY source — should return the message key
+        assertThat(extractor.extract(keyMsg, IdSource.KEY, null)).hasValue("key-val");
 
-        // "value" source — should apply JSONPath to message value
-        assertThat(extractor.extract(valueMsg, "value", "$.id")).hasValue("v");
+        // IdSource.VALUE source — should apply JSONPath to message value
+        assertThat(extractor.extract(valueMsg, IdSource.VALUE, "$.id")).hasValue("v");
 
-        // "header" source — should extract the named header
-        assertThat(extractor.extract(headerMsg, "header", "x-id")).hasValue("h-val");
+        // IdSource.HEADER source — should extract the named header
+        assertThat(extractor.extract(headerMsg, IdSource.HEADER, "x-id")).hasValue("h-val");
     }
 
     @Test
-    void extractor_returnsEmpty_forObsoletePluralSpelling() {
-        // "headers" (plural) is no longer a valid id_source. If it were stored
-        // in the DB it would mean old data with the wrong spelling. The extractor
-        // must not silently match it — it falls through to the default empty branch.
-        KafkaMessage msg = new KafkaMessage(
-                "t", 0, 0L, System.currentTimeMillis(), null, null,
-                List.of(new KafkaMessage.Header("x-id", "h".getBytes(StandardCharsets.UTF_8))));
-
-        assertThat(extractor.extract(msg, "headers", "x-id")).isEmpty();
+    void idSource_fromValue_rejectsObsoletePluralSpelling() {
+        // "headers" (plural) is not a valid IdSource — IdSource.fromValue must throw.
+        assertThatThrownBy(() -> IdSource.fromValue("headers"))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 }

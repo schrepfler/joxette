@@ -32,10 +32,10 @@ public record CompactionRun(
         @Schema(description = "Timestamp when the run finished; null while still running",
                 example = "2024-06-01T03:00:12Z")
         Instant completedAt,
-        @Schema(description = "One of: running, completed, failed", example = "completed")
-        String status,
-        @Schema(description = "One of: scheduled, manual", example = "scheduled")
-        String triggeredBy,
+        @Schema(description = "Run status", example = "completed")
+        RunStatus status,
+        @Schema(description = "What triggered the run", example = "scheduled")
+        TriggerSource triggeredBy,
         @Schema(description = "Entity types targeted by this run; null means all entity types (plus general if enabled)",
                 example = "[\"order\", \"payment\"]")
         List<String> targets,

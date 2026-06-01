@@ -2,6 +2,7 @@ package com.joxette.api.error;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.joxette.management.ConfigRepository;
+import com.joxette.management.TopicMode;
 import com.joxette.config.events.ConfigEventBus;
 import com.joxette.management.KafkaTopicAdmin;
 import com.joxette.management.TopicConfig;
@@ -80,12 +81,12 @@ class TopicControllerProblemDetailTest {
 
     @Test
     void createTopic_duplicate_returnsConflictProblem() throws Exception {
-        TopicConfig existing = new TopicConfig("orders", "general", false, false, null, "latest", null);
+        TopicConfig existing = new TopicConfig("orders", TopicMode.GENERAL, false, false, null, "latest", null);
         when(config.findTopic("orders")).thenReturn(Optional.of(existing));
 
         String body = mapper.writeValueAsString(Map.of(
                 "topic", "orders",
-                "mode",  "general"));
+                "mode",  TopicMode.GENERAL));
 
         mvc.perform(post("/topics").contentType(MediaType.APPLICATION_JSON).content(body))
            .andExpectAll(ProblemDetailAssertions.problemDetail(
@@ -104,7 +105,7 @@ class TopicControllerProblemDetailTest {
     void createTopic_blankTopicField_returnsValidationProblemWithFieldErrors() throws Exception {
         String body = mapper.writeValueAsString(Map.of(
                 "topic", "",
-                "mode",  "general"));
+                "mode",  TopicMode.GENERAL));
 
         mvc.perform(post("/topics").contentType(MediaType.APPLICATION_JSON).content(body))
            .andExpectAll(ProblemDetailAssertions.problemDetail(

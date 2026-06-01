@@ -43,13 +43,13 @@ public class ReplayCoordinatorActor {
     // Public types shared with ReplayActor
     // -------------------------------------------------------------------------
 
-    public record ReplayStatus(
+    public record ReplaySnapshot(
             String id,
             String sourceTopic,
             String targetTopic,
             Instant startedAt,
             long sentCount,
-            String status   // "running" | "completed" | "failed" | "cancelled"
+            ReplayStatus status
     ) {}
 
     // -------------------------------------------------------------------------
@@ -72,12 +72,12 @@ public class ReplayCoordinatorActor {
     /** Cancel all running replays — sent during shutdown before the actor system stops. */
     public record CancelAll(ActorRef<Integer> replyTo) implements Cmd {}
 
-    public record ListActive(ActorRef<List<ReplayStatus>> replyTo) implements Cmd {}
+    public record ListActive(ActorRef<List<ReplaySnapshot>> replyTo) implements Cmd {}
 
     /** Sent by ReplayActor when its VT completes (normally, failed, or cancelled). */
     public record ChildDone(
             String id, String sourceTopic, String targetTopic,
-            Instant startedAt, long sentCount, String status
+            Instant startedAt, long sentCount, ReplayStatus status
     ) implements Cmd {}
 
     /** Functional interface for the actual engine call — allows both topic and entity replays. */
@@ -90,7 +90,7 @@ public class ReplayCoordinatorActor {
     // Internal linger entry
     // -------------------------------------------------------------------------
 
-    private record LingerEntry(ReplayStatus status, Instant completedAt) {}
+    private record LingerEntry(ReplaySnapshot status, Instant completedAt) {}
 
     // -------------------------------------------------------------------------
     // Factory
@@ -135,7 +135,7 @@ public class ReplayCoordinatorActor {
                                     msg.vtExecutor()),
                             "replay-" + id);
                     ctx.watchWith(child, new ChildDone(id, msg.sourceTopic(), msg.targetTopic(),
-                            Instant.now(), 0, "failed"));  // watchWith fallback if actor crashes hard
+                            Instant.now(), 0, ReplayStatus.FAILED));  // watchWith fallback if actor crashes hard
 
                     children.put(id, child);
                     log.info("ReplayCoordinatorActor: started replay[{}] {} → {}", id, msg.sourceTopic(), msg.targetTopic());
@@ -165,7 +165,7 @@ public class ReplayCoordinatorActor {
                 .onMessage(ChildDone.class, msg -> {
                     children.remove(msg.id());
                     linger.put(msg.id(), new LingerEntry(
-                            new ReplayStatus(msg.id(), msg.sourceTopic(), msg.targetTopic(),
+                            new ReplaySnapshot(msg.id(), msg.sourceTopic(), msg.targetTopic(),
                                     msg.startedAt(), msg.sentCount(), msg.status()),
                             Instant.now()));
                     log.info("ReplayCoordinatorActor: replay[{}] → {} (sent={})", msg.id(), msg.status(), msg.sentCount());
@@ -176,11 +176,11 @@ public class ReplayCoordinatorActor {
                     Instant evictBefore = Instant.now().minusSeconds(LINGER_SECONDS);
                     linger.entrySet().removeIf(e -> e.getValue().completedAt().isBefore(evictBefore));
 
-                    List<ReplayStatus> result = new ArrayList<>(children.size() + linger.size());
+                    List<ReplaySnapshot> result = new ArrayList<>(children.size() + linger.size());
                     // Running: ask each child for a live snapshot
                     for (Map.Entry<String, ActorRef<ReplayActor.Cmd>> e : children.entrySet()) {
                         // Inline ask within the mailbox — safe, same pattern as RecordingCoordinatorActor.ListRunning
-                        ReplayStatus s = org.apache.pekko.actor.typed.javadsl.AskPattern.ask(
+                        ReplaySnapshot s = org.apache.pekko.actor.typed.javadsl.AskPattern.ask(
                                 e.getValue(),
                                 ReplayActor.GetStatus::new,
                                 Duration.ofSeconds(2),

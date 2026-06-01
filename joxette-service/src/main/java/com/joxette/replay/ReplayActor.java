@@ -47,7 +47,7 @@ public class ReplayActor {
     public record Cancel() implements Cmd {}
 
     /** Ask for a point-in-time status snapshot. */
-    public record GetStatus(ActorRef<ReplayCoordinatorActor.ReplayStatus> replyTo) implements Cmd {}
+    public record GetStatus(ActorRef<ReplayCoordinatorActor.ReplaySnapshot> replyTo) implements Cmd {}
 
     // Internal pipe-back messages
     private record Finished() implements Cmd {}
@@ -104,23 +104,23 @@ public class ReplayActor {
 
         return Behaviors.receive(Cmd.class)
                 .onMessage(GetStatus.class, msg -> {
-                    msg.replyTo().tell(snapshot(id, sourceTopic, targetTopic, startedAt, sentCounter, "running"));
+                    msg.replyTo().tell(snapshot(id, sourceTopic, targetTopic, startedAt, sentCounter, ReplayStatus.RUNNING));
                     return Behaviors.same();
                 })
                 .onMessage(Cancel.class, msg -> {
                     log.debug("ReplayActor[{}]: cancel requested, interrupting VT", id);
                     Thread vt = vtHolder[0];
                     if (vt != null) vt.interrupt();
-                    return stopping(ctx, id, sourceTopic, targetTopic, startedAt, sentCounter, parent, "cancelled");
+                    return stopping(ctx, id, sourceTopic, targetTopic, startedAt, sentCounter, parent, ReplayStatus.CANCELLED);
                 })
                 .onMessage(Finished.class, msg -> {
                     log.info("ReplayActor[{}]: replay completed normally", id);
-                    parent.tell(new ReplayCoordinatorActor.ChildDone(id, sourceTopic, targetTopic, startedAt, sentCounter.get(), "completed"));
+                    parent.tell(new ReplayCoordinatorActor.ChildDone(id, sourceTopic, targetTopic, startedAt, sentCounter.get(), ReplayStatus.COMPLETED));
                     return Behaviors.stopped();
                 })
                 .onMessage(Failed.class, msg -> {
                     log.warn("ReplayActor[{}]: replay failed: {}", id, msg.cause().getMessage());
-                    parent.tell(new ReplayCoordinatorActor.ChildDone(id, sourceTopic, targetTopic, startedAt, sentCounter.get(), "failed"));
+                    parent.tell(new ReplayCoordinatorActor.ChildDone(id, sourceTopic, targetTopic, startedAt, sentCounter.get(), ReplayStatus.FAILED));
                     return Behaviors.stopped();
                 })
                 .build();
@@ -138,7 +138,7 @@ public class ReplayActor {
             Instant startedAt,
             AtomicLong sentCounter,
             ActorRef<ReplayCoordinatorActor.ChildDone> parent,
-            String terminalStatus) {
+            ReplayStatus terminalStatus) {
 
         return Behaviors.receive(Cmd.class)
                 .onMessage(GetStatus.class, msg -> {
@@ -161,10 +161,10 @@ public class ReplayActor {
     // Helpers
     // -------------------------------------------------------------------------
 
-    static ReplayCoordinatorActor.ReplayStatus snapshot(
+    static ReplayCoordinatorActor.ReplaySnapshot snapshot(
             String id, String sourceTopic, String targetTopic,
-            Instant startedAt, AtomicLong sentCounter, String status) {
-        return new ReplayCoordinatorActor.ReplayStatus(
+            Instant startedAt, AtomicLong sentCounter, ReplayStatus status) {
+        return new ReplayCoordinatorActor.ReplaySnapshot(
                 id, sourceTopic, targetTopic, startedAt, sentCounter.get(), status);
     }
 }

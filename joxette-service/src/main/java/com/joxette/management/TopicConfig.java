@@ -6,8 +6,7 @@ package com.joxette.management;
  */
 public record TopicConfig(
         String topic,
-        /** "general" | "entity_only" | "both" */
-        String mode,
+        TopicMode mode,
         boolean paused,
         boolean active,
         /** Maximum age of records in days; {@code null} means no retention limit. */

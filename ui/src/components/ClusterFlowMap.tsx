@@ -229,7 +229,8 @@ function ParticleEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
 
 interface KafkaTopicNodeData extends Record<string, unknown> { label: string; partitions: number }
 interface InstanceContainerNodeData extends Record<string, unknown> {
-  instanceId: string; roles: string[]; pekkoStatus: string | null; reachable: boolean; width: number; height: number
+  instanceId: string; recordingEnabled: boolean; compactionEnabled: boolean
+  pekkoStatus: string | null; reachable: boolean; width: number; height: number
   hasRecorders: boolean; hasCatalog: boolean; hasReplays: boolean
   lakeColX: number; rplColX: number   // -1 when panel absent
 }
@@ -287,9 +288,12 @@ function InstanceContainerNode({ data }: NodeProps<Node<InstanceContainerNodeDat
       <div style={{ height: HEADER_H, padding: '8px 12px', borderBottom: '1px solid var(--rule)', display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <img src="/joxette logo.png" alt="Joxette" style={{ width: 20, height: 20, flexShrink: 0, filter: 'invert(1) brightness(0.8)' }} />
         <span style={{ ...nodeTitle, fontFamily: 'var(--font-mono)', fontSize: '0.6875rem' }}>{data.instanceId}</span>
-        {data.roles.map(r => (
-          <span key={r} style={{ ...pill, background: 'var(--surface-sunken)', color: 'var(--ink-secondary)' }}>{r}</span>
-        ))}
+        {data.recordingEnabled && (
+          <span style={{ ...pill, background: '#dcfce7', color: '#3E6A44' }}>recording</span>
+        )}
+        {data.compactionEnabled && (
+          <span style={{ ...pill, background: 'var(--surface-sunken)', color: 'var(--ink-secondary)' }}>compaction</span>
+        )}
         <span style={{ marginLeft: 'auto', fontSize: '0.5625rem', fontWeight: 700, letterSpacing: '0.08em', color: statusColor, textTransform: 'uppercase' }}>
           {data.pekkoStatus ?? 'unknown'}
           {data.reachable ? '' : ' ✗'}
@@ -444,10 +448,9 @@ function buildGraph(data: ClusterStateView, rates: Record<string, Rates>): { nod
   const recorderEntries = Object.entries(data.self.recorders)
   // Include completed/failed/cancelled replays so they linger (server evicts after 30 s)
   const activeReplays   = data.activeReplays ?? []
-  const roles           = data.self.roles
 
   const hasRecorders = recorderEntries.length > 0
-  // Catalog panel is shown whenever the catalog backend is known; embedded means it lives inside the container
+  // Catalog is always present when the node is up; backend tells us which type
   const hasCatalog   = !!data.self.catalogBackend
   const hasReplays   = activeReplays.length > 0
 
@@ -487,7 +490,8 @@ function buildGraph(data: ClusterStateView, rates: Record<string, Rates>): { nod
     position: { x: X_INSTANCE, y: startY },
     data: {
       instanceId: data.self.instanceId,
-      roles,
+      recordingEnabled: data.self.recordingEnabled,
+      compactionEnabled: data.self.compactionEnabled,
       pekkoStatus: data.self.pekkoStatus,
       reachable: data.self.pekkoReachable,
       width: CONT_W,

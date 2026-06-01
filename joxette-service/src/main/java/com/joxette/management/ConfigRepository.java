@@ -24,7 +24,6 @@ import java.util.*;
 @DependsOn("dbSchemaManager")
 public class ConfigRepository {
 
-    private static final Set<String> VALID_MODES = Set.of("general", "entity_only", "both");
 
     private final Connection duckDB;
     private final JoxetteProperties properties;
@@ -50,7 +49,7 @@ public class ConfigRepository {
                  ResultSet rs = st.executeQuery(
                          "SELECT topic, mode, paused, retention_days, start_from, broker_id FROM topic_configs ORDER BY topic")) {
                 while (rs.next()) {
-                    result.add(new TopicConfig(rs.getString("topic"), rs.getString("mode"),
+                    result.add(new TopicConfig(rs.getString("topic"), TopicMode.fromValue(rs.getString("mode")),
                             rs.getBoolean("paused"), false,
                             (Integer) rs.getObject("retention_days"),
                             rs.getString("start_from"),
@@ -69,7 +68,7 @@ public class ConfigRepository {
                 try (ResultSet rs = ps.executeQuery()) {
                     if (rs.next()) {
                         return Optional.of(new TopicConfig(rs.getString("topic"),
-                                rs.getString("mode"), rs.getBoolean("paused"), false,
+                                TopicMode.fromValue(rs.getString("mode")), rs.getBoolean("paused"), false,
                                 (Integer) rs.getObject("retention_days"),
                                 rs.getString("start_from"),
                                 rs.getString("broker_id")));
@@ -82,7 +81,7 @@ public class ConfigRepository {
 
     public TopicConfig upsertTopic(String topic, String mode, boolean paused, String startFrom,
                                    String brokerId) throws SQLException {
-        validateMode(mode);
+        TopicMode resolvedTopicMode = TopicMode.fromValue(mode); // validates and throws on unknown
         String resolvedStartFrom = "earliest".equals(startFrom) ? "earliest" : "latest";
         synchronized (duckDB) {
             try (PreparedStatement ps = duckDB.prepareStatement("""
@@ -95,13 +94,14 @@ public class ConfigRepository {
                     RETURNING topic, mode, paused, retention_days, start_from, broker_id
                     """)) {
                 ps.setString(1, topic);
-                ps.setString(2, mode);
+                ps.setString(2, resolvedTopicMode.getValue());
                 ps.setBoolean(3, paused);
                 ps.setString(4, resolvedStartFrom);
                 ps.setString(5, brokerId);
                 try (ResultSet rs = ps.executeQuery()) {
                     if (rs.next()) {
-                        return new TopicConfig(rs.getString("topic"), rs.getString("mode"),
+                        return new TopicConfig(rs.getString("topic"),
+                                TopicMode.fromValue(rs.getString("mode")),
                                 rs.getBoolean("paused"), false,
                                 (Integer) rs.getObject("retention_days"),
                                 rs.getString("start_from"),
@@ -110,7 +110,7 @@ public class ConfigRepository {
                 }
             }
         }
-        return new TopicConfig(topic, mode, paused, false, null, resolvedStartFrom, brokerId);
+        return new TopicConfig(topic, resolvedTopicMode, paused, false, null, resolvedStartFrom, brokerId);
     }
 
     /** Convenience overload for callers that don't supply brokerId. */
@@ -267,7 +267,8 @@ public class ConfigRepository {
                     while (rs.next()) {
                         String topic = rs.getString("topic");
                         builders.put(topic, new EntitySourceConfig.Builder(
-                                rs.getString("entity_type"), topic, rs.getString("mode")));
+                                rs.getString("entity_type"), topic,
+                                TopicMode.fromValue(rs.getString("mode"))));
                     }
                 }
             }
@@ -286,7 +287,7 @@ public class ConfigRepository {
                         if (b != null) {
                             b.addMatcher(new EntitySourceConfig.MatcherConfig(
                                     rs.getString("message_type"),
-                                    rs.getString("id_source"),
+                                    IdSource.fromValue(rs.getString("id_source")),
                                     rs.getString("id_expression")));
                         }
                     }
@@ -304,7 +305,8 @@ public class ConfigRepository {
                                             String mode,
                                             List<EntitySourceConfig.MatcherConfig> matchers)
             throws SQLException {
-        String resolvedMode = "both".equals(mode) ? "both" : "entity_only";
+        TopicMode resolvedMode = (mode != null && mode.equals(TopicMode.BOTH.getValue()))
+                ? TopicMode.BOTH : TopicMode.ENTITY_ONLY;
         synchronized (duckDB) {
             // Upsert the mapping header
             try (PreparedStatement ps = duckDB.prepareStatement("""
@@ -314,7 +316,7 @@ public class ConfigRepository {
                     """)) {
                 ps.setString(1, entityType);
                 ps.setString(2, topic);
-                ps.setString(3, resolvedMode);
+                ps.setString(3, resolvedMode.getValue());
                 ps.executeUpdate();
             }
             // Replace all matchers for this mapping
@@ -337,7 +339,7 @@ public class ConfigRepository {
                         ps.setString(1, entityType);
                         ps.setString(2, topic);
                         ps.setString(3, m.messageType());
-                        ps.setString(4, m.idSource());
+                        ps.setString(4, m.idSource().getValue());
                         ps.setString(5, m.idExpression());
                         ps.addBatch();
                     }
@@ -374,7 +376,6 @@ public class ConfigRepository {
     public EntitySourceConfig.MatcherConfig addEntityMatcher(
             String entityType, String topic, EntitySourceConfig.MatcherConfig matcher)
             throws SQLException {
-        validateMatcherSource(matcher.idSource());
         synchronized (duckDB) {
             try (PreparedStatement ps = duckDB.prepareStatement("""
                     INSERT INTO entity_source_matchers
@@ -387,7 +388,7 @@ public class ConfigRepository {
                 ps.setString(1, entityType);
                 ps.setString(2, topic);
                 ps.setString(3, matcher.messageType());
-                ps.setString(4, matcher.idSource());
+                ps.setString(4, matcher.idSource().getValue());
                 ps.setString(5, matcher.idExpression());
                 ps.executeUpdate();
             }
@@ -427,7 +428,7 @@ public class ConfigRepository {
                         result.add(new TopicMatcherConfig(
                                 rs.getString("topic"),
                                 rs.getString("message_type"),
-                                rs.getString("id_source"),
+                                IdSource.fromValue(rs.getString("id_source")),
                                 rs.getString("id_expression")));
                     }
                 }
@@ -447,7 +448,7 @@ public class ConfigRepository {
                     result.add(new TopicMatcherConfig(
                             rs.getString("topic"),
                             rs.getString("message_type"),
-                            rs.getString("id_source"),
+                            IdSource.fromValue(rs.getString("id_source")),
                             rs.getString("id_expression")));
                 }
             }
@@ -458,7 +459,7 @@ public class ConfigRepository {
     public TopicMatcherConfig upsertTopicMatcher(String topic, String messageType,
                                                   String idSource, String idExpression)
             throws SQLException {
-        validateMatcherSource(idSource);
+        IdSource resolvedIdSource = IdSource.fromValue(idSource);
         synchronized (duckDB) {
             try (PreparedStatement ps = duckDB.prepareStatement("""
                     INSERT INTO topic_message_type_matchers (topic, message_type, id_source, id_expression)
@@ -469,12 +470,12 @@ public class ConfigRepository {
                     """)) {
                 ps.setString(1, topic);
                 ps.setString(2, messageType);
-                ps.setString(3, idSource);
+                ps.setString(3, resolvedIdSource.getValue());
                 ps.setString(4, idExpression);
                 ps.executeUpdate();
             }
         }
-        return new TopicMatcherConfig(topic, messageType, idSource, idExpression);
+        return new TopicMatcherConfig(topic, messageType, resolvedIdSource, idExpression);
     }
 
     public boolean deleteTopicMatcher(String topic, String messageType) throws SQLException {
@@ -563,10 +564,11 @@ public class ConfigRepository {
                     """)) {
                 for (var e : properties.getBootstrap().getEntities()) {
                     for (var src : e.getSources()) {
-                        String m = "both".equals(src.getMode()) ? "both" : "entity_only";
+                        TopicMode m = TopicMode.BOTH.getValue().equals(src.getMode())
+                                ? TopicMode.BOTH : TopicMode.ENTITY_ONLY;
                         psMapping.setString(1, e.getType());
                         psMapping.setString(2, src.getTopic());
-                        psMapping.setString(3, m);
+                        psMapping.setString(3, m.getValue());
                         psMapping.addBatch();
 
                         for (var matcher : src.getMatchers()) {
@@ -589,19 +591,4 @@ public class ConfigRepository {
     // Validation
     // -------------------------------------------------------------------------
 
-    private static void validateMode(String mode) {
-        if (!VALID_MODES.contains(mode)) {
-            throw com.joxette.api.error.ValidationException.field("mode",
-                    "must be one of %s (got '%s')".formatted(VALID_MODES, mode));
-        }
-    }
-
-    private static final Set<String> VALID_ID_SOURCES = Set.of("key", "value", "header");
-
-    private static void validateMatcherSource(String idSource) {
-        if (!VALID_ID_SOURCES.contains(idSource)) {
-            throw com.joxette.api.error.ValidationException.field("id_source",
-                    "must be one of %s (got '%s')".formatted(VALID_ID_SOURCES, idSource));
-        }
-    }
 }

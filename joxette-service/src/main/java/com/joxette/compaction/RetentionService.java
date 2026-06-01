@@ -5,6 +5,7 @@ import com.joxette.db.SchemaManager;
 import com.joxette.management.ConfigRepository;
 import com.joxette.management.EntityTypeConfig;
 import com.joxette.management.TopicConfig;
+import com.joxette.management.TopicMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.DependsOn;
@@ -76,7 +77,7 @@ public class RetentionService {
         }
         long runId;
         try {
-            runId = insertRunRecord("scheduled");
+            runId = insertRunRecord(TriggerSource.SCHEDULED);
         } catch (SQLException e) {
             running.set(false);
             log.error("Failed to insert retention run record", e);
@@ -91,7 +92,7 @@ public class RetentionService {
      *
      * @throws com.joxette.api.error.ConflictException if a retention run is already in progress
      */
-    public RetentionRun beginRun(String triggeredBy) throws SQLException {
+    public RetentionRun beginRun(TriggerSource triggeredBy) throws SQLException {
         if (!running.compareAndSet(false, true)) {
             throw com.joxette.api.error.ConflictException.retentionAlreadyRunning();
         }
@@ -113,13 +114,13 @@ public class RetentionService {
             entityRows        = entityCounts[0];
             knownEntitiesRows = entityCounts[1];
             checkpoint();
-            updateRunRecord(runId, "completed", entityRows, generalRows, knownEntitiesRows, null);
+            updateRunRecord(runId, RunStatus.COMPLETED, entityRows, generalRows, knownEntitiesRows, null);
             log.info("Retention run {} completed: {} general rows, {} entity rows, {} known_entities rows deleted",
                     runId, generalRows, entityRows, knownEntitiesRows);
         } catch (Exception e) {
             log.error("Retention run {} failed", runId, e);
             try {
-                updateRunRecord(runId, "failed", entityRows, generalRows, knownEntitiesRows, e.getMessage());
+                updateRunRecord(runId, RunStatus.FAILED, entityRows, generalRows, knownEntitiesRows, e.getMessage());
             } catch (SQLException se) {
                 log.error("Failed to update retention_history for run {}", runId, se);
             }
@@ -179,8 +180,7 @@ public class RetentionService {
         for (TopicConfig tc : topics) {
             if (tc.retentionDays() == null) continue;
             // Only general-mode topics have a cassette table; entity_only topics skip this
-            String mode = tc.mode();
-            if ("entity_only".equals(mode)) continue;
+            if (tc.mode() == TopicMode.ENTITY_ONLY) continue;
             long deleted = deleteFromGeneralCassette(tc.topic(), tc.retentionDays());
             if (deleted > 0) {
                 log.debug("Retention: deleted {} rows from general cassette for topic '{}' (retention={} days)",
@@ -270,7 +270,7 @@ public class RetentionService {
     // retention_history CRUD
     // =========================================================================
 
-    private long insertRunRecord(String triggeredBy) throws SQLException {
+    private long insertRunRecord(TriggerSource triggeredBy) throws SQLException {
         synchronized (duckDB) {
             try (PreparedStatement ps = duckDB.prepareStatement("""
                     INSERT INTO retention_history
@@ -280,7 +280,7 @@ public class RetentionService {
                     RETURNING id
                     """)) {
                 ps.setTimestamp(1, Timestamp.from(Instant.now()));
-                ps.setString(2, triggeredBy);
+                ps.setString(2, triggeredBy.getValue());
                 try (ResultSet rs = ps.executeQuery()) {
                     if (rs.next()) return rs.getLong(1);
                     throw new SQLException("INSERT into retention_history returned no generated id");
@@ -289,7 +289,7 @@ public class RetentionService {
         }
     }
 
-    private void updateRunRecord(long runId, String status,
+    private void updateRunRecord(long runId, RunStatus status,
                                   long entityRows, long generalRows, long knownEntitiesRows,
                                   String errorMessage) throws SQLException {
         synchronized (duckDB) {
@@ -304,7 +304,7 @@ public class RetentionService {
                     WHERE id = ?
                     """)) {
                 ps.setTimestamp(1, Timestamp.from(Instant.now()));
-                ps.setString(2, status);
+                ps.setString(2, status.getValue());
                 ps.setLong(3, entityRows);
                 ps.setLong(4, generalRows);
                 ps.setLong(5, knownEntitiesRows);
@@ -348,8 +348,8 @@ public class RetentionService {
                 rs.getLong("id"),
                 rs.getTimestamp("started_at").toInstant(),
                 completedTs != null ? completedTs.toInstant() : null,
-                rs.getString("status"),
-                rs.getString("triggered_by"),
+                RunStatus.fromValue(rs.getString("status")),
+                TriggerSource.fromValue(rs.getString("triggered_by")),
                 rs.getLong("entity_rows_deleted"),
                 rs.getLong("general_rows_deleted"),
                 rs.getLong("known_entities_deleted"),

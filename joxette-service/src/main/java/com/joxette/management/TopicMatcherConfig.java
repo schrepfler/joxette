@@ -11,13 +11,13 @@ package com.joxette.management;
  *
  * @param topic        Kafka topic this matcher applies to
  * @param messageType  label to store in the cassette (e.g. {@code "OrderCreated"})
- * @param idSource     one of {@code "key"}, {@code "value"}, {@code "header"}
+ * @param idSource     where to evaluate the expression
  * @param idExpression JSONPath for {@code "value"} source; header name for
  *                     {@code "header"} source; ignored for {@code "key"} source
  */
 public record TopicMatcherConfig(
         String topic,
         String messageType,
-        String idSource,
+        IdSource idSource,
         String idExpression
 ) {}

@@ -1063,7 +1063,8 @@ export interface RecorderStatus {
 
 export interface InstanceRecord {
   instanceId: string
-  roles: string[]
+  recordingEnabled: boolean
+  compactionEnabled: boolean
   catalogBackend: string
   startedAt: string
   lastHeartbeat: string
@@ -1090,7 +1091,8 @@ export interface ActiveReplay {
 export interface ClusterStateView {
   self: {
     instanceId: string
-    roles: string[]
+    recordingEnabled: boolean
+    compactionEnabled: boolean
     catalogBackend: string
     startedAt: string | null
     lastHeartbeat: string | null

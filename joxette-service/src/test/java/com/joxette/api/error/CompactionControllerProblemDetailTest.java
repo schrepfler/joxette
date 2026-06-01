@@ -3,6 +3,8 @@ package com.joxette.api.error;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.joxette.compaction.CompactionController;
 import com.joxette.compaction.CompactionRun;
+import com.joxette.compaction.RunStatus;
+import com.joxette.compaction.TriggerSource;
 import com.joxette.compaction.CompactionService;
 import com.joxette.compaction.CompactionSingletonActor;
 import com.joxette.compaction.RetentionService;
@@ -87,7 +89,7 @@ class CompactionControllerProblemDetailTest {
 
         // "accepting" actor: always replies CompactionAccepted with a fake run
         CompactionRun fakeRun = new CompactionRun(
-                1L, Instant.now(), null, "running", "manual", null, 0, 0, 0, 0, null);
+                1L, Instant.now(), null, RunStatus.RUNNING, TriggerSource.MANUAL, null, 0, 0, 0, 0, null);
         acceptingSingleton = actorSystem.systemActorOf(
                 Behaviors.receive(CompactionSingletonActor.CompactionCommand.class)
                         .onMessage(CompactionSingletonActor.TriggerCompaction.class, msg -> {

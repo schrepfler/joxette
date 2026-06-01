@@ -3,8 +3,10 @@ package com.joxette.replay;
 import com.joxette.management.ConfigRepository;
 import com.joxette.management.EntitySourceConfig;
 import com.joxette.management.EntityTypeConfig;
+import com.joxette.management.IdSource;
 import com.joxette.management.TopicConfig;
 import com.joxette.management.TopicMatcherConfig;
+import com.joxette.management.TopicMode;
 import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -48,7 +50,7 @@ class MessageRouterTest {
             super(null, null);
         }
 
-        void addTopic(String topic, String mode) {
+        void addTopic(String topic, TopicMode mode) {
             topics.add(new TopicConfig(topic, mode, false, false, null, "latest", null));
         }
 
@@ -56,13 +58,13 @@ class MessageRouterTest {
             entityTypes.add(new EntityTypeConfig(type, buckets, null));
         }
 
-        void addSource(String entityType, String topic, String mode,
+        void addSource(String entityType, String topic, TopicMode mode,
                        List<EntitySourceConfig.MatcherConfig> matchers) {
             sources.computeIfAbsent(entityType, k -> new ArrayList<>())
                    .add(new EntitySourceConfig(entityType, topic, mode, matchers));
         }
 
-        void addTopicMatcher(String topic, String messageType, String idSource, String idExpression) {
+        void addTopicMatcher(String topic, String messageType, IdSource idSource, String idExpression) {
             topicMatchers.add(new TopicMatcherConfig(topic, messageType, idSource, idExpression));
         }
 
@@ -94,7 +96,7 @@ class MessageRouterTest {
     }
 
     private static EntitySourceConfig.MatcherConfig matcher(
-            String messageType, String source, String expression) {
+            String messageType, IdSource source, String expression) {
         return new EntitySourceConfig.MatcherConfig(messageType, source, expression);
     }
 
@@ -108,13 +110,13 @@ class MessageRouterTest {
     }
 
     // =========================================================================
-    // Mode = "general"
+    // Mode = TopicMode.GENERAL
     // =========================================================================
 
     @Test
     void general_routesToGeneralOnly() {
         StubConfigRepository repo = new StubConfigRepository();
-        repo.addTopic("audit.log", "general");
+        repo.addTopic("audit.log", TopicMode.GENERAL);
         MessageRouter router = routerFor(repo);
 
         RouteDecision decision = router.route(jsonMessage("audit.log", "{}"));
@@ -134,16 +136,16 @@ class MessageRouterTest {
     }
 
     // =========================================================================
-    // Mode = "entity_only" with single matcher
+    // Mode = TopicMode.ENTITY_ONLY with single matcher
     // =========================================================================
 
     @Test
     void entityOnly_doesNotRouteToGeneral() {
         StubConfigRepository repo = new StubConfigRepository();
-        repo.addTopic("payments.events", "entity_only");
+        repo.addTopic("payments.events", TopicMode.ENTITY_ONLY);
         repo.addEntityType("order", 256);
-        repo.addSource("order", "payments.events", "entity_only",
-                List.of(matcher("payment", "value", "$.payment.order_id")));
+        repo.addSource("order", "payments.events", TopicMode.ENTITY_ONLY,
+                List.of(matcher("payment", IdSource.VALUE, "$.payment.order_id")));
         MessageRouter router = routerFor(repo);
 
         RouteDecision decision = router.route(
@@ -157,16 +159,16 @@ class MessageRouterTest {
     }
 
     // =========================================================================
-    // Mode = "both"
+    // Mode = TopicMode.BOTH
     // =========================================================================
 
     @Test
     void both_routesToGeneralAndEntity() {
         StubConfigRepository repo = new StubConfigRepository();
-        repo.addTopic("orders.events", "both");
+        repo.addTopic("orders.events", TopicMode.BOTH);
         repo.addEntityType("order", 256);
-        repo.addSource("order", "orders.events", "entity_only",
-                List.of(matcher("order", "value", "$.order_id")));
+        repo.addSource("order", "orders.events", TopicMode.ENTITY_ONLY,
+                List.of(matcher("order", IdSource.VALUE, "$.order_id")));
         MessageRouter router = routerFor(repo);
 
         RouteDecision decision = router.route(
@@ -185,10 +187,10 @@ class MessageRouterTest {
     @Test
     void missingEntityId_skipsEntityRoute_butStillRoutesGeneral() {
         StubConfigRepository repo = new StubConfigRepository();
-        repo.addTopic("orders.events", "both");
+        repo.addTopic("orders.events", TopicMode.BOTH);
         repo.addEntityType("order", 256);
-        repo.addSource("order", "orders.events", "entity_only",
-                List.of(matcher("order", "value", "$.order_id")));
+        repo.addSource("order", "orders.events", TopicMode.ENTITY_ONLY,
+                List.of(matcher("order", IdSource.VALUE, "$.order_id")));
         MessageRouter router = routerFor(repo);
 
         RouteDecision decision = router.route(
@@ -201,10 +203,10 @@ class MessageRouterTest {
     @Test
     void entityOnly_missingId_producesNoRoutes() {
         StubConfigRepository repo = new StubConfigRepository();
-        repo.addTopic("payments.events", "entity_only");
+        repo.addTopic("payments.events", TopicMode.ENTITY_ONLY);
         repo.addEntityType("order", 256);
-        repo.addSource("order", "payments.events", "entity_only",
-                List.of(matcher("payment", "value", "$.payment.order_id")));
+        repo.addSource("order", "payments.events", TopicMode.ENTITY_ONLY,
+                List.of(matcher("payment", IdSource.VALUE, "$.payment.order_id")));
         MessageRouter router = routerFor(repo);
 
         RouteDecision decision = router.route(jsonMessage("payments.events", "{}"));
@@ -220,11 +222,11 @@ class MessageRouterTest {
     @Test
     void multipleMatchers_firstMatchWins() {
         StubConfigRepository repo = new StubConfigRepository();
-        repo.addTopic("events", "both");
+        repo.addTopic("events", TopicMode.BOTH);
         repo.addEntityType("fixture", 256);
-        repo.addSource("fixture", "events", "entity_only", List.of(
-                matcher("fixture",   "value", "$.fixture.id"),
-                matcher("marketSet", "value", "$.marketSet.fixtureId")));
+        repo.addSource("fixture", "events", TopicMode.ENTITY_ONLY, List.of(
+                matcher("fixture",   IdSource.VALUE, "$.fixture.id"),
+                matcher("marketSet", IdSource.VALUE, "$.marketSet.fixtureId")));
         MessageRouter router = routerFor(repo);
 
         // Message is a marketSet — no $.fixture.id present
@@ -240,11 +242,11 @@ class MessageRouterTest {
     @Test
     void multipleMatchers_firstMatchWins_fixtureMessage() {
         StubConfigRepository repo = new StubConfigRepository();
-        repo.addTopic("events", "both");
+        repo.addTopic("events", TopicMode.BOTH);
         repo.addEntityType("fixture", 256);
-        repo.addSource("fixture", "events", "entity_only", List.of(
-                matcher("fixture",   "value", "$.fixture.id"),
-                matcher("marketSet", "value", "$.marketSet.fixtureId")));
+        repo.addSource("fixture", "events", TopicMode.ENTITY_ONLY, List.of(
+                matcher("fixture",   IdSource.VALUE, "$.fixture.id"),
+                matcher("marketSet", IdSource.VALUE, "$.marketSet.fixtureId")));
         MessageRouter router = routerFor(repo);
 
         // Message is a fixture — first matcher matches
@@ -263,10 +265,10 @@ class MessageRouterTest {
     @Test
     void mappingMode_both_promotesGeneralEvenIfTopicIsEntityOnly() {
         StubConfigRepository repo = new StubConfigRepository();
-        repo.addTopic("events", "entity_only");
+        repo.addTopic("events", TopicMode.ENTITY_ONLY);
         repo.addEntityType("fixture", 256);
-        repo.addSource("fixture", "events", "both",   // mapping-level both
-                List.of(matcher("fixture", "value", "$.fixture.id")));
+        repo.addSource("fixture", "events", TopicMode.BOTH,   // mapping-level both
+                List.of(matcher("fixture", IdSource.VALUE, "$.fixture.id")));
         MessageRouter router = routerFor(repo);
 
         RouteDecision decision = router.route(
@@ -283,13 +285,13 @@ class MessageRouterTest {
     @Test
     void multipleEntityTypes_allResolvedRoutes_areReturned() {
         StubConfigRepository repo = new StubConfigRepository();
-        repo.addTopic("events", "both");
+        repo.addTopic("events", TopicMode.BOTH);
         repo.addEntityType("fixture", 256);
         repo.addEntityType("session", 64);
-        repo.addSource("fixture", "events", "entity_only",
-                List.of(matcher("fixture", "value", "$.fixture.id")));
-        repo.addSource("session", "events", "entity_only",
-                List.of(matcher("session", "key", null)));
+        repo.addSource("fixture", "events", TopicMode.ENTITY_ONLY,
+                List.of(matcher("fixture", IdSource.VALUE, "$.fixture.id")));
+        repo.addSource("session", "events", TopicMode.ENTITY_ONLY,
+                List.of(matcher("session", IdSource.KEY, null)));
         MessageRouter router = routerFor(repo);
 
         KafkaMessage msg = new KafkaMessage("events", 0, 0L,
@@ -339,7 +341,7 @@ class MessageRouterTest {
     @Test
     void reload_picksUpNewEntitySource() throws SQLException {
         StubConfigRepository repo = new StubConfigRepository();
-        repo.addTopic("orders.events", "both");
+        repo.addTopic("orders.events", TopicMode.BOTH);
         // No entity type yet — should produce no entity routes
         MessageRouter router = routerFor(repo);
 
@@ -349,8 +351,8 @@ class MessageRouterTest {
 
         // Now register the entity type + source and reload
         repo.addEntityType("order", 256);
-        repo.addSource("order", "orders.events", "entity_only",
-                List.of(matcher("order", "value", "$.order_id")));
+        repo.addSource("order", "orders.events", TopicMode.ENTITY_ONLY,
+                List.of(matcher("order", IdSource.VALUE, "$.order_id")));
         router.reload();
 
         RouteDecision after = router.route(

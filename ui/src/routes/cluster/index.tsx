@@ -95,18 +95,11 @@ function ClusterPage() {
               </span>
             </div>
 
-            {/* Roles */}
+            {/* Capabilities */}
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center', marginBottom: 12 }}>
-              {data.self.roles.map(role => (
-                <span key={role} className="jx-badge jx-badge-info">{role}</span>
-              ))}
-              <button
-                disabled
-                title="Role changes require node restart — backend support coming"
-                style={{ ...stubBtnStyle, marginLeft: 4 }}
-              >
-                + Add role
-              </button>
+              <span className="jx-badge jx-badge-success">replay</span>
+              {data.self.recordingEnabled && <span className="jx-badge jx-badge-success">recording</span>}
+              {data.self.compactionEnabled && <span className="jx-badge jx-badge-info">compaction</span>}
             </div>
 
             {/* Pekko + heartbeat row */}
@@ -196,7 +189,7 @@ function ClusterPage() {
               <table aria-label="Cluster instances" style={tableStyle}>
                 <thead>
                   <tr>
-                    {['Instance ID', 'Roles', 'Catalog', 'Status', 'Last Heartbeat', 'Topics'].map(h => (
+                    {['Instance ID', 'Capabilities', 'Catalog', 'Status', 'Last Heartbeat', 'Topics'].map(h => (
                       <th key={h} style={thStyle}>{h}</th>
                     ))}
                   </tr>
@@ -297,7 +290,9 @@ function InstanceRow({ inst }: { inst: InstanceRecord }) {
       </td>
       <td style={tdStyle}>
         <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-          {inst.roles.map(r => <span key={r} className="jx-badge jx-badge-info">{r}</span>)}
+          <span className="jx-badge jx-badge-success">replay</span>
+          {inst.recordingEnabled && <span className="jx-badge jx-badge-success">recording</span>}
+          {inst.compactionEnabled && <span className="jx-badge jx-badge-info">compaction</span>}
         </div>
       </td>
       <td style={{ ...tdStyle, fontFamily: 'var(--font-mono)', fontSize: 'var(--type-caption-size)' }}>{inst.catalogBackend}</td>
@@ -408,14 +403,3 @@ const actionBtnStyle: React.CSSProperties = {
   fontFamily: 'var(--font-body)',
 }
 
-const stubBtnStyle: React.CSSProperties = {
-  background: 'none',
-  border: '1px dashed var(--rule)',
-  borderRadius: 'var(--radius-sm)',
-  padding: '3px 10px',
-  fontSize: 'var(--type-caption-size)',
-  cursor: 'not-allowed',
-  color: 'var(--ink-tertiary)',
-  fontFamily: 'var(--font-body)',
-  opacity: 0.6,
-}

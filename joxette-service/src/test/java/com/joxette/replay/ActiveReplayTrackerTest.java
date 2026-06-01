@@ -47,7 +47,7 @@ class ActiveReplayTrackerTest {
         List<ActiveReplayTracker.ActiveReplay> active = tracker.listActive();
         assertThat(active).hasSize(1);
         assertThat(active.get(0).id()).isEqualTo(id);
-        assertThat(active.get(0).status()).isEqualTo("running");
+        assertThat(active.get(0).status()).isEqualTo(com.joxette.replay.ReplayStatus.RUNNING);
 
         // Clean up
         coordinator.tell(new ReplayCoordinatorActor.CancelReplay(id));
@@ -59,12 +59,12 @@ class ActiveReplayTrackerTest {
 
         // Simulate VT completing normally
         coordinator.tell(new ReplayCoordinatorActor.ChildDone(
-                id, "source", "target", Instant.now(), 5L, "completed"));
+                id, "source", "target", Instant.now(), 5L, ReplayStatus.COMPLETED));
 
         // Linger window: entry should still be visible immediately
         List<ActiveReplayTracker.ActiveReplay> lingering = tracker.listActive();
         assertThat(lingering).hasSize(1);
-        assertThat(lingering.get(0).status()).isEqualTo("completed");
+        assertThat(lingering.get(0).status()).isEqualTo(com.joxette.replay.ReplayStatus.COMPLETED);
         assertThat(lingering.get(0).sentCount()).isEqualTo(5L);
     }
 
@@ -73,11 +73,11 @@ class ActiveReplayTrackerTest {
         String id = startReplay("source", "target");
 
         coordinator.tell(new ReplayCoordinatorActor.ChildDone(
-                id, "source", "target", Instant.now(), 0L, "failed"));
+                id, "source", "target", Instant.now(), 0L, ReplayStatus.FAILED));
 
         List<ActiveReplayTracker.ActiveReplay> lingering = tracker.listActive();
         assertThat(lingering).hasSize(1);
-        assertThat(lingering.get(0).status()).isEqualTo("failed");
+        assertThat(lingering.get(0).status()).isEqualTo(com.joxette.replay.ReplayStatus.FAILED);
     }
 
     @Test
@@ -87,11 +87,11 @@ class ActiveReplayTrackerTest {
 
         // After cancel, ChildDone arrives from the actor with "cancelled" status
         coordinator.tell(new ReplayCoordinatorActor.ChildDone(
-                id, "source", "target", Instant.now(), 3L, "cancelled"));
+                id, "source", "target", Instant.now(), 3L, ReplayStatus.CANCELLED));
 
         List<ActiveReplayTracker.ActiveReplay> lingering = tracker.listActive();
         assertThat(lingering).hasSize(1);
-        assertThat(lingering.get(0).status()).isEqualTo("cancelled");
+        assertThat(lingering.get(0).status()).isEqualTo(com.joxette.replay.ReplayStatus.CANCELLED);
     }
 
     @Test
@@ -102,7 +102,7 @@ class ActiveReplayTrackerTest {
         List<ActiveReplayTracker.ActiveReplay> active = tracker.listActive();
         assertThat(active).hasSize(2);
         assertThat(active).extracting(ActiveReplayTracker.ActiveReplay::status)
-                .containsOnly("running");
+                .containsOnly(ReplayStatus.RUNNING);
 
         coordinator.tell(new ReplayCoordinatorActor.CancelReplay(id1));
         coordinator.tell(new ReplayCoordinatorActor.CancelReplay(id2));

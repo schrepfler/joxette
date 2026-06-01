@@ -1,6 +1,5 @@
 package com.joxette.management;
 
-import com.joxette.api.error.ValidationException;
 import com.joxette.replay.EntityIdExtractor;
 import com.joxette.replay.KafkaMessage;
 import jakarta.validation.Valid;
@@ -13,13 +12,10 @@ import org.springframework.web.bind.annotation.RestController;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Optional;
-import java.util.Set;
 
 @RestController
 @RequestMapping("/matchers")
 public class MatcherPreviewController {
-
-    private static final Set<String> VALID_ID_SOURCES = Set.of("key", "value", "header");
 
     private final EntityIdExtractor extractor;
 
@@ -41,10 +37,7 @@ public class MatcherPreviewController {
 
     @PostMapping("/preview")
     public PreviewResponse preview(@Valid @RequestBody PreviewRequest req) {
-        if (!VALID_ID_SOURCES.contains(req.idSource())) {
-            throw ValidationException.field("idSource",
-                    "must be one of %s (got '%s')".formatted(VALID_ID_SOURCES, req.idSource()));
-        }
+        IdSource source = IdSource.fromValue(req.idSource()); // throws ValidationException on unknown value
         byte[] valueBytes = req.value() != null
             ? req.value().getBytes(StandardCharsets.UTF_8)
             : null;
@@ -57,7 +50,7 @@ public class MatcherPreviewController {
             "preview", 0, 0, System.currentTimeMillis(),
             req.key(), valueBytes, headers
         );
-        Optional<String> result = extractor.extract(msg, req.idSource(), req.idExpression());
+        Optional<String> result = extractor.extract(msg, source, req.idExpression());
         return new PreviewResponse(result.isPresent(), result.orElse(null));
     }
 }

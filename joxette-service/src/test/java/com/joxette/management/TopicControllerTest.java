@@ -3,6 +3,7 @@ package com.joxette.management;
 import com.joxette.api.error.ResourceNotFoundException;
 import com.joxette.config.events.ConfigEventBus;
 import com.joxette.config.events.TopicConfigChanged;
+import com.joxette.management.TopicMode;
 import com.joxette.recording.RecordingCoordinator;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -39,8 +40,8 @@ class TopicControllerTest {
 
     @Test
     void updateTopic_modeChange_publishesEvent() throws Exception {
-        TopicConfig existing = new TopicConfig("orders", "general", false, false, null, "latest", null);
-        TopicConfig updated  = new TopicConfig("orders", "both",    false, false, null, "latest", null);
+        TopicConfig existing = new TopicConfig("orders", TopicMode.GENERAL, false, false, null, "latest", null);
+        TopicConfig updated  = new TopicConfig("orders", TopicMode.BOTH,    false, false, null, "latest", null);
 
         when(config.findTopic("orders")).thenReturn(Optional.of(existing));
         when(config.upsertTopic("orders", "both", false, "latest", null)).thenReturn(updated);
@@ -50,7 +51,7 @@ class TopicControllerTest {
 
         assertThat(response.getStatusCode().value()).isEqualTo(200);
         assertThat(response.getBody()).isNotNull();
-        assertThat(response.getBody().mode()).isEqualTo("both");
+        assertThat(response.getBody().mode()).isEqualTo(TopicMode.BOTH);
 
         ArgumentCaptor<TopicConfigChanged> cap = ArgumentCaptor.forClass(TopicConfigChanged.class);
         verify(eventBus).publishTopicConfig(cap.capture());
@@ -102,7 +103,7 @@ class TopicControllerTest {
 
     @Test
     void createTopic_publishesCreatedEvent() throws Exception {
-        TopicConfig saved = new TopicConfig("payments", "both", false, false, null, "latest", null);
+        TopicConfig saved = new TopicConfig("payments", TopicMode.BOTH, false, false, null, "latest", null);
 
         when(config.findTopic("payments")).thenReturn(Optional.empty());
         when(config.upsertTopic("payments", "both", false, "latest", null)).thenReturn(saved);
