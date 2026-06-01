@@ -90,7 +90,7 @@ class MessageRouterTest {
 
     private static MessageRouter routerFor(StubConfigRepository repo) {
         // Default InstanceRoles (all roles active) so entity-routing tests exercise the full path
-        return new MessageRouter(repo, new EntityIdExtractor(), new com.joxette.config.InstanceRoles());
+        return new MessageRouter(repo, new EntityIdExtractor());
     }
 
     private static EntitySourceConfig.MatcherConfig matcher(

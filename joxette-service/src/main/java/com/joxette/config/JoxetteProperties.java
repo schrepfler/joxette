@@ -128,6 +128,15 @@ public class JoxetteProperties {
 
     public static class Compaction {
         /**
+         * Whether to run the scheduled compaction and retention jobs on this node.
+         * Set {@code false} to designate specific nodes as compaction runners.
+         * Cross-node safety is guaranteed by the {@code compaction_locks} catalog table
+         * regardless of how many nodes have compaction enabled.
+         * The {@code POST /compaction/trigger} endpoint remains available on all nodes.
+         */
+        private boolean enabled = true;
+
+        /**
          * Cron expression for the scheduled compaction run.
          * Uses Spring 6-field format: {@code <sec> <min> <hour> <dom> <month> <dow>}.
          * Default: daily at 03:00:00.
@@ -204,6 +213,9 @@ public class JoxetteProperties {
             public int getLookbackDays() { return lookbackDays; }
             public void setLookbackDays(int lookbackDays) { this.lookbackDays = lookbackDays; }
         }
+
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
 
         public String getSchedule() { return schedule; }
         public void setSchedule(String schedule) { this.schedule = schedule; }
@@ -321,6 +333,13 @@ public class JoxetteProperties {
     // -----------------------------------------------------------------------
 
     public static class Recording {
+        /**
+         * Whether to start Kafka consumers on this node. Set {@code false} on nodes
+         * dedicated to replay/analytics that should not consume Kafka partitions.
+         * The catalog is still attached and all other endpoints remain active.
+         */
+        private boolean enabled = true;
+
         /** Maximum number of messages accumulated before writing a batch. */
         private int batchSize = 10_000;
         /** Maximum time (ms) to wait before flushing an incomplete batch. */
@@ -331,6 +350,9 @@ public class JoxetteProperties {
         private double retryMultiplier = 2.0;
         /** Maximum backoff (ms) between recorder restart attempts. */
         private long retryMaxIntervalMs = 300_000;   // 5 minutes
+
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
 
         public int getBatchSize() { return batchSize; }
         public void setBatchSize(int batchSize) { this.batchSize = batchSize; }

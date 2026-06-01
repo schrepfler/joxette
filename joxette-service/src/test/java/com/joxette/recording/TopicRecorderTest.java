@@ -100,7 +100,7 @@ class TopicRecorderTest {
         writeChannel.start();
 
         ConfigRepository configRepo = new ConfigRepository(duckDB, props);
-        generalRouter  = new MessageRouter(configRepo, new EntityIdExtractor(), new com.joxette.config.InstanceRoles());
+        generalRouter  = new MessageRouter(configRepo, new EntityIdExtractor());
         noopEntities   = new com.joxette.replay.KnownEntitiesRepository(
                 org.jooq.impl.DSL.using(duckDB, org.jooq.SQLDialect.DUCKDB));
 

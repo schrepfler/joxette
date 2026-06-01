@@ -23,7 +23,6 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 
-import com.joxette.config.ConditionalOnRole;
 import com.joxette.config.JoxetteProperties;
 import com.joxette.management.ConfigRepository;
 import com.joxette.management.KafkaTopicAdmin;
@@ -96,7 +95,6 @@ import java.util.UUID;
                    "All replay endpoints support optional start_at / start_delay_ms parameters for scheduled delivery.")
 @RestController
 @RequestMapping("/cassettes")
-@ConditionalOnRole("replay")
 @ConditionalOnProperty(prefix = "joxette.replay", name = "enabled", havingValue = "true", matchIfMissing = true)
 public class CassetteController {
 

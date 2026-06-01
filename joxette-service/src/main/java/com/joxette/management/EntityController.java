@@ -2,8 +2,9 @@ package com.joxette.management;
 
 import com.joxette.api.error.ConflictException;
 import com.joxette.api.error.ResourceNotFoundException;
+import com.joxette.config.events.ConfigEventBus;
+import com.joxette.config.events.EntityConfigChanged;
 import com.joxette.db.SchemaManager;
-import com.joxette.replay.MessageRouter;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import org.slf4j.Logger;
@@ -18,6 +19,11 @@ import java.util.List;
 /**
  * Management API for entity-type configuration and source mappings.
  *
+ * <p>Every mutating operation publishes an {@link EntityConfigChanged} event.
+ * The {@link com.joxette.recording.EntityConfigWatcher} on every node receives it
+ * and reloads the local {@link com.joxette.replay.MessageRouter} routing tables
+ * immediately — no direct router reload needed here.
+ *
  * <pre>
  * GET    /entities                      list all entity types
  * POST   /entities                      create entity type (creates DuckDB table)
@@ -28,10 +34,6 @@ import java.util.List;
  * POST   /entities/{type}/sources       add / update a source-topic mapping
  * DELETE /entities/{type}/sources/{t}   remove a source-topic mapping
  * </pre>
- *
- * <p>Every mutating operation ({@code POST}, {@code PUT}, {@code DELETE}) calls
- * {@link MessageRouter#reload()} so the in-process recording pipeline picks up
- * the change immediately without a restart.
  */
 @RestController
 @RequestMapping("/entities")
@@ -41,7 +43,7 @@ public class EntityController {
 
     private final ConfigRepository config;
     private final SchemaManager schemaManager;
-    private final MessageRouter messageRouter;
+    private final ConfigEventBus eventBus;
 
     public record CreateEntityRequest(@NotBlank String type, int buckets) {}
     public record UpdateEntityRequest(int buckets) {}
@@ -54,18 +56,14 @@ public class EntityController {
     public record AddMatcherRequest(@NotBlank String messageType, String idSource, String idExpression) {}
 
     public EntityController(ConfigRepository config, SchemaManager schemaManager,
-                            MessageRouter messageRouter) {
+                            ConfigEventBus eventBus) {
         this.config        = config;
         this.schemaManager = schemaManager;
-        this.messageRouter = messageRouter;
+        this.eventBus      = eventBus;
     }
 
-    private void reloadRouter() {
-        try {
-            messageRouter.reload();
-        } catch (SQLException e) {
-            log.warn("MessageRouter reload failed after config change: {}", e.getMessage());
-        }
+    private void publish(String entityType, String changeType) {
+        eventBus.publishEntityConfig(new EntityConfigChanged(entityType, changeType));
     }
 
     @GetMapping(produces = MediaType.APPLICATION_JSON_VALUE)
@@ -84,7 +82,7 @@ public class EntityController {
         int buckets = body.buckets() > 0 ? body.buckets() : 256;
         schemaManager.createEntityTable(body.type());
         EntityTypeConfig etc = config.upsertEntityType(body.type(), buckets);
-        reloadRouter();
+        publish(body.type(), "created");
         return ResponseEntity.status(201).body(etc);
     }
 
@@ -102,7 +100,7 @@ public class EntityController {
             @Valid @RequestBody UpdateEntityRequest body) throws SQLException {
         config.findEntityType(type).orElseThrow(() -> ResourceNotFoundException.entityType(type));
         EntityTypeConfig updated = config.upsertEntityType(type, body.buckets());
-        reloadRouter();
+        publish(type, "updated");
         return updated;
     }
 
@@ -123,7 +121,7 @@ public class EntityController {
             throw ResourceNotFoundException.entityType(type);
         }
         schemaManager.dropEntityTable(type);
-        reloadRouter();
+        publish(type, "deleted");
         return ResponseEntity.noContent().build();
     }
 
@@ -145,7 +143,7 @@ public class EntityController {
             @Valid @RequestBody AddSourceRequest body) throws SQLException {
         config.findEntityType(type).orElseThrow(() -> ResourceNotFoundException.entityType(type));
         EntitySourceConfig src = config.upsertSource(type, body.topic(), body.mode(), body.matchers());
-        reloadRouter();
+        publish(type, "source_added");
         return ResponseEntity.status(201).body(src);
     }
 
@@ -157,7 +155,7 @@ public class EntityController {
         if (!deleted) {
             throw ResourceNotFoundException.entitySource(type, topic);
         }
-        reloadRouter();
+        publish(type, "source_deleted");
         return ResponseEntity.noContent().build();
     }
 
@@ -176,7 +174,7 @@ public class EntityController {
         EntitySourceConfig.MatcherConfig matcher = config.addEntityMatcher(
                 type, topic,
                 new EntitySourceConfig.MatcherConfig(body.messageType(), body.idSource(), body.idExpression()));
-        reloadRouter();
+        publish(type, "source_added");
         return ResponseEntity.status(201).body(matcher);
     }
 
@@ -189,7 +187,7 @@ public class EntityController {
         if (!deleted) {
             throw ResourceNotFoundException.entityMatcher(type, topic, messageType);
         }
-        reloadRouter();
+        publish(type, "source_deleted");
         return ResponseEntity.noContent().build();
     }
 }

@@ -2,12 +2,12 @@ package com.joxette.api.error;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.joxette.management.ConfigRepository;
+import com.joxette.config.events.ConfigEventBus;
 import com.joxette.management.KafkaTopicAdmin;
 import com.joxette.management.TopicConfig;
 import com.joxette.management.TopicController;
 import com.joxette.recording.RecorderStatus;
 import com.joxette.recording.RecordingCoordinator;
-import com.joxette.replay.MessageRouter;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -27,7 +27,6 @@ import java.util.Optional;
 import java.util.stream.Stream;
 
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -44,15 +43,15 @@ class TopicControllerProblemDetailTest {
 
     @Mock ConfigRepository config;
     @Mock RecordingCoordinator coordinator;
-    @Mock MessageRouter router;
     @Mock KafkaTopicAdmin kafkaTopicAdmin;
+    @Mock ConfigEventBus eventBus;
 
     private MockMvc mvc;
     private final ObjectMapper mapper = new ObjectMapper();
 
     @BeforeEach
     void setUp() {
-        TopicController controller = new TopicController(config, coordinator, router, kafkaTopicAdmin);
+        TopicController controller = new TopicController(config, coordinator, kafkaTopicAdmin, eventBus);
         mvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
@@ -179,21 +178,4 @@ class TopicControllerProblemDetailTest {
                    path));
     }
 
-    @Test
-    @SuppressWarnings("unused")
-    void routerReloadFailureDoesNotSurfaceAsError() throws Exception {
-        // Sanity: SQLException from reload is swallowed; the route still succeeds.
-        TopicConfig saved = new TopicConfig("payments", "both", false, false, null, "latest", null);
-        when(config.findTopic("payments")).thenReturn(Optional.empty());
-        when(config.upsertTopic("payments", "both", false, "latest", null)).thenReturn(saved);
-        doThrow(new java.sql.SQLException("db error")).when(router).reload();
-        when(coordinator.activeTopics()).thenReturn(java.util.Set.of("payments"));
-
-        String body = mapper.writeValueAsString(Map.of(
-                "topic", "payments",
-                "mode",  "both"));
-
-        mvc.perform(post("/topics").contentType(MediaType.APPLICATION_JSON).content(body))
-           .andExpect(org.springframework.test.web.servlet.result.MockMvcResultMatchers.status().isCreated());
-    }
 }

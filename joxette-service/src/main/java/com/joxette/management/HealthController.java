@@ -1,7 +1,6 @@
 package com.joxette.management;
 
 import com.joxette.cluster.InstanceRegistry;
-import com.joxette.config.InstanceRoles;
 import com.joxette.config.JoxetteProperties;
 import com.joxette.lifecycle.BackgroundTaskRegistry;
 import com.joxette.recording.RecordingCoordinator;
@@ -122,9 +121,10 @@ public class HealthController {
             long inlinedDataSizeBytes,
             @Schema(description = "Filesystem path to the DuckDB catalog file", example = "./data/joxette.ducklake")
             String catalogPath,
-            @Schema(description = "Active subsystem roles on this instance (expanded from joxette.roles); sorted alphabetically",
-                    example = "[\"compaction\", \"entity-router\", \"recorder\", \"replay\"]")
-            List<String> roles,
+            @Schema(description = "Whether recording (Kafka consumers) is enabled on this node", example = "true")
+            boolean recordingEnabled,
+            @Schema(description = "Whether scheduled compaction/retention is enabled on this node", example = "true")
+            boolean compactionEnabled,
             @Schema(description = "Unique identifier for this instance in hostname:pid format",
                     example = "myhost:12345")
             String instanceId,
@@ -145,7 +145,6 @@ public class HealthController {
 
     private final RecordingCoordinator   coordinator;
     private final JoxetteProperties      properties;
-    private final InstanceRoles          instanceRoles;
     private final com.joxette.config.BrokerConnectionFactory brokerConnectionFactory;
     private final Connection             duckDB;
     private final PrometheusMeterRegistry metricsRegistry;
@@ -165,7 +164,6 @@ public class HealthController {
     public HealthController(
             @Lazy RecordingCoordinator coordinator,
             JoxetteProperties properties,
-            InstanceRoles instanceRoles,
             com.joxette.config.BrokerConnectionFactory brokerConnectionFactory,
             Connection duckDB,
             PrometheusMeterRegistry metricsRegistry,
@@ -173,7 +171,6 @@ public class HealthController {
             BackgroundTaskRegistry taskRegistry) {
         this.coordinator              = coordinator;
         this.properties               = properties;
-        this.instanceRoles            = instanceRoles;
         this.brokerConnectionFactory  = brokerConnectionFactory;
         this.duckDB                   = duckDB;
         this.metricsRegistry          = metricsRegistry;
@@ -208,9 +205,8 @@ public class HealthController {
     @GetMapping(value = "/health", produces = MediaType.APPLICATION_JSON_VALUE)
     public HealthStatus health() {
         Map<String, com.joxette.recording.RecorderStatus> running = coordinator.listRunning();
-        List<String> active      = running.keySet().stream().sorted().toList();
-        List<String> activeRoles = instanceRoles.resolvedRoles().stream().sorted().toList();
-        ClusterSummary cluster   = buildClusterSummary();
+        List<String> active    = running.keySet().stream().sorted().toList();
+        ClusterSummary cluster = buildClusterSummary();
         List<BackgroundTaskRegistry.TaskHandle> bgTaskList = taskRegistry.getRunningTasks();
         BackgroundTasksSummary bgTasks = new BackgroundTasksSummary(
                 bgTaskList.size(),
@@ -222,7 +218,8 @@ public class HealthController {
                 catalogSizeBytes(),
                 inlinedDataSizeBytes(),
                 properties.getCatalog().getPath(),
-                activeRoles,
+                properties.getRecording().isEnabled(),
+                properties.getCompaction().isEnabled(),
                 instanceRegistry.getInstanceId(),
                 cluster,
                 bgTasks);

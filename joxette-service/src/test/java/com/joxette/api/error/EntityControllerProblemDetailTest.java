@@ -5,7 +5,7 @@ import com.joxette.db.SchemaManager;
 import com.joxette.management.ConfigRepository;
 import com.joxette.management.EntityController;
 import com.joxette.management.EntityTypeConfig;
-import com.joxette.replay.MessageRouter;
+import com.joxette.config.events.ConfigEventBus;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -41,14 +41,14 @@ class EntityControllerProblemDetailTest {
 
     @Mock ConfigRepository config;
     @Mock SchemaManager schemaManager;
-    @Mock MessageRouter messageRouter;
+    @Mock ConfigEventBus eventBus;
 
     private MockMvc mvc;
     private final ObjectMapper mapper = new ObjectMapper();
 
     @BeforeEach
     void setUp() {
-        EntityController controller = new EntityController(config, schemaManager, messageRouter);
+        EntityController controller = new EntityController(config, schemaManager, eventBus);
         mvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();

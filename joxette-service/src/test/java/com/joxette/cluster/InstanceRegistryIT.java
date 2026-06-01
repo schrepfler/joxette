@@ -288,7 +288,8 @@ class InstanceRegistryIT {
         assertThat(own).as("own instance must appear in listAll()").isNotNull();
         assertThat(own.status()).as("own status must be 'alive'").isEqualTo("alive");
         assertThat(own.catalogBackend()).as("catalogBackend must be set").isNotBlank();
-        assertThat(own.roles()).as("roles list must not be empty").isNotEmpty();
+        // recordingEnabled defaults to true; verify the field is present and readable
+        assertThat(own.recordingEnabled()).as("recordingEnabled must be present").isTrue();
     }
 
     // -------------------------------------------------------------------------

@@ -2,7 +2,7 @@ package com.joxette.cluster;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.joxette.config.InstanceRoles;
+import com.joxette.config.JoxetteProperties;
 import com.joxette.lifecycle.BackgroundTaskRegistry;
 import com.joxette.recording.RecorderStatus;
 import com.joxette.recording.RecordingCoordinator;
@@ -43,7 +43,7 @@ public class InstanceController {
 
     private final InstanceRegistry       registry;
     private final ClusterEventListener   clusterEventListener;
-    private final InstanceRoles          instanceRoles;
+    private final JoxetteProperties      properties;
     private final RecordingCoordinator   recordingCoordinator;
     private final ObjectMapper           objectMapper;
     private final ActiveReplayTracker    replayTracker;
@@ -52,14 +52,14 @@ public class InstanceController {
     public InstanceController(
             InstanceRegistry registry,
             ClusterEventListener clusterEventListener,
-            InstanceRoles instanceRoles,
+            JoxetteProperties properties,
             @Lazy RecordingCoordinator recordingCoordinator,
             ObjectMapper objectMapper,
             ActiveReplayTracker replayTracker,
             BackgroundTaskRegistry taskRegistry) {
         this.registry             = registry;
         this.clusterEventListener = clusterEventListener;
-        this.instanceRoles        = instanceRoles;
+        this.properties           = properties;
         this.recordingCoordinator = recordingCoordinator;
         this.objectMapper         = objectMapper;
         this.replayTracker        = replayTracker;
@@ -193,15 +193,14 @@ public class InstanceController {
                 .filter(m -> m.address().contains("@" + selfHost + ":"))
                 .findFirst().orElse(null);
 
-        Map<String, RecorderStatus> recorders = instanceRoles.isRecorder()
+        Map<String, RecorderStatus> recorders = properties.getRecording().isEnabled()
                 ? recordingCoordinator.listRunning()
                 : Map.of();
 
         ClusterStateView.SelfNodeView self = new ClusterStateView.SelfNodeView(
                 selfId,
-                selfRecord != null
-                        ? selfRecord.roles()
-                        : instanceRoles.resolvedRoles().stream().sorted().toList(),
+                properties.getRecording().isEnabled(),
+                properties.getCompaction().isEnabled(),
                 selfRecord != null ? selfRecord.catalogBackend() : "unknown",
                 selfRecord != null ? selfRecord.startedAt() : null,
                 selfRecord != null ? selfRecord.lastHeartbeat() : null,

@@ -3,7 +3,7 @@ package com.joxette.cluster;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.joxette.config.InstanceRoles;
+import com.joxette.config.JoxetteProperties;
 import com.joxette.db.DuckLakeManager;
 import com.joxette.recording.RecordingCoordinator;
 import jakarta.annotation.PostConstruct;
@@ -19,7 +19,6 @@ import java.sql.*;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
-import java.util.stream.Collectors;
 
 /**
  * Tracks running Joxette instances in the shared {@code joxette_instances} DuckDB table.
@@ -66,7 +65,7 @@ public class InstanceRegistry {
     static final Duration ALIVE_THRESHOLD = Duration.ofSeconds(90);
 
     private final Connection connection;
-    private final InstanceRoles instanceRoles;
+    private final JoxetteProperties properties;
     private final DuckLakeManager duckLakeManager;
     private final RecordingCoordinator coordinator;
     private final ObjectMapper objectMapper;
@@ -80,12 +79,12 @@ public class InstanceRegistry {
 
     public InstanceRegistry(
             Connection connection,
-            InstanceRoles instanceRoles,
+            JoxetteProperties properties,
             DuckLakeManager duckLakeManager,
             @Lazy RecordingCoordinator coordinator,
             ObjectMapper objectMapper) {
         this.connection      = connection;
-        this.instanceRoles   = instanceRoles;
+        this.properties      = properties;
         this.duckLakeManager = duckLakeManager;
         this.coordinator     = coordinator;
         this.objectMapper    = objectMapper;
@@ -110,8 +109,10 @@ public class InstanceRegistry {
                 }
             }
         });
-        log.info("Instance registry active: instanceId={}, roles={}", instanceId,
-                instanceRoles.resolvedRoles().stream().sorted().toList());
+        log.info("Instance registry active: instanceId={}, recording={}, compaction={}",
+                instanceId,
+                properties.getRecording().isEnabled(),
+                properties.getCompaction().isEnabled());
     }
 
     @PreDestroy
@@ -191,8 +192,8 @@ public class InstanceRegistry {
             synchronized (connection) {
                 try (Statement st = connection.createStatement();
                      ResultSet rs = st.executeQuery(
-                             "SELECT instance_id, roles, catalog_backend, started_at, " +
-                             "last_heartbeat, kafka_assignments " +
+                             "SELECT instance_id, recording_enabled, compaction_enabled, " +
+                             "catalog_backend, started_at, last_heartbeat, kafka_assignments " +
                              "FROM joxette_instances ORDER BY instance_id")) {
                     while (rs.next()) {
                         result.add(mapRow(rs, aliveAfter));
@@ -214,42 +215,34 @@ public class InstanceRegistry {
     // Internal helpers
     // -------------------------------------------------------------------------
 
-    /**
-     * Inserts or replaces the row for this instance.
-     *
-     * <p>Role names come from a controlled set ({@link InstanceRoles#ALL_ROLES}) so they are
-     * safe to embed in a DuckDB array literal; no user input reaches this method.
-     */
     private void upsertSelf() {
-        List<String> roles = instanceRoles.resolvedRoles().stream().sorted().toList();
-        String backend     = duckLakeManager.getBackend().name();
-        String assignmentsJson = buildKafkaAssignmentsJson();
+        boolean recEnabled  = properties.getRecording().isEnabled();
+        boolean cmpEnabled  = properties.getCompaction().isEnabled();
+        String  backend     = duckLakeManager.getBackend().name();
+        String  assignmentsJson = buildKafkaAssignmentsJson();
 
-        // Build a DuckDB array literal for the VARCHAR[] roles column.
-        // Values come exclusively from InstanceRoles.ALL_ROLES — no user input.
-        String rolesLiteral = roles.stream()
-                .map(r -> "'" + r + "'")
-                .collect(Collectors.joining(", ", "[", "]"));
-
-        String sql = String.format(
+        String sql =
                 "INSERT INTO joxette_instances " +
-                "    (instance_id, roles, catalog_backend, started_at, last_heartbeat, kafka_assignments) " +
-                "VALUES (?, %s, ?, ?, now(), ?) " +
+                "    (instance_id, recording_enabled, compaction_enabled, catalog_backend," +
+                "     started_at, last_heartbeat, kafka_assignments) " +
+                "VALUES (?, ?, ?, ?, ?, now(), ?) " +
                 "ON CONFLICT (instance_id) DO UPDATE SET " +
-                "    roles              = EXCLUDED.roles, " +
+                "    recording_enabled  = EXCLUDED.recording_enabled, " +
+                "    compaction_enabled = EXCLUDED.compaction_enabled, " +
                 "    catalog_backend    = EXCLUDED.catalog_backend, " +
                 "    started_at         = EXCLUDED.started_at, " +
                 "    last_heartbeat     = EXCLUDED.last_heartbeat, " +
-                "    kafka_assignments  = EXCLUDED.kafka_assignments",
-                rolesLiteral);
+                "    kafka_assignments  = EXCLUDED.kafka_assignments";
 
         try {
             synchronized (connection) {
                 try (PreparedStatement ps = connection.prepareStatement(sql)) {
                     ps.setString(1, instanceId);
-                    ps.setString(2, backend);
-                    ps.setTimestamp(3, Timestamp.from(startedAt));
-                    ps.setString(4, assignmentsJson);
+                    ps.setBoolean(2, recEnabled);
+                    ps.setBoolean(3, cmpEnabled);
+                    ps.setString(4, backend);
+                    ps.setTimestamp(5, Timestamp.from(startedAt));
+                    ps.setString(6, assignmentsJson);
                     ps.executeUpdate();
                 }
             }
@@ -298,22 +291,13 @@ public class InstanceRegistry {
     }
 
     private InstanceRecord mapRow(ResultSet rs, Instant aliveAfter) throws SQLException {
-        String  id        = rs.getString("instance_id");
-        String  backend   = rs.getString("catalog_backend");
-        Instant started   = rs.getTimestamp("started_at").toInstant();
-        Instant heartbeat = rs.getTimestamp("last_heartbeat").toInstant();
+        String  id         = rs.getString("instance_id");
+        boolean recEnabled = rs.getBoolean("recording_enabled");
+        boolean cmpEnabled = rs.getBoolean("compaction_enabled");
+        String  backend    = rs.getString("catalog_backend");
+        Instant started    = rs.getTimestamp("started_at").toInstant();
+        Instant heartbeat  = rs.getTimestamp("last_heartbeat").toInstant();
 
-        // Parse VARCHAR[] roles column. DuckDB returns Object[] from Array.getArray().
-        Array   rolesArr  = rs.getArray("roles");
-        List<String> roles;
-        if (rolesArr != null) {
-            Object[] raw = (Object[]) rolesArr.getArray();
-            roles = Arrays.stream(raw).map(Object::toString).toList();
-        } else {
-            roles = List.of();
-        }
-
-        // Parse kafka_assignments JSON (may be null or empty).
         Map<String, List<Integer>> kafkaAssignments = null;
         String assignmentsStr = rs.getString("kafka_assignments");
         if (assignmentsStr != null && !assignmentsStr.isBlank() && !"{}".equals(assignmentsStr.strip())) {
@@ -329,7 +313,7 @@ public class InstanceRegistry {
         }
 
         String status = heartbeat.isAfter(aliveAfter) ? "alive" : "stale";
-        return new InstanceRecord(id, roles, backend, started, heartbeat, kafkaAssignments, status);
+        return new InstanceRecord(id, recEnabled, cmpEnabled, backend, started, heartbeat, kafkaAssignments, status);
     }
 
     private static String resolveInstanceId() {

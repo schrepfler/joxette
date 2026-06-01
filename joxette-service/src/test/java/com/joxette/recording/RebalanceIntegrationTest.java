@@ -1,6 +1,5 @@
 package com.joxette.recording;
 
-import com.joxette.config.InstanceRoles;
 import com.joxette.config.JoxetteProperties;
 import com.joxette.replay.EntityIdExtractor;
 import com.joxette.replay.KnownEntitiesRepository;
@@ -91,7 +90,7 @@ class RebalanceIntegrationTest {
         writeChannel.start();
 
         ConfigRepository configRepo = new ConfigRepository(duckDB, props);
-        generalRouter = new MessageRouter(configRepo, new EntityIdExtractor(), new InstanceRoles());
+        generalRouter = new MessageRouter(configRepo, new EntityIdExtractor());
         noopEntities  = new KnownEntitiesRepository(
                 org.jooq.impl.DSL.using(duckDB, org.jooq.SQLDialect.DUCKDB));
 

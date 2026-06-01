@@ -447,12 +447,13 @@ public class SchemaManager {
             // shared across all processes.  Rows are reaped on startup and deleted on clean shutdown.
             stmt.execute("""
                 CREATE TABLE IF NOT EXISTS joxette_instances (
-                    instance_id      VARCHAR     NOT NULL PRIMARY KEY,
-                    roles            VARCHAR[]   NOT NULL,
-                    catalog_backend  VARCHAR     NOT NULL,
-                    started_at       TIMESTAMPTZ NOT NULL,
-                    last_heartbeat   TIMESTAMPTZ NOT NULL,
-                    kafka_assignments JSON
+                    instance_id        VARCHAR     NOT NULL PRIMARY KEY,
+                    recording_enabled  BOOLEAN     NOT NULL DEFAULT true,
+                    compaction_enabled BOOLEAN     NOT NULL DEFAULT true,
+                    catalog_backend    VARCHAR     NOT NULL,
+                    started_at         TIMESTAMPTZ NOT NULL,
+                    last_heartbeat     TIMESTAMPTZ NOT NULL,
+                    kafka_assignments  JSON
                 )
                 """);
 
@@ -466,6 +467,7 @@ public class SchemaManager {
         // the connection in a "pending query" state and silently drops the ALTER TABLE.
         migrateCompactionHistory(conn);
         migrateKnownEntities(conn);
+        migrateJoxetteInstances(conn);
     }
 
     // -------------------------------------------------------------------------
@@ -707,6 +709,29 @@ public class SchemaManager {
                 log.warn("known_entities migration failed ({}): {}", m[0], e.getMessage());
                 try { conn.rollback(); } catch (SQLException re) {
                     log.debug("rollback after failed known_entities migration: {}", re.getMessage());
+                }
+            }
+        }
+    }
+
+    private void migrateJoxetteInstances(Connection conn) {
+        // Replace the old roles VARCHAR[] column with two boolean capability flags.
+        String[][] migrations = {
+            { "drop_roles",
+              "ALTER TABLE joxette_instances DROP COLUMN IF EXISTS roles" },
+            { "add_recording_enabled",
+              "ALTER TABLE joxette_instances ADD COLUMN IF NOT EXISTS recording_enabled BOOLEAN DEFAULT true" },
+            { "add_compaction_enabled",
+              "ALTER TABLE joxette_instances ADD COLUMN IF NOT EXISTS compaction_enabled BOOLEAN DEFAULT true" },
+        };
+        for (String[] m : migrations) {
+            try (Statement st = conn.createStatement()) {
+                st.execute(m[1]);
+                log.debug("joxette_instances migration applied: {}", m[0]);
+            } catch (SQLException e) {
+                log.debug("joxette_instances migration skipped ({}): {}", m[0], e.getMessage());
+                try { conn.rollback(); } catch (SQLException re) {
+                    log.debug("rollback after joxette_instances migration: {}", re.getMessage());
                 }
             }
         }

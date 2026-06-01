@@ -18,6 +18,7 @@ import org.slf4j.LoggerFactory;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -70,6 +71,25 @@ public class RecordingCoordinatorActor {
     public record ActiveTopics(
             ActorRef<Set<String>> replyTo
     ) implements CoordinatorCommand {}
+
+    /**
+     * Declarative reconciliation: align running recorders with the desired state
+     * from the catalog. Called by {@link com.joxette.recording.RecordingConfigWatcher}
+     * on startup, on a 30 s tick, and immediately after a pub/sub config event.
+     *
+     * <p>The coordinator:
+     * <ul>
+     *   <li>starts topics that are in {@code desired} (not paused) but not running</li>
+     *   <li>stops topics that are running but absent from {@code desired} or paused</li>
+     *   <li>restarts topics whose {@code startFrom} changed</li>
+     * </ul>
+     */
+    public record ReconcileTopics(
+            java.util.List<com.joxette.management.TopicConfig> desired,
+            ActorRef<ReconcileReply> replyTo
+    ) implements CoordinatorCommand {}
+
+    public record ReconcileReply(int started, int stopped, int unchanged) {}
 
     /**
      * Sent internally when a child actor's stop sequence completes.
@@ -203,6 +223,54 @@ public class RecordingCoordinatorActor {
                 })
                 .onMessage(ActiveTopics.class, msg -> {
                     msg.replyTo().tell(Set.copyOf(children.keySet()));
+                    return Behaviors.same();
+                })
+                .onMessage(ReconcileTopics.class, msg -> {
+                    int started = 0, stopped = 0, unchanged = 0;
+
+                    // Build desired map: topic → startFrom (only non-paused topics)
+                    Map<String, String> desired = new HashMap<>();
+                    for (com.joxette.management.TopicConfig tc : msg.desired()) {
+                        if (!tc.paused()) desired.put(tc.topic(), tc.startFrom() != null ? tc.startFrom() : "latest");
+                    }
+
+                    // Stop running topics not in desired (removed or paused)
+                    for (String running : new ArrayList<>(children.keySet())) {
+                        if (!desired.containsKey(running)) {
+                            ActorRef<TopicLifecycleActor.Cmd> child = children.remove(running);
+                            startedAts.remove(running);
+                            ctx.unwatch(child);
+                            child.tell(new TopicLifecycleActor.Stop(
+                                    ctx.messageAdapter(TopicLifecycleActor.StopReply.class,
+                                            r -> new ChildStopped(running, null))));
+                            log.info("RecordingCoordinatorActor: reconcile stopping topic '{}'", running);
+                            stopped++;
+                        }
+                    }
+
+                    // Start or restart desired topics
+                    for (Map.Entry<String, String> entry : desired.entrySet()) {
+                        String topic = entry.getKey();
+                        String startFrom = entry.getValue();
+                        if (!children.containsKey(topic)) {
+                            String brokerId = lookupBrokerId(topic, configRepo);
+                            ActorRef<TopicLifecycleActor.Cmd> child = ctx.spawn(
+                                    TopicLifecycleActor.create(topic, startFrom, Instant.now(),
+                                            props, brokerFactory, brokerId, writeChannel, router, knownEntities, vtExecutor),
+                                    "topic-" + sanitizeName(topic));
+                            ctx.watchWith(child, new ChildStopped(topic, null));
+                            children.put(topic, child);
+                            startedAts.put(topic, Instant.now());
+                            log.info("RecordingCoordinatorActor: reconcile starting topic '{}'", topic);
+                            started++;
+                        } else {
+                            unchanged++;
+                        }
+                    }
+
+                    log.debug("RecordingCoordinatorActor: reconcile complete — started={} stopped={} unchanged={}",
+                            started, stopped, unchanged);
+                    msg.replyTo().tell(new ReconcileReply(started, stopped, unchanged));
                     return Behaviors.same();
                 })
                 .onMessage(ChildStopped.class, msg -> {

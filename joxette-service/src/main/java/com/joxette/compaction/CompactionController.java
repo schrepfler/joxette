@@ -1,6 +1,5 @@
 package com.joxette.compaction;
 
-import com.joxette.config.ConditionalOnRole;
 import com.joxette.config.JoxetteProperties;
 import com.joxette.lifecycle.BackgroundTaskRegistry;
 import io.swagger.v3.oas.annotations.Operation;
@@ -53,7 +52,6 @@ import java.util.List;
      description = "Manage DuckLake compaction runs that merge small Parquet files to reduce read amplification.")
 @RestController
 @RequestMapping("/compaction")
-@ConditionalOnRole("compaction")
 public class CompactionController {
 
     private static final int DEFAULT_HISTORY_LIMIT = 20;

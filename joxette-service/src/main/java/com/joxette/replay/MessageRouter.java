@@ -1,6 +1,5 @@
 package com.joxette.replay;
 
-import com.joxette.config.InstanceRoles;
 import com.joxette.management.ConfigRepository;
 import com.joxette.management.EntitySourceConfig;
 import com.joxette.management.EntityTypeConfig;
@@ -57,21 +56,16 @@ public class MessageRouter {
 
     private final ConfigRepository configRepo;
     private final EntityIdExtractor extractor;
-    private final InstanceRoles instanceRoles;
 
     /** Snapshot of routing state, replaced atomically on reload(). */
     private volatile RoutingTables tables;
 
-    public MessageRouter(ConfigRepository configRepo, EntityIdExtractor extractor,
-                         InstanceRoles instanceRoles) {
-        this.configRepo    = configRepo;
-        this.extractor     = extractor;
-        this.instanceRoles = instanceRoles;
+    public MessageRouter(ConfigRepository configRepo, EntityIdExtractor extractor) {
+        this.configRepo = configRepo;
+        this.extractor  = extractor;
         try {
             reload();
         } catch (SQLException e) {
-            // Non-fatal at construction: log and start with empty tables.
-            // reload() will be called again by RecordingStartupRunner if needed.
             log.warn("MessageRouter: initial config load from DB failed ({}); starting with empty routing tables", e.getMessage());
             this.tables = new RoutingTables(Map.of(), Map.of(), Map.of(), Map.of());
         }
@@ -149,7 +143,7 @@ public class MessageRouter {
         boolean routeToGeneral = !"entity_only".equals(topicMode);
 
         List<EntityRoute> entityRoutes = new ArrayList<>();
-        if (instanceRoles.isEntityRouter() && !"general".equals(topicMode)) {
+        if (!"general".equals(topicMode)) {
             List<EntitySourceEntry> entries =
                     t.topicSourceEntries().getOrDefault(message.topic(), List.of());
 

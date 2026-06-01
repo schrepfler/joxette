@@ -41,37 +41,21 @@ management:
 joxette:
 
   # ---------------------------------------------------------------------------
-  # Instance roles — controls which subsystems start on this node.
-  #
-  # Valid values: recorder, entity-router, compaction, replay, all
-  #   recorder      — starts Kafka consumers; writes to general cassettes
-  #   entity-router — routes messages to entity cassettes (requires recorder)
-  #   compaction    — registers the cron compaction job and POST /compaction/trigger
-  #   replay        — registers GET /cassettes/** REST endpoints
-  #   all           — expands to all four roles (default)
-  #
-  # The active roles are logged at startup:
-  #   "Starting Joxette with roles: [compaction, entity-router, recorder, replay]"
-  # and reported in GET /health under the "roles" and "instanceId" fields.
-  #
-  # Examples:
-  #
-  #   All-in-one node (default — omit the property or set to [all]):
-  #   roles: [all]
-  #
-  #   Dedicated write node (Kafka consumers + entity routing; no compaction or replay API):
-  #   roles: [recorder, entity-router]
-  #
-  #   Compaction-only maintenance node (no Kafka consumers, no replay API):
-  #   roles: [compaction]
-  #
-  #   Read-only replay node (no Kafka consumers, no compaction scheduler):
-  #   roles: [replay]
-  #
-  # Note: replay can also be disabled independently via joxette.replay.enabled=false
-  # regardless of the role setting (useful for pure write-only nodes).
   # ---------------------------------------------------------------------------
-  roles: [all]
+  # Capability opt-outs — all capabilities are enabled by default.
+  # Every node with a catalog attached can serve recording, replay, and compaction.
+  # Set these to false only for resource-isolation reasons (e.g. a dedicated
+  # analytics node that should not consume Kafka partitions).
+  #
+  #   recording.enabled=false  — skip Kafka consumer startup on this node;
+  #                              catalog, replay API, and compaction still active.
+  #   compaction.enabled=false — skip scheduled compaction/retention jobs;
+  #                              POST /compaction/trigger still works manually.
+  #                              compaction_locks prevents concurrent runs anyway.
+  #
+  # Example: analytics/replay-only node
+  #   joxette.recording.enabled: false
+  # ---------------------------------------------------------------------------
 
   # ---------------------------------------------------------------------------
   # Pekko cluster configuration

@@ -9,17 +9,6 @@ import java.util.Map;
 
 /**
  * Unified cluster state response for {@code GET /instances/cluster-state}.
- *
- * <p>Combines three existing views:
- * <ul>
- *   <li>{@link #self} — this node, enriched with live recorder status and Pekko reachability</li>
- *   <li>{@link #instances} — all nodes from the DB heartbeat table (30 s resolution)</li>
- *   <li>{@link #topology} — all members from the Pekko phi-accrual view (~10 s failure detection)</li>
- * </ul>
- *
- * @param self      enriched view of the node serving this request
- * @param instances all rows from {@code joxette_instances} (same as {@code GET /instances})
- * @param topology  live Pekko cluster members (same as {@code GET /instances/topology})
  */
 public record ClusterStateView(
         SelfNodeView self,
@@ -32,24 +21,22 @@ public record ClusterStateView(
      * Enriched view of the local node combining DB registration data, Pekko membership,
      * and live per-topic recorder status.
      *
-     * @param instanceId      stable {@code hostname:pid} identifier
-     * @param roles           active subsystem roles on this node
-     * @param catalogBackend  one of {@code EMBEDDED_DUCKDB}, {@code QUACK}, {@code POSTGRESQL}
-     * @param startedAt       when this JVM process started
-     * @param lastHeartbeat   timestamp of the most recent 30-second heartbeat ({@code null} if
-     *                        this node's DB row is not yet visible)
-     * @param heartbeatStatus {@code "alive"}, {@code "stale"}, or {@code "unknown"}
-     * @param pekkoAddress    Pekko actor-system address ({@code pekko://joxette@host:port});
-     *                        {@code null} if self not yet seen by {@link ClusterEventListener}
-     * @param pekkoStatus     Pekko member status ({@code "up"}, {@code "leaving"}, etc.);
-     *                        {@code null} when {@code pekkoAddress} is {@code null}
-     * @param pekkoReachable  {@code true} unless the phi-accrual detector marks self unreachable
-     * @param recorders       live per-topic recorder status; empty when {@code recorder} role
-     *                        is not active on this node
+     * @param instanceId         stable {@code hostname:pid} identifier
+     * @param recordingEnabled   whether Kafka consumers are started on this node
+     * @param compactionEnabled  whether scheduled compaction/retention runs on this node
+     * @param catalogBackend     one of {@code EMBEDDED_DUCKDB}, {@code QUACK}, {@code POSTGRESQL}
+     * @param startedAt          when this JVM process started
+     * @param lastHeartbeat      timestamp of the most recent 30-second heartbeat
+     * @param heartbeatStatus    {@code "alive"}, {@code "stale"}, or {@code "unknown"}
+     * @param pekkoAddress       Pekko actor-system address; {@code null} if not yet seen
+     * @param pekkoStatus        Pekko member status; {@code null} when address is {@code null}
+     * @param pekkoReachable     {@code true} unless phi-accrual marks self unreachable
+     * @param recorders          live per-topic recorder status
      */
     public record SelfNodeView(
             String instanceId,
-            List<String> roles,
+            boolean recordingEnabled,
+            boolean compactionEnabled,
             String catalogBackend,
             Instant startedAt,
             Instant lastHeartbeat,

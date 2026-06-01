@@ -2,7 +2,6 @@ package com.joxette.api.error;
 
 import com.joxette.cluster.InstanceRegistry;
 import com.joxette.config.BrokerConnectionFactory;
-import com.joxette.config.InstanceRoles;
 import com.joxette.config.JoxetteProperties;
 import com.joxette.lifecycle.BackgroundTaskRegistry;
 import com.joxette.management.HealthController;
@@ -47,7 +46,7 @@ class HealthControllerProblemDetailTest {
         BackgroundTaskRegistry taskRegistry = new BackgroundTaskRegistry();
         taskRegistry.start();
         HealthController controller = new HealthController(
-                coordinator, properties, new InstanceRoles(), adminClient, duckDB,
+                coordinator, properties, adminClient, duckDB,
                 metricsRegistry, instanceRegistry, taskRegistry);
         mvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler())
