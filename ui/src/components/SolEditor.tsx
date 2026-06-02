@@ -33,12 +33,18 @@ import { completionKeymap, closeBrackets, closeBracketsKeymap } from '@codemirro
 import { syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { solLanguage } from './sol-language'
+import { lintGutter } from '@codemirror/lint'
 
 interface Props {
   value: string
   onChange: (value: string) => void
   onRun?: () => void
+  /** @deprecated Use `messageTypes` + `fieldPaths` instead */
   eventNames?: string[]
+  /** Distinct message_type values — fed to MATCH clause autocompletion */
+  messageTypes?: string[]
+  /** Full JSONPath field suggestions ($.value.x, $.key, …) */
+  fieldPaths?: string[]
   dark?: boolean
   minHeight?: number
   disabled?: boolean
@@ -120,7 +126,10 @@ const solHighlightStyle = syntaxHighlighting(defaultHighlightStyle)
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
-export function SolEditor({ value, onChange, onRun, eventNames = [], dark = false, minHeight = 120, disabled = false, compact = false }: Props) {
+export function SolEditor({ value, onChange, onRun, eventNames = [], messageTypes, fieldPaths, dark = false, minHeight = 120, disabled = false, compact = false }: Props) {
+  // Resolve props: prefer explicit messageTypes/fieldPaths; fall back to legacy eventNames
+  const resolvedMessageTypes = messageTypes ?? []
+  const resolvedFieldPaths   = fieldPaths ?? eventNames
   const containerRef = useRef<HTMLDivElement>(null)
   const viewRef      = useRef<EditorView | null>(null)
   const onChangeRef  = useRef(onChange)
@@ -186,8 +195,9 @@ export function SolEditor({ value, onChange, onRun, eventNames = [], dark = fals
       ]),
       runKeymap,
 
-      // SOL language + autocomplete
-      solLanguage(eventNames),
+      // SOL language + autocomplete + linting
+      solLanguage({ messageTypes: resolvedMessageTypes, fieldPaths: resolvedFieldPaths }),
+      lintGutter(),
 
       // Highlighting
       solHighlightStyle,
@@ -209,7 +219,7 @@ export function SolEditor({ value, onChange, onRun, eventNames = [], dark = fals
       ...(disabled ? [EditorState.readOnly.of(true)] : []),
     ]
     return base
-  }, [eventNames, dark, minHeight, disabled, compact]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [resolvedMessageTypes, resolvedFieldPaths, dark, minHeight, disabled, compact]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Mount
   useEffect(() => {
@@ -247,7 +257,7 @@ export function SolEditor({ value, onChange, onRun, eventNames = [], dark = fals
     if (!view) return
     const doc = view.state.doc.toString()
     view.setState(EditorState.create({ doc, extensions: buildExtensions() }))
-  }, [eventNames, dark, disabled, compact]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [resolvedMessageTypes, resolvedFieldPaths, dark, disabled, compact]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div

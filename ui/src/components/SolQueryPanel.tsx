@@ -110,7 +110,7 @@ export function SolQueryPanel({ mode, entityType, entityId, topic, from, to }: P
     })
   }
 
-  // Fetch event-name vocabulary for autocomplete
+  // Fetch field paths ($.value.xxx, $.key, …) for SET/FILTER/IF autocompletion
   const fieldsQuery = useQuery({
     queryKey: ['fields', mode, entityType ?? topic],
     queryFn: () =>
@@ -122,7 +122,21 @@ export function SolQueryPanel({ mode, entityType, entityId, topic, from, to }: P
     staleTime: 300_000,
     enabled: !!(entityType || topic),
   })
-  const eventNames = fieldsQuery.data ?? []
+  const fieldPaths = fieldsQuery.data ?? []
+
+  // Fetch distinct message_type names for MATCH autocompletion
+  const messageTypesQuery = useQuery({
+    queryKey: ['message-types', mode, entityType ?? topic],
+    queryFn: () =>
+      mode === 'entity' && entityType
+        ? cassettesApi.getEntityMessageTypes(entityType)
+        : topic
+          ? cassettesApi.getTopicMessageTypes(topic)
+          : Promise.resolve([]),
+    staleTime: 300_000,
+    enabled: !!(entityType || topic),
+  })
+  const messageTypes = messageTypesQuery.data ?? []
 
   const mutation = useMutation({
     mutationFn: () => {
@@ -238,9 +252,12 @@ export function SolQueryPanel({ mode, entityType, entityId, topic, from, to }: P
           </div>
         )}
 
-        {eventNames.length > 0 && (
+        {(messageTypes.length > 0 || fieldPaths.length > 0) && (
           <span style={{ fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)' }}>
-            {eventNames.length} event types · Ctrl+Space for autocomplete
+            {messageTypes.length > 0 && `${messageTypes.length} event types`}
+            {messageTypes.length > 0 && fieldPaths.length > 0 && ' · '}
+            {fieldPaths.length > 0 && `${fieldPaths.length} fields`}
+            {' · Ctrl+Space'}
           </span>
         )}
         <span style={{ fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)' }}>
@@ -261,7 +278,8 @@ export function SolQueryPanel({ mode, entityType, entityId, topic, from, to }: P
         value={query}
         onChange={setQuery}
         onRun={() => mutation.mutate()}
-        eventNames={eventNames}
+        messageTypes={messageTypes}
+        fieldPaths={fieldPaths}
         minHeight={120}
         disabled={mutation.isPending}
       />

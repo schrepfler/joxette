@@ -1338,6 +1338,27 @@ public class CassetteController {
     }
 
     @Operation(
+        operationId = "getTopicMessageTypes",
+        summary = "Distinct message_type values for a topic cassette",
+        description = "Returns the set of distinct message_type labels recorded for this topic. " +
+                      "Used to populate SOL MATCH autocompletion with real event type names."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Sorted list of message type strings",
+            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                examples = @ExampleObject(name = "types", value =
+                    "{\"messageTypes\":[\"OrderCreated\",\"OrderUpdated\",\"PaymentReceived\"]}")))
+    })
+    @GetMapping(value = "/topics/{topic}/message-types", produces = MediaType.APPLICATION_JSON_VALUE)
+    public Map<String, List<String>> getTopicMessageTypes(
+            @Parameter(description = "Topic name", required = true)
+            @PathVariable String topic,
+            @Parameter(description = "Max distinct types to return")
+            @RequestParam(defaultValue = "500") int limit) {
+        return Map.of("messageTypes", fieldSuggestionsService.messageTypesForTopic(topic, limit));
+    }
+
+    @Operation(
         operationId = "getEntityFields",
         summary = "JSONPath field suggestions for an entity cassette",
         description = "Samples the last `limit` messages from the entity cassette and returns " +
@@ -1358,6 +1379,27 @@ public class CassetteController {
             @Parameter(description = "Max messages to sample")
             @RequestParam(defaultValue = "500") int limit) {
         return Map.of("fields", fieldSuggestionsService.forEntityType(entityType, limit));
+    }
+
+    @Operation(
+        operationId = "getEntityMessageTypes",
+        summary = "Distinct message_type values for an entity cassette",
+        description = "Returns the set of distinct message_type labels recorded for this entity type. " +
+                      "Used to populate SOL MATCH autocompletion with real event type names."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Sorted list of message type strings",
+            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                examples = @ExampleObject(name = "types", value =
+                    "{\"messageTypes\":[\"OrderCreated\",\"OrderShipped\",\"OrderCancelled\"]}")))
+    })
+    @GetMapping(value = "/entities/{entityType}/message-types", produces = MediaType.APPLICATION_JSON_VALUE)
+    public Map<String, List<String>> getEntityMessageTypes(
+            @Parameter(description = "Entity type name", required = true)
+            @PathVariable String entityType,
+            @Parameter(description = "Max distinct types to return")
+            @RequestParam(defaultValue = "500") int limit) {
+        return Map.of("messageTypes", fieldSuggestionsService.messageTypesForEntityType(entityType, limit));
     }
 
     // =========================================================================

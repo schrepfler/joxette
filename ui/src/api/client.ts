@@ -502,6 +502,14 @@ export const cassettesApi = {
     request<{ fields: string[] }>(`/cassettes/entities/${encodeURIComponent(entityType)}/fields?limit=${limit}`)
       .then(r => r.fields),
 
+  getTopicMessageTypes: (topic: string, limit = 500) =>
+    request<{ messageTypes: string[] }>(`/cassettes/topics/${encodeURIComponent(topic)}/message-types?limit=${limit}`)
+      .then(r => r.messageTypes),
+
+  getEntityMessageTypes: (entityType: string, limit = 500) =>
+    request<{ messageTypes: string[] }>(`/cassettes/entities/${encodeURIComponent(entityType)}/message-types?limit=${limit}`)
+      .then(r => r.messageTypes),
+
   /** Find sequences matching a SequenceQuery across a topic or entity cassette. */
   matchSequences: (
     mode: 'topic' | 'entity',
