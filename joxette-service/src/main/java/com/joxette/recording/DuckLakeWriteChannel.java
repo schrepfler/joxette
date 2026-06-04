@@ -184,9 +184,11 @@ public class DuckLakeWriteChannel {
                 written += batch.generalRecords().size();
             }
 
-            for (WriteBatch.EntityWriteItem item : batch.entityItems()) {
-                writers.entityWriter().writeRoutes(item.routes(), item.message());
-                written += item.routes().size();
+            if (!batch.entityItems().isEmpty()) {
+                writers.entityWriter().writeBatch(batch.entityItems());
+                for (WriteBatch.EntityWriteItem item : batch.entityItems()) {
+                    written += item.routes().size();
+                }
             }
 
             batch.result().complete(new WriteResult(batch.topic(), written));
