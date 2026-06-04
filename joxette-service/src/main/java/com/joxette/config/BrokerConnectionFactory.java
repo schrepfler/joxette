@@ -67,7 +67,12 @@ public class BrokerConnectionFactory {
                 // Don't wait forever for metadata: fail fast so the Pekko backoff supervisor
                 // in TopicLifecycleActor can apply its own backoff.
                 .property("request.timeout.ms",       "10000")
-                .property("default.api.timeout.ms",   "15000");
+                .property("default.api.timeout.ms",   "15000")
+                // Fetch throughput: ask the broker to batch up at least fetchMinBytes before
+                // responding. Reduces round-trips during catchup at the cost of slight extra
+                // latency. fetch.max.wait.ms caps the broker wait so quiet topics don't stall.
+                .property("fetch.min.bytes",    String.valueOf(properties.getKafka().getFetchMinBytes()))
+                .property("fetch.max.wait.ms",  String.valueOf(properties.getKafka().getFetchMaxWaitMs()));
         settings = applySecurityProps(settings, cfg);
         return settings;
     }

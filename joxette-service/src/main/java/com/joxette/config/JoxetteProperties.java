@@ -268,6 +268,19 @@ public class JoxetteProperties {
          * Default: {@code consumer}.
          */
         private String groupProtocol = "consumer";
+        /**
+         * Minimum bytes the broker must have available before responding to a fetch request.
+         * Higher values reduce fetch round-trips at the cost of slightly more latency on quiet
+         * topics. Default: {@code 65536} (64 KB) — good for high-throughput catchup.
+         * Set to {@code 1} to restore Kafka's default (respond immediately regardless of data).
+         */
+        private int fetchMinBytes = 65536;
+        /**
+         * Maximum time the broker will block a fetch request waiting for {@code fetchMinBytes}
+         * to be available. Acts as a safety valve so quiet topics don't stall.
+         * Default: {@code 100} ms.
+         */
+        private int fetchMaxWaitMs = 100;
 
         public String getBootstrapServers() { return bootstrapServers; }
         public void setBootstrapServers(String bootstrapServers) { this.bootstrapServers = bootstrapServers; }
@@ -283,6 +296,12 @@ public class JoxetteProperties {
 
         public String getGroupProtocol() { return groupProtocol; }
         public void setGroupProtocol(String groupProtocol) { this.groupProtocol = groupProtocol; }
+
+        public int getFetchMinBytes() { return fetchMinBytes; }
+        public void setFetchMinBytes(int fetchMinBytes) { this.fetchMinBytes = fetchMinBytes; }
+
+        public int getFetchMaxWaitMs() { return fetchMaxWaitMs; }
+        public void setFetchMaxWaitMs(int fetchMaxWaitMs) { this.fetchMaxWaitMs = fetchMaxWaitMs; }
 
         public static class BrokerEntry {
             private String id = "default";

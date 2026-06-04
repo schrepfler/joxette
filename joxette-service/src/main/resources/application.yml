@@ -107,7 +107,7 @@ joxette:
 
   recording:
     batch-size: 10000
-    batch-timeout-ms: 1000
+    batch-timeout-ms: 250   # reduced from 1000 ms — faster flush during catchup
     # Exponential backoff for recorder restart after Kafka failure.
     # Initial: 5 s → doubles each attempt → capped at 5 min.
     retry-initial-interval-ms: 5000
