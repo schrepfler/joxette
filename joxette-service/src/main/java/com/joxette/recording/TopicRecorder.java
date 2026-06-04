@@ -127,10 +127,10 @@ public class TopicRecorder {
         this.assignedPartition = assignedPartition;
         this.writeChannel      = writeChannel;
         this.joxetteMetrics    = joxetteMetrics;
-        // Metrics are keyed by "topic" for topic-wide recorders and "topic-N" for per-partition.
-        String metricsKey = assignedPartition != null ? topic + "-" + assignedPartition : topic;
-        this.meters = joxetteMetrics.recordingMetrics(metricsKey);
-        joxetteMetrics.registerLagGauge(metricsKey, consumerLag);
+        // Metrics tagged by topic + optional partition so the UI can aggregate by topic
+        // or drill down per partition.
+        this.meters = joxetteMetrics.recordingMetrics(topic, assignedPartition);
+        joxetteMetrics.registerLagGauge(topic, assignedPartition, consumerLag);
         this.batchSize    = batchSize;
         this.batchTimeout = Duration.ofMillis(batchTimeoutMs);
         this.router       = router;
@@ -202,7 +202,7 @@ public class TopicRecorder {
                 KafkaConsumer<String, byte[]> kc = settings.toConsumer();
                 try {
                     this.consumer = kc;
-                    joxetteMetrics.bindKafkaConsumerMetrics(kc.metrics(), label);
+                    joxetteMetrics.bindKafkaConsumerMetrics(kc.metrics(), topic, assignedPartition);
 
                     if (assignedPartition != null) {
                         // --- Per-partition manual assignment ---

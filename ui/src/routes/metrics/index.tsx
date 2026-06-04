@@ -78,6 +78,21 @@ function getSamplesBy(family: Record<string, MetricFamily>, name: string, groupB
   return result
 }
 
+// Returns { topic → { partition → value } } for metrics that have both labels
+function getSamplesByTopicAndPartition(family: Record<string, MetricFamily>, name: string): Record<string, Record<string, number>> {
+  const f = family[name]; if (!f) return {}
+  const result: Record<string, Record<string, number>> = {}
+  for (const s of f.samples) {
+    if (s.labels.__name__ !== name) continue
+    const topic = s.labels['topic'] ?? 'unknown'
+    const partition = s.labels['partition']
+    if (!partition) continue  // skip topic-level (no partition tag)
+    if (!result[topic]) result[topic] = {}
+    result[topic][partition] = (result[topic][partition] ?? 0) + s.value
+  }
+  return result
+}
+
 // ---------------------------------------------------------------------------
 // Rolling history
 // ---------------------------------------------------------------------------
@@ -91,13 +106,15 @@ interface DataPoint {
   ts: number
   topicKeys: string[]           // safe keys (t0, t1…) in order
   topicLabels: Record<string, string>  // t0 → "feed.betgenius.fixture.v1"
-  // per-topic (indexed by tN)
+  // per-topic (indexed by tN) — aggregated across partitions
   lag:          Record<string, number>
   consumed:     Record<string, number>
   written:      Record<string, number>
   consumedRate: Record<string, number>
   bytesRate:    Record<string, number>
   fetchLatency: Record<string, number>
+  // per-partition lag: { "feed.betgenius.fixture.v1": { "0": 123, "1": 456 } }
+  partitionLag: Record<string, Record<string, number>>
   // aggregates
   writeDepth:    number
   writeDuration: number
@@ -145,9 +162,13 @@ function scrapeToPoint(family: Record<string, MetricFamily>): DataPoint {
   const heapMax  = getSample(family, 'jvm_memory_max_bytes',   { id: 'heap' })
              || getSample(family, 'jvm_memory_max_bytes',  { area: 'heap' }) || 0
 
+  // Per-partition lag keyed by base topic name
+  const partitionLag = getSamplesByTopicAndPartition(family, 'joxette_consumer_lag')
+
   return {
     ts: Date.now(), topicKeys, topicLabels,
     lag, consumed, written, consumedRate, bytesRate, fetchLatency,
+    partitionLag,
     writeDepth: getSample(family, 'joxette_write_channel_depth') || 0,
     writeDuration: (getSample(family, 'joxette_write_duration_seconds_sum') /
                    (getSample(family, 'joxette_write_duration_seconds_count') || 1)) * 1000,
@@ -328,8 +349,25 @@ function MetricsPage() {
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(480px, 1fr))', gap: 20 }}>
 
+        {/* Per-partition lag breakdown */}
+        {latest && Object.keys(latest.partitionLag).length > 0 && (
+          <Card title="Lag by Partition" subtitle="messages behind per partition">
+            <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', padding: '8px 0' }}>
+              {Object.entries(latest.partitionLag).map(([topic, parts]) =>
+                Object.entries(parts).sort((a, b) => Number(a[0]) - Number(b[0])).map(([p, v]) => (
+                  <div key={`${topic}-${p}`} style={{ display: 'flex', flexDirection: 'column', minWidth: 72 }}>
+                    <span style={{ fontSize: '0.5625rem', color: 'var(--ink-tertiary)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em' }}>partition {p}</span>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: '1.125rem', fontWeight: 700, color: 'var(--ink-primary)', lineHeight: 1.3 }}>{fmt(v, 0)}</span>
+                    <span style={{ fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)' }}>{Math.round(v / 3600)}h lag</span>
+                  </div>
+                ))
+              )}
+            </div>
+          </Card>
+        )}
+
         {/* Consumer lag */}
-        <Card title="Consumer Lag" subtitle="messages behind head">
+        <Card title="Consumer Lag" subtitle="messages behind head (aggregated across partitions)">
           <ChartContainer config={tConfig} className="h-[200px] w-full">
             <AreaChart data={pts}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />

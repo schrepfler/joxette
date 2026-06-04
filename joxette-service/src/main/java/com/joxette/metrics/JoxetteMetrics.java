@@ -95,54 +95,58 @@ public class JoxetteMetrics {
     // =========================================================================
 
     /**
-     * Registers per-topic recording counters and returns a handle used by
-     * {@link com.joxette.recording.TopicRecorder} to update them.
-     * Safe to call multiple times for the same topic (idempotent via Micrometer registry).
+     * Registers recording counters tagged by topic (and optionally partition).
+     * When {@code partition} is non-null a {@code partition} tag is added so
+     * per-partition metrics are visible alongside the topic-level rollup.
      */
-    public RecordingMetrics recordingMetrics(String topic) {
-        Counter consumed = Counter.builder("joxette.messages.consumed")
-                .description("Cumulative Kafka messages consumed")
-                .tag("topic", topic)
-                .register(registry);
+    public RecordingMetrics recordingMetrics(String topic, Integer partition) {
+        String partTag = partition != null ? String.valueOf(partition) : null;
 
-        Counter written = Counter.builder("joxette.messages.written")
-                .description("Cumulative messages written to DuckLake")
-                .tag("topic", topic)
-                .register(registry);
+        Counter.Builder cb = Counter.builder("joxette.messages.consumed").description("Cumulative Kafka messages consumed").tag("topic", topic);
+        if (partTag != null) cb.tag("partition", partTag);
+        Counter consumed = cb.register(registry);
 
-        Counter restarts = Counter.builder("joxette.recorder.restarts")
-                .description("TopicRecorder restart count due to failure")
-                .tag("topic", topic)
-                .register(registry);
+        Counter.Builder wb = Counter.builder("joxette.messages.written").description("Cumulative messages written to DuckLake").tag("topic", topic);
+        if (partTag != null) wb.tag("partition", partTag);
+        Counter written = wb.register(registry);
 
-        Timer writeDuration = Timer.builder("joxette.write.duration")
-                .description("DuckDB batch write latency")
-                .tag("topic", topic)
-                .publishPercentiles(0.5, 0.95, 0.99)
-                .register(registry);
+        Counter.Builder rb = Counter.builder("joxette.recorder.restarts").description("TopicRecorder restart count due to failure").tag("topic", topic);
+        if (partTag != null) rb.tag("partition", partTag);
+        Counter restarts = rb.register(registry);
 
-        DistributionSummary batchSize = DistributionSummary.builder("joxette.write.batch.size")
-                .description("Records per DuckDB batch")
-                .tag("topic", topic)
-                .publishPercentiles(0.5, 0.95)
-                .register(registry);
+        Timer.Builder tb = Timer.builder("joxette.write.duration").description("DuckDB batch write latency").publishPercentiles(0.5, 0.95, 0.99).tag("topic", topic);
+        if (partTag != null) tb.tag("partition", partTag);
+        Timer writeDuration = tb.register(registry);
+
+        DistributionSummary.Builder sb = DistributionSummary.builder("joxette.write.batch.size").description("Records per DuckDB batch").publishPercentiles(0.5, 0.95).tag("topic", topic);
+        if (partTag != null) sb.tag("partition", partTag);
+        DistributionSummary batchSize = sb.register(registry);
 
         return new RecordingMetrics(consumed, written, restarts, writeDuration, batchSize);
     }
 
+    /** Convenience overload for whole-topic (non-partitioned) recorders. */
+    public RecordingMetrics recordingMetrics(String topic) {
+        return recordingMetrics(topic, null);
+    }
+
     /**
-     * Registers a gauge for consumer lag. The gauge reads from the supplied
-     * {@code AtomicLong} which is updated by the recorder on each poll cycle.
-     * Safe to call multiple times — the gauge is only registered once per topic.
+     * Registers a gauge for consumer lag tagged by topic and optional partition.
      */
-    public void registerLagGauge(String topic, AtomicLong lagHolder) {
-        String id = "lag:" + topic;
+    public void registerLagGauge(String topic, Integer partition, AtomicLong lagHolder) {
+        String id = "lag:" + topic + (partition != null ? ":" + partition : "");
         if (registeredGaugeIds.add(id)) {
-            Gauge.builder("joxette.consumer.lag", lagHolder, AtomicLong::get)
-                    .description("Kafka consumer lag (sum across assigned partitions)")
-                    .tag("topic", topic)
-                    .register(registry);
+            var builder = Gauge.builder("joxette.consumer.lag", lagHolder, AtomicLong::get)
+                    .description("Kafka consumer lag")
+                    .tag("topic", topic);
+            if (partition != null) builder.tag("partition", String.valueOf(partition));
+            builder.register(registry);
         }
+    }
+
+    /** Convenience overload for whole-topic lag gauges. */
+    public void registerLagGauge(String topic, AtomicLong lagHolder) {
+        registerLagGauge(topic, null, lagHolder);
     }
 
     /**
@@ -168,31 +172,36 @@ public class JoxetteMetrics {
      * @param topic           the topic this consumer is recording
      */
     public void bindKafkaConsumerMetrics(Map<MetricName, ? extends Metric> consumerMetrics,
-                                         String topic) {
+                                         String topic, Integer partition) {
         for (var entry : consumerMetrics.entrySet()) {
             MetricName name = entry.getKey();
             if (!CONSUMER_METRIC_NAMES.contains(name.name())) continue;
 
             Metric kafkaMetric = entry.getValue();
-            String metricKey = "consumer:" + topic + ":" + name.name();
-            if (!registeredGaugeIds.add(metricKey)) continue;  // already registered
+            String metricKey = "consumer:" + topic + (partition != null ? ":" + partition : "") + ":" + name.name();
+            if (!registeredGaugeIds.add(metricKey)) continue;
 
             String meterName = "joxette.kafka.consumer." + name.name().replace('-', '.');
             try {
-                Gauge.builder(meterName, kafkaMetric,
+                var b = Gauge.builder(meterName, kafkaMetric,
                               m -> {
                                   Object val = m.metricValue();
                                   return val instanceof Number ? ((Number) val).doubleValue() : Double.NaN;
                               })
                         .description(name.description())
-                        .tag("topic", topic)
-                        .register(registry);
+                        .tag("topic", topic);
+                if (partition != null) b.tag("partition", String.valueOf(partition));
+                b.register(registry);
             } catch (Exception e) {
                 log.debug("Could not register Kafka consumer metric '{}' for topic '{}': {}",
                         name.name(), topic, e.getMessage());
             }
         }
-        log.debug("Bound Kafka consumer metrics for topic '{}'", topic);
+    }
+
+    /** Convenience overload for whole-topic consumer metrics. */
+    public void bindKafkaConsumerMetrics(Map<MetricName, ? extends Metric> consumerMetrics, String topic) {
+        bindKafkaConsumerMetrics(consumerMetrics, topic, null);
     }
 
     /**
