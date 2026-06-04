@@ -26,6 +26,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Coordinator actor that manages per-topic {@link TopicLifecycleActor} children.
@@ -119,8 +120,12 @@ public class RecordingCoordinatorActor {
             Executor vtExecutor,
             JoxetteMetrics joxetteMetrics) {
 
+        // Monotonic counter ensures every spawned TopicLifecycleActor has a unique
+        // name, preventing InvalidActorNameException when a new actor is spawned
+        // before a terminating one with the same topic name has fully stopped.
+        AtomicLong spawnGen = new AtomicLong(0);
         return Behaviors.setup(ctx ->
-                coordinator(ctx, new HashMap<>(), new HashMap<>(),
+                coordinator(ctx, new HashMap<>(), new HashMap<>(), spawnGen,
                             props, brokerFactory, configRepo, writeChannel, router, knownEntities,
                             vtExecutor, joxetteMetrics));
     }
@@ -133,6 +138,7 @@ public class RecordingCoordinatorActor {
             ActorContext<CoordinatorCommand> ctx,
             Map<String, ActorRef<TopicLifecycleActor.Cmd>> children,
             Map<String, Instant> startedAts,
+            AtomicLong spawnGen,
             JoxetteProperties props,
             BrokerConnectionFactory brokerFactory,
             ConfigRepository configRepo,
@@ -155,7 +161,7 @@ public class RecordingCoordinatorActor {
                                     msg.topic(), msg.startFrom(), Instant.now(),
                                     props, brokerFactory, brokerId,
                                     writeChannel, router, knownEntities, vtExecutor, joxetteMetrics),
-                            "topic-" + sanitizeName(msg.topic()));
+                            "topic-" + sanitizeName(msg.topic()) + "-" + spawnGen.incrementAndGet());
                     ctx.watchWith(child, new ChildStopped(msg.topic(), null));
                     children.put(msg.topic(), child);
                     startedAts.put(msg.topic(), Instant.now());
@@ -202,7 +208,7 @@ public class RecordingCoordinatorActor {
                                     msg.topic(), startFrom, Instant.now(),
                                     props, brokerFactory, brokerId,
                                     writeChannel, router, knownEntities, vtExecutor, joxetteMetrics),
-                            "topic-" + sanitizeName(msg.topic()) + "-r" + System.nanoTime());
+                            "topic-" + sanitizeName(msg.topic()) + "-" + spawnGen.incrementAndGet());
                     ctx.watchWith(child, new ChildStopped(msg.topic(), null));
                     children.put(msg.topic(), child);
                     startedAts.put(msg.topic(), Instant.now());
@@ -262,7 +268,7 @@ public class RecordingCoordinatorActor {
                                     TopicLifecycleActor.create(topic, startFrom, Instant.now(),
                                             props, brokerFactory, brokerId, writeChannel, router,
                                             knownEntities, vtExecutor, joxetteMetrics),
-                                    "topic-" + sanitizeName(topic));
+                                    "topic-" + sanitizeName(topic) + "-" + spawnGen.incrementAndGet());
                             ctx.watchWith(child, new ChildStopped(topic, null));
                             children.put(topic, child);
                             startedAts.put(topic, Instant.now());
