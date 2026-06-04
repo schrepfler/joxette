@@ -40,6 +40,9 @@ import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 
+import com.joxette.metrics.JoxetteMetrics;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
@@ -58,6 +61,8 @@ import static org.awaitility.Awaitility.await;
  */
 @Testcontainers
 class RebalanceIntegrationTest {
+
+    private static final JoxetteMetrics TEST_METRICS = new JoxetteMetrics(new SimpleMeterRegistry());
 
     private static final String TOPIC = "rebalance.test.events";
     private static final String SANITIZED = "rebalance_test_events";
@@ -86,7 +91,7 @@ class RebalanceIntegrationTest {
         }
 
         JoxetteProperties props = new JoxetteProperties();
-        writeChannel = new DuckLakeWriteChannel(duckDB, props, new CassetteRecordingBus(props));
+        writeChannel = new DuckLakeWriteChannel(duckDB, props, new CassetteRecordingBus(props), TEST_METRICS);
         writeChannel.start();
 
         ConfigRepository configRepo = new ConfigRepository(duckDB, props);
@@ -223,7 +228,7 @@ class RebalanceIntegrationTest {
                 .property(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false")
                 .property("group.protocol", groupProtocol);
         return new TopicRecorder(TOPIC, base, writeChannel,
-                100, 200, generalRouter, noopEntities, "earliest");
+                100, 200, generalRouter, noopEntities, "earliest", TEST_METRICS);
     }
 
     private void publishMessages(int count) throws Exception {

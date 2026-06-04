@@ -30,8 +30,10 @@ import java.util.concurrent.TimeUnit;
 
 import com.joxette.management.ConfigRepository;
 import com.joxette.management.TopicConfig;
+import com.joxette.metrics.JoxetteMetrics;
 import com.joxette.replay.EntityIdExtractor;
 import com.joxette.replay.MessageRouter;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
@@ -53,6 +55,8 @@ class TopicRecorderTest {
     @Container
     static KafkaContainer kafka = new KafkaContainer(
             DockerImageName.parse("apache/kafka-native:4.0.2"));
+
+    private static final JoxetteMetrics TEST_METRICS = new JoxetteMetrics(new SimpleMeterRegistry());
 
     private static final String TOPIC = "recorder.test.events";
     private static final String SANITIZED = "recorder_test_events";
@@ -96,7 +100,7 @@ class TopicRecorderTest {
         }
 
         JoxetteProperties props = new JoxetteProperties();
-        writeChannel = new DuckLakeWriteChannel(duckDB, props, new CassetteRecordingBus(props));
+        writeChannel = new DuckLakeWriteChannel(duckDB, props, new CassetteRecordingBus(props), TEST_METRICS);
         writeChannel.start();
 
         ConfigRepository configRepo = new ConfigRepository(duckDB, props);
@@ -133,7 +137,7 @@ class TopicRecorderTest {
             }
         }
 
-        recorder = new TopicRecorder(TOPIC, consumerSettings(), writeChannel, 100, 200, generalRouter, noopEntities, "earliest");
+        recorder = new TopicRecorder(TOPIC, consumerSettings(), writeChannel, 100, 200, generalRouter, noopEntities, "earliest", TEST_METRICS);
         recorderThread = Thread.ofVirtual().name("test-recorder").start(() -> {
             try {
                 recorder.run();
@@ -174,7 +178,7 @@ class TopicRecorderTest {
             producer.send(rec).get();
         }
 
-        recorder = new TopicRecorder(TOPIC, consumerSettings(), writeChannel, 10, 200, generalRouter, noopEntities, "earliest");
+        recorder = new TopicRecorder(TOPIC, consumerSettings(), writeChannel, 10, 200, generalRouter, noopEntities, "earliest", TEST_METRICS);
         recorderThread = Thread.ofVirtual().name("test-recorder-hdr").start(() -> {
             try { recorder.run(); } catch (Exception ignored) {}
         });
@@ -229,7 +233,7 @@ class TopicRecorderTest {
         // Capture time just before the recorder writes so we can bound recorded_at.
         java.time.Instant beforeRecord = java.time.Instant.now();
 
-        recorder = new TopicRecorder(TOPIC, consumerSettings(), writeChannel, 100, 200, generalRouter, noopEntities, "earliest");
+        recorder = new TopicRecorder(TOPIC, consumerSettings(), writeChannel, 100, 200, generalRouter, noopEntities, "earliest", TEST_METRICS);
         recorderThread = Thread.ofVirtual().name("test-recorder-fields").start(() -> {
             try { recorder.run(); } catch (Exception ignored) {}
         });
@@ -300,7 +304,7 @@ class TopicRecorderTest {
             }
         }
 
-        TopicRecorder multiRecorder = new TopicRecorder(multiTopic, consumerSettings(), writeChannel, 20, 300, generalRouter, noopEntities, "earliest");
+        TopicRecorder multiRecorder = new TopicRecorder(multiTopic, consumerSettings(), writeChannel, 20, 300, generalRouter, noopEntities, "earliest", TEST_METRICS);
         Thread multiThread = Thread.ofVirtual().name("test-multi-recorder").start(() -> {
             try { multiRecorder.run(); } catch (Exception ignored) {}
         });
@@ -341,7 +345,7 @@ class TopicRecorderTest {
 
         // Base props deliberately use "latest" — TopicRecorder must override via seek.
         recorder = new TopicRecorder(TOPIC, consumerSettingsWithLatestDefault(), writeChannel,
-                100, 500, generalRouter, noopEntities, "earliest");
+                100, 500, generalRouter, noopEntities, "earliest", TEST_METRICS);
         recorderThread = Thread.ofVirtual().name("test-recorder-earliest").start(() -> {
             try { recorder.run(); } catch (Exception ignored) {}
         });

@@ -2,6 +2,8 @@ package com.joxette.compaction;
 
 import com.joxette.config.JoxetteProperties;
 import com.joxette.management.ConfigRepository;
+import com.joxette.metrics.JoxetteMetrics;
+import io.micrometer.core.instrument.Timer;
 import com.joxette.management.TopicMode;
 import com.joxette.db.SchemaManager;
 import org.slf4j.Logger;
@@ -77,11 +79,18 @@ public class CompactionService {
     private final JoxetteProperties    props;
     private final ConfigRepository     configRepo;
     private final AtomicBoolean        running = new AtomicBoolean(false);
+    private final io.micrometer.core.instrument.Counter filesProcessedCounter;
+    private final io.micrometer.core.instrument.Counter filesCreatedCounter;
+    private final Timer compactionTimer;
 
-    public CompactionService(Connection duckDB, JoxetteProperties props, ConfigRepository configRepo) {
-        this.duckDB     = duckDB;
-        this.props      = props;
-        this.configRepo = configRepo;
+    public CompactionService(Connection duckDB, JoxetteProperties props, ConfigRepository configRepo,
+                              JoxetteMetrics joxetteMetrics) {
+        this.duckDB                = duckDB;
+        this.props                 = props;
+        this.configRepo            = configRepo;
+        this.filesProcessedCounter = joxetteMetrics.compactionFilesProcessed();
+        this.filesCreatedCounter   = joxetteMetrics.compactionFilesCreated();
+        this.compactionTimer       = joxetteMetrics.compactionDuration();
     }
 
     // =========================================================================
@@ -120,6 +129,7 @@ public class CompactionService {
         int entityTypes = 0;
         int generalTopics = 0;
         FileStats totalFileStats = FileStats.EMPTY;
+        long start = System.nanoTime();
         try {
             CompactionResult entityResult = compactEntityTypes(targets);
             entityTypes    = entityResult.unitsProcessed();
@@ -130,6 +140,9 @@ public class CompactionService {
             totalFileStats = totalFileStats.add(generalResult.fileStats());
 
             checkpoint();
+            filesProcessedCounter.increment(totalFileStats.filesProcessed());
+            filesCreatedCounter.increment(totalFileStats.filesCreated());
+            compactionTimer.record(System.nanoTime() - start, java.util.concurrent.TimeUnit.NANOSECONDS);
             updateRunRecord(runId, RunStatus.COMPLETED, entityTypes, generalTopics, totalFileStats, null);
             log.info("Compaction run {} completed: {} entity types, {} general topics, "
                             + "files_processed={} files_created={}",
@@ -137,6 +150,7 @@ public class CompactionService {
                     totalFileStats.filesProcessed(), totalFileStats.filesCreated());
         } catch (Exception e) {
             log.error("Compaction run {} failed", runId, e);
+            compactionTimer.record(System.nanoTime() - start, java.util.concurrent.TimeUnit.NANOSECONDS);
             try {
                 updateRunRecord(runId, RunStatus.FAILED, entityTypes, generalTopics, totalFileStats, e.getMessage());
             } catch (SQLException se) {

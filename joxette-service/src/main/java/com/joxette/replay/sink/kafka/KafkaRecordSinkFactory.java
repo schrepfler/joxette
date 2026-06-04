@@ -2,6 +2,7 @@ package com.joxette.replay.sink.kafka;
 
 import com.joxette.config.BrokerConnectionFactory;
 import com.joxette.management.BrokerConfig;
+import com.joxette.metrics.JoxetteMetrics;
 import com.joxette.replay.sink.RecordSink;
 import com.softwaremill.jox.kafka.ProducerSettings;
 import jakarta.annotation.PreDestroy;
@@ -31,11 +32,13 @@ public class KafkaRecordSinkFactory {
     private static final Logger log = LoggerFactory.getLogger(KafkaRecordSinkFactory.class);
 
     private final BrokerConnectionFactory brokerFactory;
+    private final JoxetteMetrics joxetteMetrics;
     private final Map<String, KafkaProducer<byte[], byte[]>> producers = new ConcurrentHashMap<>();
     private final Map<String, RecordSink> sinks = new ConcurrentHashMap<>();
 
-    public KafkaRecordSinkFactory(BrokerConnectionFactory brokerFactory) {
-        this.brokerFactory = brokerFactory;
+    public KafkaRecordSinkFactory(BrokerConnectionFactory brokerFactory, JoxetteMetrics joxetteMetrics) {
+        this.brokerFactory  = brokerFactory;
+        this.joxetteMetrics = joxetteMetrics;
     }
 
     /**
@@ -54,7 +57,9 @@ public class KafkaRecordSinkFactory {
 
     private KafkaProducer<byte[], byte[]> buildProducer(String id) {
         ProducerSettings<byte[], byte[]> settings = brokerFactory.producerSettings(id);
-        return settings.toProducer();
+        KafkaProducer<byte[], byte[]> producer = settings.toProducer();
+        joxetteMetrics.bindKafkaProducerMetrics(producer.metrics(), id);
+        return producer;
     }
 
     @PreDestroy

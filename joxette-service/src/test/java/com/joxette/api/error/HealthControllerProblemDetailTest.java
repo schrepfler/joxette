@@ -3,6 +3,8 @@ package com.joxette.api.error;
 import com.joxette.cluster.InstanceRegistry;
 import com.joxette.config.BrokerConnectionFactory;
 import com.joxette.config.JoxetteProperties;
+import com.joxette.metrics.JoxetteMetrics;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import com.joxette.lifecycle.BackgroundTaskRegistry;
 import com.joxette.management.HealthController;
 import com.joxette.recording.RecordingCoordinator;
@@ -47,7 +49,8 @@ class HealthControllerProblemDetailTest {
         taskRegistry.start();
         HealthController controller = new HealthController(
                 coordinator, properties, adminClient, duckDB,
-                metricsRegistry, instanceRegistry, taskRegistry);
+                metricsRegistry, instanceRegistry, taskRegistry,
+                new JoxetteMetrics(new SimpleMeterRegistry()));
         mvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();

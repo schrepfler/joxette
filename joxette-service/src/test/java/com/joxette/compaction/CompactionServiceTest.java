@@ -5,7 +5,9 @@ import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.joxette.config.JoxetteProperties;
 import com.joxette.management.ConfigRepository;
+import com.joxette.metrics.JoxetteMetrics;
 import com.joxette.support.DuckDBTestSupport;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -43,6 +45,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class CompactionServiceTest {
 
+    private static final JoxetteMetrics TEST_METRICS = new JoxetteMetrics(new SimpleMeterRegistry());
+
     private static final String ENTITY_TYPE = "order";
 
     private Connection duckDB;
@@ -67,7 +71,7 @@ class CompactionServiceTest {
         JoxetteProperties props = testProperties();
 
         configRepo = new ConfigRepository(duckDB, props);
-        service = new CompactionService(duckDB, props, configRepo);
+        service = new CompactionService(duckDB, props, configRepo, TEST_METRICS);
     }
 
     @AfterEach
@@ -453,7 +457,7 @@ class CompactionServiceTest {
 
         JoxetteProperties props = testProperties();
         props.getCompaction().getEntity().setRowGroupMemoryLimitMb(limitMb);
-        CompactionService svc = new CompactionService(duckDB, props, configRepo);
+        CompactionService svc = new CompactionService(duckDB, props, configRepo, TEST_METRICS);
 
         ch.qos.logback.classic.Logger logger =
                 (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(CompactionService.class);

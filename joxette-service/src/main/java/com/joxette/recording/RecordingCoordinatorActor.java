@@ -3,6 +3,7 @@ package com.joxette.recording;
 import com.joxette.config.BrokerConnectionFactory;
 import com.joxette.config.JoxetteProperties;
 import com.joxette.management.ConfigRepository;
+import com.joxette.metrics.JoxetteMetrics;
 import com.joxette.management.TopicConfig;
 import com.joxette.replay.KnownEntitiesRepository;
 import com.joxette.replay.MessageRouter;
@@ -115,11 +116,13 @@ public class RecordingCoordinatorActor {
             DuckLakeWriteChannel writeChannel,
             MessageRouter router,
             KnownEntitiesRepository knownEntities,
-            Executor vtExecutor) {
+            Executor vtExecutor,
+            JoxetteMetrics joxetteMetrics) {
 
         return Behaviors.setup(ctx ->
                 coordinator(ctx, new HashMap<>(), new HashMap<>(),
-                            props, brokerFactory, configRepo, writeChannel, router, knownEntities, vtExecutor));
+                            props, brokerFactory, configRepo, writeChannel, router, knownEntities,
+                            vtExecutor, joxetteMetrics));
     }
 
     // -------------------------------------------------------------------------
@@ -136,7 +139,8 @@ public class RecordingCoordinatorActor {
             DuckLakeWriteChannel writeChannel,
             MessageRouter router,
             KnownEntitiesRepository knownEntities,
-            Executor vtExecutor) {
+            Executor vtExecutor,
+            JoxetteMetrics joxetteMetrics) {
 
         return Behaviors.receive(CoordinatorCommand.class)
                 .onMessage(StartTopic.class, msg -> {
@@ -150,7 +154,7 @@ public class RecordingCoordinatorActor {
                             TopicLifecycleActor.create(
                                     msg.topic(), msg.startFrom(), Instant.now(),
                                     props, brokerFactory, brokerId,
-                                    writeChannel, router, knownEntities, vtExecutor),
+                                    writeChannel, router, knownEntities, vtExecutor, joxetteMetrics),
                             "topic-" + sanitizeName(msg.topic()));
                     ctx.watchWith(child, new ChildStopped(msg.topic(), null));
                     children.put(msg.topic(), child);
@@ -197,7 +201,7 @@ public class RecordingCoordinatorActor {
                             TopicLifecycleActor.create(
                                     msg.topic(), startFrom, Instant.now(),
                                     props, brokerFactory, brokerId,
-                                    writeChannel, router, knownEntities, vtExecutor),
+                                    writeChannel, router, knownEntities, vtExecutor, joxetteMetrics),
                             "topic-" + sanitizeName(msg.topic()) + "-r" + System.nanoTime());
                     ctx.watchWith(child, new ChildStopped(msg.topic(), null));
                     children.put(msg.topic(), child);
@@ -256,7 +260,8 @@ public class RecordingCoordinatorActor {
                             String brokerId = lookupBrokerId(topic, configRepo);
                             ActorRef<TopicLifecycleActor.Cmd> child = ctx.spawn(
                                     TopicLifecycleActor.create(topic, startFrom, Instant.now(),
-                                            props, brokerFactory, brokerId, writeChannel, router, knownEntities, vtExecutor),
+                                            props, brokerFactory, brokerId, writeChannel, router,
+                                            knownEntities, vtExecutor, joxetteMetrics),
                                     "topic-" + sanitizeName(topic));
                             ctx.watchWith(child, new ChildStopped(topic, null));
                             children.put(topic, child);

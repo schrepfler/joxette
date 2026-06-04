@@ -3,7 +3,9 @@ package com.joxette.management;
 import com.joxette.cluster.InstanceRegistry;
 import com.joxette.config.JoxetteProperties;
 import com.joxette.lifecycle.BackgroundTaskRegistry;
+import com.joxette.metrics.JoxetteMetrics;
 import com.joxette.recording.RecordingCoordinator;
+import jakarta.annotation.PostConstruct;
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
@@ -161,6 +163,8 @@ public class HealthController {
     private final AtomicLong lagCacheTime = new AtomicLong(0);
     private static final long LAG_CACHE_TTL_MS = 15_000;
 
+    private final JoxetteMetrics joxetteMetrics;
+
     public HealthController(
             @Lazy RecordingCoordinator coordinator,
             JoxetteProperties properties,
@@ -168,7 +172,8 @@ public class HealthController {
             Connection duckDB,
             PrometheusMeterRegistry metricsRegistry,
             InstanceRegistry instanceRegistry,
-            BackgroundTaskRegistry taskRegistry) {
+            BackgroundTaskRegistry taskRegistry,
+            JoxetteMetrics joxetteMetrics) {
         this.coordinator              = coordinator;
         this.properties               = properties;
         this.brokerConnectionFactory  = brokerConnectionFactory;
@@ -176,6 +181,13 @@ public class HealthController {
         this.metricsRegistry          = metricsRegistry;
         this.instanceRegistry         = instanceRegistry;
         this.taskRegistry             = taskRegistry;
+        this.joxetteMetrics           = joxetteMetrics;
+    }
+
+    @PostConstruct
+    void registerCatalogGauges() {
+        joxetteMetrics.registerCatalogSizeGauge(this::catalogSizeBytes);
+        joxetteMetrics.registerInlinedDataGauge(this::inlinedDataSizeBytes);
     }
 
     @Operation(

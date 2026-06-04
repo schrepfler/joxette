@@ -2,6 +2,7 @@ package com.joxette.recording;
 
 import com.joxette.config.BrokerConnectionFactory;
 import com.joxette.config.JoxetteProperties;
+import com.joxette.metrics.JoxetteMetrics;
 import com.joxette.replay.KnownEntitiesRepository;
 import com.joxette.replay.MessageRouter;
 import com.softwaremill.jox.kafka.ConsumerSettings;
@@ -69,12 +70,13 @@ public class TopicLifecycleActor {
             DuckLakeWriteChannel writeChannel,
             MessageRouter router,
             KnownEntitiesRepository knownEntities,
-            Executor vtExecutor) {
+            Executor vtExecutor,
+            JoxetteMetrics joxetteMetrics) {
 
         JoxetteProperties.Recording cfg = props.getRecording();
         Behavior<Cmd> coreBehavior = Behaviors.setup(ctx ->
                 starting(ctx, topic, startFrom, startedAt, props, brokerFactory, brokerId,
-                         writeChannel, router, knownEntities, vtExecutor));
+                         writeChannel, router, knownEntities, vtExecutor, joxetteMetrics));
 
         return Behaviors.supervise(coreBehavior)
                 .onFailure(Exception.class, SupervisorStrategy.restartWithBackoff(
@@ -99,7 +101,8 @@ public class TopicLifecycleActor {
             DuckLakeWriteChannel writeChannel,
             MessageRouter router,
             KnownEntitiesRepository knownEntities,
-            Executor vtExecutor) {
+            Executor vtExecutor,
+            JoxetteMetrics joxetteMetrics) {
 
         JoxetteProperties.Recording cfg = props.getRecording();
         ConsumerSettings<String, byte[]> baseSettings = brokerFactory.consumerSettings(brokerId);
@@ -107,7 +110,7 @@ public class TopicLifecycleActor {
         TopicRecorder recorder = new TopicRecorder(
                 topic, baseSettings, writeChannel,
                 cfg.getBatchSize(), cfg.getBatchTimeoutMs(),
-                router, knownEntities, startFrom);
+                router, knownEntities, startFrom, joxetteMetrics);
 
         // Launch in VT; pipe result back as Cmd
         ctx.pipeToSelf(
@@ -124,7 +127,8 @@ public class TopicLifecycleActor {
 
         log.info("TopicLifecycleActor: launching recorder for topic '{}'", topic);
         return recording(ctx, topic, startFrom, startedAt, recorder,
-                         props, brokerFactory, brokerId, writeChannel, router, knownEntities, vtExecutor);
+                         props, brokerFactory, brokerId, writeChannel, router, knownEntities,
+                         vtExecutor, joxetteMetrics);
     }
 
     private static Behavior<Cmd> recording(
@@ -139,7 +143,8 @@ public class TopicLifecycleActor {
             DuckLakeWriteChannel writeChannel,
             MessageRouter router,
             KnownEntitiesRepository knownEntities,
-            Executor vtExecutor) {
+            Executor vtExecutor,
+            JoxetteMetrics joxetteMetrics) {
 
         return Behaviors.receive(Cmd.class)
                 .onMessage(GetStatus.class, msg -> {
@@ -152,12 +157,12 @@ public class TopicLifecycleActor {
                 })
                 .onMessage(RecorderFinished.class, msg -> {
                     log.info("TopicLifecycleActor: recorder finished cleanly for topic '{}'", topic);
-                    // Finished without stop — let the supervisor decide (backoff on failure).
                     return Behaviors.stopped();
                 })
                 .onMessage(RecorderFailed.class, msg -> {
                     log.error("TopicLifecycleActor: recorder failed for topic '{}'", topic, msg.cause());
-                    // Throw so the supervisor's backoff strategy kicks in.
+                    // Increment restart counter before throwing so the supervisor's backoff kicks in.
+                    joxetteMetrics.recordingMetrics(topic).restarts().increment();
                     throw new RuntimeException(msg.cause());
                 })
                 .build();

@@ -1,5 +1,6 @@
 package com.joxette.recording;
 
+import com.joxette.metrics.JoxetteMetrics;
 import com.softwaremill.jox.kafka.ConsumerSettings;
 import com.joxette.replay.EntityRoute;
 import com.joxette.replay.GeneralRoute;
@@ -77,6 +78,7 @@ public class TopicRecorder {
     private final KnownEntitiesRepository knownEntities;
     private final boolean seekToEarliest;
     private final Instant seekToTimestamp;
+    private final JoxetteMetrics.RecordingMetrics meters;
 
     /** The live consumer — set during {@link #run()}, cleared on exit. */
     private volatile KafkaConsumer<String, byte[]> consumer;
@@ -98,6 +100,9 @@ public class TopicRecorder {
     /** Negotiated Kafka group protocol — set when the first rebalance fires. */
     private volatile String negotiatedProtocol = "unknown";
 
+    /** Kept for lambda capture in {@link #run()} — passed to bindKafkaConsumerMetrics. */
+    private final JoxetteMetrics joxetteMetrics;
+
     public TopicRecorder(
             String topic,
             ConsumerSettings<String, byte[]> baseSettings,
@@ -106,9 +111,13 @@ public class TopicRecorder {
             long batchTimeoutMs,
             MessageRouter router,
             KnownEntitiesRepository knownEntities,
-            String startFrom) {
-        this.topic        = topic;
-        this.writeChannel = writeChannel;
+            String startFrom,
+            JoxetteMetrics joxetteMetrics) {
+        this.topic          = topic;
+        this.writeChannel   = writeChannel;
+        this.joxetteMetrics = joxetteMetrics;
+        this.meters         = joxetteMetrics.recordingMetrics(topic);
+        joxetteMetrics.registerLagGauge(topic, consumerLag);
         this.batchSize    = batchSize;
         this.batchTimeout = Duration.ofMillis(batchTimeoutMs);
         this.router       = router;
@@ -148,6 +157,8 @@ public class TopicRecorder {
                 KafkaConsumer<String, byte[]> kc = settings.toConsumer();
                 try {
                     this.consumer = kc;
+                    // Bridge Kafka client metrics into Micrometer on first consumer creation
+                    joxetteMetrics.bindKafkaConsumerMetrics(kc.metrics(), topic);
                     kc.subscribe(List.of(topic), new PartitionAwareRebalanceListener(kc));
 
                     while (!stopped && !Thread.currentThread().isInterrupted()) {
@@ -268,9 +279,16 @@ public class TopicRecorder {
         }
 
         messagesConsumed.addAndGet(batch.size());
+        meters.messagesConsumed().increment(batch.size());
+        meters.batchSize().record(batch.size());
+
         WriteBatch wb = WriteBatch.of(topic, generalRecords, generalMessageTypes, entityItems);
-        writeChannel.submit(wb);
+        meters.writeDuration().record(() -> {
+            try { writeChannel.submit(wb); }
+            catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new RuntimeException(e); }
+        });
         messagesWritten.addAndGet(batch.size());
+        meters.messagesWritten().increment(batch.size());
         lastBatchAt = Instant.now();
 
         if (!allRoutes.isEmpty()) {

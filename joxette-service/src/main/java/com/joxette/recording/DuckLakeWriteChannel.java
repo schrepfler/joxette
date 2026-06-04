@@ -1,6 +1,7 @@
 package com.joxette.recording;
 
 import com.joxette.config.JoxetteProperties;
+import com.joxette.metrics.JoxetteMetrics;
 import com.softwaremill.jox.Channel;
 import com.softwaremill.jox.ChannelClosedException;
 import jakarta.annotation.PostConstruct;
@@ -56,15 +57,21 @@ public class DuckLakeWriteChannel {
 
     public DuckLakeWriteChannel(Connection duckDbConnection,
                                  JoxetteProperties properties,
-                                 CassetteRecordingBus bus) {
+                                 CassetteRecordingBus bus,
+                                 JoxetteMetrics joxetteMetrics) {
         this.duckDbConnection = duckDbConnection;
         this.capacity = properties.getThreading().getWriteChannelCapacity();
         this.bus = bus;
+        // Register depth gauge lazily after channel is created in @PostConstruct
+        this.joxetteMetrics = joxetteMetrics;
     }
+
+    private final JoxetteMetrics joxetteMetrics;
 
     @PostConstruct
     void start() throws SQLException {
         channel = Channel.newBufferedChannel(capacity);
+        joxetteMetrics.registerWriteChannelDepthGauge(() -> inFlight.size());
         WriterSet writers = new WriterSet(duckDbConnection);
         drainThread = Thread.ofVirtual()
                 .name("joxette-write-drain")

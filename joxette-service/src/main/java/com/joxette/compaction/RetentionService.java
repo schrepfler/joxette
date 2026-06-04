@@ -2,6 +2,9 @@ package com.joxette.compaction;
 
 import com.joxette.config.JoxetteProperties;
 import com.joxette.db.SchemaManager;
+import com.joxette.metrics.JoxetteMetrics;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Timer;
 import com.joxette.management.ConfigRepository;
 import com.joxette.management.EntityTypeConfig;
 import com.joxette.management.TopicConfig;
@@ -51,11 +54,20 @@ public class RetentionService {
     private final ConfigRepository configRepo;
     private final JoxetteProperties props;
     private final AtomicBoolean running = new AtomicBoolean(false);
+    private final Counter entityRowsCounter;
+    private final Counter generalRowsCounter;
+    private final Counter knownEntitiesRowsCounter;
+    private final Timer retentionTimer;
 
-    public RetentionService(Connection duckDB, ConfigRepository configRepo, JoxetteProperties props) {
-        this.duckDB     = duckDB;
-        this.configRepo = configRepo;
-        this.props      = props;
+    public RetentionService(Connection duckDB, ConfigRepository configRepo, JoxetteProperties props,
+                             JoxetteMetrics joxetteMetrics) {
+        this.duckDB                    = duckDB;
+        this.configRepo                = configRepo;
+        this.props                     = props;
+        this.entityRowsCounter         = joxetteMetrics.retentionRowsDeleted("entity");
+        this.generalRowsCounter        = joxetteMetrics.retentionRowsDeleted("general");
+        this.knownEntitiesRowsCounter  = joxetteMetrics.retentionRowsDeleted("known_entities");
+        this.retentionTimer            = joxetteMetrics.retentionDuration();
     }
 
     // =========================================================================
@@ -108,17 +120,23 @@ public class RetentionService {
         long entityRows = 0;
         long generalRows = 0;
         long knownEntitiesRows = 0;
+        long start = System.nanoTime();
         try {
             generalRows = enforceTopicRetention();
             long[] entityCounts = enforceEntityRetention();
             entityRows        = entityCounts[0];
             knownEntitiesRows = entityCounts[1];
             checkpoint();
+            generalRowsCounter.increment(generalRows);
+            entityRowsCounter.increment(entityRows);
+            knownEntitiesRowsCounter.increment(knownEntitiesRows);
+            retentionTimer.record(System.nanoTime() - start, java.util.concurrent.TimeUnit.NANOSECONDS);
             updateRunRecord(runId, RunStatus.COMPLETED, entityRows, generalRows, knownEntitiesRows, null);
             log.info("Retention run {} completed: {} general rows, {} entity rows, {} known_entities rows deleted",
                     runId, generalRows, entityRows, knownEntitiesRows);
         } catch (Exception e) {
             log.error("Retention run {} failed", runId, e);
+            retentionTimer.record(System.nanoTime() - start, java.util.concurrent.TimeUnit.NANOSECONDS);
             try {
                 updateRunRecord(runId, RunStatus.FAILED, entityRows, generalRows, knownEntitiesRows, e.getMessage());
             } catch (SQLException se) {

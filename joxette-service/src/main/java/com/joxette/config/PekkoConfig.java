@@ -159,7 +159,8 @@ public class PekkoConfig {
     public ActorRef<RecordingCoordinatorActor.CoordinatorCommand> recordingCoordinatorActor(
             ActorSystem<Void> system,
             BrokerConnectionFactory brokerConnectionFactory,
-            @Qualifier("pekkoVtExecutor") Executor vtExecutor) {
+            @Qualifier("pekkoVtExecutor") Executor vtExecutor,
+            com.joxette.metrics.JoxetteMetrics joxetteMetrics) {
         return system.systemActorOf(
                 RecordingCoordinatorActor.create(
                         joxetteProperties,
@@ -168,7 +169,8 @@ public class PekkoConfig {
                         writeChannel,
                         messageRouter,
                         knownEntitiesRepository,
-                        vtExecutor),
+                        vtExecutor,
+                        joxetteMetrics),
                 "recording-coordinator",
                 org.apache.pekko.actor.typed.Props.empty());
     }
@@ -181,11 +183,26 @@ public class PekkoConfig {
      * proper actor hierarchy that supports proactive cancellation.
      */
     @Bean
-    public ActorRef<ReplayCoordinatorActor.Cmd> replayCoordinatorActor(ActorSystem<Void> system) {
+    public ActorRef<ReplayCoordinatorActor.Cmd> replayCoordinatorActor(
+            ActorSystem<Void> system,
+            com.joxette.metrics.JoxetteMetrics joxetteMetrics) {
         replayCoordinatorRef = system.systemActorOf(
                 ReplayCoordinatorActor.create(),
                 "replay-coordinator",
                 org.apache.pekko.actor.typed.Props.empty());
+        // Register active-replays gauge — reads from the coordinator via ask on each scrape
+        joxetteMetrics.registerActiveReplaysGauge(() -> {
+            try {
+                return org.apache.pekko.actor.typed.javadsl.AskPattern.<ReplayCoordinatorActor.Cmd, java.util.List<ReplayCoordinatorActor.ReplaySnapshot>>ask(
+                        replayCoordinatorRef,
+                        ReplayCoordinatorActor.ListActive::new,
+                        java.time.Duration.ofSeconds(1),
+                        system.scheduler()
+                ).toCompletableFuture().join().size();
+            } catch (Exception e) {
+                return 0;
+            }
+        });
         return replayCoordinatorRef;
     }
 
