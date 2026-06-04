@@ -300,7 +300,10 @@ public class TopicRecorder {
      */
     private void submitWriteBatch(WriteBatch wb) throws Exception {
         int recordCount = wb.sourceRecords().size();
-        log.trace("Submitting batch of {} source records for topic '{}'", recordCount, topic);
+        int generalCount = wb.generalRecords().size();
+        int entityCount  = wb.entityItems().size();
+        log.info("Writing {} record(s) to topic '{}' ({} general, {} entity routes)",
+                recordCount, topic, generalCount, entityCount);
 
         meters.writeDuration().record(() -> {
             try { writeChannel.submit(wb); }
