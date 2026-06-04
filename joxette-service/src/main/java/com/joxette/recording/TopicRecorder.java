@@ -93,9 +93,11 @@ public class TopicRecorder {
     private volatile boolean stopped = false;
 
     private volatile Instant lastBatchAt;
-    private final AtomicLong consumerLag = new AtomicLong(-1);
+    private final AtomicLong consumerLag     = new AtomicLong(-1);
     private final AtomicLong messagesConsumed = new AtomicLong(0);
     private final AtomicLong messagesWritten  = new AtomicLong(0);
+    /** Nanos when the last buildWriteBatch call completed — for pipeline queue time logging. */
+    private volatile long lastIngestNanos = 0;
 
     /** Negotiated Kafka group protocol — set when the first rebalance fires. */
     private volatile String negotiatedProtocol = "unknown";
@@ -266,7 +268,11 @@ public class TopicRecorder {
      * any I/O. Called from the Jox flow before {@code batchWeighted} coalescing.
      */
     private WriteBatch buildWriteBatch(List<ConsumerRecord<String, byte[]>> batch) {
-        log.trace("Routing batch of {} records for topic '{}'", batch.size(), topic);
+        long nowMs = System.currentTimeMillis();
+        long oldestKafkaTs = batch.stream().mapToLong(ConsumerRecord::timestamp).min().orElse(nowMs);
+        long lagMs = nowMs - oldestKafkaTs;
+        log.info("Ingested {} record(s) for topic '{}' — oldest record lag {}ms ({}s behind)",
+                batch.size(), topic, lagMs, lagMs / 1_000);
 
         List<ConsumerRecord<String, byte[]>> generalRecords = new ArrayList<>();
         List<String> generalMessageTypes = new ArrayList<>();
@@ -290,6 +296,7 @@ public class TopicRecorder {
         messagesConsumed.addAndGet(batch.size());
         meters.messagesConsumed().increment(batch.size());
         meters.batchSize().record(batch.size());
+        lastIngestNanos = System.nanoTime();
 
         return WriteBatch.of(topic, batch, generalRecords, generalMessageTypes, entityItems);
     }
@@ -302,8 +309,10 @@ public class TopicRecorder {
         int recordCount = wb.sourceRecords().size();
         int generalCount = wb.generalRecords().size();
         int entityCount  = wb.entityItems().size();
-        log.info("Writing {} record(s) to topic '{}' ({} general, {} entity routes)",
-                recordCount, topic, generalCount, entityCount);
+        long queueMs = lastIngestNanos > 0
+                ? (System.nanoTime() - lastIngestNanos) / 1_000_000 : -1;
+        log.info("Writing {} record(s) to topic '{}' ({} general, {} entity routes) — pipeline queue {}ms",
+                recordCount, topic, generalCount, entityCount, queueMs);
 
         meters.writeDuration().record(() -> {
             try { writeChannel.submit(wb); }
