@@ -386,9 +386,25 @@ public class TopicRecorder {
                     topic, assigned, negotiatedProtocol);
 
             if (seekToEarliest) {
-                kc.seekToBeginning(assigned);
-                log.info("Seeked to beginning of {} partition(s) for topic '{}' (startFrom=earliest)",
-                        assigned.size(), topic);
+                // Only seek uncommitted partitions to beginning; partitions that already
+                // have a committed offset resume from there so restarts don't re-read
+                // already-processed messages.  Mirrors Kafka's auto.offset.reset=earliest.
+                Map<TopicPartition, OffsetAndMetadata> committed = kc.committed(new java.util.HashSet<>(assigned));
+                List<TopicPartition> noOffset = assigned.stream()
+                        .filter(tp -> committed.get(tp) == null)
+                        .toList();
+                if (!noOffset.isEmpty()) {
+                    kc.seekToBeginning(noOffset);
+                    log.info("Seeked to beginning of {} uncommitted partition(s) for topic '{}': {}",
+                            noOffset.size(), topic, noOffset);
+                }
+                List<TopicPartition> resuming = assigned.stream()
+                        .filter(tp -> committed.get(tp) != null)
+                        .toList();
+                if (!resuming.isEmpty()) {
+                    log.info("Resuming {} committed partition(s) for topic '{}' from stored offsets",
+                            resuming.size(), topic);
+                }
             } else if (seekToTimestamp != null) {
                 seekToTimestamp(kc, assigned, seekToTimestamp);
                 log.info("Seeked to timestamp {} on {} partition(s) for topic '{}'",
