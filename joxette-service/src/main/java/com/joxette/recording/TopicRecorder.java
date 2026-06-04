@@ -210,16 +210,10 @@ public class TopicRecorder {
             // When the writer keeps up with the consumer, each group passes through
             // unchanged (no coalescing overhead on the happy path).
             .batchWeighted(
-                (long) batchSize * 4,                    // max ~4x a single batch worth of records
-                records -> (long) records.size(),        // cost = record count
-                records -> records,                      // seed = first group as-is
-                (acc, records) -> {                      // aggregate = concat
-                    var merged = new java.util.ArrayList<ConsumerRecord<String, byte[]>>(
-                            acc.size() + records.size());
-                    merged.addAll(acc);
-                    merged.addAll(records);
-                    return merged;
-                })
+                (long) batchSize * 4,                          // max ~4x a single batch worth of records
+                records -> (long) records.size(),              // cost = record count
+                records -> new ArrayList<>(records),           // seed = one mutable list, owned by this window
+                (acc, records) -> { acc.addAll(records); return acc; }) // mutate in place — O(1) per batch, no copy
             // Route the (possibly coalesced) record list to a single WriteBatch.
             .map(this::buildWriteBatch)
             .runForeach(wb -> {
