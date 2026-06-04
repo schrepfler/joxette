@@ -64,10 +64,12 @@ public class BrokerConnectionFactory {
                 // times per minute. 1 s initial, 30 s ceiling matches the reconnect backoff.
                 .property("retry.backoff.ms",         "1000")
                 .property("retry.backoff.max.ms",     "30000")
-                // Don't wait forever for metadata: fail fast so the Pekko backoff supervisor
-                // in TopicLifecycleActor can apply its own backoff.
-                .property("request.timeout.ms",       "10000")
-                .property("default.api.timeout.ms",   "15000")
+                // Timeout must cover the time to receive the largest possible fetch response.
+                // max.partition.fetch.bytes × partitions / link bandwidth sets the floor.
+                // 30 s gives headroom for slow VPN/cluster links; still fast enough for
+                // TopicLifecycleActor's backoff supervisor to react to genuine broker failures.
+                .property("request.timeout.ms",       "30000")
+                .property("default.api.timeout.ms",   "35000")
                 // Fetch throughput tunables.
                 // fetch.min.bytes=1: respond immediately — avoids broker wait penalising near-pace
                 //   topics. Raise to e.g. 65536 on dedicated catchup nodes.

@@ -291,11 +291,12 @@ public class JoxetteProperties {
         private int maxPollRecords = 2000;
         /**
          * Maximum bytes the server returns per partition in a fetch request.
-         * Raise this when messages are large (> 1 KB) to allow the broker to send
-         * more data per round-trip during catchup.
-         * Default: {@code 4194304} (4 MB, vs Kafka default of 1 MB).
+         * Default: {@code 1048576} (1 MB — Kafka default). Raising this increases
+         * throughput on local/fast links but risks exceeding {@code request.timeout.ms}
+         * on slow VPN or inter-datacenter links, causing repeated disconnects.
+         * Only raise when {@code request.timeout.ms} is increased proportionally.
          */
-        private int maxPartitionFetchBytes = 4 * 1024 * 1024;
+        private int maxPartitionFetchBytes = 1024 * 1024;
 
         public String getBootstrapServers() { return bootstrapServers; }
         public void setBootstrapServers(String bootstrapServers) { this.bootstrapServers = bootstrapServers; }
