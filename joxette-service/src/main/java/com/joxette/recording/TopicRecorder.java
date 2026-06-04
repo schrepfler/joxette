@@ -204,9 +204,27 @@ public class TopicRecorder {
                 }
             })
             .groupedWithin(batchSize, batchTimeout)
-            .runForeach(batch -> {
-                writeBatch(batch);
-                pendingCommit.set(buildOffsets(batch));
+            // Coalesce consecutive Kafka batches when the writer is the bottleneck.
+            // batchWeighted accumulates List<ConsumerRecord> groups while downstream
+            // is busy, concatenating them into one larger list before routing.
+            // When the writer keeps up with the consumer, each group passes through
+            // unchanged (no coalescing overhead on the happy path).
+            .batchWeighted(
+                (long) batchSize * 4,                    // max ~4x a single batch worth of records
+                records -> (long) records.size(),        // cost = record count
+                records -> records,                      // seed = first group as-is
+                (acc, records) -> {                      // aggregate = concat
+                    var merged = new java.util.ArrayList<ConsumerRecord<String, byte[]>>(
+                            acc.size() + records.size());
+                    merged.addAll(acc);
+                    merged.addAll(records);
+                    return merged;
+                })
+            // Route the (possibly coalesced) record list to a single WriteBatch.
+            .map(this::buildWriteBatch)
+            .runForeach(wb -> {
+                submitWriteBatch(wb);
+                pendingCommit.set(buildOffsets(wb.sourceRecords()));
             });
 
         } catch (InterruptedException e) {
@@ -250,17 +268,15 @@ public class TopicRecorder {
     // -----------------------------------------------------------------------
 
     /**
-     * Routes each record, builds a {@link WriteBatch}, submits it to the
-     * {@link DuckLakeWriteChannel}, and upserts the discovered entities into
-     * {@code known_entities} after a successful write.
+     * Routes each Kafka record and builds a {@link WriteBatch} without performing
+     * any I/O. Called from the Jox flow before {@code batchWeighted} coalescing.
      */
-    private void writeBatch(List<ConsumerRecord<String, byte[]>> batch) throws Exception {
-        log.trace("Processing batch of {} records for topic '{}'", batch.size(), topic);
+    private WriteBatch buildWriteBatch(List<ConsumerRecord<String, byte[]>> batch) {
+        log.trace("Routing batch of {} records for topic '{}'", batch.size(), topic);
 
         List<ConsumerRecord<String, byte[]>> generalRecords = new ArrayList<>();
         List<String> generalMessageTypes = new ArrayList<>();
         List<WriteBatch.EntityWriteItem> entityItems = new ArrayList<>();
-        List<EntityRoute> allRoutes = new ArrayList<>();
 
         for (ConsumerRecord<String, byte[]> record : batch) {
             KafkaMessage msg = toKafkaMessage(record);
@@ -274,7 +290,6 @@ public class TopicRecorder {
 
             if (!decision.entityRoutes().isEmpty()) {
                 entityItems.add(new WriteBatch.EntityWriteItem(decision.entityRoutes(), msg));
-                allRoutes.addAll(decision.entityRoutes());
             }
         }
 
@@ -282,15 +297,30 @@ public class TopicRecorder {
         meters.messagesConsumed().increment(batch.size());
         meters.batchSize().record(batch.size());
 
-        WriteBatch wb = WriteBatch.of(topic, generalRecords, generalMessageTypes, entityItems);
+        return WriteBatch.of(topic, batch, generalRecords, generalMessageTypes, entityItems);
+    }
+
+    /**
+     * Submits a (possibly coalesced) {@link WriteBatch} to DuckDB and upserts
+     * discovered entity routes into {@code known_entities}.
+     */
+    private void submitWriteBatch(WriteBatch wb) throws Exception {
+        int recordCount = wb.sourceRecords().size();
+        log.trace("Submitting batch of {} source records for topic '{}'", recordCount, topic);
+
         meters.writeDuration().record(() -> {
             try { writeChannel.submit(wb); }
             catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new RuntimeException(e); }
         });
-        messagesWritten.addAndGet(batch.size());
-        meters.messagesWritten().increment(batch.size());
+        messagesWritten.addAndGet(recordCount);
+        meters.messagesWritten().increment(recordCount);
         lastBatchAt = Instant.now();
 
+        // Collect entity routes across all entity items for known_entities upsert
+        List<EntityRoute> allRoutes = new ArrayList<>();
+        for (WriteBatch.EntityWriteItem item : wb.entityItems()) {
+            allRoutes.addAll(item.routes());
+        }
         if (!allRoutes.isEmpty()) {
             try {
                 knownEntities.upsertBatch(allRoutes, Instant.now());

@@ -17,7 +17,6 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -25,12 +24,16 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  * <p>DuckDB allows only one writer at a time on a single connection. This component
  * owns the entire write path: every {@link WriteBatch} from every per-topic
- * {@link TopicRecorder} is enqueued on a bounded Jox channel and drained
- * one-at-a-time by a dedicated virtual thread that holds the shared writer instances.
+ * {@link TopicRecorder} is enqueued on a bounded Jox channel and drained by a
+ * dedicated virtual thread that holds the shared writer instances.
  *
  * <p>The bounded channel capacity is the backpressure valve: when full,
  * {@link #submit(WriteBatch)} blocks the calling Jox flow step, which slows Kafka
  * consumption and increases consumer lag rather than growing in-process buffers.
+ *
+ * <p>Upstream coalescing is handled by {@code Flow.batchWeighted} in
+ * {@link TopicRecorder} before batches reach this channel, so the drain VT
+ * already receives pre-merged batches when the writer is the bottleneck.
  *
  * <p>Reads (replay queries) are NOT routed here — they use separate
  * {@code Statement} objects on the shared connection and proceed concurrently.
@@ -62,7 +65,6 @@ public class DuckLakeWriteChannel {
         this.duckDbConnection = duckDbConnection;
         this.capacity = properties.getThreading().getWriteChannelCapacity();
         this.bus = bus;
-        // Register depth gauge lazily after channel is created in @PostConstruct
         this.joxetteMetrics = joxetteMetrics;
     }
 
@@ -115,7 +117,6 @@ public class DuckLakeWriteChannel {
             throw new IllegalStateException(
                     "Write channel is closed; cannot accept batch for topic " + batch.topic(), e);
         }
-        // Block until the drain VT completes or fails this batch.
         try {
             return batch.result().join();
         } catch (java.util.concurrent.CompletionException e) {
@@ -131,12 +132,7 @@ public class DuckLakeWriteChannel {
      * Blocks until all in-flight batches whose partition set intersects
      * {@code revokedPartitions} have been written by the drain VT.
      *
-     * <p>Pass {@code null} to drain all in-flight batches (classic protocol path,
-     * where all partitions are revoked at once).
-     *
-     * <p>Called from {@code ConsumerRebalanceListener.onPartitionsRevoked} on the
-     * Kafka consumer thread; must return before the rebalance completes so that
-     * offsets are safe to commit.
+     * <p>Pass {@code null} to drain all in-flight batches (classic protocol path).
      */
     public void awaitDrain(Collection<TopicPartition> revokedPartitions) {
         for (WriteBatch batch : inFlight) {
@@ -146,7 +142,6 @@ public class DuckLakeWriteChannel {
                 try {
                     batch.result().join();
                 } catch (Exception ignored) {
-                    // Write failure is already logged by processBatch; don't block shutdown.
                 }
             }
         }
@@ -199,7 +194,6 @@ public class DuckLakeWriteChannel {
                 try {
                     bus.publish(batch);
                 } catch (RuntimeException be) {
-                    // Must never break the drain VT — bus publication is best-effort.
                     log.warn("Recording bus publish failed for topic '{}': {}",
                             batch.topic(), be.getMessage(), be);
                 }
@@ -211,7 +205,7 @@ public class DuckLakeWriteChannel {
     }
 
     // -----------------------------------------------------------------------
-    // Writer registry — lazily initialized, owned by the drain VT
+    // Writer registry
     // -----------------------------------------------------------------------
 
     private static final class WriterSet {
