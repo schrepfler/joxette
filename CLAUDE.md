@@ -353,18 +353,13 @@ Start with the single channel. If noisy-neighbor latency becomes measurable, pro
 ```yaml
 joxette:
   threading:
-    write-channel-capacity: 128          # slots in the global write channel (default 128)
-    default-source-parallelism: 1        # VTs per Kafka source (default 1)
-    topic-parallelism:
-      high-volume-topic: 2               # per-topic override
-    compaction-thread-type: virtual      # virtual | platform (default virtual)
+    write-channel-capacity: 128     # slots in the global write channel (default 128)
+    compaction-thread-type: virtual # virtual | platform (default virtual)
 ```
 
 | Property | Default | Effect |
 |---|---|---|
 | `write-channel-capacity` | `128` | Bounded channel size; raise if write bursts cause unnecessary consumer lag |
-| `default-source-parallelism` | `1` | VTs per Jox KafkaSource; increase only for high-partition topics with CPU-bound routing |
-| `topic-parallelism.<topic>` | inherits default | Per-topic parallelism override |
 | `compaction-thread-type` | `virtual` | Set to `platform` if a compaction library holds a monitor across I/O and triggers virtual-thread pinning warnings |
 
 ---

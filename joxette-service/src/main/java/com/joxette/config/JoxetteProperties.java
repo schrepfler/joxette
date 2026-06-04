@@ -396,21 +396,22 @@ public class JoxetteProperties {
     public static class Threading {
         /** Capacity of the bounded Jox channel feeding the single DuckDB write VT. */
         private int writeChannelCapacity = 128;
-        /** Default parallelism for Kafka source flows (per topic). */
-        private int defaultSourceParallelism = 1;
-        /** Per-topic parallelism overrides (topic name → parallelism). */
-        private Map<String, Integer> topicParallelism = new HashMap<>();
-        /** Thread type used for the compaction background job: "virtual" or "platform". */
+        /**
+         * Thread type used for the compaction background job: {@code "virtual"} or
+         * {@code "platform"}. Set to {@code platform} only if a compaction library holds a
+         * monitor across I/O that would trigger virtual-thread pinning warnings.
+         */
         private String compactionThreadType = "virtual";
+
+        // NOTE: defaultSourceParallelism and topicParallelism were removed.
+        // Each topic already gets its own TopicRecorder (one consumer group member per topic).
+        // Intra-topic parallelism via multiple VTs is not implemented: all partitions for a
+        // topic are handled by a single poll loop feeding the shared single-writer write channel.
+        // The fetch throughput tunables (fetch.min.bytes, fetch.max.wait.ms) and a lower
+        // batch-timeout-ms are the effective levers for catchup throughput.
 
         public int getWriteChannelCapacity() { return writeChannelCapacity; }
         public void setWriteChannelCapacity(int writeChannelCapacity) { this.writeChannelCapacity = writeChannelCapacity; }
-
-        public int getDefaultSourceParallelism() { return defaultSourceParallelism; }
-        public void setDefaultSourceParallelism(int defaultSourceParallelism) { this.defaultSourceParallelism = defaultSourceParallelism; }
-
-        public Map<String, Integer> getTopicParallelism() { return topicParallelism; }
-        public void setTopicParallelism(Map<String, Integer> topicParallelism) { this.topicParallelism = topicParallelism; }
 
         public String getCompactionThreadType() { return compactionThreadType; }
         public void setCompactionThreadType(String compactionThreadType) { this.compactionThreadType = compactionThreadType; }

@@ -66,12 +66,17 @@ Key tunables (`joxette.threading.*`):
 | Property | Default | Effect |
 |---|---|---|
 | `write-channel-capacity` | `128` | Bounded write-channel slots; raise if write bursts cause avoidable lag |
-| `default-source-parallelism` | `1` | Virtual threads per Kafka source; raise only for high-partition CPU-bound routing |
-| `topic-parallelism.<topic>` | inherits default | Per-topic override |
 | `compaction-thread-type` | `virtual` | Set `platform` only if a compaction library pins virtual threads |
 
 Recording batches flush on size or time (`joxette.recording.batch-size`,
-default `10000`; `batch-timeout-ms`, default `1000`).
+default `10000`; `batch-timeout-ms`, default `250` ms).
+
+Fetch throughput tunables (`joxette.kafka.*`):
+
+| Property | Default | Effect |
+|---|---|---|
+| `fetch-min-bytes` | `65536` | Bytes the broker must have ready before responding to a fetch; higher = fewer round-trips during catchup |
+| `fetch-max-wait-ms` | `100` | Max time broker waits to satisfy `fetch-min-bytes`; caps latency on quiet topics |
 
 ### Pekko's role in concurrency
 
@@ -402,16 +407,16 @@ joxette:
     bootstrap-servers: "localhost:9092"
     consumer-group: "joxette-recorder"       # shared across recorder nodes
     group-protocol: "consumer"               # KIP-848 cooperative rebalance
+    fetch-min-bytes: 65536                   # batch fetches; 1 = Kafka default (respond immediately)
+    fetch-max-wait-ms: 100                   # max broker wait for fetch-min-bytes
 
   threading:
     write-channel-capacity: 128
-    default-source-parallelism: 1
-    topic-parallelism: {}                    # { "high-volume-topic": 2 }
     compaction-thread-type: virtual
 
   recording:
     batch-size: 10000
-    batch-timeout-ms: 1000
+    batch-timeout-ms: 250                    # reduced from 1000 ms for faster catchup
 
   compaction:
     schedule: "0 0 3 * * *"                  # daily 03:00 (Spring 6-field cron)

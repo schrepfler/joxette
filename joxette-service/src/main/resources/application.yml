@@ -116,7 +116,6 @@ joxette:
 
   threading:
     write-channel-capacity: 128
-    default-source-parallelism: 1
     compaction-thread-type: virtual
 
   replay:
