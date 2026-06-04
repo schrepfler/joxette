@@ -51,3 +51,6 @@ joxette-service/snapshots/
 
 # Local archived docs mirror — not source, large media
 motif-docs-wayback/
+
+# Local environment overrides — never commit
+joxette-service/src/main/resources/application-local.yml

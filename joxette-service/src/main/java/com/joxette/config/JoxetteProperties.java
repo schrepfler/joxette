@@ -489,12 +489,17 @@ public class JoxetteProperties {
             private String topic;
             /** "general", "entity_only", or "both" */
             private String mode = "general";
+            /** "earliest" | "latest" (default) | ISO-8601 timestamp */
+            private String startFrom = "latest";
 
             public String getTopic() { return topic; }
             public void setTopic(String topic) { this.topic = topic; }
 
             public String getMode() { return mode; }
             public void setMode(String mode) { this.mode = mode; }
+
+            public String getStartFrom() { return startFrom; }
+            public void setStartFrom(String startFrom) { this.startFrom = startFrom; }
         }
 
         public static class EntityEntry {

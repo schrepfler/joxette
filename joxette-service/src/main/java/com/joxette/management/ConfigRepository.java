@@ -528,12 +528,14 @@ public class ConfigRepository {
         synchronized (duckDB) {
             // Topics
             try (PreparedStatement ps = duckDB.prepareStatement("""
-                    INSERT INTO topic_configs (topic, mode, paused) VALUES (?, ?, false)
+                    INSERT INTO topic_configs (topic, mode, paused, start_from) VALUES (?, ?, false, ?)
                     ON CONFLICT DO NOTHING
                     """)) {
                 for (var e : properties.getBootstrap().getTopics()) {
                     ps.setString(1, e.getTopic());
                     ps.setString(2, e.getMode());
+                    // Normalise: only "earliest" is a special token; anything else defaults to "latest"
+                    ps.setString(3, "earliest".equals(e.getStartFrom()) ? "earliest" : "latest");
                     ps.addBatch();
                 }
                 ps.executeBatch();
