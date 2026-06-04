@@ -270,17 +270,32 @@ public class JoxetteProperties {
         private String groupProtocol = "consumer";
         /**
          * Minimum bytes the broker must have available before responding to a fetch request.
-         * Higher values reduce fetch round-trips at the cost of slightly more latency on quiet
-         * topics. Default: {@code 65536} (64 KB) — good for high-throughput catchup.
-         * Set to {@code 1} to restore Kafka's default (respond immediately regardless of data).
+         * Higher values reduce fetch round-trips during deep catchup but add latency when
+         * near-pace with production (the broker waits up to {@code fetchMaxWaitMs} to fill
+         * the quota even if only a few new messages exist).
+         * Default: {@code 1} — respond immediately (Kafka default). Raise to e.g. {@code 65536}
+         * only for dedicated catchup nodes.
          */
-        private int fetchMinBytes = 65536;
+        private int fetchMinBytes = 1;
         /**
          * Maximum time the broker will block a fetch request waiting for {@code fetchMinBytes}
          * to be available. Acts as a safety valve so quiet topics don't stall.
          * Default: {@code 100} ms.
          */
         private int fetchMaxWaitMs = 100;
+        /**
+         * Maximum records returned by a single {@code poll()} call across all assigned
+         * partitions. Higher values reduce poll round-trips during catchup.
+         * Default: {@code 2000} (Kafka default is 500).
+         */
+        private int maxPollRecords = 2000;
+        /**
+         * Maximum bytes the server returns per partition in a fetch request.
+         * Raise this when messages are large (> 1 KB) to allow the broker to send
+         * more data per round-trip during catchup.
+         * Default: {@code 4194304} (4 MB, vs Kafka default of 1 MB).
+         */
+        private int maxPartitionFetchBytes = 4 * 1024 * 1024;
 
         public String getBootstrapServers() { return bootstrapServers; }
         public void setBootstrapServers(String bootstrapServers) { this.bootstrapServers = bootstrapServers; }
@@ -302,6 +317,12 @@ public class JoxetteProperties {
 
         public int getFetchMaxWaitMs() { return fetchMaxWaitMs; }
         public void setFetchMaxWaitMs(int fetchMaxWaitMs) { this.fetchMaxWaitMs = fetchMaxWaitMs; }
+
+        public int getMaxPollRecords() { return maxPollRecords; }
+        public void setMaxPollRecords(int maxPollRecords) { this.maxPollRecords = maxPollRecords; }
+
+        public int getMaxPartitionFetchBytes() { return maxPartitionFetchBytes; }
+        public void setMaxPartitionFetchBytes(int maxPartitionFetchBytes) { this.maxPartitionFetchBytes = maxPartitionFetchBytes; }
 
         public static class BrokerEntry {
             private String id = "default";

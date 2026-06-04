@@ -68,11 +68,15 @@ public class BrokerConnectionFactory {
                 // in TopicLifecycleActor can apply its own backoff.
                 .property("request.timeout.ms",       "10000")
                 .property("default.api.timeout.ms",   "15000")
-                // Fetch throughput: ask the broker to batch up at least fetchMinBytes before
-                // responding. Reduces round-trips during catchup at the cost of slight extra
-                // latency. fetch.max.wait.ms caps the broker wait so quiet topics don't stall.
-                .property("fetch.min.bytes",    String.valueOf(properties.getKafka().getFetchMinBytes()))
-                .property("fetch.max.wait.ms",  String.valueOf(properties.getKafka().getFetchMaxWaitMs()));
+                // Fetch throughput tunables.
+                // fetch.min.bytes=1: respond immediately — avoids broker wait penalising near-pace
+                //   topics. Raise to e.g. 65536 on dedicated catchup nodes.
+                // max.poll.records: more records per poll() call during backlog drain.
+                // max.partition.fetch.bytes: larger per-partition payload per fetch round-trip.
+                .property("fetch.min.bytes",             String.valueOf(properties.getKafka().getFetchMinBytes()))
+                .property("fetch.max.wait.ms",           String.valueOf(properties.getKafka().getFetchMaxWaitMs()))
+                .property("max.poll.records",            String.valueOf(properties.getKafka().getMaxPollRecords()))
+                .property("max.partition.fetch.bytes",   String.valueOf(properties.getKafka().getMaxPartitionFetchBytes()));
         settings = applySecurityProps(settings, cfg);
         return settings;
     }

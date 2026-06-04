@@ -104,6 +104,10 @@ joxette:
 
   kafka:
     bootstrap-servers: "localhost:9092"
+    # fetch-min-bytes: 1              # default — respond immediately (good for near-pace topics)
+    #                                 # raise to 65536 on dedicated catchup nodes
+    # max-poll-records: 2000          # default — raise further if lag remains and CPU allows
+    # max-partition-fetch-bytes: 4194304  # default 4 MB per partition
 
   recording:
     batch-size: 10000
