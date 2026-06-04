@@ -1015,6 +1015,8 @@ export const retentionApi = {
 
 export const healthApi = {
   get: () => request<HealthStatus>('/health'),
+  getMetricsText: (): Promise<string> =>
+    fetch(`${API_BASE}/metrics`, { headers: { Accept: 'text/plain' } }).then(r => r.text()),
 }
 
 // ---- Runtime config ----
