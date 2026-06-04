@@ -79,6 +79,12 @@ public class TopicRecorder {
     private final boolean seekToEarliest;
     private final Instant seekToTimestamp;
     private final JoxetteMetrics.RecordingMetrics meters;
+    /**
+     * When non-null, this recorder uses manual partition assignment ({@code assign()})
+     * rather than group subscription ({@code subscribe()}), giving it exclusive
+     * ownership of a single partition and allowing independent parallel fetch.
+     */
+    private final Integer assignedPartition;
 
     /** The live consumer — set during {@link #run()}, cleared on exit. */
     private volatile KafkaConsumer<String, byte[]> consumer;
@@ -105,8 +111,10 @@ public class TopicRecorder {
     /** Kept for lambda capture in {@link #run()} — passed to bindKafkaConsumerMetrics. */
     private final JoxetteMetrics joxetteMetrics;
 
-    public TopicRecorder(
+    /** Full constructor used internally. */
+    private TopicRecorder(
             String topic,
+            Integer assignedPartition,
             ConsumerSettings<String, byte[]> baseSettings,
             DuckLakeWriteChannel writeChannel,
             int batchSize,
@@ -115,11 +123,14 @@ public class TopicRecorder {
             KnownEntitiesRepository knownEntities,
             String startFrom,
             JoxetteMetrics joxetteMetrics) {
-        this.topic          = topic;
-        this.writeChannel   = writeChannel;
-        this.joxetteMetrics = joxetteMetrics;
-        this.meters         = joxetteMetrics.recordingMetrics(topic);
-        joxetteMetrics.registerLagGauge(topic, consumerLag);
+        this.topic             = topic;
+        this.assignedPartition = assignedPartition;
+        this.writeChannel      = writeChannel;
+        this.joxetteMetrics    = joxetteMetrics;
+        // Metrics are keyed by "topic" for topic-wide recorders and "topic-N" for per-partition.
+        String metricsKey = assignedPartition != null ? topic + "-" + assignedPartition : topic;
+        this.meters = joxetteMetrics.recordingMetrics(metricsKey);
+        joxetteMetrics.registerLagGauge(metricsKey, consumerLag);
         this.batchSize    = batchSize;
         this.batchTimeout = Duration.ofMillis(batchTimeoutMs);
         this.router       = router;
@@ -143,25 +154,70 @@ public class TopicRecorder {
         this.settings = s;
     }
 
+    /** Creates a recorder that subscribes to the whole topic via consumer group. */
+    public TopicRecorder(
+            String topic,
+            ConsumerSettings<String, byte[]> baseSettings,
+            DuckLakeWriteChannel writeChannel,
+            int batchSize,
+            long batchTimeoutMs,
+            MessageRouter router,
+            KnownEntitiesRepository knownEntities,
+            String startFrom,
+            JoxetteMetrics joxetteMetrics) {
+        this(topic, null, baseSettings, writeChannel, batchSize, batchTimeoutMs,
+             router, knownEntities, startFrom, joxetteMetrics);
+    }
+
+    /**
+     * Creates a recorder that uses manual {@code assign()} for a single partition.
+     * Independent of the consumer group — fetches this partition in isolation,
+     * allowing parallel fetch across partitions without group coordination overhead.
+     */
+    public TopicRecorder(
+            String topic,
+            int partition,
+            ConsumerSettings<String, byte[]> baseSettings,
+            DuckLakeWriteChannel writeChannel,
+            int batchSize,
+            long batchTimeoutMs,
+            MessageRouter router,
+            KnownEntitiesRepository knownEntities,
+            String startFrom,
+            JoxetteMetrics joxetteMetrics) {
+        this(topic, (Integer) partition, baseSettings, writeChannel, batchSize, batchTimeoutMs,
+             router, knownEntities, startFrom, joxetteMetrics);
+    }
+
     // -----------------------------------------------------------------------
     // Pipeline
     // -----------------------------------------------------------------------
 
     public void run() throws Exception {
-        log.info("Starting recorder for topic '{}'", topic);
+        String label = assignedPartition != null ? topic + "[" + assignedPartition + "]" : topic;
+        log.info("Starting recorder for '{}'", label);
 
         try {
             Flows.<ConsumerRecord<String, byte[]>>usingEmit(emit -> {
-                // Explicit try-finally instead of try-with-resources so we can pass a
-                // close timeout. The default kc.close() waits up to 30 s for a
-                // leave-group handshake — that blocks the recorder VT and keeps Kafka's
-                // non-daemon background threads alive, preventing JVM exit on shutdown.
                 KafkaConsumer<String, byte[]> kc = settings.toConsumer();
                 try {
                     this.consumer = kc;
-                    // Bridge Kafka client metrics into Micrometer on first consumer creation
-                    joxetteMetrics.bindKafkaConsumerMetrics(kc.metrics(), topic);
-                    kc.subscribe(List.of(topic), new PartitionAwareRebalanceListener(kc));
+                    joxetteMetrics.bindKafkaConsumerMetrics(kc.metrics(), label);
+
+                    if (assignedPartition != null) {
+                        // --- Per-partition manual assignment ---
+                        // No consumer group coordinator, no rebalance — this recorder
+                        // owns exactly one partition independently.
+                        TopicPartition tp = new TopicPartition(topic, assignedPartition);
+                        kc.assign(List.of(tp));
+                        assignedPartitions.add(tp);
+                        positionPartition(kc, tp);
+                        log.info("Assigned partition {} of '{}'; startFrom={}", assignedPartition, topic,
+                                seekToEarliest ? "earliest" : seekToTimestamp != null ? seekToTimestamp.toString() : "latest");
+                    } else {
+                        // --- Group subscription (original behaviour) ---
+                        kc.subscribe(List.of(topic), new PartitionAwareRebalanceListener(kc));
+                    }
 
                     while (!stopped && !Thread.currentThread().isInterrupted()) {
                         Map<TopicPartition, OffsetAndMetadata> toCommit = pendingCommit.getAndSet(null);
@@ -172,16 +228,13 @@ public class TopicRecorder {
                             var records = kc.poll(POLL_TIMEOUT);
                             updateLag(kc);
                             if (records.isEmpty() && kc.assignment().isEmpty()) {
-                                // No partitions assigned yet (Kafka unreachable or rebalancing).
-                                // Sleep briefly so the poll loop does not spin at CPU speed while
-                                // the metadata background thread is retrying.
                                 Thread.sleep(POLL_TIMEOUT.toMillis());
                             }
                             for (ConsumerRecord<String, byte[]> record : records) {
                                 emit.apply(record);
                             }
                         } catch (WakeupException e) {
-                            log.debug("Kafka wakeup received for topic '{}'; stopping poll loop", topic);
+                            log.debug("Kafka wakeup received for '{}'; stopping poll loop", label);
                             break;
                         } catch (InterruptedException e) {
                             Thread.currentThread().interrupt();
@@ -189,14 +242,13 @@ public class TopicRecorder {
                         }
                     }
 
-                    // Graceful shutdown: drain in-flight batches, commit, then close.
                     writeChannel.awaitDrain(null);
                     Map<TopicPartition, OffsetAndMetadata> finalCommit = pendingCommit.getAndSet(null);
                     if (finalCommit != null && !finalCommit.isEmpty()) {
                         try {
                             kc.commitSync(finalCommit);
                         } catch (Exception e) {
-                            log.warn("Final offset commit failed for topic '{}': {}", topic, e.getMessage());
+                            log.warn("Final offset commit failed for '{}': {}", label, e.getMessage());
                         }
                     }
                 } finally {
@@ -500,6 +552,33 @@ public class TopicRecorder {
     // -----------------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------------
+
+    /**
+     * Positions a manually-assigned partition on startup.
+     * Mirrors {@code onPartitionsAssigned} logic for the group-subscription path:
+     * - seekToEarliest → seek to beginning if no committed offset, else resume
+     * - seekToTimestamp → seek to timestamp if no committed offset, else resume
+     * - default → seek to end if no committed offset, else resume
+     */
+    private void positionPartition(KafkaConsumer<String, byte[]> kc, TopicPartition tp) {
+        Map<TopicPartition, OffsetAndMetadata> committed = kc.committed(java.util.Set.of(tp));
+        boolean hasCommitted = committed.get(tp) != null;
+
+        if (hasCommitted) {
+            // Always resume from committed offset regardless of startFrom setting.
+            // startFrom only applies to the very first run (no prior committed offset).
+            log.info("Resuming partition {} of '{}' from committed offset {}", tp.partition(), topic,
+                    committed.get(tp).offset());
+        } else if (seekToEarliest) {
+            kc.seekToBeginning(List.of(tp));
+            log.info("No committed offset for partition {} of '{}'; seeking to beginning", tp.partition(), topic);
+        } else if (seekToTimestamp != null) {
+            seekToTimestamp(kc, List.of(tp), seekToTimestamp);
+        } else {
+            kc.seekToEnd(List.of(tp));
+            log.info("No committed offset for partition {} of '{}'; seeking to end", tp.partition(), topic);
+        }
+    }
 
     private void updateLag(KafkaConsumer<String, byte[]> kc) {
         try {

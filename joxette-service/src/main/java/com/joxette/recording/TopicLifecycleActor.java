@@ -14,8 +14,14 @@ import org.apache.pekko.actor.typed.javadsl.Behaviors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.common.serialization.ByteArrayDeserializer;
+import org.apache.kafka.common.serialization.StringDeserializer;
+
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
@@ -49,8 +55,9 @@ public class TopicLifecycleActor {
     public record Stop(org.apache.pekko.actor.typed.ActorRef<StopReply> replyTo) implements Cmd {}
     public record GetStatus(org.apache.pekko.actor.typed.ActorRef<RecorderStatus> replyTo) implements Cmd {}
 
-    private record RecorderFinished() implements Cmd {}
-    private record RecorderFailed(Throwable cause) implements Cmd {}
+    private record RecorderFinished(int partition) implements Cmd {}
+    private record RecorderFailed(int partition, Throwable cause) implements Cmd {}
+    // (old single-recorder variants shadowed by the new per-partition versions above)
 
     public sealed interface StopReply {}
     public record Stopped() implements StopReply {}
@@ -107,26 +114,45 @@ public class TopicLifecycleActor {
         JoxetteProperties.Recording cfg = props.getRecording();
         ConsumerSettings<String, byte[]> baseSettings = brokerFactory.consumerSettings(brokerId);
 
-        TopicRecorder recorder = new TopicRecorder(
-                topic, baseSettings, writeChannel,
-                cfg.getBatchSize(), cfg.getBatchTimeoutMs(),
-                router, knownEntities, startFrom, joxetteMetrics);
+        // Look up partition count using a short-lived consumer — no group join needed.
+        int partitionCount = 1;
+        try {
+            ConsumerSettings<String, byte[]> metaSettings = baseSettings
+                    .groupId(baseSettings.groupId() + "-meta-" + topic);
+            try (KafkaConsumer<String, byte[]> probe = metaSettings.toConsumer()) {
+                partitionCount = probe.partitionsFor(topic).size();
+            }
+        } catch (Exception e) {
+            log.warn("TopicLifecycleActor: could not determine partition count for '{}'; defaulting to 1: {}",
+                    topic, e.getMessage());
+        }
 
-        // Launch in VT; pipe result back as Cmd
-        ctx.pipeToSelf(
-                CompletableFuture.supplyAsync(() -> {
-                    try {
-                        recorder.run();
-                        return (Cmd) new RecorderFinished();
-                    } catch (Exception e) {
-                        throw new RuntimeException(e);
-                    }
-                }, vtExecutor),
-                (result, ex) -> ex != null ? new RecorderFailed(ex) : result
-        );
+        log.info("TopicLifecycleActor: launching {} per-partition recorder(s) for topic '{}'",
+                partitionCount, topic);
 
-        log.info("TopicLifecycleActor: launching recorder for topic '{}'", topic);
-        return recording(ctx, topic, startFrom, startedAt, recorder,
+        List<TopicRecorder> recorders = new ArrayList<>(partitionCount);
+        for (int p = 0; p < partitionCount; p++) {
+            int partition = p;
+            TopicRecorder recorder = new TopicRecorder(
+                    topic, partition, baseSettings, writeChannel,
+                    cfg.getBatchSize(), cfg.getBatchTimeoutMs(),
+                    router, knownEntities, startFrom, joxetteMetrics);
+            recorders.add(recorder);
+
+            ctx.pipeToSelf(
+                    CompletableFuture.supplyAsync(() -> {
+                        try {
+                            recorder.run();
+                            return (Cmd) new RecorderFinished(partition);
+                        } catch (Exception e) {
+                            throw new RuntimeException(e);
+                        }
+                    }, vtExecutor),
+                    (result, ex) -> ex != null ? new RecorderFailed(partition, ex) : result
+            );
+        }
+
+        return recording(ctx, topic, startFrom, startedAt, recorders,
                          props, brokerFactory, brokerId, writeChannel, router, knownEntities,
                          vtExecutor, joxetteMetrics);
     }
@@ -136,7 +162,7 @@ public class TopicLifecycleActor {
             String topic,
             String startFrom,
             Instant startedAt,
-            TopicRecorder recorder,
+            List<TopicRecorder> recorders,
             JoxetteProperties props,
             BrokerConnectionFactory brokerFactory,
             String brokerId,
@@ -146,22 +172,30 @@ public class TopicLifecycleActor {
             Executor vtExecutor,
             JoxetteMetrics joxetteMetrics) {
 
+        int[] finishedCount = {0};
+
         return Behaviors.receive(Cmd.class)
                 .onMessage(GetStatus.class, msg -> {
-                    msg.replyTo().tell(buildStatus(topic, startedAt, recorder, null));
+                    msg.replyTo().tell(buildStatus(topic, startedAt, recorders, null));
                     return Behaviors.same();
                 })
                 .onMessage(Stop.class, msg -> {
-                    recorder.stop();
-                    return stopping(topic, startedAt, recorder, msg.replyTo());
+                    recorders.forEach(TopicRecorder::stop);
+                    return stopping(topic, startedAt, recorders, recorders.size(), msg.replyTo());
                 })
                 .onMessage(RecorderFinished.class, msg -> {
-                    log.info("TopicLifecycleActor: recorder finished cleanly for topic '{}'", topic);
-                    return Behaviors.stopped();
+                    finishedCount[0]++;
+                    log.info("TopicLifecycleActor: partition {} finished for topic '{}' ({}/{})",
+                            msg.partition(), topic, finishedCount[0], recorders.size());
+                    if (finishedCount[0] >= recorders.size()) {
+                        log.info("TopicLifecycleActor: all partitions finished for topic '{}'", topic);
+                        return Behaviors.stopped();
+                    }
+                    return Behaviors.same();
                 })
                 .onMessage(RecorderFailed.class, msg -> {
-                    log.error("TopicLifecycleActor: recorder failed for topic '{}'", topic, msg.cause());
-                    // Increment restart counter before throwing so the supervisor's backoff kicks in.
+                    log.error("TopicLifecycleActor: partition {} failed for topic '{}': {}",
+                            msg.partition(), topic, msg.cause().getMessage());
                     joxetteMetrics.recordingMetrics(topic).restarts().increment();
                     throw new RuntimeException(msg.cause());
                 })
@@ -171,27 +205,37 @@ public class TopicLifecycleActor {
     private static Behavior<Cmd> stopping(
             String topic,
             Instant startedAt,
-            TopicRecorder recorder,
+            List<TopicRecorder> recorders,
+            int totalPartitions,
             org.apache.pekko.actor.typed.ActorRef<StopReply> replyTo) {
+
+        int[] stoppedCount = {0};
 
         return Behaviors.receive(Cmd.class)
                 .onMessage(RecorderFinished.class, msg -> {
-                    log.info("TopicLifecycleActor: stopped cleanly for topic '{}'", topic);
-                    replyTo.tell(new Stopped());
-                    return Behaviors.stopped();
+                    stoppedCount[0]++;
+                    if (stoppedCount[0] >= totalPartitions) {
+                        log.info("TopicLifecycleActor: all partitions stopped for topic '{}'", topic);
+                        replyTo.tell(new Stopped());
+                        return Behaviors.stopped();
+                    }
+                    return Behaviors.same();
                 })
                 .onMessage(RecorderFailed.class, msg -> {
-                    log.warn("TopicLifecycleActor: stopped with error for topic '{}': {}",
-                            topic, msg.cause().getMessage());
-                    replyTo.tell(new Stopped());
-                    return Behaviors.stopped();
+                    stoppedCount[0]++;
+                    log.warn("TopicLifecycleActor: partition {} stopped with error for topic '{}': {}",
+                            msg.partition(), topic, msg.cause().getMessage());
+                    if (stoppedCount[0] >= totalPartitions) {
+                        replyTo.tell(new Stopped());
+                        return Behaviors.stopped();
+                    }
+                    return Behaviors.same();
                 })
                 .onMessage(GetStatus.class, msg -> {
-                    msg.replyTo().tell(buildStatus(topic, startedAt, recorder, null));
+                    msg.replyTo().tell(buildStatus(topic, startedAt, recorders, null));
                     return Behaviors.same();
                 })
                 .onMessage(Stop.class, msg -> {
-                    // Already stopping — acknowledge immediately
                     msg.replyTo().tell(new Stopped());
                     return Behaviors.same();
                 })
@@ -202,20 +246,31 @@ public class TopicLifecycleActor {
     // Helpers
     // -------------------------------------------------------------------------
 
-    static RecorderStatus buildStatus(String topic, Instant startedAt, TopicRecorder recorder, String lastError) {
-        long lag = recorder.consumerLag();
-        Set<Integer> partitions = recorder.assignedPartitionIds();
+    static RecorderStatus buildStatus(String topic, Instant startedAt, List<TopicRecorder> recorders, String lastError) {
+        // Aggregate across all per-partition recorders
+        long lag = recorders.stream().mapToLong(TopicRecorder::consumerLag).filter(l -> l >= 0).sum();
+        Set<Integer> partitions = new java.util.HashSet<>();
+        recorders.forEach(r -> partitions.addAll(r.assignedPartitionIds()));
+        boolean running = recorders.stream().anyMatch(r -> !r.isStopped());
+        Instant lastBatch = recorders.stream()
+                .map(TopicRecorder::lastBatchAt)
+                .filter(java.util.Objects::nonNull)
+                .max(java.util.Comparator.naturalOrder())
+                .orElse(null);
+        long consumed = recorders.stream().mapToLong(TopicRecorder::messagesConsumed).sum();
+        long written  = recorders.stream().mapToLong(TopicRecorder::messagesWritten).sum();
+        String protocol = recorders.isEmpty() ? "unknown" : recorders.get(0).negotiatedProtocol();
         return new RecorderStatus(
                 topic,
-                !recorder.isStopped(),
+                running,
                 startedAt,
-                recorder.lastBatchAt(),
+                lastBatch,
                 lag,
                 lastError,
-                recorder.negotiatedProtocol(),
+                protocol,
                 partitions,
-                recorder.messagesConsumed(),
-                recorder.messagesWritten()
+                consumed,
+                written
         );
     }
 }
