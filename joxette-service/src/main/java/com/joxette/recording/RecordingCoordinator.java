@@ -69,11 +69,13 @@ public class RecordingCoordinator {
     }
 
     public Set<String> activeTopics() {
-        return ask(RecordingCoordinatorActor.ActiveTopics::new);
+        Set<String> result = ask(RecordingCoordinatorActor.ActiveTopics::new);
+        return result != null ? result : Set.of();
     }
 
     public Map<String, RecorderStatus> listRunning() {
-        return ask(RecordingCoordinatorActor.ListRunning::new);
+        Map<String, RecorderStatus> result = ask(RecordingCoordinatorActor.ListRunning::new);
+        return result != null ? result : Map.of();
     }
 
     public void stopAll() {
@@ -98,11 +100,24 @@ public class RecordingCoordinator {
     private <R> R askWithTimeout(
             java.util.function.Function<ActorRef<R>, RecordingCoordinatorActor.CoordinatorCommand> msgFactory,
             java.time.Duration timeout) {
-        return (R) AskPattern.ask(
-                coordinatorActor,
-                msgFactory::apply,
-                timeout,
-                system.scheduler()
-        ).toCompletableFuture().join();
+        try {
+            return (R) AskPattern.ask(
+                    coordinatorActor,
+                    msgFactory::apply,
+                    timeout,
+                    system.scheduler()
+            ).toCompletableFuture().join();
+        } catch (java.util.concurrent.CompletionException ex) {
+            Throwable cause = ex.getCause();
+            if (cause instanceof java.util.concurrent.TimeoutException
+                    && cause.getMessage() != null
+                    && cause.getMessage().contains("had already been terminated")) {
+                // The coordinator is mid-restart — return null; callers handle null safely
+                // via the actor's exponential-backoff supervisor coming back up shortly.
+                log.debug("RecordingCoordinator: ask skipped — coordinator actor is restarting");
+                return null;
+            }
+            throw ex;
+        }
     }
 }
