@@ -1215,3 +1215,30 @@ export const matchersApi = {
       body: JSON.stringify(body),
     }),
 }
+
+// ---- Catalog SQL console ----
+
+export interface ColumnMeta {
+  name: string
+  typeName: string
+}
+
+export interface CatalogQueryResponse {
+  columns: ColumnMeta[]
+  rows: unknown[][]
+  rowCount: number
+  affectedRows: number
+  truncated: boolean
+  durationMs: number
+  isQuery: boolean
+}
+
+export const catalogApi = {
+  query: (sql: string, maxRows = 10_000) =>
+    request<CatalogQueryResponse>('/catalog/query', {
+      method: 'POST',
+      body: JSON.stringify({ sql, maxRows }),
+    }),
+  tables: () =>
+    catalogApi.query('SHOW ALL TABLES', 10_000),
+}
