@@ -5,6 +5,7 @@ import com.joxette.config.events.ConfigEventBus;
 import com.joxette.config.events.TopicConfigChanged;
 import com.joxette.management.ConfigRepository;
 import com.joxette.management.TopicConfig;
+import com.joxette.replay.MessageRouter;
 import org.apache.pekko.actor.typed.ActorRef;
 import org.apache.pekko.actor.typed.ActorSystem;
 import org.apache.pekko.actor.typed.Behavior;
@@ -49,6 +50,7 @@ public class RecordingConfigWatcher implements ApplicationRunner {
 
     private final JoxetteProperties properties;
     private final ConfigRepository configRepository;
+    private final MessageRouter messageRouter;
     private final RecordingCoordinator coordinator;
     private final ActorRef<RecordingCoordinatorActor.CoordinatorCommand> coordinatorActor;
     private final ConfigEventBus eventBus;
@@ -57,12 +59,14 @@ public class RecordingConfigWatcher implements ApplicationRunner {
     public RecordingConfigWatcher(
             JoxetteProperties properties,
             ConfigRepository configRepository,
+            MessageRouter messageRouter,
             @Lazy RecordingCoordinator coordinator,
             ActorRef<RecordingCoordinatorActor.CoordinatorCommand> recordingCoordinatorActor,
             ConfigEventBus eventBus,
             ActorSystem<Void> system) {
         this.properties       = properties;
         this.configRepository = configRepository;
+        this.messageRouter    = messageRouter;
         this.coordinator      = coordinator;
         this.coordinatorActor = recordingCoordinatorActor;
         this.eventBus         = eventBus;
@@ -79,6 +83,7 @@ public class RecordingConfigWatcher implements ApplicationRunner {
 
     static Behavior<Cmd> watcherBehavior(
             ConfigRepository configRepository,
+            MessageRouter messageRouter,
             ActorRef<RecordingCoordinatorActor.CoordinatorCommand> coordinatorActor,
             ActorSystem<Void> system) {
 
@@ -87,7 +92,7 @@ public class RecordingConfigWatcher implements ApplicationRunner {
                     timers.startTimerWithFixedDelay("reconcile-tick",
                             new Tick(),
                             Duration.ofSeconds(RECONCILE_INTERVAL_SECONDS));
-                    return watching(ctx, timers, configRepository, coordinatorActor, system);
+                    return watching(ctx, timers, configRepository, messageRouter, coordinatorActor, system);
                 }));
     }
 
@@ -95,16 +100,17 @@ public class RecordingConfigWatcher implements ApplicationRunner {
             ActorContext<Cmd> ctx,
             TimerScheduler<Cmd> timers,
             ConfigRepository configRepository,
+            MessageRouter messageRouter,
             ActorRef<RecordingCoordinatorActor.CoordinatorCommand> coordinatorActor,
             ActorSystem<Void> system) {
 
         return Behaviors.receive(Cmd.class)
                 .onMessage(Tick.class, msg -> {
-                    reconcile(ctx, configRepository, coordinatorActor, system, "poll");
+                    reconcile(ctx, configRepository, messageRouter, coordinatorActor, system, "poll");
                     return Behaviors.same();
                 })
                 .onMessage(ConfigEvent.class, msg -> {
-                    reconcile(ctx, configRepository, coordinatorActor, system,
+                    reconcile(ctx, configRepository, messageRouter, coordinatorActor, system,
                             "event:" + msg.event().changeType() + ":" + msg.event().topic());
                     return Behaviors.same();
                 })
@@ -114,6 +120,7 @@ public class RecordingConfigWatcher implements ApplicationRunner {
     private static void reconcile(
             ActorContext<Cmd> ctx,
             ConfigRepository configRepository,
+            MessageRouter messageRouter,
             ActorRef<RecordingCoordinatorActor.CoordinatorCommand> coordinatorActor,
             ActorSystem<Void> system,
             String trigger) {
@@ -123,6 +130,14 @@ public class RecordingConfigWatcher implements ApplicationRunner {
         } catch (SQLException e) {
             log.warn("RecordingConfigWatcher: failed to read topic_configs (trigger={}): {}", trigger, e.getMessage());
             return;
+        }
+        // Reload the router's topic-mode cache before reconciling so that any
+        // newly registered topic is already in the routing tables when the
+        // recorder starts consuming its first messages.
+        try {
+            messageRouter.reload();
+        } catch (SQLException e) {
+            log.warn("RecordingConfigWatcher: router reload failed (trigger={}): {}", trigger, e.getMessage());
         }
         AskPattern.<RecordingCoordinatorActor.CoordinatorCommand, RecordingCoordinatorActor.ReconcileReply>ask(
                 coordinatorActor,
@@ -152,7 +167,7 @@ public class RecordingConfigWatcher implements ApplicationRunner {
 
         // Spawn the watcher actor
         ActorRef<Cmd> watcher = system.systemActorOf(
-                watcherBehavior(configRepository, coordinatorActor, system),
+                watcherBehavior(configRepository, messageRouter, coordinatorActor, system),
                 "recording-config-watcher",
                 org.apache.pekko.actor.typed.Props.empty());
 
