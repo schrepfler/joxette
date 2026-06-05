@@ -585,8 +585,10 @@ public class TopicRecorder {
             var endOffsets = kc.endOffsets(kc.assignment());
             long lag = 0;
             for (var entry : endOffsets.entrySet()) {
-                var committed = kc.committed(java.util.Set.of(entry.getKey())).get(entry.getKey());
-                long position = committed != null ? committed.offset() : kc.position(entry.getKey());
+                // Use kc.position() — the local consumer cursor — instead of kc.committed()
+                // which issues a synchronous OffsetFetch request to the broker on every poll
+                // cycle. position() is accurate for in-flight records and has zero network cost.
+                long position = kc.position(entry.getKey());
                 lag += Math.max(0, entry.getValue() - position);
             }
             consumerLag.set(lag);
