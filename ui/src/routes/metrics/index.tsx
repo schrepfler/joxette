@@ -113,8 +113,9 @@ interface DataPoint {
   consumedRate: Record<string, number>
   bytesRate:    Record<string, number>
   fetchLatency: Record<string, number>
-  // per-partition lag: { "feed.betgenius.fixture.v1": { "0": 123, "1": 456 } }
-  partitionLag: Record<string, Record<string, number>>
+  // per-partition metrics: { "feed.betgenius.fixture.v1": { "0": 123, "1": 456 } }
+  partitionLag:          Record<string, Record<string, number>>
+  partitionConsumedRate: Record<string, Record<string, number>>
   // aggregates
   writeDepth:    number
   writeDuration: number
@@ -162,13 +163,14 @@ function scrapeToPoint(family: Record<string, MetricFamily>): DataPoint {
   const heapMax  = getSample(family, 'jvm_memory_max_bytes',   { id: 'heap' })
              || getSample(family, 'jvm_memory_max_bytes',  { area: 'heap' }) || 0
 
-  // Per-partition lag keyed by base topic name
-  const partitionLag = getSamplesByTopicAndPartition(family, 'joxette_consumer_lag')
+  // Per-partition metrics keyed by base topic name
+  const partitionLag         = getSamplesByTopicAndPartition(family, 'joxette_consumer_lag')
+  const partitionConsumedRate = getSamplesByTopicAndPartition(family, 'joxette_kafka_consumer_records_consumed_rate')
 
   return {
     ts: Date.now(), topicKeys, topicLabels,
     lag, consumed, written, consumedRate, bytesRate, fetchLatency,
-    partitionLag,
+    partitionLag, partitionConsumedRate,
     writeDepth: getSample(family, 'joxette_write_channel_depth') || 0,
     writeDuration: (getSample(family, 'joxette_write_duration_seconds_sum') /
                    (getSample(family, 'joxette_write_duration_seconds_count') || 1)) * 1000,
@@ -268,18 +270,56 @@ function MetricsPage() {
   const topicKeys   = latest?.topicKeys ?? []
   const topicLabels = latest?.topicLabels ?? {}
 
-  // Build per-topic rate series from deltas
-  const rateSeries = history.map((pt, i) => {
-    const row: Record<string, number | string> = { ts: String(pt.ts) }
-    if (i === 0) { topicKeys.forEach(k => { row[k] = 0 }); return row }
-    const prev = history[i - 1]
-    const dtSec = (pt.ts - prev.ts) / 1000
-    topicKeys.forEach(k => { row[k] = dtSec > 0 ? Math.max(0, (pt.consumed[k] - (prev.consumed[k] ?? 0)) / dtSec) : 0 })
+  // Stringify ts to avoid Recharts treating numbers as object keys
+  const pts = history.map(p => ({ ...p, ts: String(p.ts) }))
+
+  // Collect stable partition list across all topics (e.g. ["0","1","2"])
+  const allPartitions = [...new Set(
+    Object.values(latest?.partitionLag ?? {}).flatMap(parts => Object.keys(parts))
+  )].sort((a, b) => Number(a) - Number(b))
+
+  // Per-partition stacked lag series: each point has p0, p1, p2 ...
+  const lagStackedSeries = pts.map(pt => {
+    const row: Record<string, string | number> = { ts: pt.ts }
+    // sum across all topics for each partition
+    for (const p of allPartitions) {
+      let sum = 0
+      for (const parts of Object.values(pt.partitionLag ?? {})) sum += parts[p] ?? 0
+      row[`p${p}`] = sum
+    }
+    row['total'] = allPartitions.reduce((acc, p) => acc + (Number(row[`p${p}`]) || 0), 0)
     return row
   })
 
-  // Stringify ts to avoid Recharts treating numbers as object keys
-  const pts = history.map(p => ({ ...p, ts: String(p.ts) }))
+  // Per-partition stacked consume-rate series
+  const rateStackedSeries = history.map((pt, i) => {
+    const row: Record<string, string | number> = { ts: String(pt.ts) }
+    if (i === 0) { allPartitions.forEach(p => { row[`p${p}`] = 0 }); row['total'] = 0; return row }
+    const prev = history[i - 1]
+    const dtSec = (pt.ts - prev.ts) / 1000
+    let total = 0
+    for (const p of allPartitions) {
+      let sum = 0
+      for (const parts of Object.values(pt.partitionConsumedRate ?? {})) {
+        sum += parts[p] ?? 0
+      }
+      row[`p${p}`] = dtSec > 0 ? Math.max(0, sum) : 0
+      total += Number(row[`p${p}`])
+    }
+    row['total'] = total
+    return row
+  })
+
+  // Build ChartConfig for partition stacks
+  function partitionConfig(partitions: string[]): ChartConfig {
+    const cfg: ChartConfig = { total: { label: 'total', color: '#6674cc' } }
+    partitions.forEach((p, i) => {
+      cfg[`p${p}`] = { label: `partition ${p}`, color: PALETTE[(i + 1) % PALETTE.length] }
+    })
+    return cfg
+  }
+  const pLagConfig  = partitionConfig(allPartitions)
+  const pRateConfig = partitionConfig(allPartitions)
 
   // Build ChartConfig for shadcn chart theming
   function topicConfig(keys: string[], labels: Record<string, string>): ChartConfig {
@@ -333,11 +373,24 @@ function MetricsPage() {
       {/* Headline stats */}
       {latest && (
         <div style={{ ...cardStyle, padding: '16px 24px', marginBottom: 24, display: 'flex', gap: 32, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-          {topicKeys.map(k => (
-            <Stat key={k} label={`lag · ${(topicLabels[k] ?? k).length > 28 ? '…' + (topicLabels[k] ?? k).slice(-20) : (topicLabels[k] ?? k)}`}
-              value={fmt(latest.lag[k] ?? 0, 0)}
-              sub={`${fmt(latest.consumedRate[k] ?? 0, 1)} msg/s`} />
-          ))}
+          {/* Total across all topics/partitions */}
+          {topicKeys.length > 0 && (() => {
+            const totalLag  = topicKeys.reduce((s, k) => s + (latest.lag[k] ?? 0), 0)
+            const totalRate = topicKeys.reduce((s, k) => s + (latest.consumedRate[k] ?? 0), 0)
+            return (
+              <Stat label="total lag" value={fmt(totalLag, 0)} sub={`${fmt(totalRate, 1)} msg/s total`} />
+            )
+          })()}
+          {/* Per-partition breakdown */}
+          {allPartitions.length > 0 && allPartitions.map(p => {
+            const pLag  = Object.values(latest.partitionLag  ?? {}).reduce((s, parts) => s + (parts[p] ?? 0), 0)
+            const pRate = Object.values(latest.partitionConsumedRate ?? {}).reduce((s, parts) => s + (parts[p] ?? 0), 0)
+            return (
+              <Stat key={p} label={`lag · p${p}`}
+                value={fmt(pLag, 0)}
+                sub={`${fmt(pRate, 1)} msg/s`} />
+            )
+          })}
           {topicKeys.length > 0 && <div style={{ width: 1, background: 'var(--rule)', alignSelf: 'stretch' }} />}
           <Stat label="write depth"   value={String(latest.writeDepth)}    sub="in-flight batches" />
           <Stat label="write latency" value={fmtMs(latest.writeDuration)}  sub="avg batch" />
@@ -349,55 +402,43 @@ function MetricsPage() {
 
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(480px, 1fr))', gap: 20 }}>
 
-        {/* Per-partition lag breakdown */}
-        {latest && Object.keys(latest.partitionLag).length > 0 && (
-          <Card title="Lag by Partition" subtitle="messages behind per partition">
-            <div style={{ display: 'flex', gap: 24, flexWrap: 'wrap', padding: '8px 0' }}>
-              {Object.entries(latest.partitionLag).map(([topic, parts]) =>
-                Object.entries(parts).sort((a, b) => Number(a[0]) - Number(b[0])).map(([p, v]) => (
-                  <div key={`${topic}-${p}`} style={{ display: 'flex', flexDirection: 'column', minWidth: 72 }}>
-                    <span style={{ fontSize: '0.5625rem', color: 'var(--ink-tertiary)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em' }}>partition {p}</span>
-                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: '1.125rem', fontWeight: 700, color: 'var(--ink-primary)', lineHeight: 1.3 }}>{fmt(v, 0)}</span>
-                    <span style={{ fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)' }}>{Math.round(v / 3600)}h lag</span>
-                  </div>
-                ))
-              )}
-            </div>
-          </Card>
-        )}
-
-        {/* Consumer lag */}
-        <Card title="Consumer Lag" subtitle="messages behind head (aggregated across partitions)">
-          <ChartContainer config={tConfig} className="h-[200px] w-full">
-            <AreaChart data={pts}>
+        {/* Consumer Lag — stacked per partition + total */}
+        <Card title="Consumer Lag" subtitle="stacked per partition · top line = total">
+          <ChartContainer config={pLagConfig} className="h-[200px] w-full">
+            <AreaChart data={lagStackedSeries} stackOffset="none">
               <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
               <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
               <YAxis tickFormatter={v => fmt(v, 0)} {...axisProps} width={44} />
               <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => fmt(Number(v), 0)} />} />
               <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
-              {topicKeys.map((k, i) => (
-                <Area key={k} type="monotone" dataKey={`lag.${k}`} name={topicLabels[k] ?? k}
-                  stroke={PALETTE[i % PALETTE.length]} fill={PALETTE[i % PALETTE.length] + '22'}
+              {allPartitions.map((p, i) => (
+                <Area key={p} type="monotone" dataKey={`p${p}`} name={`partition ${p}`}
+                  stackId="lag"
+                  stroke={PALETTE[(i + 1) % PALETTE.length]}
+                  fill={PALETTE[(i + 1) % PALETTE.length] + '55'}
                   strokeWidth={1.5} dot={false} isAnimationActive={false} />
               ))}
             </AreaChart>
           </ChartContainer>
         </Card>
 
-        {/* Consume rate */}
-        <Card title="Consume Rate" subtitle="msg / s">
-          <ChartContainer config={tConfig} className="h-[200px] w-full">
-            <LineChart data={rateSeries}>
+        {/* Consume Rate — stacked per partition + total */}
+        <Card title="Consume Rate" subtitle="stacked per partition · top = total msg/s">
+          <ChartContainer config={pRateConfig} className="h-[200px] w-full">
+            <AreaChart data={rateStackedSeries} stackOffset="none">
               <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
               <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
               <YAxis tickFormatter={v => fmt(v, 0)} {...axisProps} width={44} />
               <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => `${fmt(Number(v), 1)}/s`} />} />
               <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
-              {topicKeys.map((k, i) => (
-                <Line key={k} type="monotone" dataKey={k} name={topicLabels[k] ?? k}
-                  stroke={PALETTE[i % PALETTE.length]} strokeWidth={1.5} dot={false} isAnimationActive={false} />
+              {allPartitions.map((p, i) => (
+                <Area key={p} type="monotone" dataKey={`p${p}`} name={`partition ${p}`}
+                  stackId="rate"
+                  stroke={PALETTE[(i + 1) % PALETTE.length]}
+                  fill={PALETTE[(i + 1) % PALETTE.length] + '55'}
+                  strokeWidth={1.5} dot={false} isAnimationActive={false} />
               ))}
-            </LineChart>
+            </AreaChart>
           </ChartContainer>
         </Card>
 
