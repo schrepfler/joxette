@@ -96,7 +96,38 @@ services:
       "
     restart: "no"   # run once, do not restart after exit
 
+  joxette:
+    build:
+      context: .
+      dockerfile: joxette-service/Dockerfile
+    container_name: joxette
+    ports:
+      - "8080:8080"
+    environment:
+      JOXETTE_CATALOG_PATH: /data/joxette.ducklake
+      JOXETTE_CATALOG_OBJECT-STORAGE-PATH: s3://joxette-data/
+      JOXETTE_KAFKA_BOOTSTRAP-SERVERS: kafka:9094
+      JOXETTE_S3_ENDPOINT: http://rustfs:9000
+      JOXETTE_S3_ACCESS-KEY: joxettedev
+      JOXETTE_S3_SECRET-KEY: joxettedev123
+    depends_on:
+      kafka:
+        condition: service_healthy
+      rustfs:
+        condition: service_healthy
+      rustfs-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    volumes:
+      - joxette-data:/data
+
 volumes:
   kafka-data:
   rustfs-data:
   jikkou-config:
+  joxette-data:

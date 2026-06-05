@@ -134,6 +134,24 @@ differ.
 - Docker + Docker Compose
 - Node 20+ and [pnpm](https://pnpm.io/) (for the UI)
 
+### Running locally (full stack)
+
+Start Kafka, RustFS (S3-compatible storage), and the Joxette service all at once:
+
+```bash
+docker compose up -d
+```
+
+| Service | URL |
+|---|---|
+| Joxette API | http://localhost:8080 |
+| Swagger UI | http://localhost:8080/swagger-ui.html |
+| RustFS console | http://localhost:9001 (user: `joxettedev` / `joxettedev123`) |
+
+The first `docker compose up` builds the fat jar — subsequent starts use the cached image. Rebuild after code changes with `docker compose build joxette`.
+
+---
+
 ### 1. Start Kafka locally
 
 ```bash
