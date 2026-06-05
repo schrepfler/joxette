@@ -219,14 +219,20 @@ public class RecordingCoordinatorActor {
                     Map<String, RecorderStatus> result = new LinkedHashMap<>();
                     for (Map.Entry<String, ActorRef<TopicLifecycleActor.Cmd>> e : children.entrySet()) {
                         String topic = e.getKey();
-                        // Ask each child for its status synchronously within the mailbox
-                        RecorderStatus status = AskPattern.ask(
+                        // Use exceptionally() so a slow/unresponsive child does NOT throw on
+                        // the coordinator's mailbox thread — a thrown exception here would kill
+                        // the coordinator actor via StopSupervisor.
+                        RecorderStatus status = AskPattern.<TopicLifecycleActor.Cmd, RecorderStatus>ask(
                                 e.getValue(),
                                 TopicLifecycleActor.GetStatus::new,
-                                Duration.ofSeconds(2),
+                                Duration.ofSeconds(10),  // generous: child may be mid-write
                                 ctx.getSystem().scheduler()
-                        ).toCompletableFuture().join();
-                        result.put(topic, status);
+                        ).toCompletableFuture().exceptionally(ex -> {
+                            log.warn("RecordingCoordinatorActor: GetStatus timed out for topic '{}': {}",
+                                    topic, ex.getMessage());
+                            return null;  // omit this topic from the result
+                        }).join();
+                        if (status != null) result.put(topic, status);
                     }
                     msg.replyTo().tell(Map.copyOf(result));
                     return Behaviors.same();
