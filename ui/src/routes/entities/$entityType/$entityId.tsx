@@ -464,6 +464,9 @@ function EntityInstancePage() {
           active={activeTab}
           onChange={setActiveTab}
         />
+        {activeTab === 'barcode' && (
+          <BarcodeXModeToggle value={barcodeXMode} onChange={setBarcodeXMode} />
+        )}
       </div>
 
       {/* SOL tab */}
@@ -502,10 +505,11 @@ function EntityInstancePage() {
         const barcodeRow: BarcodeRow = { entityId, records: allRecords }
         return (
           <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'hidden', marginBottom: '1.5rem' }}>
-            <div style={{ padding: '8px 16px', borderBottom: '1px solid #e2e8f0', display: 'flex', alignItems: 'center', gap: 12 }}>
-              <div style={{ flex: 1 }}><BarcodeLegend messageTypes={messageTypes} /></div>
-              <BarcodeXModeToggle value={barcodeXMode} onChange={setBarcodeXMode} />
-            </div>
+            {messageTypes.length > 0 && (
+              <div style={{ padding: '8px 16px', borderBottom: '1px solid #e2e8f0' }}>
+                <BarcodeLegend messageTypes={messageTypes} />
+              </div>
+            )}
             {recordsQuery.isLoading && <div style={{ padding: 16 }}><LoadingSpinner /></div>}
             {!recordsQuery.isLoading && allRecords.length > 0 && (
               <SequenceBarcodeView rows={[barcodeRow]} xMode={barcodeXMode} colorMode="type" cellHeight={28} />

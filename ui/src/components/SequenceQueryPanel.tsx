@@ -24,7 +24,6 @@ interface Props {
   mode: 'topic' | 'entity'
   topic?: string
   entityType?: string
-  entityId?: string
   onSaveFragment?: (fragment: FragmentDefinition) => void
 }
 

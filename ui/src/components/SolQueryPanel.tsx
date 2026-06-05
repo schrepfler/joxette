@@ -272,7 +272,6 @@ export function SolQueryPanel({ mode, entityType, entityId, topic, from, to }: P
         </button>
       </div>
 
-      {/* ── SOL editor textarea ───────────────────────────────────────── */}
       {/* ── CodeMirror SOL editor ─────────────────────────────────────── */}
       <SolEditor
         value={query}
