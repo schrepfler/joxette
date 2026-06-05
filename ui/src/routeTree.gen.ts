@@ -21,6 +21,7 @@ import { Route as HealthIndexRouteImport } from './routes/health/index'
 import { Route as EntitiesIndexRouteImport } from './routes/entities/index'
 import { Route as CompactionIndexRouteImport } from './routes/compaction/index'
 import { Route as ClusterIndexRouteImport } from './routes/cluster/index'
+import { Route as CatalogIndexRouteImport } from './routes/catalog/index'
 import { Route as BrokersIndexRouteImport } from './routes/brokers/index'
 import { Route as TopicsTopicRouteImport } from './routes/topics/$topic'
 import { Route as StreamsStreamIdRouteImport } from './routes/streams/$streamId'
@@ -92,6 +93,11 @@ const ClusterIndexRoute = ClusterIndexRouteImport.update({
   path: '/cluster/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const CatalogIndexRoute = CatalogIndexRouteImport.update({
+  id: '/catalog/',
+  path: '/catalog/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const BrokersIndexRoute = BrokersIndexRouteImport.update({
   id: '/brokers/',
   path: '/brokers/',
@@ -154,6 +160,7 @@ export interface FileRoutesByFullPath {
   '/streams/$streamId': typeof StreamsStreamIdRoute
   '/topics/$topic': typeof TopicsTopicRoute
   '/brokers/': typeof BrokersIndexRoute
+  '/catalog/': typeof CatalogIndexRoute
   '/cluster/': typeof ClusterIndexRoute
   '/compaction/': typeof CompactionIndexRoute
   '/entities/': typeof EntitiesIndexRoute
@@ -178,6 +185,7 @@ export interface FileRoutesByTo {
   '/streams/$streamId': typeof StreamsStreamIdRoute
   '/topics/$topic': typeof TopicsTopicRoute
   '/brokers': typeof BrokersIndexRoute
+  '/catalog': typeof CatalogIndexRoute
   '/cluster': typeof ClusterIndexRoute
   '/compaction': typeof CompactionIndexRoute
   '/entities': typeof EntitiesIndexRoute
@@ -203,6 +211,7 @@ export interface FileRoutesById {
   '/streams/$streamId': typeof StreamsStreamIdRoute
   '/topics/$topic': typeof TopicsTopicRoute
   '/brokers/': typeof BrokersIndexRoute
+  '/catalog/': typeof CatalogIndexRoute
   '/cluster/': typeof ClusterIndexRoute
   '/compaction/': typeof CompactionIndexRoute
   '/entities/': typeof EntitiesIndexRoute
@@ -229,6 +238,7 @@ export interface FileRouteTypes {
     | '/streams/$streamId'
     | '/topics/$topic'
     | '/brokers/'
+    | '/catalog/'
     | '/cluster/'
     | '/compaction/'
     | '/entities/'
@@ -253,6 +263,7 @@ export interface FileRouteTypes {
     | '/streams/$streamId'
     | '/topics/$topic'
     | '/brokers'
+    | '/catalog'
     | '/cluster'
     | '/compaction'
     | '/entities'
@@ -277,6 +288,7 @@ export interface FileRouteTypes {
     | '/streams/$streamId'
     | '/topics/$topic'
     | '/brokers/'
+    | '/catalog/'
     | '/cluster/'
     | '/compaction/'
     | '/entities/'
@@ -302,6 +314,7 @@ export interface RootRouteChildren {
   StreamsStreamIdRoute: typeof StreamsStreamIdRoute
   TopicsTopicRoute: typeof TopicsTopicRoute
   BrokersIndexRoute: typeof BrokersIndexRoute
+  CatalogIndexRoute: typeof CatalogIndexRoute
   ClusterIndexRoute: typeof ClusterIndexRoute
   CompactionIndexRoute: typeof CompactionIndexRoute
   EntitiesIndexRoute: typeof EntitiesIndexRoute
@@ -406,6 +419,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ClusterIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/catalog/': {
+      id: '/catalog/'
+      path: '/catalog'
+      fullPath: '/catalog/'
+      preLoaderRoute: typeof CatalogIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/brokers/': {
       id: '/brokers/'
       path: '/brokers'
@@ -486,6 +506,7 @@ const rootRouteChildren: RootRouteChildren = {
   StreamsStreamIdRoute: StreamsStreamIdRoute,
   TopicsTopicRoute: TopicsTopicRoute,
   BrokersIndexRoute: BrokersIndexRoute,
+  CatalogIndexRoute: CatalogIndexRoute,
   ClusterIndexRoute: ClusterIndexRoute,
   CompactionIndexRoute: CompactionIndexRoute,
   EntitiesIndexRoute: EntitiesIndexRoute,

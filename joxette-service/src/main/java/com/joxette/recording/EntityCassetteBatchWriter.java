@@ -6,6 +6,7 @@ import org.duckdb.DuckDBConnection;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
@@ -103,7 +104,7 @@ public class EntityCassetteBatchWriter implements AutoCloseable {
             int idx = 1;
             for (RouteWithMessage rwm : rows) {
                 KafkaMessage msg = rwm.message();
-                String valueStr = msg.value() != null ? new String(msg.value()) : null;
+                String valueStr = msg.value() != null ? new String(msg.value(), StandardCharsets.UTF_8) : null;
                 ps.setTimestamp(idx++, recordedAt);
                 ps.setString(idx++, rwm.route().entityId());
                 ps.setInt(idx++, rwm.route().entityBucket());

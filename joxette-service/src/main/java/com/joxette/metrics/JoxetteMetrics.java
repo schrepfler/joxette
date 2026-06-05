@@ -60,15 +60,26 @@ public class JoxetteMetrics {
 
     private static final Logger log = LoggerFactory.getLogger(JoxetteMetrics.class);
 
-    // Kafka consumer metrics we bridge into Micrometer
+    // Kafka consumer metrics we bridge into Micrometer.
+    // Network-diagnostic additions:
+    //   fetch-latency-avg / fetch-latency-max — round-trip time per FETCH request
+    //   fetch-throttle-time-avg               — broker-side throttle; non-zero → quota hit
+    //   network-io-rate                       — I/O ops/s; plateau → NIC or TCP bottleneck
+    //   outgoing-byte-rate                    — request bytes/s sent to broker
+    //   request-latency-avg                   — full request RTT including broker processing
     private static final Set<String> CONSUMER_METRIC_NAMES = Set.of(
             "records-consumed-rate",
             "bytes-consumed-rate",
             "records-lag-max",
             "fetch-latency-avg",
+            "fetch-latency-max",
+            "fetch-throttle-time-avg",
             "commit-latency-avg",
             "join-rate",
-            "incoming-byte-rate"
+            "incoming-byte-rate",
+            "outgoing-byte-rate",
+            "network-io-rate",
+            "request-latency-avg"
     );
 
     // Kafka producer metrics we bridge into Micrometer
@@ -122,7 +133,14 @@ public class JoxetteMetrics {
         if (partTag != null) sb.tag("partition", partTag);
         DistributionSummary batchSize = sb.register(registry);
 
-        return new RecordingMetrics(consumed, written, restarts, writeDuration, batchSize);
+        // poll-duration: time from kc.poll() call to return, including broker wait.
+        // Near POLL_TIMEOUT (100ms) on every call → broker not sending data fast enough.
+        // Near 0ms with full batches → local pipeline is the constraint.
+        Timer.Builder pb = Timer.builder("joxette.poll.duration").description("kc.poll() wall-clock time per call").publishPercentiles(0.5, 0.95, 0.99).tag("topic", topic);
+        if (partTag != null) pb.tag("partition", partTag);
+        Timer pollDuration = pb.register(registry);
+
+        return new RecordingMetrics(consumed, written, restarts, writeDuration, batchSize, pollDuration);
     }
 
     /** Convenience overload for whole-topic (non-partitioned) recorders. */
@@ -334,6 +352,7 @@ public class JoxetteMetrics {
             Counter messagesWritten,
             Counter restarts,
             Timer writeDuration,
-            DistributionSummary batchSize
+            DistributionSummary batchSize,
+            Timer pollDuration
     ) {}
 }

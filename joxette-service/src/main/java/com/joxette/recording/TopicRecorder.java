@@ -38,9 +38,14 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * <h2>Pipeline design</h2>
  * <ol>
- *   <li>A {@link KafkaConsumer} drives the Kafka consumer, emitting one {@link ConsumerRecord}
- *       at a time via a Jox {@code Flow} built with {@code Flows.usingEmit}.</li>
- *   <li>{@code groupedWithin} accumulates records into bounded batches.</li>
+ *   <li>A {@link KafkaConsumer} drives the poll loop; each {@code kc.poll()} result is
+ *       emitted as one {@code List<ConsumerRecord>} item via a Jox {@code Flow} built
+ *       with {@code Flows.usingEmit}.  Emitting the whole poll result atomically prevents
+ *       {@code groupedWithin}-style timers from firing after seeing only the first record
+ *       of a large poll batch.</li>
+ *   <li>{@code batchWeighted} coalesces consecutive poll results when the writer is the
+ *       bottleneck, accumulating up to {@code batchSize * 4} records before routing.
+ *       When the writer keeps up, each poll result passes through unchanged.</li>
  *   <li>For each batch, each record is routed via {@link MessageRouter}.</li>
  *   <li>A {@link WriteBatch} is submitted to {@link DuckLakeWriteChannel}, which serializes
  *       all DuckDB writes through a single virtual thread. The submit call blocks until the
@@ -197,84 +202,86 @@ public class TopicRecorder {
         String label = assignedPartition != null ? topic + "[" + assignedPartition + "]" : topic;
         log.info("Starting recorder for '{}'", label);
 
+        KafkaConsumer<String, byte[]> kc = settings.toConsumer();
         try {
-            Flows.<ConsumerRecord<String, byte[]>>usingEmit(emit -> {
-                KafkaConsumer<String, byte[]> kc = settings.toConsumer();
-                try {
-                    this.consumer = kc;
-                    joxetteMetrics.bindKafkaConsumerMetrics(kc.metrics(), topic, assignedPartition);
+            this.consumer = kc;
+            joxetteMetrics.bindKafkaConsumerMetrics(kc.metrics(), topic, assignedPartition);
 
-                    if (assignedPartition != null) {
-                        // --- Per-partition manual assignment ---
-                        // No consumer group coordinator, no rebalance — this recorder
-                        // owns exactly one partition independently.
-                        TopicPartition tp = new TopicPartition(topic, assignedPartition);
-                        kc.assign(List.of(tp));
-                        assignedPartitions.add(tp);
-                        positionPartition(kc, tp);
-                        log.info("Assigned partition {} of '{}'; startFrom={}", assignedPartition, topic,
-                                seekToEarliest ? "earliest" : seekToTimestamp != null ? seekToTimestamp.toString() : "latest");
-                    } else {
-                        // --- Group subscription (original behaviour) ---
-                        kc.subscribe(List.of(topic), new PartitionAwareRebalanceListener(kc));
-                    }
+            if (assignedPartition != null) {
+                TopicPartition tp = new TopicPartition(topic, assignedPartition);
+                kc.assign(List.of(tp));
+                assignedPartitions.add(tp);
+                positionPartition(kc, tp);
+                log.info("Assigned partition {} of '{}'; startFrom={}", assignedPartition, topic,
+                        seekToEarliest ? "earliest" : seekToTimestamp != null ? seekToTimestamp.toString() : "latest");
+            } else {
+                kc.subscribe(List.of(topic), new PartitionAwareRebalanceListener(kc));
+            }
 
+            try {
+                // Emit one List<ConsumerRecord> per kc.poll() call — never individual records.
+                // Emitting the whole poll result atomically prevents batchWeighted from seeing
+                // only the first record before it can accumulate more (the old singleton-batch bug).
+                Flows.<List<ConsumerRecord<String, byte[]>>>usingEmit(emit -> {
+                    outer:
                     while (!stopped && !Thread.currentThread().isInterrupted()) {
-                        Map<TopicPartition, OffsetAndMetadata> toCommit = pendingCommit.getAndSet(null);
-                        if (toCommit != null) {
-                            kc.commitSync(toCommit);
-                        }
                         try {
+                            Map<TopicPartition, OffsetAndMetadata> toCommit = pendingCommit.getAndSet(null);
+                            if (toCommit != null) {
+                                kc.commitSync(toCommit);
+                            }
+                            long pollStart = System.nanoTime();
                             var records = kc.poll(POLL_TIMEOUT);
+                            meters.pollDuration().record(System.nanoTime() - pollStart,
+                                    java.util.concurrent.TimeUnit.NANOSECONDS);
                             updateLag(kc);
-                            if (records.isEmpty() && kc.assignment().isEmpty()) {
-                                Thread.sleep(POLL_TIMEOUT.toMillis());
+                            if (records.isEmpty()) {
+                                if (kc.assignment().isEmpty()) {
+                                    Thread.sleep(POLL_TIMEOUT.toMillis());
+                                }
+                                continue;
                             }
-                            for (ConsumerRecord<String, byte[]> record : records) {
-                                emit.apply(record);
+                            List<ConsumerRecord<String, byte[]>> pollBatch = new ArrayList<>();
+                            for (ConsumerRecord<String, byte[]> r : records) {
+                                pollBatch.add(r);
                             }
+                            emit.apply(pollBatch);
                         } catch (WakeupException e) {
+                            // stop() calls kc.wakeup() — wakeup can fire during commitSync
+                            // or poll; both are handled here at the loop level.
                             log.debug("Kafka wakeup received for '{}'; stopping poll loop", label);
-                            break;
+                            break outer;
                         } catch (InterruptedException e) {
                             Thread.currentThread().interrupt();
-                            break;
+                            break outer;
                         }
                     }
-
-                    writeChannel.awaitDrain(null);
-                    Map<TopicPartition, OffsetAndMetadata> finalCommit = pendingCommit.getAndSet(null);
-                    if (finalCommit != null && !finalCommit.isEmpty()) {
-                        try {
-                            kc.commitSync(finalCommit);
-                        } catch (Exception e) {
-                            log.warn("Final offset commit failed for '{}': {}", label, e.getMessage());
-                        }
+                })
+                // Coalesce consecutive poll results when the writer is the bottleneck.
+                .batchWeighted(
+                    (long) batchSize * 4,
+                    records -> (long) records.size(),
+                    records -> records,
+                    (acc, records) -> { acc.addAll(records); return acc; })
+                .map(this::buildWriteBatch)
+                .runForeach(wb -> {
+                    submitWriteBatch(wb);
+                    pendingCommit.set(buildOffsets(wb.sourceRecords()));
+                });
+            } finally {
+                // runForeach has returned — all buffered poll batches have been written and
+                // their offsets are in pendingCommit. Now it is safe to do the final commit
+                // and close the consumer. Doing this inside usingEmit's lambda was wrong:
+                // batchWeighted's buffer hadn't been flushed yet when the lambda exited.
+                Map<TopicPartition, OffsetAndMetadata> finalCommit = pendingCommit.getAndSet(null);
+                if (finalCommit != null && !finalCommit.isEmpty()) {
+                    try {
+                        kc.commitSync(finalCommit);
+                    } catch (Exception e) {
+                        log.warn("Final offset commit failed for '{}': {}", label, e.getMessage());
                     }
-                } finally {
-                    this.consumer = null;
-                    assignedPartitions.clear();
-                    kc.close(Duration.ofSeconds(5));
                 }
-            })
-            .groupedWithin(batchSize, batchTimeout)
-            // Coalesce consecutive Kafka batches when the writer is the bottleneck.
-            // batchWeighted accumulates List<ConsumerRecord> groups while downstream
-            // is busy, concatenating them into one larger list before routing.
-            // When the writer keeps up with the consumer, each group passes through
-            // unchanged (no coalescing overhead on the happy path).
-            .batchWeighted(
-                (long) batchSize * 4,                          // max ~4x a single batch worth of records
-                records -> (long) records.size(),              // cost = record count
-                records -> new ArrayList<>(records),           // seed = one mutable list, owned by this window
-                (acc, records) -> { acc.addAll(records); return acc; }) // mutate in place — O(1) per batch, no copy
-            // Route the (possibly coalesced) record list to a single WriteBatch.
-            .map(this::buildWriteBatch)
-            .runForeach(wb -> {
-                submitWriteBatch(wb);
-                pendingCommit.set(buildOffsets(wb.sourceRecords()));
-            });
-
+            }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             log.info("Recorder for topic '{}' interrupted; treating as clean stop", topic);
@@ -282,6 +289,9 @@ public class TopicRecorder {
             log.error("Recorder for topic '{}' terminated with error", topic, e);
             throw e;
         } finally {
+            this.consumer = null;
+            assignedPartitions.clear();
+            kc.close(Duration.ofSeconds(5));
             log.info("Recorder for topic '{}' stopped", topic);
         }
     }

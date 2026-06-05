@@ -116,6 +116,12 @@ interface DataPoint {
   // per-partition metrics: { "feed.betgenius.fixture.v1": { "0": 123, "1": 456 } }
   partitionLag:          Record<string, Record<string, number>>
   partitionConsumedRate: Record<string, Record<string, number>>
+  // network diagnostics
+  pollDurationP50:    Record<string, number>  // kc.poll() p50 ms per topic
+  pollDurationP99:    Record<string, number>  // kc.poll() p99 ms per topic
+  fetchLatencyMax:    Record<string, number>  // Kafka fetch-latency-max ms
+  fetchThrottle:      Record<string, number>  // broker throttle ms (>0 → quota hit)
+  networkIoRate:      Record<string, number>  // I/O ops/s
   // aggregates
   writeDepth:    number
   writeDuration: number
@@ -145,6 +151,11 @@ function scrapeToPoint(family: Record<string, MetricFamily>): DataPoint {
   const consumedRate: Record<string, number> = {}
   const bytesRate: Record<string, number> = {}
   const fetchLatency: Record<string, number> = {}
+  const pollDurationP50: Record<string, number> = {}
+  const pollDurationP99: Record<string, number> = {}
+  const fetchLatencyMax: Record<string, number> = {}
+  const fetchThrottle:   Record<string, number> = {}
+  const networkIoRate:   Record<string, number> = {}
 
   for (const topic of topicNames) {
     const k = safeKey(topic)
@@ -155,6 +166,14 @@ function scrapeToPoint(family: Record<string, MetricFamily>): DataPoint {
     consumedRate[k] = getSample(family, 'joxette_kafka_consumer_records_consumed_rate', { topic }) || 0
     bytesRate[k]    = getSample(family, 'joxette_kafka_consumer_bytes_consumed_rate',   { topic }) || 0
     fetchLatency[k] = getSample(family, 'joxette_kafka_consumer_fetch_latency_avg',     { topic }) || 0
+    // poll() instrumentation: Micrometer timer → _seconds_sum/_count + percentile gauges
+    const pollP50Raw = getSample(family, 'joxette_poll_duration_seconds', { topic, quantile: '0.5' })
+    const pollP99Raw = getSample(family, 'joxette_poll_duration_seconds', { topic, quantile: '0.99' })
+    pollDurationP50[k] = isNaN(pollP50Raw) ? 0 : pollP50Raw * 1000
+    pollDurationP99[k] = isNaN(pollP99Raw) ? 0 : pollP99Raw * 1000
+    fetchLatencyMax[k] = getSample(family, 'joxette_kafka_consumer_fetch_latency_max',       { topic }) || 0
+    fetchThrottle[k]   = getSample(family, 'joxette_kafka_consumer_fetch_throttle_time_avg', { topic }) || 0
+    networkIoRate[k]   = getSample(family, 'joxette_kafka_consumer_network_io_rate',         { topic }) || 0
   }
 
   // JVM heap: Micrometer uses label `id` not `area`
@@ -170,6 +189,7 @@ function scrapeToPoint(family: Record<string, MetricFamily>): DataPoint {
   return {
     ts: Date.now(), topicKeys, topicLabels,
     lag, consumed, written, consumedRate, bytesRate, fetchLatency,
+    pollDurationP50, pollDurationP99, fetchLatencyMax, fetchThrottle, networkIoRate,
     partitionLag, partitionConsumedRate,
     writeDepth: getSample(family, 'joxette_write_channel_depth') || 0,
     writeDuration: (getSample(family, 'joxette_write_duration_seconds_sum') /
@@ -394,6 +414,15 @@ function MetricsPage() {
           {topicKeys.length > 0 && <div style={{ width: 1, background: 'var(--rule)', alignSelf: 'stretch' }} />}
           <Stat label="write depth"   value={String(latest.writeDepth)}    sub="in-flight batches" />
           <Stat label="write latency" value={fmtMs(latest.writeDuration)}  sub="avg batch" />
+          {topicKeys.length > 0 && (() => {
+            // poll p99 across all topics — near 100ms = broker-gated, near 0 = local-bound
+            const maxP99 = topicKeys.reduce((m, k) => Math.max(m, latest.pollDurationP99[k] ?? 0), 0)
+            const maxThrottle = topicKeys.reduce((m, k) => Math.max(m, latest.fetchThrottle[k] ?? 0), 0)
+            return (
+              <Stat label="poll p99" value={fmtMs(maxP99)}
+                sub={maxThrottle > 1 ? `throttled ${fmtMs(maxThrottle)}` : 'no throttle'} />
+            )
+          })()}
           <Stat label="catalog"       value={fmtBytes(latest.catalogBytes)} sub={`${fmtBytes(latest.inlinedBytes)} inlined`} />
           <Stat label="replays"       value={String(latest.activeReplays)} sub="active" />
           <Stat label="heap"          value={fmtBytes(latest.heapUsed)}    sub={`of ${fmtBytes(latest.heapMax)}`} />
@@ -534,6 +563,55 @@ function MetricsPage() {
             </AreaChart>
           </ChartContainer>
         </Card>
+
+        {/* Network Diagnostics — poll() latency vs fetch-latency-max */}
+        {(() => {
+          const netConfig: ChartConfig = {}
+          topicKeys.forEach((k, i) => {
+            netConfig[`poll50_${k}`] = { label: `${topicLabels[k]} poll p50`, color: PALETTE[i % PALETTE.length] }
+            netConfig[`poll99_${k}`] = { label: `${topicLabels[k]} poll p99`, color: PALETTE[i % PALETTE.length] }
+            netConfig[`flmax_${k}`]  = { label: `${topicLabels[k]} fetch max`, color: PALETTE[i % PALETTE.length] }
+          })
+          const netPts = history.map(dp => {
+            const row: Record<string, string | number> = { ts: String(dp.ts) }
+            topicKeys.forEach(k => {
+              row[`poll50_${k}`] = dp.pollDurationP50[k] ?? 0
+              row[`poll99_${k}`] = dp.pollDurationP99[k] ?? 0
+              row[`flmax_${k}`]  = dp.fetchLatencyMax[k] ?? 0
+            })
+            return row
+          })
+          return (
+            <Card title="Network Diagnostics"
+              subtitle="poll() p50/p99 + Kafka fetch-latency-max · near 100ms = broker-bound">
+              <ChartContainer config={netConfig} className="h-[200px] w-full">
+                <LineChart data={netPts}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
+                  <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
+                  <YAxis tickFormatter={v => fmtMs(v)} {...axisProps} width={56}
+                    domain={[0, 120]} />
+                  <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => fmtMs(Number(v))} />} />
+                  <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
+                  {topicKeys.map((k, i) => (
+                    <Line key={`p50-${k}`} type="monotone" dataKey={`poll50_${k}`}
+                      name={`${topicLabels[k] ?? k} poll p50`}
+                      stroke={PALETTE[i % PALETTE.length]} strokeWidth={2} dot={false} isAnimationActive={false} />
+                  ))}
+                  {topicKeys.map((k, i) => (
+                    <Line key={`p99-${k}`} type="monotone" dataKey={`poll99_${k}`}
+                      name={`${topicLabels[k] ?? k} poll p99`}
+                      stroke={PALETTE[i % PALETTE.length]} strokeWidth={1} strokeDasharray="4 2" dot={false} isAnimationActive={false} />
+                  ))}
+                  {topicKeys.map((k, i) => (
+                    <Line key={`flmax-${k}`} type="monotone" dataKey={`flmax_${k}`}
+                      name={`${topicLabels[k] ?? k} fetch max`}
+                      stroke={PALETTE[i % PALETTE.length]} strokeWidth={1} strokeDasharray="1 3" dot={false} isAnimationActive={false} />
+                  ))}
+                </LineChart>
+              </ChartContainer>
+            </Card>
+          )
+        })()}
 
       </div>
     </Layout>

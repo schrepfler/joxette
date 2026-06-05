@@ -6,6 +6,7 @@ import org.duckdb.DuckDBConnection;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
@@ -91,7 +92,7 @@ public class CassetteBatchWriter implements AutoCloseable {
                 new Timestamp(record.timestamp()),
                 record.key(),
                 record.value(),
-                record.value() != null ? new String(record.value()) : null,
+                record.value() != null ? new String(record.value(), StandardCharsets.UTF_8) : null,
                 messageTypes.get(i)
             });
         }
@@ -181,17 +182,19 @@ public class CassetteBatchWriter implements AutoCloseable {
 
     /**
      * Decodes header value bytes as UTF-8.  Falls back to base64 for non-UTF-8 binary values.
+     *
+     * <p>Uses the decoder's CharBuffer output directly to avoid the double-allocation that
+     * occurs when first decoding to validate and then constructing a separate String.
      */
     static String decodeHeaderValue(byte[] bytes) {
         if (bytes == null || bytes.length == 0) return "";
         try {
-            // Verify the bytes are valid UTF-8 before converting
-            java.nio.charset.CharsetDecoder decoder = java.nio.charset.StandardCharsets.UTF_8
+            return java.nio.charset.StandardCharsets.UTF_8
                     .newDecoder()
                     .onMalformedInput(java.nio.charset.CodingErrorAction.REPORT)
-                    .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT);
-            decoder.decode(java.nio.ByteBuffer.wrap(bytes));
-            return new String(bytes, java.nio.charset.StandardCharsets.UTF_8);
+                    .onUnmappableCharacter(java.nio.charset.CodingErrorAction.REPORT)
+                    .decode(java.nio.ByteBuffer.wrap(bytes))
+                    .toString();
         } catch (java.nio.charset.CharacterCodingException e) {
             // Binary payload — base64-encode so it survives the VARCHAR round-trip
             return java.util.Base64.getEncoder().encodeToString(bytes);
