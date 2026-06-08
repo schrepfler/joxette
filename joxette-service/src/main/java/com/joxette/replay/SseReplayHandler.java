@@ -614,6 +614,15 @@ public class SseReplayHandler implements SmartLifecycle {
                 || lower.contains("reset by peer");
     }
 
+    /** Logs {@code cause} at ERROR, appending SQL error-code and SQLState when available. */
+    private void logStreamFailure(String message, Throwable cause) {
+        if (cause instanceof SQLException sqle) {
+            log.error("{} [sqlErrorCode={}, sqlState={}]", message, sqle.getErrorCode(), sqle.getSQLState(), sqle);
+        } else {
+            log.error(message, cause);
+        }
+    }
+
     /**
      * Emits a terminal {@code event: error} SSE frame carrying a ProblemDetail-shaped
      * payload, then completes the emitter normally. The underlying cause is logged
@@ -625,7 +634,7 @@ public class SseReplayHandler implements SmartLifecycle {
         if (isClientDisconnect(cause)) {
             log.debug("SSE client disconnected, stream terminated: {}", cause.getMessage());
         } else {
-            log.error("Mid-stream SSE replay failure", cause);
+            logStreamFailure("Mid-stream SSE replay failure", cause);
             try {
                 String payload = objectMapper.writeValueAsString(problemPayload(cause));
                 emitter.send(SseEmitter.event().name("error").data(payload).build());
@@ -643,7 +652,7 @@ public class SseReplayHandler implements SmartLifecycle {
      * disconnected mid-stream).
      */
     private void writeNdjsonError(BufferedWriter writer, Throwable cause) {
-        log.error("Mid-stream NDJSON replay failure", cause);
+        logStreamFailure("Mid-stream NDJSON replay failure", cause);
         try {
             Map<String, Object> wrapper = new LinkedHashMap<>();
             wrapper.put("_error", problemPayload(cause));
