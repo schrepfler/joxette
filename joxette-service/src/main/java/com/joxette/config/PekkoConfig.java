@@ -83,20 +83,100 @@ public class PekkoConfig {
      */
     @Bean(destroyMethod = "")
     public ActorSystem<Void> actorSystem() throws InterruptedException {
-        Config base = ConfigFactory.load("pekko");
-        Config overrides = remotePort > 0
-                ? ConfigFactory.parseString(
-                        "pekko.remote.artery.canonical.port = " + remotePort)
-                : ConfigFactory.empty();
-        Config config = overrides.withFallback(base);
+        JoxetteProperties.Clustering clustering = joxetteProperties.getClustering();
+        boolean pekkoManagement =
+                clustering.getMode() == JoxetteProperties.ClusteringMode.PEKKO_MANAGEMENT;
+
+        Config config = buildConfig(clustering, pekkoManagement);
 
         actorSystem = ActorSystem.create(Behaviors.empty(), "joxette", config);
-        log.info("Pekko ActorSystem 'joxette' started (remote port={})",
-                remotePort > 0 ? remotePort : "OS-assigned");
+        log.info("Pekko ActorSystem 'joxette' started (mode={}, remote port={})",
+                clustering.getMode(), remotePort > 0 ? remotePort : "OS-assigned");
 
-        // Self-join so this node forms a single-node cluster immediately.
-        // pekko.conf has seed-nodes=[] so without this the node stays in
-        // Joining indefinitely, and every cluster-phase timeout fires on shutdown.
+        if (pekkoManagement) {
+            startClusterBootstrap();
+            // Membership is driven by Cluster Bootstrap discovery; do NOT self-join
+            // (a self-join would form a separate one-member cluster and defeat
+            // discovery). Reaching Up may take longer than one node, so we do not
+            // block on it here — ClusterSingleton/coordinator actors tolerate a
+            // not-yet-Up cluster and activate once membership converges.
+        } else {
+            selfJoin();
+        }
+
+        return actorSystem;
+    }
+
+    /**
+     * Assembles the effective HOCON config. The base is {@code pekko.conf}; the
+     * remote port override applies in both modes. In {@code PEKKO_MANAGEMENT}
+     * mode an overlay wires kubernetes-api discovery, the management port, the
+     * canonical hostname from {@code POD_IP}, and the lease-backed split-brain
+     * resolver (replacing the {@code keep-majority} strategy used for self-join).
+     */
+    private Config buildConfig(JoxetteProperties.Clustering clustering, boolean pekkoManagement) {
+        Config base = ConfigFactory.load("pekko");
+        Config overlay = ConfigFactory.empty();
+        if (remotePort > 0) {
+            overlay = overlay.withFallback(ConfigFactory.parseString(
+                    "pekko.remote.artery.canonical.port = " + remotePort));
+        }
+        if (pekkoManagement) {
+            overlay = overlay.withFallback(buildManagementOverlay(clustering));
+        }
+        return overlay.withFallback(base);
+    }
+
+    private Config buildManagementOverlay(JoxetteProperties.Clustering clustering) {
+        return buildManagementOverlay(clustering, System.getenv("POD_IP"));
+    }
+
+    /**
+     * Pure, testable overlay builder. {@code podIp} is passed explicitly (from the
+     * downward-API {@code POD_IP} env var in production) so the HOCON can be
+     * validated in a unit test without environment manipulation.
+     */
+    static Config buildManagementOverlay(JoxetteProperties.Clustering clustering, String podIp) {
+        String hostnameLine = (podIp != null && !podIp.isBlank())
+                ? "pekko.remote.artery.canonical.hostname = \"" + podIp + "\"\n"
+                : "";
+        String labelSelector = clustering.getPodLabelSelector()
+                .formatted(clustering.getServiceName());
+        return ConfigFactory.parseString(
+                hostnameLine +
+                "pekko.management.http.port = " + clustering.getManagementPort() + "\n" +
+                "pekko.management.http.hostname = \"0.0.0.0\"\n" +
+                "pekko.management.cluster.bootstrap.contact-point-discovery {\n" +
+                "  discovery-method = kubernetes-api\n" +
+                "  service-name = \"" + clustering.getServiceName() + "\"\n" +
+                "  required-contact-point-nr = " + clustering.getRequiredContactPointNr() + "\n" +
+                "}\n" +
+                "pekko.discovery.kubernetes-api.pod-label-selector = \"" + labelSelector + "\"\n" +
+                "pekko.cluster.downing-provider-class = " +
+                "  \"org.apache.pekko.cluster.sbr.SplitBrainResolverProvider\"\n" +
+                "pekko.cluster.split-brain-resolver.active-strategy = lease-majority\n" +
+                "pekko.cluster.split-brain-resolver.lease-majority.lease-implementation = " +
+                "  \"pekko.coordination.lease.kubernetes\"\n" +
+                "pekko.coordination.lease.kubernetes.lease-class = " +
+                "  \"org.apache.pekko.coordination.lease.kubernetes.NativeKubernetesLease\"\n");
+    }
+
+    /** Starts the management HTTP server, then Cluster Bootstrap discovery. */
+    private void startClusterBootstrap() {
+        // Management HTTP must start before ClusterBootstrap — bootstrap registers
+        // its contact-point route on the management server.
+        org.apache.pekko.management.javadsl.PekkoManagement.get(actorSystem).start();
+        org.apache.pekko.management.cluster.bootstrap.ClusterBootstrap.get(actorSystem).start();
+        log.info("Pekko Cluster Bootstrap started (management port={}, discovery=kubernetes-api)",
+                joxetteProperties.getClustering().getManagementPort());
+    }
+
+    /**
+     * Self-join so this node forms a single-node cluster immediately.
+     * pekko.conf has seed-nodes=[] so without this the node stays in
+     * Joining indefinitely, and every cluster-phase timeout fires on shutdown.
+     */
+    private void selfJoin() throws InterruptedException {
         Cluster cluster = Cluster.get(actorSystem);
         Address self = cluster.selfMember().address();
         cluster.manager().tell(Join.create(self));
@@ -109,8 +189,6 @@ public class PekkoConfig {
             Thread.sleep(100);
         }
         log.info("Pekko ActorSystem '{}' cluster Up at {}", actorSystem.name(), self);
-
-        return actorSystem;
     }
 
     /**

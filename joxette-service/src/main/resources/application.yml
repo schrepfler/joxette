@@ -67,6 +67,29 @@ joxette:
   pekko:
     remote-port: 0
 
+  # ---------------------------------------------------------------------------
+  # Clustering (how this process joins a Pekko cluster)
+  # ---------------------------------------------------------------------------
+  # mode:
+  #   catalog          (default) — each process self-joins a one-member cluster;
+  #                    cross-process coordination is via the shared catalog
+  #                    (compaction_locks + heartbeat registry) and the Kafka
+  #                    consumer group. The only safe option with an embedded
+  #                    catalog, and the mode used for all local dev and tests.
+  #   pekko-management — Cluster Bootstrap forms a real shared cluster via
+  #                    kubernetes-api discovery; the compaction ClusterSingleton
+  #                    becomes genuinely cluster-wide (k8s-lease-backed SBR).
+  #                    Requires running in Kubernetes with the RBAC + headless
+  #                    Service from docs/operator-design.md §8.2.
+  # Override via env-var: JOXETTE_CLUSTERING_MODE=pekko-management
+  clustering:
+    mode: catalog
+    # The following apply only when mode=pekko-management:
+    management-port: 7626              # Cluster Bootstrap contact-point + health HTTP port
+    service-name: joxette              # substituted into pod-label-selector and discovery
+    pod-label-selector: "app.kubernetes.io/name=%s"
+    required-contact-point-nr: 1       # set to the recorder/compaction tier replica count
+
   catalog:
     path: "./data/joxette.ducklake"
     object-storage-path: "s3://joxette-data/"

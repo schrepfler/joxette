@@ -10,6 +10,7 @@ import java.util.Map;
 @ConfigurationProperties(prefix = "joxette")
 public class JoxetteProperties {
 
+    private Clustering clustering = new Clustering();
     private Catalog catalog = new Catalog();
     private Inline inline = new Inline();
     private Compaction compaction = new Compaction();
@@ -21,6 +22,73 @@ public class JoxetteProperties {
     private Bootstrap bootstrap = new Bootstrap();
     private S3 s3 = new S3();
     private ObjectStore objectStore = new ObjectStore();
+
+    // -----------------------------------------------------------------------
+    // Clustering
+    // -----------------------------------------------------------------------
+
+    /**
+     * How this process joins a Pekko cluster.
+     *
+     * <ul>
+     *   <li>{@code CATALOG} (default) — each process self-joins a one-member
+     *       cluster. Cross-process coordination is via the shared catalog
+     *       ({@code compaction_locks} + the heartbeat registry) and the Kafka
+     *       consumer group, not Pekko. Zero infrastructure; correct on a single
+     *       node and the only safe option with an embedded catalog. This is the
+     *       behaviour for all local dev and tests.</li>
+     *   <li>{@code PEKKO_MANAGEMENT} — Cluster Bootstrap forms a real shared
+     *       cluster via {@code kubernetes-api} discovery, and the
+     *       {@code ClusterSingleton} compaction actor becomes genuinely
+     *       cluster-wide (k8s-lease-backed split-brain resolver). Requires the
+     *       app to run in Kubernetes with the RBAC and headless Service from
+     *       {@code docs/operator-design.md} §8.2.</li>
+     * </ul>
+     */
+    public enum ClusteringMode { CATALOG, PEKKO_MANAGEMENT }
+
+    public static class Clustering {
+        /** Cluster-formation strategy. Default {@code CATALOG} (self-join). */
+        private ClusteringMode mode = ClusteringMode.CATALOG;
+
+        /** Pekko Management HTTP port (Cluster Bootstrap contact point + health). */
+        private int managementPort = 7626;
+
+        /**
+         * Label selector used by {@code kubernetes-api} discovery to find sibling
+         * pods, with a single {@code %s} placeholder filled by {@link #serviceName}.
+         * Pekko default is {@code "app=%s"}.
+         */
+        private String podLabelSelector = "app.kubernetes.io/name=%s";
+
+        /**
+         * Service / app name substituted into {@link #podLabelSelector}. Defaults
+         * to {@code joxette}; the operator/Helm chart sets it per JoxetteCluster.
+         */
+        private String serviceName = "joxette";
+
+        /**
+         * Minimum number of contact points Cluster Bootstrap must observe before
+         * forming or joining a cluster. Set to the initial replica count of the
+         * recorder/compaction tier. {@code 1} allows single-pod bootstrap.
+         */
+        private int requiredContactPointNr = 1;
+
+        public ClusteringMode getMode() { return mode; }
+        public void setMode(ClusteringMode mode) { this.mode = mode; }
+
+        public int getManagementPort() { return managementPort; }
+        public void setManagementPort(int managementPort) { this.managementPort = managementPort; }
+
+        public String getPodLabelSelector() { return podLabelSelector; }
+        public void setPodLabelSelector(String podLabelSelector) { this.podLabelSelector = podLabelSelector; }
+
+        public String getServiceName() { return serviceName; }
+        public void setServiceName(String serviceName) { this.serviceName = serviceName; }
+
+        public int getRequiredContactPointNr() { return requiredContactPointNr; }
+        public void setRequiredContactPointNr(int n) { this.requiredContactPointNr = n; }
+    }
 
     // -----------------------------------------------------------------------
     // Catalog
@@ -741,4 +809,7 @@ public class JoxetteProperties {
 
     public ObjectStore getObjectStore() { return objectStore; }
     public void setObjectStore(ObjectStore objectStore) { this.objectStore = objectStore; }
+
+    public Clustering getClustering() { return clustering; }
+    public void setClustering(Clustering clustering) { this.clustering = clustering; }
 }

@@ -145,6 +145,26 @@
             <artifactId>pekko-slf4j_2.13</artifactId>
         </dependency>
 
+        <!-- Pekko Management: Cluster Bootstrap + kubernetes-api discovery +
+             k8s-lease-backed SBR. Only engaged when joxette.clustering.mode=
+             pekko-management; the default 'catalog' mode self-joins as before. -->
+        <dependency>
+            <groupId>org.apache.pekko</groupId>
+            <artifactId>pekko-management-cluster-http_2.13</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.pekko</groupId>
+            <artifactId>pekko-management-cluster-bootstrap_2.13</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.pekko</groupId>
+            <artifactId>pekko-discovery-kubernetes-api_2.13</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.pekko</groupId>
+            <artifactId>pekko-lease-kubernetes_2.13</artifactId>
+        </dependency>
+
         <!-- Jackson for JSON handling in REST API -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>

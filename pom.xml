@@ -106,6 +106,30 @@
                 <version>${pekko.version}</version>
             </dependency>
 
+            <!-- Pekko Management (Track B clustering: Cluster Bootstrap +
+                 kubernetes-api discovery + k8s-lease-backed split-brain resolver).
+                 Pinned to 2.0.0-M1 — the only 2.x management line on Maven Central. -->
+            <dependency>
+                <groupId>org.apache.pekko</groupId>
+                <artifactId>pekko-management-cluster-http_2.13</artifactId>
+                <version>${pekko.management.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.pekko</groupId>
+                <artifactId>pekko-management-cluster-bootstrap_2.13</artifactId>
+                <version>${pekko.management.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.pekko</groupId>
+                <artifactId>pekko-discovery-kubernetes-api_2.13</artifactId>
+                <version>${pekko.management.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>org.apache.pekko</groupId>
+                <artifactId>pekko-lease-kubernetes_2.13</artifactId>
+                <version>${pekko.management.version}</version>
+            </dependency>
+
             <!-- BOMs -->
             <dependency>
                 <groupId>org.springframework.boot</groupId>
