@@ -333,11 +333,15 @@ implemented and on `main`.
 
 ### 8.1 Container image (required for either track) — ✅ done
 
-A multi-stage `joxette-service/Dockerfile` exists (commit `31bcbe3`):
-`maven:3-eclipse-temurin-25` builder → `eclipse-temurin:25-jre-alpine` runtime,
-POM-first layer caching, non-root `joxette` user, and `--enable-preview` +
-container-aware JVM flags. A `docker-compose.yml` service builds from it. The
-operator's `spec.image` points at a published build of this image.
+The runtime image is produced by **Cloud Native Buildpacks** via
+`mvn -pl joxette-service spring-boot:build-image` (no Dockerfile). The
+spring-boot-maven-plugin `<image>` config selects JDK 25 (`BP_JVM_VERSION=25`,
+BellSoft Liberica) and bakes the preview launcher flags into `JAVA_TOOL_OPTIONS`
+via the buildpack BPE mechanism (`--add-opens` in `=` form — the JVM splits
+`JAVA_TOOL_OPTIONS` on whitespace). Verified booting on Java 25.0.3 with preview
+features. The `docker-compose.yml` service references the built image by name
+(`joxette-service:${project.version}`); the operator's `spec.image` points at a
+published build of it.
 
 ### 8.2 Pekko Management integration (Track B only) — ✅ done
 

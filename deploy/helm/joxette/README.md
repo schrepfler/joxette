@@ -18,8 +18,8 @@ clear message (mirrors `docs/operator-design.md` §5). A shared backend without 
 ### Local (kind), embedded catalog
 
 ```bash
-# build + load the image into kind
-docker build -t joxette-service:dev -f joxette-service/Dockerfile .
+# build the image via Cloud Native Buildpacks (no Dockerfile), then load into kind
+mvn -pl joxette-service spring-boot:build-image -Djoxette.image.name=joxette-service:dev
 kind load docker-image joxette-service:dev
 
 helm install joxette deploy/helm/joxette -f deploy/helm/joxette/values-kind.yaml

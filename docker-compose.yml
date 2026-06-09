@@ -97,9 +97,11 @@ services:
     restart: "no"   # run once, do not restart after exit
 
   joxette:
-    build:
-      context: .
-      dockerfile: joxette-service/Dockerfile
+    # Image is produced by Cloud Native Buildpacks, not a Dockerfile:
+    #   mvn -pl joxette-service spring-boot:build-image
+    # (builds joxette-service:<project.version>). Override the tag with
+    # JOXETTE_IMAGE if you build under a different version.
+    image: ${JOXETTE_IMAGE:-joxette-service:0.1.0-SNAPSHOT}
     container_name: joxette
     ports:
       - "8080:8080"

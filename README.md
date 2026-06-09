@@ -136,9 +136,11 @@ differ.
 
 ### Running locally (full stack)
 
-Start Kafka, RustFS (S3-compatible storage), and the Joxette service all at once:
+Build the Joxette image once via Cloud Native Buildpacks (no Dockerfile), then
+start Kafka, RustFS (S3-compatible storage), and the Joxette service together:
 
 ```bash
+mvn -pl joxette-service spring-boot:build-image   # builds joxette-service:<version>
 docker compose up -d
 ```
 
@@ -148,7 +150,10 @@ docker compose up -d
 | Swagger UI | http://localhost:8080/swagger-ui.html |
 | RustFS console | http://localhost:9001 (user: `joxettedev` / `joxettedev123`) |
 
-The first `docker compose up` builds the fat jar — subsequent starts use the cached image. Rebuild after code changes with `docker compose build joxette`.
+Rebuild the image after code changes by re-running `spring-boot:build-image`,
+then `docker compose up -d` to pick it up. (The compose `joxette` service
+references the built image by name — override the tag with the `JOXETTE_IMAGE`
+env var if you build under a different version.)
 
 ---
 

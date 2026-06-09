@@ -1,8 +1,0 @@
-**/target/
-ui/node_modules/
-ui/dist/
-.git/
-*.md
-docs/
-memory-bank/
-motif-docs-wayback/
