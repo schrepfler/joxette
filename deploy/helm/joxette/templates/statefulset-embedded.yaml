@@ -1,0 +1,74 @@
+{{- include "joxette.validate" . -}}
+{{- if eq .Values.catalog.backend "embedded" }}
+{{- /*
+Embedded catalog: one all-in-one pod (roles: [all]), replicas:1, Recreate-style
+(StatefulSet has no rolling overlap for a single replica), PVC for the .ducklake
+file. This is the only safe shape for a single-writer catalog.
+*/}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "joxette.fullname" . }}
+  labels:
+    {{- include "joxette.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ include "joxette.fullname" . }}-headless
+  replicas: 1
+  podManagementPolicy: OrderedReady
+  selector:
+    matchLabels:
+      {{- include "joxette.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "joxette.labels" . | nindent 8 }}
+        {{- with .Values.podLabels }}{{ toYaml . | nindent 8 }}{{- end }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "joxette.serviceAccountName" . }}
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: joxette
+          image: {{ include "joxette.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            {{- include "joxette.containerPorts" . | nindent 12 }}
+          env:
+            {{- include "joxette.env" (dict "ctx" . "roles" (list "all") "replayEnabled" true) | nindent 12 }}
+          {{- include "joxette.probes" . | nindent 10 }}
+          {{- with (index .Values.tiers "recorder" "resources") }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: catalog
+              mountPath: {{ dir .Values.catalog.embedded.path }}
+  {{- if .Values.catalog.embedded.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: catalog
+      spec:
+        accessModes: [{{ .Values.catalog.embedded.persistence.accessMode }}]
+        {{- if .Values.catalog.embedded.persistence.storageClass }}
+        storageClassName: {{ .Values.catalog.embedded.persistence.storageClass }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.catalog.embedded.persistence.size }}
+  {{- end }}
+{{- end }}

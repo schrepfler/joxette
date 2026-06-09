@@ -1,0 +1,59 @@
+# Scaled-out production shape: shared PostgreSQL catalog + real Pekko cluster.
+#
+#   helm install joxette deploy/helm/joxette -f deploy/helm/joxette/values-cluster.yaml
+#
+# Requires an existing PostgreSQL catalog (point catalog.uri at it) and Secrets
+# for Kafka + S3 credentials. The chart never provisions the catalog DB itself.
+
+image:
+  repository: ghcr.io/schrepfler/joxette-service
+  tag: "0.1.0"
+
+catalog:
+  backend: postgresql
+  uri: "postgresql://pg.joxette.svc/joxette"
+  objectStoragePath: "s3://joxette-data/"
+
+clustering:
+  mode: pekko-management
+  managementPort: 7626
+  # Match the recorder/compaction count so Bootstrap waits for a quorum of pods
+  # before forming. Leave null to default to tiers.recorder.replicas.
+  requiredContactPointNr: 3
+
+tiers:
+  recorder:
+    enabled: true
+    replicas: 3
+    roles: [recorder, entity-router]
+    replayEnabled: false
+    resources:
+      requests: { cpu: "1", memory: 2Gi }
+  replay:
+    enabled: true
+    replicas: 2
+    roles: [replay]
+    replayEnabled: true
+    resources:
+      requests: { cpu: 500m, memory: 1Gi }
+  compaction:
+    enabled: true
+    roles: [compaction]
+    replayEnabled: false
+
+kafka:
+  bootstrapServers: "kafka-bootstrap.kafka.svc:9092"
+  consumerGroup: "joxette-recorder"
+  groupProtocol: "consumer"
+
+objectStore:
+  region: "us-east-1"
+  existingSecret: "joxette-s3"     # keys: access-key, secret-key
+
+serviceAccount:
+  create: true
+  annotations: {}
+    # eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/joxette
+
+serviceMonitor:
+  enabled: true

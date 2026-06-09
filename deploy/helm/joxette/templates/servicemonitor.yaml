@@ -1,0 +1,17 @@
+{{- if .Values.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "joxette.fullname" . }}
+  labels:
+    {{- include "joxette.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.labels }}{{ toYaml . | nindent 4 }}{{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "joxette.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: http
+      path: /actuator/prometheus
+      interval: {{ .Values.serviceMonitor.interval }}
+{{- end }}

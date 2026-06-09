@@ -1,0 +1,42 @@
+# Minimal local-dev override for a kind cluster.
+# Embedded catalog + self-join clustering — the simplest, single-pod shape.
+#
+#   helm install joxette deploy/helm/joxette -f deploy/helm/joxette/values-kind.yaml
+#
+# Assumes Kafka and an S3-compatible store (e.g. RustFS/MinIO) are reachable at
+# the addresses below — adjust to your in-cluster service names.
+
+image:
+  repository: joxette-service
+  tag: dev
+  # kind loads images locally (`kind load docker-image joxette-service:dev`),
+  # so never try to pull from a registry.
+  pullPolicy: Never
+
+catalog:
+  backend: embedded
+  objectStoragePath: "s3://joxette-data/"
+  embedded:
+    path: /data/joxette.ducklake
+    persistence:
+      enabled: true
+      size: 5Gi
+
+clustering:
+  mode: catalog
+
+kafka:
+  bootstrapServers: "kafka:9092"
+
+objectStore:
+  endpoint: "http://rustfs:9000"
+  region: "us-east-1"
+  # For local dev you can point at a Secret with access-key/secret-key, or rely
+  # on the in-cluster store's anonymous access. Left empty here.
+  existingSecret: ""
+
+# Embedded mode ignores tier replicas, but keep them at 1 so the guardrail is happy.
+tiers:
+  recorder:   { enabled: true, replicas: 1 }
+  replay:     { enabled: true, replicas: 1 }
+  compaction: { enabled: true }

@@ -1,0 +1,150 @@
+# Default values for the joxette chart.
+# See values-kind.yaml for a minimal local-dev (kind) override.
+
+image:
+  repository: ghcr.io/schrepfler/joxette-service
+  # Defaults to .Chart.appVersion when empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# Override the chart's generated name. fullnameOverride wins over nameOverride.
+nameOverride: ""
+fullnameOverride: ""
+
+# ----------------------------------------------------------------------------
+# Catalog backend — THE deployment-shaping choice.
+#
+#   embedded   -> single all-in-one StatefulSet (replicas:1, Recreate, PVC).
+#                 Tiers are collapsed; the DuckDB catalog file is single-writer,
+#                 so replicas>1 / split tiers are rejected by the chart.
+#   quack      -> shared catalog (DuckDB Quack server). Stateless Deployment tiers.
+#   postgresql -> shared catalog (PostgreSQL). Stateless Deployment tiers.
+#
+# For shared backends, `uri` is the JDBC-style catalog path Joxette attaches to
+# (quack://host:port/db or postgresql://host/db). The chart never provisions the
+# backend itself — point `uri` at an existing Quack/Postgres service.
+# ----------------------------------------------------------------------------
+catalog:
+  backend: embedded
+  # Shared-backend connection URI (quack:// or postgresql://). Required unless embedded.
+  uri: ""
+  # Parquet data root on object storage — ALWAYS remote, for every backend.
+  objectStoragePath: "s3://joxette-data/"
+  # embedded-only: catalog file path and its PersistentVolumeClaim.
+  embedded:
+    path: /data/joxette.ducklake
+    persistence:
+      enabled: true
+      size: 20Gi
+      storageClass: ""
+      accessMode: ReadWriteOnce
+
+# ----------------------------------------------------------------------------
+# Clustering — how pods form a Pekko cluster (maps to joxette.clustering.mode).
+#
+#   catalog          -> each pod self-joins a one-member cluster; coordination is
+#                       via the shared catalog + Kafka consumer group. Default.
+#   pekko-management -> Cluster Bootstrap forms a real shared cluster via
+#                       kubernetes-api discovery (adds a headless Service, pod
+#                       RBAC, POD_IP downward API, lease-backed SBR singleton).
+# ----------------------------------------------------------------------------
+clustering:
+  mode: catalog
+  managementPort: 7626
+  # required-contact-point-nr; the chart defaults this to the recorder tier
+  # replica count when unset (see _helpers).
+  requiredContactPointNr: null
+
+# ----------------------------------------------------------------------------
+# Role tiers (shared-catalog backends only).
+#
+# With embedded backend these are ignored — everything collapses into one
+# all-in-one pod (roles: [all]). With quack/postgresql each enabled tier becomes
+# its own Deployment with the listed roles.
+# ----------------------------------------------------------------------------
+# Replicas default to 1 so the defaults render cleanly with the default embedded
+# backend (which collapses tiers into one pod and ignores these anyway). When you
+# switch to a quack/postgresql backend, raise recorder/replay replicas — see
+# values-cluster.yaml for a scaled example.
+tiers:
+  recorder:
+    enabled: true
+    replicas: 1
+    roles: [recorder, entity-router]
+    # Pure write node: turn off the replay API to avoid serving reads here.
+    replayEnabled: false
+    resources:
+      requests: { cpu: "1", memory: 2Gi }
+  replay:
+    enabled: true
+    replicas: 1
+    roles: [replay]
+    replayEnabled: true
+    resources:
+      requests: { cpu: 500m, memory: 1Gi }
+  compaction:
+    enabled: true
+    # replicas always 1 — the chart pins it regardless of this value.
+    roles: [compaction]
+    replayEnabled: false
+    resources:
+      requests: { cpu: 500m, memory: 1Gi }
+
+# ----------------------------------------------------------------------------
+# Kafka
+# ----------------------------------------------------------------------------
+kafka:
+  bootstrapServers: "kafka:9092"
+  consumerGroup: "joxette-recorder"
+  groupProtocol: "consumer"   # KIP-848 cooperative
+  # Name of a Secret holding SASL/SSL material, projected as env vars. Optional.
+  # Keys are passed through verbatim as JOXETTE_KAFKA_* — see templates/secret refs.
+  existingSecret: ""
+
+# ----------------------------------------------------------------------------
+# Object store (S3-compatible) for DuckDB httpfs + snapshot export.
+# ----------------------------------------------------------------------------
+objectStore:
+  endpoint: ""          # omit for AWS default; set for MinIO/RustFS/etc.
+  region: "us-east-1"
+  # Secret with keys `access-key` and `secret-key`. If empty, no creds are
+  # injected (rely on IRSA / instance profile / anonymous).
+  existingSecret: ""
+
+# Extra raw joxette.* env (JOXETTE_*) — escape hatch for any property.
+extraEnv: {}
+  # JOXETTE_RECORDING_BATCH-SIZE: "20000"
+
+service:
+  type: ClusterIP
+  port: 8080
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}     # e.g. eks.amazonaws.com/role-arn for IRSA
+
+# Probe tuning. Paths track Spring Boot Actuator; the catalog component gates
+# readiness. startupProbe allows generous time for catalog ATTACH + bootstrap.
+probes:
+  startupFailureThreshold: 30
+  liveness:
+    path: /actuator/health/liveness
+  readiness:
+    path: /actuator/health/readiness
+
+# Seconds for the ordered SIGTERM teardown (recorders -> replays -> drain -> pekko).
+terminationGracePeriodSeconds: 45
+
+podAnnotations: {}
+podLabels: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Prometheus Operator ServiceMonitor (scrapes /actuator/prometheus).
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  labels: {}

@@ -1,0 +1,72 @@
+{{- include "joxette.validate" . -}}
+{{- if ne .Values.catalog.backend "embedded" }}
+{{- /*
+Shared catalog (quack/postgresql): one Deployment per enabled tier. Each tier
+carries its own roles. The compaction tier is pinned to replicas:1 regardless of
+the configured value (one active compaction node by design; the compaction_locks
+table is the cross-pod backstop). recorder/replay scale freely.
+*/}}
+{{- $root := . }}
+{{- range $tierName, $tier := .Values.tiers }}
+{{- if $tier.enabled }}
+{{- $replicas := int (default 1 $tier.replicas) }}
+{{- if eq $tierName "compaction" }}{{- $replicas = 1 }}{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "joxette.fullname" $root }}-{{ $tierName }}
+  labels:
+    {{- include "joxette.labels" $root | nindent 4 }}
+    app.kubernetes.io/component: {{ $tierName }}
+spec:
+  replicas: {{ $replicas }}
+  selector:
+    matchLabels:
+      {{- include "joxette.selectorLabels" $root | nindent 6 }}
+      app.kubernetes.io/component: {{ $tierName }}
+  {{- if eq $tierName "compaction" }}
+  strategy:
+    type: Recreate
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "joxette.labels" $root | nindent 8 }}
+        app.kubernetes.io/component: {{ $tierName }}
+        {{- with $root.Values.podLabels }}{{ toYaml . | nindent 8 }}{{- end }}
+      {{- with $root.Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "joxette.serviceAccountName" $root }}
+      terminationGracePeriodSeconds: {{ $root.Values.terminationGracePeriodSeconds }}
+      {{- with $root.Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $root.Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $root.Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $root.Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: joxette
+          image: {{ include "joxette.image" $root }}
+          imagePullPolicy: {{ $root.Values.image.pullPolicy }}
+          ports:
+            {{- include "joxette.containerPorts" $root | nindent 12 }}
+          env:
+            {{- include "joxette.env" (dict "ctx" $root "roles" $tier.roles "replayEnabled" (default false $tier.replayEnabled)) | nindent 12 }}
+          {{- include "joxette.probes" $root | nindent 10 }}
+          {{- with $tier.resources }}
+          resources: {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

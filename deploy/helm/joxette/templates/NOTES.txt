@@ -1,0 +1,23 @@
+Joxette {{ .Chart.AppVersion }} deployed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Catalog backend : {{ .Values.catalog.backend }}
+Clustering mode : {{ .Values.clustering.mode }}
+{{- if eq .Values.catalog.backend "embedded" }}
+Topology        : single all-in-one StatefulSet (roles: [all]), 1 replica, PVC-backed.
+{{- else }}
+Topology        : role tiers —
+{{- range $name, $tier := .Values.tiers }}{{ if $tier.enabled }}
+    - {{ $name }}: {{ if eq $name "compaction" }}1{{ else }}{{ default 1 $tier.replicas }}{{ end }} replica(s), roles {{ join "," $tier.roles }}
+{{- end }}{{ end }}
+{{- end }}
+
+Reach the REST API:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "joxette.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
+  curl http://localhost:{{ .Values.service.port }}/health
+
+{{- if eq .Values.clustering.mode "pekko-management" }}
+
+Cluster (pekko-management): pods discover each other via kubernetes-api using the
+label "app.kubernetes.io/name={{ include "joxette.name" . }}". Check formation:
+  kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/name={{ include "joxette.name" . }} | grep -i bootstrap
+{{- end }}

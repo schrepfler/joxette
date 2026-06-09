@@ -1,0 +1,36 @@
+{{- if and .Values.serviceAccount.create (eq .Values.clustering.mode "pekko-management") }}
+{{- /*
+pekko-management mode only: pods need to read sibling pods (kubernetes-api
+discovery) and manage coordination Leases (the lease-backed SBR + cluster
+singleton). Namespaced Role + RoleBinding — the operator/Helm grants exactly
+this, nothing cluster-wide.
+*/}}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "joxette.fullname" . }}-pekko
+  labels:
+    {{- include "joxette.labels" . | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "watch", "list"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "create", "update", "list", "watch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "joxette.fullname" . }}-pekko
+  labels:
+    {{- include "joxette.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "joxette.fullname" . }}-pekko
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "joxette.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
