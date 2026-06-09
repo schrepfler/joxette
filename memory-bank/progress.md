@@ -234,32 +234,33 @@
 ### Next phase roadmap
 
 #### Integration test gaps
-- [ ] `typeField` extraction in topic SOL match — IT scenario: topic records with null message_type, typeField resolves event names
-- [ ] Sort cursor correctness — IT: page through `lastActive` / `mostMessages` across multiple pages with real DuckDB data
-- [ ] `SolMatchIT` coverage: `match split` + `combine`, `replace`, `set` operations; tag span assertions
+- [x] `typeField` extraction in topic SOL match — `SolTopicMatchIT` (6 tests: withTypeField match/noMatch/duration, withoutTypeField, explicit messageType, recordsCarryExtractedEventNames, tagSpans)
+- [x] Sort cursor correctness — `SortCursorPaginationIT` (general + entity, pageSize 1/2/3, ASC + DESC) + `EntitySortCursorIT` (lastActive, mostMessages, id sort, pagination)
+- [x] `SolMatchIT` coverage — `match split` + `combine`, `replace`, `set`, tag span assertions; 15 parameterised + 8 standalone tests
 
-#### UI polish
-- [ ] Barcode `xMode` toggle exposed in UI — switch between time-proportional and fixed-width index modes
-- [ ] `SequenceQueryPanel` component — check if it still exists as dead code; remove if unused
-- [ ] Sunburst zoom animation — `animating`/`prevRef` stubs left in place; wire D3 tween if desired
-- [ ] `SolQueryPanel` recipe hints — show the recipe description on hover in the dropdown
+#### UI polish — ALL DONE (verified 2026-06-09)
+- [x] Barcode `xMode` toggle exposed in UI — `BarcodeXModeToggle` wired into toolbar in all 3 views (commit f6f7bd7)
+- [x] `SequenceQueryPanel` component — NOT dead; live in `$entityId.tsx` + `$topic.tsx` "Sequence" tab; unused `entityId` prop removed (f6f7bd7)
+- [x] Sunburst zoom animation — `tweenZoom()` (d3-interpolate + rAF) wired; `zoomedArc(d, animZoom)` consumes it; double-click + centre-circle trigger
+- [x] `GET /instances` cluster panel — full `/cluster` route (instance table + Pekko topology + @xyflow/react flow map); in nav (shortcut `g l`)
 
 #### Production readiness
 - [x] DuckLake VARIANT probe — 18-test evidence base confirms VARIANT works end-to-end through DuckLake Parquet on duckdb_jdbc 1.5.3.0; `probeVariant()` retained as runtime safety net
 - [x] Object storage config — `docs/object-storage.md` extended: EKS/IRSA guide (4-step, DuckDB ≥ 1.5.3 web-identity chain), HTTP_PROXY/HTTPS_PROXY/NO_PROXY support added in DuckDB 1.5.3 httpfs, troubleshooting table (4 new rows)
-- [ ] Snapshot restore path — integration test for `POST /cassettes/snapshots/{name}/restore`
-- [ ] Multi-topic entity ordering — document clock-skew caveat; add warning to entity cassette replay docs
+- [x] Snapshot restore path — `RestoreSnapshotIT`: seed → snapshot → post-snapshot write → restore → assert only pre-snapshot records visible
+- [x] Multi-topic entity ordering — `docs/entity-ordering.md` (clock-skew caveat, tradeoff table, workarounds); fixed inaccurate `order_by=recorded_at` API claim; linked from CLAUDE.md (2026-06-09)
 
 #### Deployment / Kubernetes
 - [x] `docs/clustering-deployment.md` — concurrency, roles, coordination, K8s + non-K8s topologies, catalog single-writer guardrail
 - [x] `docs/operator-design.md` — JOSDK operator design: `JoxetteCluster` + `RecordedTopic` + `EntityType` CRDs, tier→workload map, catalog/scaling enforcement, two clustering tracks
-- [ ] **Phase 0 prerequisite — container image**: no `Dockerfile`/buildpacks config yet (JDK 25 + `--enable-preview`); the operator's `spec.image` depends on it
-- [ ] **Phase 0 prerequisite — Track B Pekko Management**: add `pekko-management-cluster-{http,bootstrap}` + `pekko-discovery-kubernetes-api`, start the extensions, drop the programmatic self-join, `kubernetes-api` discovery + `lease-majority` SBR + lease-backed singleton, expose mgmt port 7626. Turns per-process self-join into a real shared cluster.
+- [x] **Phase 0 — container image**: multi-stage `joxette-service/Dockerfile` (temurin-25 builder → 25-jre-alpine runtime, `--enable-preview`, non-root) + docker-compose service (commit 31bcbe3)
+- [x] **Phase 0 — Track B Pekko Management**: `joxette.clustering.mode = catalog (default) | pekko-management`; mgmt+bootstrap+k8s-discovery+k8s-lease deps at 2.0.0-M1 (core aligned M3→M1); HOCON overlay (kubernetes-api discovery + lease-majority SBR), mgmt port 7626, no self-join in mgmt mode; `PekkoConfigClusteringTest` (commit 9a9bfa7). 844 tests green
+- [ ] **Helm chart** (NEXT) — StatefulSet (embedded) + Deployment tiers (recorder/replay/compaction), Service (+ headless for mgmt mode), ConfigMap, RBAC, probes; kind + cloud portable; configurable catalog backend
 - [ ] Build the operator itself (Phases 1–3 in `operator-design.md`)
 
 #### `sol` library
 - [ ] Group ID rename `com.joxette → com.sol` — deferred until ready to publish independently
-- [ ] `SolEngine` edge-case tests: tag span correctness after `replace`, `combine` output dims
+- [x] `SolEngine` edge-case tests: tag span correctness after `replace` (3 cases in `SolEngineTest`), `combine` output dims (4 cases in `SolEngineTest`)
 
 ### Instance Roles
 - [x] `InstanceRoles` — `joxette.roles` is a `List<String>` (default `[all]`); concrete roles `recorder`/`entity-router`/`compaction`/`replay` gate subsystems per instance
