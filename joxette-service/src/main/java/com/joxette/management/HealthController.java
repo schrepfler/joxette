@@ -351,21 +351,20 @@ public class HealthController {
      * schema.  This approximates the amount of data stored inline in the DuckDB
      * catalog file (i.e. not yet flushed to object storage as Parquet files).
      *
-     * <p>A 5-second query timeout prevents a long-running compaction from stalling
-     * the health endpoint: if the timeout fires, DuckDB throws {@link SQLException}
-     * and we return {@code -1} rather than blocking indefinitely.
+     * <p>{@code duckdb_tables()} is a catalog introspection function that reads
+     * stored statistics — it does not scan data and completes in sub-millisecond
+     * time regardless of how much data is inlined.  It is therefore safe to run
+     * without the write-serialisation lock: DuckDB allows concurrent reads via
+     * separate {@code Statement} objects, and holding {@code synchronized(duckDB)}
+     * here would block if compaction held the lock, stalling the health endpoint.
      */
     private long inlinedDataSizeBytes() {
         try {
-            synchronized (duckDB) {
-                try (Statement st = duckDB.createStatement()) {
-                    st.setQueryTimeout(5);
-                    try (ResultSet rs = st.executeQuery(
-                            "SELECT COALESCE(SUM(estimated_size), 0) AS total " +
-                            "FROM duckdb_tables() WHERE schema_name = 'lake'")) {
-                        return rs.next() ? rs.getLong("total") : 0;
-                    }
-                }
+            try (Statement st = duckDB.createStatement();
+                 ResultSet rs = st.executeQuery(
+                         "SELECT COALESCE(SUM(estimated_size), 0) AS total " +
+                         "FROM duckdb_tables() WHERE schema_name = 'lake'")) {
+                return rs.next() ? rs.getLong("total") : 0;
             }
         } catch (SQLException e) {
             return -1;
