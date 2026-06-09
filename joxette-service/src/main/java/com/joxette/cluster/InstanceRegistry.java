@@ -176,7 +176,12 @@ public class InstanceRegistry {
                 }
             }
         } catch (SQLException e) {
-            log.warn("Failed to send heartbeat for instanceId={}: {}", instanceId, e.getMessage());
+            // Log SQL error detail and attempt recovery via re-insert — a transient
+            // failure (e.g. lock contention after sleep/wake) should not leave this
+            // instance permanently invisible in the registry.
+            log.warn("Failed to send heartbeat for instanceId={} [sqlErrorCode={}, sqlState={}]; attempting re-insert",
+                    instanceId, e.getErrorCode(), e.getSQLState());
+            upsertSelf();
         }
     }
 
