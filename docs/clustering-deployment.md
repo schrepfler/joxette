@@ -396,6 +396,13 @@ The same rules apply on VMs / bare metal / `docker compose`:
 joxette:
   roles: [all]                       # recorder | entity-router | compaction | replay | all
 
+  clustering:
+    mode: catalog                    # catalog (self-join, default) | pekko-management (shared cluster)
+    management-port: 7626            # pekko-management only: Cluster Bootstrap + health HTTP port
+    service-name: joxette            # pekko-management only: discovery service name + label-selector arg
+    pod-label-selector: "app.kubernetes.io/name=%s"   # pekko-management only
+    required-contact-point-nr: 1     # pekko-management only: set to recorder/compaction tier replicas
+
   pekko:
     remote-port: 0                   # 0 = OS-assigned; set a fixed port only when pre-provisioning multi-node
 
@@ -440,12 +447,15 @@ See also: [`catalog-scaling.md`](catalog-scaling.md) (catalog backends),
 These are known gaps as of this writing — documented so deployments don't assume
 capabilities that aren't wired yet:
 
-1. **No shared Pekko cluster.** Processes self-join one-member clusters
-   (`seed-nodes = []`). `ClusterSingleton` is per-process; cross-pod compaction
-   safety relies on the `compaction_locks` table, so **run exactly one
-   `compaction` node**. Forming a real shared cluster (Pekko Management Cluster
-   Bootstrap + `kubernetes-api` discovery + a `coordination.k8s.io` Lease behind
-   the SBR/singleton) is the "Track B" prerequisite in
+1. **Shared Pekko cluster is opt-in.** By default (`joxette.clustering.mode:
+   catalog`) processes self-join one-member clusters (`seed-nodes = []`),
+   `ClusterSingleton` is per-process, and cross-pod compaction safety relies on
+   the `compaction_locks` table — so **run exactly one `compaction` node**.
+   Setting `joxette.clustering.mode: pekko-management` engages Pekko Management
+   Cluster Bootstrap + `kubernetes-api` discovery + a `coordination.k8s.io` Lease
+   behind the SBR/singleton, forming a real shared cluster where the compaction
+   singleton is genuinely cluster-wide. This requires running in Kubernetes with
+   the pod RBAC and headless Service described in
    [`operator-design.md`](operator-design.md) §8.2.
 2. **No shipped Kubernetes/Helm manifests.** §6 describes the intended patterns
    and [`operator-design.md`](operator-design.md) designs an operator around them;

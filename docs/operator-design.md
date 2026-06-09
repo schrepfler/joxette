@@ -326,44 +326,59 @@ bump is an ordinary spec change → reconcile.
 
 ---
 
-## 8. Phase 0 — app-side prerequisites
+## 8. Phase 0 — app-side prerequisites (DONE)
 
-These are **changes to `joxette-service`**, not the operator. The design depends
-on them; they are not built by this document.
+These were **changes to `joxette-service`**, not the operator. Both are now
+implemented and on `main`.
 
-### 8.1 Container image (required for either track)
+### 8.1 Container image (required for either track) — ✅ done
 
-No `Dockerfile` exists today. The image must run on **JDK 25 with preview
-features**: `--enable-preview --add-opens java.base/jdk.internal.misc=ALL-UNNAMED`,
-launching `joxette-service-<version>.jar`. Recommended: `mvn spring-boot:build-image`
-(buildpacks) or a committed `Dockerfile` on a `eclipse-temurin:25` base. The
-operator's `spec.image` points at the result.
+A multi-stage `joxette-service/Dockerfile` exists (commit `31bcbe3`):
+`maven:3-eclipse-temurin-25` builder → `eclipse-temurin:25-jre-alpine` runtime,
+POM-first layer caching, non-root `joxette` user, and `--enable-preview` +
+container-aware JVM flags. A `docker-compose.yml` service builds from it. The
+operator's `spec.image` points at a published build of this image.
 
-### 8.2 Pekko Management integration (Track B only)
+### 8.2 Pekko Management integration (Track B only) — ✅ done
 
-Verified against Pekko Management **1.2.1** docs:
+Implemented via `joxette.clustering.mode` (commit `9a9bfa7`). Default
+`catalog` keeps the self-join (local dev, tests, embedded catalog);
+`pekko-management` engages Cluster Bootstrap. The whole Pekko tree is pinned to
+**`2.0.0-M1`** — the only Pekko Management 2.x release on Maven Central — so core
+and management share one milestone (Pekko's
+[binary-compatibility rules](https://pekko.apache.org/docs/pekko/current/common/binary-compatibility-rules.html)
+give no cross-milestone guarantee, so a single pinned milestone is required, not
+a mix). Core was moved `M3 → M1` to match; the full suite passed unchanged.
 
-- **Dependencies**: `org.apache.pekko:pekko-management-cluster-http`,
-  `pekko-management-cluster-bootstrap`, `pekko-discovery-kubernetes-api`.
-- **`PekkoConfig`**: start `PekkoManagement(system).start()` and
-  `ClusterBootstrap(system).start()`; **drop the programmatic self-join** and keep
-  `seed-nodes = []` (bootstrap is skipped if seed-nodes are set). Guard this behind
-  the clustering mode / a Spring profile so local dev and tests keep self-joining.
-- **HOCON overlay**:
+- **Dependencies** (the `_2.13` Scala suffix matches Pekko core's): `pekko-management-cluster-http_2.13`,
+  `pekko-management-cluster-bootstrap_2.13`, `pekko-discovery-kubernetes-api_2.13`,
+  `pekko-lease-kubernetes_2.13`, all `2.0.0-M1`, managed in the parent POM via
+  the `pekko.management.version` property.
+- **`PekkoConfig`**: in `pekko-management` mode it overlays the HOCON below onto
+  `pekko.conf`, starts `PekkoManagement.get(system).start()` then
+  `ClusterBootstrap.get(system).start()`, and **skips the self-join** (membership
+  is discovery-driven; `seed-nodes` stays `[]`). In `catalog` mode the original
+  self-join path runs unchanged.
+- **HOCON overlay** (built by `PekkoConfig.buildManagementOverlay`, unit-tested in
+  `PekkoConfigClusteringTest`):
   ```hocon
+  pekko.management.http.port = ${joxette.clustering.management-port}   # default 7626
   pekko.management.cluster.bootstrap.contact-point-discovery {
-    discovery-method = kubernetes-api
-    required-contact-point-nr = <initial node count>
+    discovery-method          = kubernetes-api
+    service-name              = ${joxette.clustering.service-name}
+    required-contact-point-nr = ${joxette.clustering.required-contact-point-nr}
   }
-  pekko.discovery.kubernetes-api.pod-label-selector = "app=%s"
+  pekko.discovery.kubernetes-api.pod-label-selector = "app.kubernetes.io/name=%s"  # serviceName
   pekko.cluster.downing-provider-class = "org.apache.pekko.cluster.sbr.SplitBrainResolverProvider"
   pekko.cluster.split-brain-resolver.active-strategy = lease-majority
   pekko.cluster.split-brain-resolver.lease-majority.lease-implementation = "pekko.coordination.lease.kubernetes"
   pekko.coordination.lease.kubernetes.lease-class = "org.apache.pekko.coordination.lease.kubernetes.NativeKubernetesLease"
-  pekko.remote.artery.canonical.hostname = ${POD_IP}     # downward API
+  pekko.remote.artery.canonical.hostname = ${POD_IP}     # downward API; omitted if POD_IP unset
   ```
-- **Ports**: management `7626` (named `management`), a fixed remoting port (e.g.
-  `7355`). Health at `/ready` and `/alive` on `7626`.
+- **Config knobs** (`joxette.clustering.*`): `mode`, `management-port` (7626),
+  `service-name` (`joxette`), `pod-label-selector` (`app.kubernetes.io/name=%s`),
+  `required-contact-point-nr` (1).
+- **Ports**: management `7626`; remoting port via `joxette.pekko.remote-port`.
 - **Pod RBAC** (provisioned by the operator, see §4): `pods: [get, watch, list]`
   and `coordination.k8s.io/leases: [get, create, update, list]`.
 - **Effect**: pods form one shared cluster; the `ClusterSingleton` compaction
