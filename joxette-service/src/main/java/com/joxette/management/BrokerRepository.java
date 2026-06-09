@@ -106,35 +106,31 @@ public class BrokerRepository {
 
     public List<BrokerConfig> listBrokers() throws SQLException {
         List<BrokerConfig> result = new ArrayList<>();
-        synchronized (duckDB) {
-            try (Statement st = duckDB.createStatement();
-                 ResultSet rs = st.executeQuery(
-                         "SELECT broker_id, bootstrap_servers, security_protocol," +
-                         " sasl_mechanism, sasl_username, sasl_password," +
-                         " ssl_truststore_path, ssl_truststore_password," +
-                         " ssl_keystore_path, ssl_keystore_password" +
-                         " FROM broker_configs ORDER BY broker_id")) {
-                while (rs.next()) {
-                    result.add(fromResultSet(rs));
-                }
+        try (Statement st = duckDB.createStatement();
+             ResultSet rs = st.executeQuery(
+                     "SELECT broker_id, bootstrap_servers, security_protocol," +
+                     " sasl_mechanism, sasl_username, sasl_password," +
+                     " ssl_truststore_path, ssl_truststore_password," +
+                     " ssl_keystore_path, ssl_keystore_password" +
+                     " FROM broker_configs ORDER BY broker_id")) {
+            while (rs.next()) {
+                result.add(fromResultSet(rs));
             }
         }
         return result;
     }
 
     public Optional<BrokerConfig> findBroker(String brokerId) throws SQLException {
-        synchronized (duckDB) {
-            try (PreparedStatement ps = duckDB.prepareStatement(
-                    "SELECT broker_id, bootstrap_servers, security_protocol," +
-                    " sasl_mechanism, sasl_username, sasl_password," +
-                    " ssl_truststore_path, ssl_truststore_password," +
-                    " ssl_keystore_path, ssl_keystore_password" +
-                    " FROM broker_configs WHERE broker_id = ?")) {
-                ps.setString(1, brokerId);
-                try (ResultSet rs = ps.executeQuery()) {
-                    if (rs.next()) {
-                        return Optional.of(fromResultSet(rs));
-                    }
+        try (PreparedStatement ps = duckDB.prepareStatement(
+                "SELECT broker_id, bootstrap_servers, security_protocol," +
+                " sasl_mechanism, sasl_username, sasl_password," +
+                " ssl_truststore_path, ssl_truststore_password," +
+                " ssl_keystore_path, ssl_keystore_password" +
+                " FROM broker_configs WHERE broker_id = ?")) {
+            ps.setString(1, brokerId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return Optional.of(fromResultSet(rs));
                 }
             }
         }

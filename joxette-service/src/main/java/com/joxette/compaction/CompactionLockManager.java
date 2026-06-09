@@ -224,27 +224,25 @@ public class CompactionLockManager {
      */
     public List<CompactionLockInfo> listActiveLocks() throws SQLException {
         List<CompactionLockInfo> result = new ArrayList<>();
-        synchronized (duckDB) {
-            try (Statement st = duckDB.createStatement();
-                 ResultSet rs = st.executeQuery("""
-                         SELECT target,
-                                instance_id,
-                                acquired_at,
-                                expires_at,
-                                CAST(EXTRACT(EPOCH FROM (expires_at - now())) AS BIGINT)
-                                    AS seconds_remaining
-                         FROM   compaction_locks
-                         ORDER  BY acquired_at ASC
-                         """)) {
-                while (rs.next()) {
-                    result.add(new CompactionLockInfo(
-                            rs.getString("target"),
-                            rs.getString("instance_id"),
-                            rs.getTimestamp("acquired_at").toInstant(),
-                            rs.getTimestamp("expires_at").toInstant(),
-                            rs.getLong("seconds_remaining")
-                    ));
-                }
+        try (Statement st = duckDB.createStatement();
+             ResultSet rs = st.executeQuery("""
+                     SELECT target,
+                            instance_id,
+                            acquired_at,
+                            expires_at,
+                            CAST(EXTRACT(EPOCH FROM (expires_at - now())) AS BIGINT)
+                                AS seconds_remaining
+                     FROM   compaction_locks
+                     ORDER  BY acquired_at ASC
+                     """)) {
+            while (rs.next()) {
+                result.add(new CompactionLockInfo(
+                        rs.getString("target"),
+                        rs.getString("instance_id"),
+                        rs.getTimestamp("acquired_at").toInstant(),
+                        rs.getTimestamp("expires_at").toInstant(),
+                        rs.getLong("seconds_remaining")
+                ));
             }
         }
         return result;
