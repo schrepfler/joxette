@@ -96,19 +96,19 @@ gives ad-hoc virtual threads a consistent lifecycle with ordered shutdown.
 - `SolMatchIT` expansion: `match split` + `combine`, `replace`, `set`, tag span assertions
 - Snapshot restore IT — `POST /cassettes/snapshots/{name}/restore`
 
-### 2. UI polish (quick wins, user-facing)
-- Barcode `xMode` toggle — time-proportional vs fixed-width index modes not exposed in UI
-- `SequenceQueryPanel` — may still exist as dead code; verify and remove
-- Sunburst zoom animation — wire D3 tween on double-click (stubs already in place)
-- UI for `GET /instances` — cluster topology panel (could live under `/health`)
+### 2. UI polish (quick wins, user-facing) — ALL DONE (verified 2026-06-09)
+- [x] Barcode `xMode` toggle — `BarcodeXModeToggle` in `SequenceBarcodeView.tsx`, wired into toolbar in all 3 views (commit f6f7bd7)
+- [x] `SequenceQueryPanel` — NOT dead code; live in `$entityId.tsx` + `$topic.tsx` "Sequence" tab. Unused `entityId` prop removed in f6f7bd7
+- [x] Sunburst zoom animation — `tweenZoom()` (d3-interpolate + rAF) in `SunburstChart.tsx`; `zoomedArc(d, animZoom)` consumes it; double-click + centre-circle trigger
+- [x] UI for `GET /instances` — full `/cluster` route (instance table + Pekko topology + @xyflow/react flow map); in nav at `Layout.tsx` (shortcut `g l`)
 
 ### 3. Production readiness
-- Multi-topic entity ordering — document clock-skew caveat; add warning to entity cassette replay docs
-- Quack server integration test (stub exists; activate when DuckDB 2.0 GA)
+- [x] Multi-topic entity ordering — `docs/entity-ordering.md` is comprehensive; fixed inaccurate `order_by=recorded_at` API claim; linked from CLAUDE.md (2026-06-09)
+- Quack server integration test (stub exists; activate when DuckDB 2.0 GA) — blocked on external
 
 ### 4. `sol` library
 - Group ID rename `com.joxette → com.sol` (deferred)
-- `SolEngine` edge-case tests: tag spans after `replace` / `combine`
+- [x] `SolEngine` edge-case tests: tag spans after `replace` / `combine` — done (107 sol tests green)
 
 ---
 

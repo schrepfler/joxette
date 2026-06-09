@@ -226,7 +226,7 @@ Each topic has a mode:
 
 ### Cross-Topic Entity Ordering
 
-Entity cassettes aggregate messages from multiple topics. Ordering is by `timestamp` (Kafka producer timestamp) as primary, `recorded_at` (service ingestion time) as tiebreaker. Cross-topic ordering is best-effort based on producer timestamps (clock skew is possible).
+Entity cassettes aggregate messages from multiple topics. Ordering is by `timestamp` (Kafka producer timestamp) as primary, `recorded_at` (service ingestion time) as tiebreaker. Cross-topic ordering is best-effort based on producer timestamps (clock skew is possible). See [`docs/entity-ordering.md`](docs/entity-ordering.md) for the full caveat and guidance on when to use `recorded_at`-primary ordering instead.
 
 ### Bucketed Entities
 
@@ -783,7 +783,7 @@ DuckLake transparently reads from both inlined data (in catalog DB) and Parquet 
 At-least-once from Kafka means possible duplicates. Deduplicate on read, not write. `(topic, partition, offset)` is the unique key. Use `QUALIFY` or `DISTINCT ON` in replay queries.
 
 ### Entity Ordering Across Topics
-Order by `timestamp` (Kafka producer timestamp) primary, `recorded_at` (service ingestion time) tiebreaker. Cross-topic ordering is best-effort due to possible clock skew.
+Order by `timestamp` (Kafka producer timestamp) primary, `recorded_at` (service ingestion time) tiebreaker. Cross-topic ordering is best-effort due to possible clock skew. See [`docs/entity-ordering.md`](docs/entity-ordering.md) for the full caveat, tradeoff table, and workarounds.
 
 ### Config Lifecycle
 YAML bootstrap config is loaded only on first start (when config tables are empty). After that, the REST API is the source of truth. Config lives in plain DuckDB tables, not DuckLake.

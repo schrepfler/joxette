@@ -48,7 +48,7 @@ values are monotonically non-decreasing within a single ingestion run. They refl
 the order in which Joxette *saw* the messages — a consistent, single-clock view
 even when producer clocks vary.
 
-To reconstruct the ingestion-time order:
+To reconstruct the ingestion-time order, query the lake table directly:
 
 ```sql
 SELECT *
@@ -58,8 +58,11 @@ ORDER BY recorded_at ASC, kafka_timestamp ASC,
          topic ASC, kafka_partition ASC, kafka_offset ASC;
 ```
 
-Or, via the replay API, supply the `order_by=recorded_at` query parameter
-(where supported) to switch the primary sort key.
+The replay API (`GET /cassettes/entities/{type}/{id}`) exposes only `order=asc|desc`,
+which flips the direction of the default `kafka_timestamp`-primary sort. There is
+currently no API parameter to change the *primary* sort key to `recorded_at`.
+If you need ingestion-time ordering, use the Catalog query page (`/catalog`) or
+a direct DuckDB query as shown above.
 
 ### Tradeoffs
 
