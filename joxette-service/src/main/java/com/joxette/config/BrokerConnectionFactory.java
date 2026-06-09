@@ -70,6 +70,16 @@ public class BrokerConnectionFactory {
                 // TopicLifecycleActor's backoff supervisor to react to genuine broker failures.
                 .property("request.timeout.ms",       "30000")
                 .property("default.api.timeout.ms",   "35000")
+                // Sleep/wake resilience: keep group membership alive for 3 minutes so a
+                // brief laptop sleep does not evict the consumer and trigger a full rebalance.
+                // Default is 45 s — any sleep longer than that causes an unnecessary rebalance.
+                // heartbeat.interval.ms must stay ≤ session.timeout.ms / 3.
+                .property("session.timeout.ms",      "180000")  // 3 min
+                .property("heartbeat.interval.ms",    "30000")  // 30 s
+                // Close idle TCP sockets after 60 s so reconnect after sleep is immediate
+                // rather than discovering a broken socket on the first poll.
+                // Mirrors the AdminClient's connections.max.idle.ms setting.
+                .property("connections.max.idle.ms",  "60000")
                 // Fetch throughput tunables.
                 // fetch.min.bytes=1: respond immediately — avoids broker wait penalising near-pace
                 //   topics. Raise to e.g. 65536 on dedicated catchup nodes.

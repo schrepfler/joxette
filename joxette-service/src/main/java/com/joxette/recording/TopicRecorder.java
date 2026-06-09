@@ -13,6 +13,7 @@ import org.apache.kafka.clients.consumer.ConsumerRebalanceListener;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.clients.consumer.OffsetAndMetadata;
+import org.apache.kafka.common.errors.RetriableException;
 import org.apache.kafka.common.errors.WakeupException;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.header.Header;
@@ -251,6 +252,13 @@ public class TopicRecorder {
                             // or poll; both are handled here at the loop level.
                             log.debug("Kafka wakeup received for '{}'; stopping poll loop", label);
                             break outer;
+                        } catch (RetriableException e) {
+                            // Transient broker/network error (e.g. network loss, broker restart,
+                            // laptop sleep/wake). The Kafka client will reconnect automatically;
+                            // skip the failed poll and retry on the next iteration rather than
+                            // propagating the exception and killing the recorder.
+                            log.warn("Transient Kafka error on topic '{}', will retry: {} {}",
+                                    label, e.getClass().getSimpleName(), e.getMessage());
                         } catch (InterruptedException e) {
                             Thread.currentThread().interrupt();
                             break outer;

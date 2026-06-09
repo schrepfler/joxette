@@ -271,14 +271,19 @@ public class HealthController {
             return lagCache.get();
         }
         List<TopicLag> result = new ArrayList<>();
-        try (AdminClient client = brokerConnectionFactory.adminClient(
-                com.joxette.management.BrokerConfig.DEFAULT_BROKER_ID)) {
+        AdminClient client = brokerConnectionFactory.adminClient(
+                com.joxette.management.BrokerConfig.DEFAULT_BROKER_ID);
+        try {
             for (String topic : topics) {
                 result.add(lagForTopic(client, topic, running.get(topic)));
             }
         } catch (Exception e) {
             // Kafka unreachable — return cached (possibly empty) values
             return lagCache.get();
+        } finally {
+            // Bounded close: default AdminClient.close() blocks indefinitely waiting for
+            // in-flight requests; cap at 3 s so a down broker can't stall the health endpoint.
+            client.close(java.time.Duration.ofSeconds(3));
         }
         lagCache.set(List.copyOf(result));
         lagCacheTime.set(now);
