@@ -255,8 +255,8 @@
 - [x] `docs/operator-design.md` — JOSDK operator design: `JoxetteCluster` + `RecordedTopic` + `EntityType` CRDs, tier→workload map, catalog/scaling enforcement, two clustering tracks
 - [x] **Phase 0 — container image**: multi-stage `joxette-service/Dockerfile` (temurin-25 builder → 25-jre-alpine runtime, `--enable-preview`, non-root) + docker-compose service (commit 31bcbe3)
 - [x] **Phase 0 — Track B Pekko Management**: `joxette.clustering.mode = catalog (default) | pekko-management`; mgmt+bootstrap+k8s-discovery+k8s-lease deps at 2.0.0-M1 (core aligned M3→M1); HOCON overlay (kubernetes-api discovery + lease-majority SBR), mgmt port 7626, no self-join in mgmt mode; `PekkoConfigClusteringTest` (commit 9a9bfa7). 844 tests green
-- [ ] **Helm chart** (NEXT) — StatefulSet (embedded) + Deployment tiers (recorder/replay/compaction), Service (+ headless for mgmt mode), ConfigMap, RBAC, probes; kind + cloud portable; configurable catalog backend
-- [ ] Build the operator itself (Phases 1–3 in `operator-design.md`)
+- [x] **Helm chart** — `deploy/helm/joxette/`: embedded→StatefulSet / quack+pg→per-tier Deployments; clustering.mode drives Services+RBAC (headless Svc + pod RBAC + POD_IP for pekko-management); render-time single-writer guardrail; values-kind + values-cluster examples; lint+template verified (commit 8370ecf)
+- [ ] **Build the operator** (NEXT) — JOSDK module, Phases 1–3 in `operator-design.md`: JoxetteCluster CRD + reconciler + dependent resources + catalog guardrail webhook, then RecordedTopic/EntityType API reconcilers
 
 #### `sol` library
 - [ ] Group ID rename `com.joxette → com.sol` — deferred until ready to publish independently
