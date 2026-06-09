@@ -52,7 +52,7 @@ DuckLake buffers small writes in the catalog database (DuckDB file) before flush
 DuckDB is used as the DuckLake catalog database (not PostgreSQL). This means:
 - Single process only — no multi-process writes
 - All Kafka consumer threads share one DuckDB JDBC connection; DuckDB serializes writes internally
-- Multiple concurrent reads are fine (multiple Statement objects from one Connection)
+- All JDBC operations on the shared `Connection` must be serialized via `synchronized(duckDB)` — reads included. The JDBC driver wraps a single native `duckdb_connection` C handle; concurrent Statement executions on that handle are not safe regardless of whether they are reads or writes. Exception: `HealthController.inlinedDataSizeBytes()` deliberately skips the lock because it only reads `duckdb_tables()` stored statistics (never live row data) and holding the lock there risks stalling health scrapes while compaction holds it.
 - If multi-process writes are needed later, there is a **three-stage scaling path** (see `docs/catalog-scaling.md`):
   1. **Embedded DuckDB** (current) — single process, zero ops overhead
   2. **Quack server** (DuckDB 1.5.3+, beta) — DuckDB semantics, multi-process, no PostgreSQL needed; evaluate at DuckDB 2.0 GA
@@ -618,7 +618,7 @@ Single process. DuckDB embedded. Kafka consumer threads write through router int
 
 ### DuckDB Connection Model
 
-One JDBC connection shared across the application. DuckDB serializes writes internally. Multiple concurrent reads via separate Statement objects. Spring manages connection lifecycle.
+One JDBC connection shared across the application. All JDBC operations (reads and writes) must be serialized via `synchronized(duckDB)` — the driver wraps a single native `duckdb_connection` handle that is not thread-safe for concurrent Statement execution. Spring manages connection lifecycle.
 
 ---
 
