@@ -42,7 +42,12 @@
         <spring-boot-dependencies.version>4.0.6</spring-boot-dependencies.version>
         <plantuml.version>1.2026.2</plantuml.version>
         <swagger-annotations.version>2.2.50</swagger-annotations.version>
-        <pekko.version>2.0.0-M3</pekko.version>
+        <!-- Pekko core. Pinned to 2.0.0-M1 to match the Pekko Management / Pekko HTTP
+             lines, which only ship 2.0.0-M1 (no M2/M3 exist for management or http).
+             Cluster Bootstrap + kubernetes-api discovery (Track B clustering) require
+             management, so the whole tree must share the M1 milestone. -->
+        <pekko.version>2.0.0-M1</pekko.version>
+        <pekko.management.version>2.0.0-M1</pekko.management.version>
     </properties>
 
     <dependencyManagement>
