@@ -48,6 +48,10 @@
              management, so the whole tree must share the M1 milestone. -->
         <pekko.version>2.0.0-M1</pekko.version>
         <pekko.management.version>2.0.0-M1</pekko.management.version>
+        <!-- OCI image name produced by `mvn spring-boot:build-image` (Cloud Native
+             Buildpacks). Single source of truth for compose / Helm / the operator.
+             Override with -Djoxette.image.name=... or in CI. -->
+        <joxette.image.name>joxette-service:${project.version}</joxette.image.name>
     </properties>
 
     <dependencyManagement>
@@ -187,6 +191,27 @@
                     <version>${spring-boot-dependencies.version}</version>
                     <configuration>
                         <jvmArguments>--enable-preview --add-opens java.base/jdk.internal.misc=ALL-UNNAMED</jvmArguments>
+                        <!-- `mvn spring-boot:build-image` builds an OCI image via Cloud
+                             Native Buildpacks (Paketo) — no Dockerfile, no docker daemon
+                             access beyond the build. JDK 25 is selected via BP_JVM_VERSION;
+                             the preview launcher flags are baked into JAVA_TOOL_OPTIONS via
+                             the buildpack BPE append mechanism (DELIM must be a literal
+                             space — hence xml:space="preserve").
+                             NOTE: add-opens MUST use the '=' form. The JVM splits
+                             JAVA_TOOL_OPTIONS on whitespace, so a space-separated
+                             "add-opens java.base/…" becomes two tokens and the JVM
+                             rejects the orphaned flag ("Unrecognized option"). The
+                             '=' form is a single token and parses correctly. (This
+                             differs from the surefire/run jvmArguments above, which are
+                             real argv where the space-separated form is fine.) -->
+                        <image>
+                            <name>${joxette.image.name}</name>
+                            <env>
+                                <BP_JVM_VERSION>25</BP_JVM_VERSION>
+                                <BPE_DELIM_JAVA_TOOL_OPTIONS xml:space="preserve"> </BPE_DELIM_JAVA_TOOL_OPTIONS>
+                                <BPE_APPEND_JAVA_TOOL_OPTIONS>--enable-preview --add-opens=java.base/jdk.internal.misc=ALL-UNNAMED</BPE_APPEND_JAVA_TOOL_OPTIONS>
+                            </env>
+                        </image>
                     </configuration>
                 </plugin>
                 <plugin>
