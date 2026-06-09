@@ -194,13 +194,15 @@ public class InstanceRegistry {
         Instant aliveAfter = Instant.now().minus(ALIVE_THRESHOLD);
         List<InstanceRecord> result = new ArrayList<>();
         try {
-            try (Statement st = connection.createStatement();
-                 ResultSet rs = st.executeQuery(
-                         "SELECT instance_id, recording_enabled, compaction_enabled, " +
-                         "catalog_backend, started_at, last_heartbeat, kafka_assignments " +
-                         "FROM joxette_instances ORDER BY instance_id")) {
-                while (rs.next()) {
-                    result.add(mapRow(rs, aliveAfter));
+            synchronized (connection) {
+                try (Statement st = connection.createStatement();
+                     ResultSet rs = st.executeQuery(
+                             "SELECT instance_id, recording_enabled, compaction_enabled, " +
+                             "catalog_backend, started_at, last_heartbeat, kafka_assignments " +
+                             "FROM joxette_instances ORDER BY instance_id")) {
+                    while (rs.next()) {
+                        result.add(mapRow(rs, aliveAfter));
+                    }
                 }
             }
         } catch (SQLException e) {

@@ -84,16 +84,18 @@ public class CassetteLifecycleService {
         String qualifiedTable = "lake.main." + tableName;
         long rowCount;
         long estimatedSize;
-        try (Statement st = duckDB.createStatement();
-             ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM " + qualifiedTable)) {
-            rowCount = rs.next() ? rs.getLong(1) : 0;
-        }
-        try (PreparedStatement ps = duckDB.prepareStatement(
-                "SELECT COALESCE(estimated_size, 0) AS sz " +
-                "FROM duckdb_tables() WHERE database_name='lake' AND schema_name='main' AND table_name=?")) {
-            ps.setString(1, tableName);
-            try (ResultSet rs = ps.executeQuery()) {
-                estimatedSize = rs.next() ? rs.getLong("sz") : 0;
+        synchronized (duckDB) {
+            try (Statement st = duckDB.createStatement();
+                 ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM " + qualifiedTable)) {
+                rowCount = rs.next() ? rs.getLong(1) : 0;
+            }
+            try (PreparedStatement ps = duckDB.prepareStatement(
+                    "SELECT COALESCE(estimated_size, 0) AS sz " +
+                    "FROM duckdb_tables() WHERE database_name='lake' AND schema_name='main' AND table_name=?")) {
+                ps.setString(1, tableName);
+                try (ResultSet rs = ps.executeQuery()) {
+                    estimatedSize = rs.next() ? rs.getLong("sz") : 0;
+                }
             }
         }
         return new CassetteStats(topic, qualifiedTable, rowCount, estimatedSize);
@@ -114,20 +116,22 @@ public class CassetteLifecycleService {
         Map<Integer, Long> bucketRows = new LinkedHashMap<>();
         long estimatedSize;
 
-        try (Statement st = duckDB.createStatement();
-             ResultSet rs = st.executeQuery(
-                     "SELECT bucket, COUNT(*) AS row_count FROM " + qualifiedTable +
-                     " GROUP BY bucket ORDER BY bucket")) {
-            while (rs.next()) {
-                bucketRows.put(rs.getInt("bucket"), rs.getLong("row_count"));
+        synchronized (duckDB) {
+            try (Statement st = duckDB.createStatement();
+                 ResultSet rs = st.executeQuery(
+                         "SELECT bucket, COUNT(*) AS row_count FROM " + qualifiedTable +
+                         " GROUP BY bucket ORDER BY bucket")) {
+                while (rs.next()) {
+                    bucketRows.put(rs.getInt("bucket"), rs.getLong("row_count"));
+                }
             }
-        }
-        try (PreparedStatement ps = duckDB.prepareStatement(
-                "SELECT COALESCE(estimated_size, 0) AS sz " +
-                "FROM duckdb_tables() WHERE database_name='lake' AND schema_name='main' AND table_name=?")) {
-            ps.setString(1, tableName);
-            try (ResultSet rs = ps.executeQuery()) {
-                estimatedSize = rs.next() ? rs.getLong("sz") : 0;
+            try (PreparedStatement ps = duckDB.prepareStatement(
+                    "SELECT COALESCE(estimated_size, 0) AS sz " +
+                    "FROM duckdb_tables() WHERE database_name='lake' AND schema_name='main' AND table_name=?")) {
+                ps.setString(1, tableName);
+                try (ResultSet rs = ps.executeQuery()) {
+                    estimatedSize = rs.next() ? rs.getLong("sz") : 0;
+                }
             }
         }
 
@@ -298,12 +302,14 @@ public class CassetteLifecycleService {
     /** Returns all known snapshots, newest first. */
     public List<SnapshotInfo> listSnapshots() throws SQLException {
         List<SnapshotInfo> result = new ArrayList<>();
-        try (Statement st = duckDB.createStatement();
-             ResultSet rs = st.executeQuery(
-                     "SELECT name, created_at, size_bytes FROM snapshots ORDER BY created_at DESC")) {
-            while (rs.next()) {
-                Instant createdAt = rs.getTimestamp("created_at").toInstant();
-                result.add(new SnapshotInfo(rs.getString("name"), createdAt, rs.getLong("size_bytes")));
+        synchronized (duckDB) {
+            try (Statement st = duckDB.createStatement();
+                 ResultSet rs = st.executeQuery(
+                         "SELECT name, created_at, size_bytes FROM snapshots ORDER BY created_at DESC")) {
+                while (rs.next()) {
+                    Instant createdAt = rs.getTimestamp("created_at").toInstant();
+                    result.add(new SnapshotInfo(rs.getString("name"), createdAt, rs.getLong("size_bytes")));
+                }
             }
         }
         return result;

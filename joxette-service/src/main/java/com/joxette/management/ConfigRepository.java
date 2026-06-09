@@ -44,31 +44,35 @@ public class ConfigRepository {
 
     public List<TopicConfig> listTopics() throws SQLException {
         List<TopicConfig> result = new ArrayList<>();
-        try (Statement st = duckDB.createStatement();
-             ResultSet rs = st.executeQuery(
-                     "SELECT topic, mode, paused, retention_days, start_from, broker_id FROM topic_configs ORDER BY topic")) {
-            while (rs.next()) {
-                result.add(new TopicConfig(rs.getString("topic"), TopicMode.fromValue(rs.getString("mode")),
-                        rs.getBoolean("paused"), false,
-                        (Integer) rs.getObject("retention_days"),
-                        rs.getString("start_from"),
-                        rs.getString("broker_id")));
+        synchronized (duckDB) {
+            try (Statement st = duckDB.createStatement();
+                 ResultSet rs = st.executeQuery(
+                         "SELECT topic, mode, paused, retention_days, start_from, broker_id FROM topic_configs ORDER BY topic")) {
+                while (rs.next()) {
+                    result.add(new TopicConfig(rs.getString("topic"), TopicMode.fromValue(rs.getString("mode")),
+                            rs.getBoolean("paused"), false,
+                            (Integer) rs.getObject("retention_days"),
+                            rs.getString("start_from"),
+                            rs.getString("broker_id")));
+                }
             }
         }
         return result;
     }
 
     public Optional<TopicConfig> findTopic(String topic) throws SQLException {
-        try (PreparedStatement ps = duckDB.prepareStatement(
-                "SELECT topic, mode, paused, retention_days, start_from, broker_id FROM topic_configs WHERE topic = ?")) {
-            ps.setString(1, topic);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    return Optional.of(new TopicConfig(rs.getString("topic"),
-                            TopicMode.fromValue(rs.getString("mode")), rs.getBoolean("paused"), false,
-                            (Integer) rs.getObject("retention_days"),
-                            rs.getString("start_from"),
-                            rs.getString("broker_id")));
+        synchronized (duckDB) {
+            try (PreparedStatement ps = duckDB.prepareStatement(
+                    "SELECT topic, mode, paused, retention_days, start_from, broker_id FROM topic_configs WHERE topic = ?")) {
+                ps.setString(1, topic);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (rs.next()) {
+                        return Optional.of(new TopicConfig(rs.getString("topic"),
+                                TopicMode.fromValue(rs.getString("mode")), rs.getBoolean("paused"), false,
+                                (Integer) rs.getObject("retention_days"),
+                                rs.getString("start_from"),
+                                rs.getString("broker_id")));
+                    }
                 }
             }
         }
@@ -159,25 +163,29 @@ public class ConfigRepository {
 
     public List<EntityTypeConfig> listEntityTypes() throws SQLException {
         List<EntityTypeConfig> result = new ArrayList<>();
-        try (Statement st = duckDB.createStatement();
-             ResultSet rs = st.executeQuery(
-                     "SELECT entity_type, bucket_count AS buckets, retention_days FROM entity_type_configs ORDER BY entity_type")) {
-            while (rs.next()) {
-                result.add(new EntityTypeConfig(rs.getString("entity_type"),
-                        rs.getInt("buckets"), (Integer) rs.getObject("retention_days")));
+        synchronized (duckDB) {
+            try (Statement st = duckDB.createStatement();
+                 ResultSet rs = st.executeQuery(
+                         "SELECT entity_type, bucket_count AS buckets, retention_days FROM entity_type_configs ORDER BY entity_type")) {
+                while (rs.next()) {
+                    result.add(new EntityTypeConfig(rs.getString("entity_type"),
+                            rs.getInt("buckets"), (Integer) rs.getObject("retention_days")));
+                }
             }
         }
         return result;
     }
 
     public Optional<EntityTypeConfig> findEntityType(String type) throws SQLException {
-        try (PreparedStatement ps = duckDB.prepareStatement(
-                "SELECT entity_type, bucket_count AS buckets, retention_days FROM entity_type_configs WHERE entity_type = ?")) {
-            ps.setString(1, type);
-            try (ResultSet rs = ps.executeQuery()) {
-                if (rs.next()) {
-                    return Optional.of(new EntityTypeConfig(rs.getString("entity_type"),
-                            rs.getInt("buckets"), (Integer) rs.getObject("retention_days")));
+        synchronized (duckDB) {
+            try (PreparedStatement ps = duckDB.prepareStatement(
+                    "SELECT entity_type, bucket_count AS buckets, retention_days FROM entity_type_configs WHERE entity_type = ?")) {
+                ps.setString(1, type);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (rs.next()) {
+                        return Optional.of(new EntityTypeConfig(rs.getString("entity_type"),
+                                rs.getInt("buckets"), (Integer) rs.getObject("retention_days")));
+                    }
                 }
             }
         }
@@ -247,39 +255,41 @@ public class ConfigRepository {
     public List<EntitySourceConfig> listSources(String entityType) throws SQLException {
         // Load mappings first
         Map<String, EntitySourceConfig.Builder> builders = new LinkedHashMap<>();
-        try (PreparedStatement ps = duckDB.prepareStatement("""
-                SELECT entity_type, topic, mode
-                FROM entity_source_mappings
-                WHERE entity_type = ?
-                ORDER BY topic
-                """)) {
-            ps.setString(1, entityType);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    String topic = rs.getString("topic");
-                    builders.put(topic, new EntitySourceConfig.Builder(
-                            rs.getString("entity_type"), topic,
-                            TopicMode.fromValue(rs.getString("mode"))));
+        synchronized (duckDB) {
+            try (PreparedStatement ps = duckDB.prepareStatement("""
+                    SELECT entity_type, topic, mode
+                    FROM entity_source_mappings
+                    WHERE entity_type = ?
+                    ORDER BY topic
+                    """)) {
+                ps.setString(1, entityType);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        String topic = rs.getString("topic");
+                        builders.put(topic, new EntitySourceConfig.Builder(
+                                rs.getString("entity_type"), topic,
+                                TopicMode.fromValue(rs.getString("mode"))));
+                    }
                 }
             }
-        }
-        // Load matchers and attach to their mappings
-        try (PreparedStatement ps = duckDB.prepareStatement("""
-                SELECT topic, message_type, id_source, id_expression
-                FROM entity_source_matchers
-                WHERE entity_type = ?
-                ORDER BY topic, id
-                """)) {
-            ps.setString(1, entityType);
-            try (ResultSet rs = ps.executeQuery()) {
-                while (rs.next()) {
-                    String topic = rs.getString("topic");
-                    EntitySourceConfig.Builder b = builders.get(topic);
-                    if (b != null) {
-                        b.addMatcher(new EntitySourceConfig.MatcherConfig(
-                                rs.getString("message_type"),
-                                IdSource.fromValue(rs.getString("id_source")),
-                                rs.getString("id_expression")));
+            // Load matchers and attach to their mappings
+            try (PreparedStatement ps = duckDB.prepareStatement("""
+                    SELECT topic, message_type, id_source, id_expression
+                    FROM entity_source_matchers
+                    WHERE entity_type = ?
+                    ORDER BY topic, id
+                    """)) {
+                ps.setString(1, entityType);
+                try (ResultSet rs = ps.executeQuery()) {
+                    while (rs.next()) {
+                        String topic = rs.getString("topic");
+                        EntitySourceConfig.Builder b = builders.get(topic);
+                        if (b != null) {
+                            b.addMatcher(new EntitySourceConfig.MatcherConfig(
+                                    rs.getString("message_type"),
+                                    IdSource.fromValue(rs.getString("id_source")),
+                                    rs.getString("id_expression")));
+                        }
                     }
                 }
             }
