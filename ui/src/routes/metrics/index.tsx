@@ -58,13 +58,33 @@ function parsePrometheus(text: string): Record<string, MetricFamily> {
   return result
 }
 
+// The Prometheus parser groups _sum/_count/_bucket/_max samples under the stripped family
+// key (e.g. joxette_write_duration_seconds_sum → family key joxette_write_duration_seconds).
+// Try the stripped key first so callers can pass the full suffixed name.
+function familyFor(family: Record<string, MetricFamily>, name: string) {
+  const stripped = name.replace(/_bucket$|_count$|_sum$|_max$/, '')
+  return family[stripped] ?? family[name]
+}
+
 function getSample(family: Record<string, MetricFamily>, name: string, labelFilter: Record<string, string> = {}): number {
-  const f = family[name]; if (!f) return NaN
+  const f = familyFor(family, name); if (!f) return NaN
   for (const s of f.samples) {
     if (s.labels.__name__ !== name) continue
     if (Object.entries(labelFilter).every(([k, v]) => s.labels[k] === v)) return s.value
   }
   return NaN
+}
+
+// Sum all samples matching a full metric name across every label combination.
+// Used for per-topic timers where we want the aggregate across all topics.
+function sumSamples(family: Record<string, MetricFamily>, name: string): number {
+  const f = familyFor(family, name); if (!f) return NaN
+  let total = 0, found = false
+  for (const s of f.samples) {
+    if (s.labels.__name__ !== name) continue
+    total += s.value; found = true
+  }
+  return found ? total : NaN
 }
 
 function getSamplesBy(family: Record<string, MetricFamily>, name: string, groupBy: string): Record<string, number> {
@@ -195,8 +215,11 @@ function scrapeToPoint(family: Record<string, MetricFamily>): DataPoint {
     pollDurationP50, pollDurationP99, fetchLatencyMax, fetchThrottle, networkIoRate,
     partitionLag, partitionConsumedRate,
     writeDepth: getSample(family, 'joxette_write_channel_depth') || 0,
-    writeDuration: (getSample(family, 'joxette_write_duration_seconds_sum') /
-                   (getSample(family, 'joxette_write_duration_seconds_count') || 1)) * 1000,
+    writeDuration: (() => {
+      const s = sumSamples(family, 'joxette_write_duration_seconds_sum')
+      const c = sumSamples(family, 'joxette_write_duration_seconds_count')
+      return (!isNaN(s) && c > 0) ? (s / c) * 1000 : 0
+    })(),
     compactionFiles: getSample(family, 'joxette_compaction_files_processed_total') || 0,
     retentionRows: Object.values(getSamplesBy(family, 'joxette_retention_rows_deleted_total', 'table_type')).reduce((a, b) => a + b, 0),
     catalogBytes: getSample(family, 'joxette_catalog_size_bytes')   || 0,
@@ -537,8 +560,8 @@ function MetricsPage() {
               <YAxis tickFormatter={fmtBytes} {...axisProps} width={68} />
               <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => fmtBytes(Number(v))} />} />
               <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
-              <Area type="monotone" dataKey="catalogBytes" name="catalog file" stroke="var(--color-catalogBytes)" fill="var(--color-catalogBytes)/20" strokeWidth={1.5} dot={false} isAnimationActive={false} />
-              <Area type="monotone" dataKey="inlinedBytes" name="inlined"       stroke="var(--color-inlinedBytes)" fill="var(--color-inlinedBytes)/20" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+              <Area type="monotone" dataKey="catalogBytes" name="catalog file" stroke="var(--color-catalogBytes)" fill="var(--color-catalogBytes)" fillOpacity={0.15} strokeWidth={1.5} dot={false} isAnimationActive={false} />
+              <Area type="monotone" dataKey="inlinedBytes" name="inlined"       stroke="var(--color-inlinedBytes)" fill="var(--color-inlinedBytes)" fillOpacity={0.15} strokeWidth={1.5} dot={false} isAnimationActive={false} />
             </AreaChart>
           </ChartContainer>
         </Card>
@@ -553,7 +576,7 @@ function MetricsPage() {
               <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => fmtBytes(Number(v))} />} />
               <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
               <Area type="monotone" dataKey="heapMax"  name="heap max"  stroke="var(--color-heapMax)"  fill="transparent"               strokeDasharray="4 3" strokeWidth={1}   dot={false} isAnimationActive={false} />
-              <Area type="monotone" dataKey="heapUsed" name="heap used" stroke="var(--color-heapUsed)" fill="var(--color-heapUsed)/15" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+              <Area type="monotone" dataKey="heapUsed" name="heap used" stroke="var(--color-heapUsed)" fill="var(--color-heapUsed)" fillOpacity={0.12} strokeWidth={1.5} dot={false} isAnimationActive={false} />
             </AreaChart>
           </ChartContainer>
         </Card>
