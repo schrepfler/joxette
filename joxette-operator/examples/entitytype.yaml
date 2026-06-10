@@ -1,0 +1,25 @@
+# Declarative entity-type config, reconciled into the 'prod' cluster's /entities API.
+apiVersion: joxette.dev/v1alpha1
+kind: EntityType
+metadata:
+  name: order
+  namespace: joxette
+spec:
+  clusterRef:
+    name: prod
+  type: order
+  buckets: 256
+  sources:
+    - topic: orders.events
+      mode: both
+      matchers:
+        - messageType: OrderCreated
+          idSource: value
+          idExpression: "$.order_id"
+    - topic: payments.events
+      mode: entity_only
+      matchers:
+        - messageType: PaymentSettled
+          idSource: value
+          idExpression: "$.payment.order_id"
+  deletionPolicy: Orphan   # Delete | Orphan

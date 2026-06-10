@@ -33,9 +33,36 @@ Deliberately out of scope:
   (`CatalogGuardrail` → `phase=Rejected`, nothing applied) is already a complete
   safety backstop. The webhook only moves rejection earlier (apply-time).
 
-Next (Phase 2): the `RecordedTopic` / `EntityType` reconcilers — clusterRef
-resolution, diff/converge into the running cluster's REST API, finalizers +
-`deletionPolicy`.
+## Status — Phase 2 (complete)
+
+The `RecordedTopic` and `EntityType` reconcilers converge into a running
+cluster's REST API (not Kubernetes objects):
+
+- **`RecordedTopic`** → `/topics`. `RecordedTopicReconciler` resolves
+  `clusterRef` → Service DNS (`http://<name>.<ns>.svc:8080`), then `TopicConverger`
+  diffs desired vs current and POSTs (create) or PUTs (mode/brokerId drift), and is
+  a JOSDK `Cleaner` applying `deletionPolicy` (Delete → `DELETE`, Pause → `POST
+  …/pause`, Orphan → no-op) on CR removal.
+- **`EntityType`** → `/entities`. `EntityConverger` creates/updates the type
+  (buckets drift) and upserts each declared source mapping (server-side
+  `POST …/sources` is idempotent); `deletionPolicy` is Delete | Orphan.
+- **`JoxetteRestClient`** — thin JDK-`HttpClient` wrapper over the endpoints used;
+  **`ClusterRefResolver`** builds the Service DNS; **`RestClientFactory`** is the
+  injection seam tests substitute.
+
+Convergers are tested against a real in-process `HttpServer` emulating the API
+(create / unchanged / drift-update / delete / pause / orphan paths).
+
+## CRDs
+
+Three kinds in `joxette.dev/v1alpha1`, all generated under
+`target/classes/META-INF/fabric8/`:
+`joxetteclusters`, `recordedtopics`, `entitytypes`.
+
+## Remaining (Phase 3)
+
+Admission webhook (TLS/cert), ServiceMonitor/HPA wiring, generated OpenAPI client,
+and `/health`-driven `clusterRef`-not-ready rescheduling for the API reconcilers.
 
 ## Build & run
 

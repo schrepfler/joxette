@@ -1,0 +1,13 @@
+# Declarative topic recording, reconciled into the 'prod' cluster's /topics API.
+apiVersion: joxette.dev/v1alpha1
+kind: RecordedTopic
+metadata:
+  name: orders-events
+  namespace: joxette
+spec:
+  clusterRef:
+    name: prod
+  topic: orders.events
+  mode: both              # general | entity_only | both
+  startFrom: latest       # latest | earliest
+  deletionPolicy: Pause   # Delete | Pause | Orphan
