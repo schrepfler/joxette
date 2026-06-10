@@ -10,7 +10,13 @@ import io.fabric8.kubernetes.api.model.HasMetadata;
 import io.fabric8.kubernetes.api.model.PersistentVolumeClaimBuilder;
 import io.fabric8.kubernetes.api.model.Quantity;
 import io.fabric8.kubernetes.api.model.Service;
+import io.fabric8.kubernetes.api.model.ServiceAccount;
+import io.fabric8.kubernetes.api.model.ServiceAccountBuilder;
 import io.fabric8.kubernetes.api.model.ServiceBuilder;
+import io.fabric8.kubernetes.api.model.rbac.Role;
+import io.fabric8.kubernetes.api.model.rbac.RoleBinding;
+import io.fabric8.kubernetes.api.model.rbac.RoleBindingBuilder;
+import io.fabric8.kubernetes.api.model.rbac.RoleBuilder;
 import io.fabric8.kubernetes.api.model.apps.Deployment;
 import io.fabric8.kubernetes.api.model.apps.DeploymentBuilder;
 import io.fabric8.kubernetes.api.model.apps.StatefulSet;
@@ -42,6 +48,12 @@ public final class JoxetteClusterResources {
         boolean embedded = spec.getCatalog().getBackend() == CatalogBackend.embedded;
 
         List<HasMetadata> out = new ArrayList<>();
+        out.add(serviceAccount(name));
+        if (spec.getClustering().getMode() == ClusteringMode.pekko_management) {
+            // kubernetes-api discovery + lease-backed SBR need pod read + lease CRUD.
+            out.add(pekkoRole(name));
+            out.add(pekkoRoleBinding(name, cluster.getMetadata().getNamespace()));
+        }
         out.add(mainService(name, spec));
         if (embedded) {
             out.add(headlessService(name, spec));
@@ -96,6 +108,7 @@ public final class JoxetteClusterResources {
                 .withNewTemplate()
                 .withNewMetadata().withLabels(labels(name)).endMetadata()
                 .withNewSpec()
+                .withServiceAccountName(name)
                 .addNewContainer()
                 .withName("joxette")
                 .withImage(spec.getImage())
@@ -129,6 +142,7 @@ public final class JoxetteClusterResources {
                 .withNewTemplate()
                 .withNewMetadata().withLabels(tierLabels).endMetadata()
                 .withNewSpec()
+                .withServiceAccountName(name)
                 .addNewContainer()
                 .withName("joxette")
                 .withImage(spec.getImage())
@@ -138,6 +152,46 @@ public final class JoxetteClusterResources {
                 .endSpec()
                 .endTemplate()
                 .endSpec()
+                .build();
+    }
+
+    // ---- service account + RBAC ---------------------------------------------
+
+    private static ServiceAccount serviceAccount(String name) {
+        return new ServiceAccountBuilder()
+                .withNewMetadata().withName(name).withLabels(labels(name)).endMetadata()
+                .build();
+    }
+
+    private static Role pekkoRole(String name) {
+        return new RoleBuilder()
+                .withNewMetadata().withName(name + "-pekko").withLabels(labels(name)).endMetadata()
+                .addNewRule()
+                .withApiGroups("")
+                .withResources("pods")
+                .withVerbs("get", "watch", "list")
+                .endRule()
+                .addNewRule()
+                .withApiGroups("coordination.k8s.io")
+                .withResources("leases")
+                .withVerbs("get", "create", "update", "list", "watch", "delete")
+                .endRule()
+                .build();
+    }
+
+    private static RoleBinding pekkoRoleBinding(String name, String namespace) {
+        return new RoleBindingBuilder()
+                .withNewMetadata().withName(name + "-pekko").withLabels(labels(name)).endMetadata()
+                .withNewRoleRef()
+                .withApiGroup("rbac.authorization.k8s.io")
+                .withKind("Role")
+                .withName(name + "-pekko")
+                .endRoleRef()
+                .addNewSubject()
+                .withKind("ServiceAccount")
+                .withName(name)
+                .withNamespace(namespace)
+                .endSubject()
                 .build();
     }
 

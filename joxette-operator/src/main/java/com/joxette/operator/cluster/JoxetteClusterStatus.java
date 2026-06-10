@@ -17,6 +17,12 @@ public class JoxetteClusterStatus {
     /** Last spec generation the reconciler observed. */
     private Long observedGeneration;
 
+    /** Total desired pod replicas across all workloads this CR owns. */
+    private Integer desiredReplicas;
+
+    /** Ready pod replicas across all workloads this CR owns. */
+    private Integer readyReplicas;
+
     public JoxetteClusterStatus() {
     }
 
@@ -33,4 +39,8 @@ public class JoxetteClusterStatus {
     public void setCatalogBackend(String catalogBackend) { this.catalogBackend = catalogBackend; }
     public Long getObservedGeneration() { return observedGeneration; }
     public void setObservedGeneration(Long observedGeneration) { this.observedGeneration = observedGeneration; }
+    public Integer getDesiredReplicas() { return desiredReplicas; }
+    public void setDesiredReplicas(Integer desiredReplicas) { this.desiredReplicas = desiredReplicas; }
+    public Integer getReadyReplicas() { return readyReplicas; }
+    public void setReadyReplicas(Integer readyReplicas) { this.readyReplicas = readyReplicas; }
 }
