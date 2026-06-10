@@ -258,8 +258,8 @@
 - [x] **Helm chart** — `deploy/helm/joxette/`: embedded→StatefulSet / quack+pg→per-tier Deployments; clustering.mode drives Services+RBAC (headless Svc + pod RBAC + POD_IP for pekko-management); render-time single-writer guardrail; values-kind + values-cluster examples; lint+template verified (commit 8370ecf)
 - [~] **Build the operator** — JOSDK module (Phases 1–3 in `operator-design.md`)
   - [x] Phase 1 — `joxette-operator` module (JOSDK 5.3.4 + Fabric8 7.7.0, Spring Boot 4 starter 6.4.2). JoxetteCluster CRD (generated YAML); JoxetteClusterReconciler (guardrail→SSA apply→readiness status, reschedules while Progressing); CatalogGuardrail; JoxetteClusterResources (embedded StatefulSet+PVC / shared per-tier Deployments, ServiceAccount wired into pods, pekko-management headless Svc + pod RBAC); WorkloadReadiness. 22 tests incl. context-load (starter on Boot4/JDK25) + reconciler tests vs Fabric8 mock (commits 6febd0d, plus RBAC/readiness). ConfigMap intentionally omitted (env-vars suffice); admission webhook deferred to Phase 3 (reconcile guardrail is the backstop)
-  - [ ] Phase 2 (NEXT) — RecordedTopic + EntityType API reconcilers (clusterRef resolution, diff/converge into REST, finalizers + deletionPolicy)
-  - [ ] Phase 3 — admission webhook (TLS/cert), ServiceMonitor/HPA, generated OpenAPI client
+  - [x] Phase 2 — RecordedTopic + EntityType reconcilers converge into the running cluster's REST API (not K8s objects). RecordedTopic→/topics (TopicConverger: POST/PUT diff, Cleaner applies Delete|Pause|Orphan); EntityType→/entities (EntityConverger: buckets drift + idempotent source upsert, Delete|Orphan). JoxetteRestClient (JDK HttpClient), ClusterRefResolver (Service DNS), RestClientFactory. 35 tests incl. convergers vs in-process HttpServer + 3-reconciler context load (commit 22c3db2)
+  - [ ] Phase 3 (NEXT) — admission webhook (TLS/cert), ServiceMonitor/HPA, generated OpenAPI client, clusterRef-not-ready rescheduling via /health
 
 #### `sol` library
 - [ ] Group ID rename `com.joxette → com.sol` — deferred until ready to publish independently
