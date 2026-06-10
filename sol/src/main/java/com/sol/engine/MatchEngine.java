@@ -198,6 +198,13 @@ final class MatchEngine {
     private static void addTag(Map<String, Tag> tags, PatternElement elem, int from, int count) {
         if (elem.tagName() != null) {
             tags.put(elem.tagName(), new Tag(elem.tagName(), from, from + count));
+        } else if (count > 0 && elem.eventNames().size() == 1 && elem.excluded().isEmpty()) {
+            // Bare single-event element (`match home_page >> …`) — emit an implicit
+            // tag named after the event, so untagged patterns still surface spans
+            // (Motif-style: the bare name IS the tag). Wildcards and multi-event
+            // alternations stay untagged.
+            String name = elem.eventNames().get(0);
+            tags.put(name, new Tag(name, from, from + count));
         }
     }
 

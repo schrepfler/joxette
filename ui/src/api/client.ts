@@ -139,6 +139,30 @@ export interface SolMatchResponse {
   sequenceLength: number
 }
 
+/** One row of the SOL sequence model: a tag (or unnamed gap) and its hit count. */
+export interface SolModelRow {
+  label: string | null
+  gap: boolean
+  count: number
+}
+
+/** One example sequence from the batch SOL matcher. Spans index into `events`. */
+export interface SolSequenceExample {
+  entityId: string
+  events: string[]
+  tags: Record<string, SolTagSpan>
+  matched: boolean
+  truncated: boolean
+}
+
+/** Aggregate result of POST /cassettes/entities/{type}/sol-examples. */
+export interface SolBatchResult {
+  totalSequences: number
+  matchedSequences: number
+  model: SolModelRow[]
+  examples: SolSequenceExample[]
+}
+
 export interface EntityInfo {
   entityType: string
   entityId: string
@@ -565,6 +589,17 @@ export const cassettesApi = {
     request<SolMatchResponse>(
       `/cassettes/topics/${encodeURIComponent(topic)}/sol-match`,
       { method: 'POST', body: JSON.stringify({ query, from, to, typeField: typeField || undefined }) },
+    ),
+
+  /** Run a SOL query across many entity sequences — examples-pane data. */
+  solExamples: (
+    entityType: string,
+    query: string,
+    opts?: { from?: string; to?: string; maxSequences?: number; exampleLimit?: number },
+  ) =>
+    request<SolBatchResult>(
+      `/cassettes/entities/${encodeURIComponent(entityType)}/sol-examples`,
+      { method: 'POST', body: JSON.stringify({ query, ...opts }) },
     ),
 
   /** Dry-run: apply a transform pipeline to the first N records and return before/after pairs. */

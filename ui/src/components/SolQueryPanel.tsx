@@ -4,6 +4,7 @@ import { cassettesApi, type EntityRecord } from '../api/client'
 import { JsonView } from './JsonView'
 import { SolEditor } from './SolEditor'
 import { SolSequenceInspector } from './SolSequenceInspector'
+import { SOL_RECIPES } from './sol-recipes'
 
 interface Props {
   mode: 'entity' | 'topic'
@@ -35,61 +36,6 @@ function eventPill(name: string): React.CSSProperties {
     whiteSpace: 'nowrap' as const,
   }
 }
-
-// ── SOL recipe library ─────────────────────────────────────────────────────────
-
-const RECIPES: { label: string; description: string; sol: string }[] = [
-  {
-    label: 'Simple funnel (A → B)',
-    description: 'Find sequences where event_a is followed by event_b with any events in between.',
-    sol: 'match A(event_a) >> * >> B(event_b)',
-  },
-  {
-    label: 'Funnel with time constraint',
-    description: 'Same as simple funnel, but only keep sequences that complete within 5 minutes.',
-    sol: 'match A(event_a) >> * >> B(event_b)\nif duration(A, B) < 5min',
-  },
-  {
-    label: 'Sessionize (gap > 30 min)',
-    description: 'Split a sequence into sessions wherever the gap between events exceeds 30 minutes.',
-    sol: 'match split Session()+\nif duration(Session[-1], SUFFIX[0]) > 30min',
-  },
-  {
-    label: 'Filter to matched only',
-    description: 'Discard all events outside the matched region — useful for zooming into the relevant window.',
-    sol: 'match Target(event_name)\nfilter MATCHED',
-  },
-  {
-    label: 'Count occurrences of event',
-    description: 'Count how many times an event appears in the sequence using split + combine.',
-    sol: 'match split E(event_name)\ncombine count = max(split_index)',
-  },
-  {
-    label: 'Remove duplicate consecutive events',
-    description: 'Collapse runs of the same event down to a single occurrence.',
-    sol: 'match split A(event_name){2,}\nreplace A with A[-1]\ncombine',
-  },
-  {
-    label: 'Keep events before a target',
-    description: 'Trim the sequence to only the events leading up to (and including) a target event.',
-    sol: 'match start >> PREFIX()* >> Target(event_name)\nreplace SEQ with PREFIX >> Target',
-  },
-  {
-    label: 'Compute duration between two events',
-    description: 'Annotate the sequence with the elapsed time between two specific events.',
-    sol: 'match A(event_a) >> * >> B(event_b)\nset time_between = duration(A, B)\nfilter MATCHED',
-  },
-  {
-    label: 'Last-touch attribution',
-    description: 'Tag the most recent touchpoint event before an outcome, ignoring repeated touches.',
-    sol: 'match LastTouch(event_a | event_b | event_c) >>\n  (^event_a, ^event_b, ^event_c)* >> outcome_event',
-  },
-  {
-    label: 'Exclude sequences containing event',
-    description: 'Keep only sequences that never contain a specific unwanted event.',
-    sol: 'match start >> (^unwanted_event)* >> end\nfilter MATCHED',
-  },
-]
 
 // ── Main component ─────────────────────────────────────────────────────────────
 
@@ -200,7 +146,7 @@ export function SolQueryPanel({ mode, entityType, entityId, topic, from, to }: P
                 minWidth: 360, marginTop: 4,
               }}
             >
-              {RECIPES.map(r => (
+              {SOL_RECIPES.map(r => (
                 <button
                   key={r.label}
                   onClick={() => applyRecipe(r.sol)}

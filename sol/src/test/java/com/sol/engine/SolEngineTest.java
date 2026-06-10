@@ -194,4 +194,56 @@ class SolEngineTest {
         SolResult result = SolEngine.execute(ops, input);
         assertions.accept(result);
     }
+
+    // ------------------------------------------------------------------
+    // Bare event names emit implicit tags named after the event
+    // ------------------------------------------------------------------
+
+    static Stream<Arguments> bareNameTagCases() {
+        return Stream.of(
+
+                Arguments.of("bare names are tagged with the event name",
+                        seq("u1", ev("home", T0), ev("click", T1), ev("search", T2)),
+                        "match home >> * >> search",
+                        (Consumer<SolResult>) result -> {
+                            assertTrue(result.matched());
+                            Tag home = result.tags().get("home");
+                            assertNotNull(home, "bare 'home' must produce a tag");
+                            assertEquals(0, home.from());
+                            assertEquals(1, home.to());
+                            Tag search = result.tags().get("search");
+                            assertNotNull(search, "bare 'search' must produce a tag");
+                            assertEquals(2, search.from());
+                            assertEquals(3, search.to());
+                        }),
+
+                Arguments.of("explicit tag still wins over implicit naming",
+                        seq("u1", ev("home", T0), ev("search", T1)),
+                        "match H(home) >> search",
+                        (Consumer<SolResult>) result -> {
+                            assertNotNull(result.tags().get("H"), "explicit tag kept");
+                            assertNull(result.tags().get("home"),
+                                    "explicitly tagged element must not also auto-tag");
+                            assertNotNull(result.tags().get("search"), "bare element auto-tags");
+                        }),
+
+                Arguments.of("multi-event alternation without tag stays untagged",
+                        seq("u1", ev("home", T0), ev("search", T1)),
+                        "match (home | search)",
+                        (Consumer<SolResult>) result -> {
+                            assertTrue(result.matched());
+                            assertNull(result.tags().get("home"),
+                                    "alternation must not auto-tag a single branch");
+                        })
+        );
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("bareNameTagCases")
+    void bareNameImplicitTags(String label, Sequence input, String query,
+                              Consumer<SolResult> assertions) {
+        List<SolOperation> ops = SolParser.parse(query);
+        SolResult result = SolEngine.execute(ops, input);
+        assertions.accept(result);
+    }
 }

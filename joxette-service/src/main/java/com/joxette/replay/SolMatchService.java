@@ -175,6 +175,161 @@ public class SolMatchService {
                 .encodeToString(value.getBytes(StandardCharsets.UTF_8)));
     }
 
+    // -----------------------------------------------------------------------
+    // Batch matching across an entity type ("examples" view)
+    // -----------------------------------------------------------------------
+
+    public static final int DEFAULT_MAX_SEQUENCES = 500;
+    public static final int DEFAULT_EXAMPLE_LIMIT = 25;
+
+    /** Hard cap on events returned per example row — keeps payloads bounded. */
+    static final int MAX_EXAMPLE_EVENTS = 80;
+
+    private static final java.util.Set<String> IMPLICIT_TAGS =
+            java.util.Set.of("SEQ", "MATCHED", "PREFIX", "SUFFIX");
+
+    /**
+     * Runs a SOL query across many entity sequences of one type — one sequence
+     * per entity ID, in entity-listing order — and aggregates per-tag match
+     * statistics plus a bounded set of example rows for the UI's examples pane.
+     *
+     * <p>Each sequence is loaded, executed independently, and contributes to:
+     * <ul>
+     *   <li>{@code totalSequences} / {@code matchedSequences} counters;</li>
+     *   <li>per-tag counts ({@code model}) in pattern order, including implicit
+     *       {@code Prefix}/{@code Suffix} rows and the unnamed gap regions between
+     *       consecutive user tags (the {@code *} wildcards);</li>
+     *   <li>up to {@code exampleLimit} examples carrying the post-pipeline event
+     *       names and tag spans (spans index into {@code events}).</li>
+     * </ul>
+     */
+    public SolBatchResult matchAcrossEntities(
+            String entityType,
+            String query,
+            Instant from,
+            Instant to,
+            int maxSequences,
+            int exampleLimit
+    ) throws SQLException {
+        List<SolOperation> ops = SolParser.parse(query);
+
+        int total = 0;
+        int matchedCount = 0;
+        int prefixCount = 0;
+        int suffixCount = 0;
+        // User-tag name → number of sequences where the tag matched non-empty.
+        // LinkedHashMap: first-seen order == pattern order (engine emits user tags
+        // in match order ahead of the implicit tags).
+        Map<String, Integer> tagCounts = new LinkedHashMap<>();
+        // "tagA→tagB" → sequences with a non-empty gap between those adjacent tags.
+        Map<String, Integer> gapCounts = new LinkedHashMap<>();
+        List<SolSequenceExample> examples = new ArrayList<>();
+
+        String cursor = null;
+        outer:
+        do {
+            var page = entityReplayService.listEntities(
+                    entityType, 100, cursor, EntityReplayService.EntitySortBy.id);
+            for (EntityInfo info : page.data()) {
+                if (total >= maxSequences) break outer;
+                List<EntityRecord> records = new ArrayList<>();
+                entityReplayService.streamEntityEvents(entityType, info.entityId(), from, to, records::add);
+                if (records.isEmpty()) continue;
+                total++;
+
+                Sequence sequence = EntityRecordAdapter.toSequence(info.entityId(), records);
+                SolResult result = SolEngine.execute(ops, sequence);
+                if (result.matched()) matchedCount++;
+
+                List<Map.Entry<String, Tag>> userTags = result.tags().entrySet().stream()
+                        .filter(e -> !IMPLICIT_TAGS.contains(e.getKey()))
+                        .filter(e -> !e.getValue().isEmpty())
+                        .toList();
+                for (var e : userTags) tagCounts.merge(e.getKey(), 1, Integer::sum);
+                if (result.tags().containsKey("PREFIX")) prefixCount++;
+                if (result.tags().containsKey("SUFFIX")) suffixCount++;
+                for (int i = 0; i + 1 < userTags.size(); i++) {
+                    Tag a = userTags.get(i).getValue();
+                    Tag b = userTags.get(i + 1).getValue();
+                    if (b.from() > a.to()) {
+                        gapCounts.merge(userTags.get(i).getKey() + "→" + userTags.get(i + 1).getKey(),
+                                1, Integer::sum);
+                    }
+                }
+
+                if (examples.size() < exampleLimit) {
+                    examples.add(toExample(info.entityId(), result));
+                }
+            }
+            cursor = page.hasMore() ? page.nextCursor() : null;
+        } while (cursor != null && total < maxSequences);
+
+        return new SolBatchResult(total, matchedCount,
+                buildModel(tagCounts, gapCounts, prefixCount, suffixCount), examples);
+    }
+
+    /** One example row: post-pipeline event names + spans indexing into them. */
+    private static SolSequenceExample toExample(String entityId, SolResult result) {
+        List<String> names = result.sequence().events().stream()
+                .map(com.sol.model.Event::name)
+                .toList();
+        boolean truncated = names.size() > MAX_EXAMPLE_EVENTS;
+        if (truncated) names = names.subList(0, MAX_EXAMPLE_EVENTS);
+
+        Map<String, TagSpan> spans = new LinkedHashMap<>();
+        for (Map.Entry<String, Tag> e : result.tags().entrySet()) {
+            String name = e.getKey();
+            if (name.equals("SEQ") || name.equals("MATCHED")) continue;   // whole/region tags add noise
+            Tag t = e.getValue();
+            if (t.isEmpty() || t.from() >= MAX_EXAMPLE_EVENTS) continue;
+            spans.put(name, new TagSpan(t.from(), Math.min(t.to(), MAX_EXAMPLE_EVENTS)));
+        }
+        return new SolSequenceExample(entityId, names, spans, result.matched(), truncated);
+    }
+
+    /**
+     * Pattern-ordered model rows: Prefix, then each user tag interleaved with the
+     * unnamed gap regions between adjacent tags, then Suffix. Empty when no tag
+     * matched anywhere (nothing to model).
+     */
+    private static List<ModelRow> buildModel(Map<String, Integer> tagCounts,
+                                             Map<String, Integer> gapCounts,
+                                             int prefixCount, int suffixCount) {
+        if (tagCounts.isEmpty()) return List.of();
+        List<ModelRow> rows = new ArrayList<>();
+        rows.add(new ModelRow("Prefix", false, prefixCount));
+        List<String> names = List.copyOf(tagCounts.keySet());
+        for (int i = 0; i < names.size(); i++) {
+            rows.add(new ModelRow(names.get(i), false, tagCounts.get(names.get(i))));
+            if (i + 1 < names.size()) {
+                int gap = gapCounts.getOrDefault(names.get(i) + "→" + names.get(i + 1), 0);
+                rows.add(new ModelRow(null, true, gap));
+            }
+        }
+        rows.add(new ModelRow("Suffix", false, suffixCount));
+        return rows;
+    }
+
+    /** One row of the sequence model: a tag (or unnamed gap) and how many sequences hit it. */
+    public record ModelRow(String label, boolean gap, int count) {}
+
+    /** One example sequence for the examples pane. Spans index into {@code events}. */
+    public record SolSequenceExample(
+            String entityId,
+            List<String> events,
+            Map<String, TagSpan> tags,
+            boolean matched,
+            boolean truncated
+    ) {}
+
+    /** Aggregate result of {@link #matchAcrossEntities}. */
+    public record SolBatchResult(
+            int totalSequences,
+            int matchedSequences,
+            List<ModelRow> model,
+            List<SolSequenceExample> examples
+    ) {}
+
     /** A tag's half-open index range within the sequence. */
     public record TagSpan(int from, int to) {
         public int length() { return to - from; }

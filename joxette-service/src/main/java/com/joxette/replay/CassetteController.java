@@ -2487,6 +2487,55 @@ public class CassetteController {
                 sequence.size());
     }
 
+    /** Request body for the batch SOL examples endpoint. */
+    public record SolExamplesRequest(
+            @io.swagger.v3.oas.annotations.media.Schema(
+                description = "SOL query string",
+                example = "match home_page >> * >> search_page")
+            String query,
+            Instant from,
+            Instant to,
+            @io.swagger.v3.oas.annotations.media.Schema(
+                description = "Maximum number of entity sequences to scan (default 500, cap 5000)")
+            Integer maxSequences,
+            @io.swagger.v3.oas.annotations.media.Schema(
+                description = "Maximum example rows to return (default 25, cap 200)")
+            Integer exampleLimit
+    ) {}
+
+    @Operation(
+        operationId = "solExamples",
+        summary     = "Run a SOL query across many entity sequences",
+        description = "Scans up to `maxSequences` entities of the given type (one ordered event " +
+                      "sequence per entity), executes the SOL query against each, and returns " +
+                      "aggregate match statistics — total/matched counts and a pattern-ordered " +
+                      "sequence model with per-tag hit counts (including implicit Prefix/Suffix " +
+                      "and the unnamed gap regions) — plus up to `exampleLimit` example rows. " +
+                      "Each example carries the post-pipeline event names and tag spans indexing " +
+                      "into them, ready for the examples-pane visualisation."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Aggregate SOL match result"),
+        @ApiResponse(responseCode = "400", description = "SOL parse error or invalid entity type"),
+        @ApiResponse(responseCode = "404", description = "Entity type not found"),
+        @ApiResponse(responseCode = "500", description = "Database error")
+    })
+    @PostMapping(value    = "/entities/{entityType}/sol-examples",
+                 consumes = MediaType.APPLICATION_JSON_VALUE,
+                 produces = MediaType.APPLICATION_JSON_VALUE)
+    public SolMatchService.SolBatchResult solExamples(
+            @Parameter(description = "Entity type name (must match `[a-z][a-z0-9_]*`)", required = true, example = "order")
+            @PathVariable String entityType,
+            @Valid @RequestBody SolExamplesRequest req
+    ) throws SQLException {
+        int maxSequences = req.maxSequences() != null
+                ? Math.min(req.maxSequences(), 5_000) : SolMatchService.DEFAULT_MAX_SEQUENCES;
+        int exampleLimit = req.exampleLimit() != null
+                ? Math.min(req.exampleLimit(), 200) : SolMatchService.DEFAULT_EXAMPLE_LIMIT;
+        return solMatchService.matchAcrossEntities(
+                entityType, req.query(), req.from(), req.to(), maxSequences, exampleLimit);
+    }
+
     // =========================================================================
     // SOL wiring helpers
     // =========================================================================

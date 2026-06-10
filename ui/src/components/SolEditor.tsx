@@ -32,8 +32,11 @@ import {
 import { completionKeymap, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete'
 import { syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language'
 import { oneDark } from '@codemirror/theme-one-dark'
+import { Decoration } from '@codemirror/view'
+import { RangeSetBuilder } from '@codemirror/state'
 import { solLanguage } from './sol-language'
 import { lintGutter } from '@codemirror/lint'
+import type { SolTagColor } from './sol-colors'
 
 interface Props {
   value: string
@@ -45,11 +48,46 @@ interface Props {
   messageTypes?: string[]
   /** Full JSONPath field suggestions ($.value.x, $.key, …) */
   fieldPaths?: string[]
+  /**
+   * Tag → colour map. Occurrences of these tokens are decorated with a coloured
+   * underline + wash so query tokens visually match their result spans.
+   */
+  tagColors?: Record<string, SolTagColor>
   dark?: boolean
   minHeight?: number
   disabled?: boolean
   /** Compact mode: no line numbers, no gutter, tighter padding. For inline strips. */
   compact?: boolean
+}
+
+// ── Tag token decorations ──────────────────────────────────────────────────────
+
+/** Decorates whole-word occurrences of each tag token in the tag's colour. */
+function tagTokenDecorations(tagColors: Record<string, SolTagColor>) {
+  const tokens = Object.keys(tagColors)
+  if (tokens.length === 0) return []
+  // Longest-first so e.g. home_page_click wins over home_page at the same start.
+  const pattern = new RegExp(
+    `\\b(${tokens.sort((a, b) => b.length - a.length)
+        .map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\b`,
+    'g',
+  )
+  return EditorView.decorations.compute(['doc'], state => {
+    const builder = new RangeSetBuilder<Decoration>()
+    const doc = state.doc.toString()
+    let m: RegExpExecArray | null
+    pattern.lastIndex = 0
+    while ((m = pattern.exec(doc)) !== null) {
+      const color = tagColors[m[1]]
+      if (!color) continue
+      builder.add(m.index, m.index + m[1].length, Decoration.mark({
+        attributes: {
+          style: `background:${color.wash};border-bottom:2px solid ${color.strong};border-radius:2px 2px 0 0`,
+        },
+      }))
+    }
+    return builder.finish()
+  })
 }
 
 // ── Light theme overrides to match the app's surface variables ─────────────────
@@ -126,10 +164,12 @@ const solHighlightStyle = syntaxHighlighting(defaultHighlightStyle)
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
-export function SolEditor({ value, onChange, onRun, eventNames = [], messageTypes, fieldPaths, dark = false, minHeight = 120, disabled = false, compact = false }: Props) {
+export function SolEditor({ value, onChange, onRun, eventNames = [], messageTypes, fieldPaths, tagColors, dark = false, minHeight = 120, disabled = false, compact = false }: Props) {
   // Resolve props: prefer explicit messageTypes/fieldPaths; fall back to legacy eventNames
   const resolvedMessageTypes = messageTypes ?? []
   const resolvedFieldPaths   = fieldPaths ?? eventNames
+  // Stable identity for the (caller-built) colour map so effects don't churn.
+  const tagColorsKey = JSON.stringify(tagColors ?? null)
   const containerRef = useRef<HTMLDivElement>(null)
   const viewRef      = useRef<EditorView | null>(null)
   const onChangeRef  = useRef(onChange)
@@ -199,6 +239,9 @@ export function SolEditor({ value, onChange, onRun, eventNames = [], messageType
       solLanguage({ messageTypes: resolvedMessageTypes, fieldPaths: resolvedFieldPaths }),
       lintGutter(),
 
+      // Tag token colouring (query tokens match result span colours)
+      ...(tagColors ? [tagTokenDecorations(tagColors)] : []),
+
       // Highlighting
       solHighlightStyle,
 
@@ -219,7 +262,7 @@ export function SolEditor({ value, onChange, onRun, eventNames = [], messageType
       ...(disabled ? [EditorState.readOnly.of(true)] : []),
     ]
     return base
-  }, [resolvedMessageTypes, resolvedFieldPaths, dark, minHeight, disabled, compact]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [resolvedMessageTypes, resolvedFieldPaths, tagColorsKey, dark, minHeight, disabled, compact]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Mount
   useEffect(() => {
@@ -257,7 +300,7 @@ export function SolEditor({ value, onChange, onRun, eventNames = [], messageType
     if (!view) return
     const doc = view.state.doc.toString()
     view.setState(EditorState.create({ doc, extensions: buildExtensions() }))
-  }, [resolvedMessageTypes, resolvedFieldPaths, dark, disabled, compact]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [resolvedMessageTypes, resolvedFieldPaths, tagColorsKey, dark, disabled, compact]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div
