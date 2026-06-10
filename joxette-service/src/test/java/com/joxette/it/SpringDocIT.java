@@ -15,6 +15,10 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -22,6 +26,11 @@ import static org.assertj.core.api.Assertions.assertThat;
 /**
  * Verifies that SpringDoc generates a valid OpenAPI document at {@code /v3/api-docs}
  * and that all expected API tags are present.
+ *
+ * <p>As a side effect this also <b>exports the spec to a committed file</b>
+ * ({@code docs/openapi.json}, repo root), so the API contract is versioned and
+ * diff-able in PRs and the joxette-operator contract test can assert against it
+ * without a running service.
  */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("it")
@@ -51,7 +60,7 @@ class SpringDocIT {
     }
 
     @Test
-    void apiDocs_returnsOkWithNonEmptyPaths() {
+    void apiDocs_returnsOkWithNonEmptyPaths() throws Exception {
         ResponseEntity<Map> response = restTemplate.getForEntity(baseUrl + "/v3/api-docs", Map.class);
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
@@ -62,5 +71,21 @@ class SpringDocIT {
 
         Map paths = (Map) body.get("paths");
         assertThat(paths).isNotEmpty();
+
+        exportSpec(body);
+    }
+
+    /**
+     * Writes the spec to {@code <repo-root>/docs/openapi.json}, pretty-printed for a
+     * readable diff. Locating the repo root from the module working dir keeps the
+     * file at a stable, committed path regardless of which module runs the test.
+     */
+    private void exportSpec(Map<?, ?> spec) throws Exception {
+        Path moduleDir = Path.of("").toAbsolutePath();          // .../joxette-service
+        Path repoRoot = moduleDir.getFileName().toString().equals("joxette-service")
+                ? moduleDir.getParent() : moduleDir;
+        Path target = repoRoot.resolve("docs").resolve("openapi.json");
+        Files.createDirectories(target.getParent());
+        new ObjectMapper().writerWithDefaultPrettyPrinter().writeValue(target.toFile(), spec);
     }
 }
