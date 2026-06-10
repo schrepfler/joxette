@@ -38,6 +38,19 @@
             <scope>provided</scope>
         </dependency>
 
+        <!-- AdmissionReview model for the validating webhook. -->
+        <dependency>
+            <groupId>io.fabric8</groupId>
+            <artifactId>kubernetes-model-admissionregistration</artifactId>
+            <version>${fabric8.version}</version>
+        </dependency>
+
+        <!-- Spring MVC to serve the validating-webhook HTTPS endpoint. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+
         <!-- Actuator: health/readiness/liveness + metrics for the operator pod. -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

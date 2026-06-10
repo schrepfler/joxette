@@ -1,0 +1,68 @@
+# Validating admission webhook for JoxetteCluster. Rejects unsafe specs at
+# apply-time via the operator's /validate/joxettecluster endpoint.
+#
+# TLS: the webhook must be served over HTTPS with a cert the API server trusts.
+# This manifest uses cert-manager to issue the serving cert and inject the CA
+# bundle (the cert-manager.io/inject-ca-from annotation). If you don't run
+# cert-manager, supply caBundle manually and mount a serving keystore into the
+# operator (see deploy/operator/webhook/README.md).
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: joxette-operator-webhook
+  namespace: joxette-system
+spec:
+  secretName: joxette-operator-webhook-tls
+  dnsNames:
+    - joxette-operator-webhook.joxette-system.svc
+    - joxette-operator-webhook.joxette-system.svc.cluster.local
+  issuerRef:
+    name: joxette-operator-selfsigned
+    kind: Issuer
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: joxette-operator-selfsigned
+  namespace: joxette-system
+spec:
+  selfSigned: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: joxette-operator-webhook
+  namespace: joxette-system
+  labels:
+    app.kubernetes.io/name: joxette-operator
+spec:
+  selector:
+    app.kubernetes.io/name: joxette-operator
+  ports:
+    - name: https
+      port: 443
+      targetPort: webhook
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingWebhookConfiguration
+metadata:
+  name: joxette-operator
+  annotations:
+    cert-manager.io/inject-ca-from: joxette-system/joxette-operator-webhook
+webhooks:
+  - name: joxettecluster.joxette.dev
+    admissionReviewVersions: ["v1"]
+    sideEffects: None
+    failurePolicy: Fail
+    clientConfig:
+      service:
+        name: joxette-operator-webhook
+        namespace: joxette-system
+        path: /validate/joxettecluster
+        port: 443
+    rules:
+      - apiGroups: ["joxette.dev"]
+        apiVersions: ["v1alpha1"]
+        operations: ["CREATE", "UPDATE"]
+        resources: ["joxetteclusters"]
+        scope: Namespaced
