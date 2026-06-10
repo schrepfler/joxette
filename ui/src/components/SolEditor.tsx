@@ -10,7 +10,7 @@
  */
 
 import { useEffect, useRef, useCallback } from 'react'
-import { EditorState, type Extension } from '@codemirror/state'
+import { Compartment, EditorState, type Extension } from '@codemirror/state'
 import {
   EditorView,
   keymap,
@@ -29,7 +29,7 @@ import {
   historyKeymap,
   indentWithTab,
 } from '@codemirror/commands'
-import { completionKeymap, closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete'
+import { completionKeymap, closeBrackets, closeBracketsKeymap, closeCompletion } from '@codemirror/autocomplete'
 import { syntaxHighlighting, defaultHighlightStyle } from '@codemirror/language'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { Decoration } from '@codemirror/view'
@@ -174,15 +174,19 @@ export function SolEditor({ value, onChange, onRun, eventNames = [], messageType
   const viewRef      = useRef<EditorView | null>(null)
   const onChangeRef  = useRef(onChange)
   const onRunRef     = useRef(onRun)
+  // Compartment for tag decorations — lets us hot-swap colours without recreating
+  // EditorState, which would reset the cursor position.
+  const tagDecorationCompartment = useRef(new Compartment())
 
   onChangeRef.current = onChange
   onRunRef.current    = onRun
 
-  // Build run keymap
+  // Mod+Enter: close any open autocomplete dropdown, then run.
+  // Without closeCompletion the dropdown captures Enter, preventing the run.
   const runKeymap = keymap.of([
     {
       key: 'Mod-Enter',
-      run() { onRunRef.current?.(); return true },
+      run(view) { closeCompletion(view); onRunRef.current?.(); return true },
     },
   ])
 
@@ -239,8 +243,9 @@ export function SolEditor({ value, onChange, onRun, eventNames = [], messageType
       solLanguage({ messageTypes: resolvedMessageTypes, fieldPaths: resolvedFieldPaths }),
       lintGutter(),
 
-      // Tag token colouring (query tokens match result span colours)
-      ...(tagColors ? [tagTokenDecorations(tagColors)] : []),
+      // Tag token colouring in a compartment so colours can be hot-swapped
+      // without recreating EditorState (which resets cursor position).
+      tagDecorationCompartment.current.of(tagColors ? tagTokenDecorations(tagColors) : []),
 
       // Highlighting
       solHighlightStyle,
@@ -290,17 +295,25 @@ export function SolEditor({ value, onChange, onRun, eventNames = [], messageType
     }
   }, [value])
 
-  // Rebuild extensions when eventNames/theme changes
+  // Full state rebuild when language options, theme, or disabled flag change.
+  // tagColorsKey is intentionally excluded — it's handled by the compartment below.
   useEffect(() => {
-    viewRef.current?.dispatch({
-      effects: [],
-    })
-    // Full reconfigure when event names change — recreate the state
     const view = viewRef.current
     if (!view) return
     const doc = view.state.doc.toString()
     view.setState(EditorState.create({ doc, extensions: buildExtensions() }))
-  }, [resolvedMessageTypes, resolvedFieldPaths, tagColorsKey, dark, disabled, compact]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [resolvedMessageTypes, resolvedFieldPaths, dark, disabled, compact]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Hot-swap tag decorations via the compartment — no state recreation, cursor preserved.
+  useEffect(() => {
+    const view = viewRef.current
+    if (!view) return
+    view.dispatch({
+      effects: tagDecorationCompartment.current.reconfigure(
+        tagColors ? tagTokenDecorations(tagColors) : []
+      ),
+    })
+  }, [tagColorsKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div

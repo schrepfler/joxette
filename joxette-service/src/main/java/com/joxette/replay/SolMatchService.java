@@ -9,6 +9,8 @@ import com.sol.engine.SolResult;
 import com.sol.model.Sequence;
 import com.sol.parser.SolParseException;
 import com.sol.parser.SolParser;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import com.sol.model.Tag;
@@ -33,6 +35,8 @@ import java.util.Map;
  */
 @Service
 public class SolMatchService {
+
+    private static final Logger log = LoggerFactory.getLogger(SolMatchService.class);
 
     private final EntityReplayService entityReplayService;
 
@@ -60,6 +64,7 @@ public class SolMatchService {
             Instant to
     ) throws SQLException {
 
+        log.debug("SOL match entity={}/{} from={} to={} query={}", entityType, entityId, from, to, query);
         List<SolOperation> ops = SolParser.parse(query);
 
         List<EntityRecord> records = new ArrayList<>();
@@ -211,6 +216,8 @@ public class SolMatchService {
             int maxSequences,
             int exampleLimit
     ) throws SQLException {
+        log.debug("SOL batch entity={} maxSequences={} exampleLimit={} from={} to={} query={}",
+                entityType, maxSequences, exampleLimit, from, to, query);
         List<SolOperation> ops = SolParser.parse(query);
 
         int total = 0;
