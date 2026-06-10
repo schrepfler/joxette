@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>com.joxette</groupId>
+        <artifactId>joxette-parent</artifactId>
+        <version>0.1.0-SNAPSHOT</version>
+    </parent>
+
+    <artifactId>joxette-operator</artifactId>
+    <name>joxette-operator</name>
+    <description>
+        Kubernetes operator for Joxette (Java Operator SDK). Reconciles the
+        JoxetteCluster custom resource into the workloads, Service, ConfigMap, and
+        RBAC that run joxette-service, enforcing the catalog single-writer guardrail.
+    </description>
+
+    <dependencies>
+        <!-- JOSDK + Fabric8, wired into a Spring Boot 4 app. The 6.4.2 starter's
+             parent pins Spring Boot 4.0.6 / JOSDK 5.3.4 / Fabric8 7.7.0, matching
+             this project's Spring Boot version. -->
+        <dependency>
+            <groupId>io.javaoperatorsdk</groupId>
+            <artifactId>operator-framework-spring-boot-starter</artifactId>
+            <version>${josdk-starter.version}</version>
+        </dependency>
+
+        <!-- CRD model annotations (@Group/@Version/@Kind etc.) for the custom
+             resource classes. Provided scope: needed to compile + for the
+             crd-generator, not at runtime. -->
+        <dependency>
+            <groupId>io.fabric8</groupId>
+            <artifactId>crd-generator-api-v2</artifactId>
+            <version>${fabric8.version}</version>
+            <scope>provided</scope>
+        </dependency>
+
+        <!-- Actuator: health/readiness/liveness + metrics for the operator pod. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+
+        <!-- Test -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- Fabric8 mock server for reconciler tests against a fake API server. -->
+        <dependency>
+            <groupId>io.fabric8</groupId>
+            <artifactId>kubernetes-server-mock</artifactId>
+            <version>${fabric8.version}</version>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <image>
+                        <name>joxette-operator:${project.version}</name>
+                        <env>
+                            <BP_JVM_VERSION>25</BP_JVM_VERSION>
+                        </env>
+                    </image>
+                </configuration>
+            </plugin>
+
+            <!-- Generates CRD YAML from the annotated custom-resource classes into
+                 target/classes/META-INF/fabric8/. The APT-based generator is
+                 deprecated; this is the current Fabric8 v2 path. -->
+            <plugin>
+                <groupId>io.fabric8</groupId>
+                <artifactId>crd-generator-maven-plugin</artifactId>
+                <version>${fabric8.version}</version>
+                <executions>
+                    <execution>
+                        <id>generate-crds</id>
+                        <goals>
+                            <goal>generate</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

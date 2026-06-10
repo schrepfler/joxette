@@ -1,0 +1,26 @@
+spring:
+  application:
+    name: joxette-operator
+
+server:
+  port: 8081
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: always
+      probes:
+        enabled: true
+
+# JOSDK Spring Boot starter settings. The operator watches its own namespace by
+# default; set a comma-separated list (or JOSDK_WATCH_ALL_NAMESPACES) to widen.
+javaoperatorsdk:
+  reconcilers:
+    joxetteclusterreconciler:
+      retry:
+        max-attempts: 5
+        initial-interval: 2000

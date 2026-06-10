@@ -1,0 +1,33 @@
+# Scaled-out: shared PostgreSQL catalog + real Pekko cluster (pekko-management).
+# The operator creates per-tier Deployments (recorder x3, replay x2, compaction x1),
+# a headless Service, and the pod RBAC for kubernetes-api discovery + leases.
+apiVersion: joxette.dev/v1alpha1
+kind: JoxetteCluster
+metadata:
+  name: prod
+  namespace: joxette
+spec:
+  image: ghcr.io/schrepfler/joxette-service:0.1.0
+  clustering:
+    mode: pekko-management
+    managementPort: 7626
+  catalog:
+    backend: postgresql
+    uri: postgresql://pg.joxette.svc/joxette
+    objectStoragePath: s3://joxette-data/
+  kafka:
+    bootstrapServers: kafka-bootstrap.kafka.svc:9092
+    consumerGroup: joxette-recorder
+    groupProtocol: consumer
+  objectStore:
+    region: us-east-1
+    secretRef: joxette-s3      # keys: access-key, secret-key
+  tiers:
+    recorder:
+      enabled: true
+      replicas: 3
+    replay:
+      enabled: true
+      replicas: 2
+    compaction:
+      enabled: true

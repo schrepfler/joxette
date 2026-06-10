@@ -1,0 +1,21 @@
+# Single all-in-one pod, embedded DuckDB catalog (dev / small single-node prod).
+# The operator collapses this into one StatefulSet (replicas:1, PVC, roles:[all]).
+apiVersion: joxette.dev/v1alpha1
+kind: JoxetteCluster
+metadata:
+  name: dev
+  namespace: joxette
+spec:
+  image: joxette-service:0.1.0-SNAPSHOT
+  clustering:
+    mode: catalog
+  catalog:
+    backend: embedded
+    objectStoragePath: s3://joxette-dev/
+    embedded:
+      path: /data/joxette.ducklake
+      pvcSize: 20Gi
+  kafka:
+    bootstrapServers: kafka:9092
+  objectStore:
+    region: us-east-1
