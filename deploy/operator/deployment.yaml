@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: joxette-operator
+  namespace: joxette-system
+  labels:
+    app.kubernetes.io/name: joxette-operator
+spec:
+  replicas: 1                      # single active operator instance
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: joxette-operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: joxette-operator
+    spec:
+      serviceAccountName: joxette-operator
+      containers:
+        - name: operator
+          image: joxette-operator:0.1.0-SNAPSHOT   # built via: mvn -pl joxette-operator spring-boot:build-image
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8081
+          env:
+            # Watch all namespaces for joxette.dev CRs. Set to a namespace name to scope.
+            - name: JAVAOPERATORSDK_CLIENT_NAMESPACE
+              value: JOSDK_ALL_NAMESPACES
+          startupProbe:
+            httpGet: { path: /actuator/health, port: http }
+            failureThreshold: 30
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /actuator/health/liveness, port: http }
+            periodSeconds: 15
+          readinessProbe:
+            httpGet: { path: /actuator/health/readiness, port: http }
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 512Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: joxette-operator
+  namespace: joxette-system
+  labels:
+    app.kubernetes.io/name: joxette-operator
+spec:
+  selector:
+    app.kubernetes.io/name: joxette-operator
+  ports:
+    - name: http
+      port: 8081
+      targetPort: http
