@@ -1,0 +1,44 @@
+# Full-stack compose: infra (Kafka + RustFS + Jikkou) plus the Joxette service.
+#
+# Usage:
+#   docker compose -f docker-compose.app.yml up
+#
+# Build the image first with:
+#   mvn -pl joxette-service spring-boot:build-image
+# Override the default tag via JOXETTE_IMAGE env var.
+
+include:
+  - docker-compose.yml
+
+services:
+
+  joxette:
+    image: ${JOXETTE_IMAGE:-joxette-service:0.1.0-SNAPSHOT}
+    container_name: joxette
+    ports:
+      - "8080:8080"
+    environment:
+      JOXETTE_CATALOG_PATH: /data/joxette.ducklake
+      JOXETTE_CATALOG_OBJECT-STORAGE-PATH: s3://joxette-data/
+      JOXETTE_KAFKA_BOOTSTRAP-SERVERS: kafka:9094
+      JOXETTE_S3_ENDPOINT: http://rustfs:9000
+      JOXETTE_S3_ACCESS-KEY: joxettedev
+      JOXETTE_S3_SECRET-KEY: joxettedev123
+    depends_on:
+      kafka:
+        condition: service_healthy
+      rustfs:
+        condition: service_healthy
+      rustfs-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8080/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    volumes:
+      - joxette-data:/data
+
+volumes:
+  joxette-data:
