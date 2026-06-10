@@ -16,8 +16,8 @@ import { cassettesApi } from '../api/client'
 import { SolEditor } from './SolEditor'
 import { SolExamplesPane } from './SolExamplesPane'
 import { SolModelPanel } from './SolModelPanel'
+import { SolToolbar } from './SolToolbar'
 import { buildTagColors, extractPatternTags } from './sol-colors'
-import { SOL_RECIPES } from './sol-recipes'
 
 interface Props {
   entityType: string
@@ -27,7 +27,6 @@ const SCAN_OPTIONS = [100, 500, 2000] as const
 
 export function SolExplorerPanel({ entityType }: Props) {
   const [query, setQuery] = useState('match event_a >> * >> event_b')
-  const [recipesOpen, setRecipesOpen] = useState(false)
   const [maxSequences, setMaxSequences] = useState<number>(500)
 
   const messageTypesQuery = useQuery({
@@ -63,54 +62,13 @@ export function SolExplorerPanel({ entityType }: Props) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
 
       {/* ── Toolbar ──────────────────────────────────────────────────── */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 'var(--type-body-sm-size)', fontWeight: 600, color: 'var(--ink-primary)' }}>
-          SOL Query
-        </span>
-
-        {/* Recipe dropdown */}
-        <div style={{ position: 'relative' }}>
-          <button style={secondaryBtnSm} onClick={() => setRecipesOpen(o => !o)}>
-            ⌨ Add recipe ▾
-          </button>
-          {recipesOpen && (
-            <div
-              style={{
-                position: 'absolute', top: '100%', left: 0, zIndex: 50,
-                background: 'var(--surface-paper)',
-                border: '1px solid var(--rule)',
-                borderRadius: 'var(--radius-sm)',
-                boxShadow: 'var(--shadow-md)',
-                minWidth: 380, marginTop: 4,
-                maxHeight: 420, overflowY: 'auto',
-              }}
-            >
-              <div style={{ padding: '8px 14px 4px', fontSize: 'var(--type-micro-size)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 'var(--type-micro-tracking)', color: 'var(--ink-tertiary)' }}>
-                Start with a recipe
-              </div>
-              {SOL_RECIPES.map(r => (
-                <button
-                  key={r.label}
-                  onClick={() => { setQuery(r.sol); setRecipesOpen(false) }}
-                  style={{
-                    display: 'block', width: '100%', textAlign: 'left',
-                    padding: '8px 14px',
-                    background: 'none', border: 'none', cursor: 'pointer',
-                    fontFamily: 'var(--font-body)',
-                  }}
-                  onMouseEnter={e => (e.currentTarget.style.background = 'var(--ink-wash)')}
-                  onMouseLeave={e => (e.currentTarget.style.background = 'none')}
-                >
-                  <div style={{ fontSize: 'var(--type-body-sm-size)', color: 'var(--ink-primary)' }}>{r.label}</div>
-                  <div style={{ fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)', marginTop: 2 }}>{r.description}</div>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div style={{ flex: 1 }} />
-
+      <SolToolbar
+        onRun={() => mutation.mutate()}
+        isPending={mutation.isPending}
+        messageTypes={messageTypes}
+        fieldPaths={fieldPaths}
+        onQueryChange={setQuery}
+      >
         {/* Scan size */}
         <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)' }}>
           scan
@@ -126,21 +84,7 @@ export function SolExplorerPanel({ entityType }: Props) {
             {SCAN_OPTIONS.map(n => <option key={n} value={n}>{n.toLocaleString()} sequences</option>)}
           </select>
         </label>
-
-        {messageTypes.length > 0 && (
-          <span style={{ fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)' }}>
-            {messageTypes.length} event types · Ctrl+Space
-          </span>
-        )}
-        <span style={{ fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)' }}>⌘↵ to run</span>
-        <button
-          style={{ ...primaryBtnSm, minWidth: 72 }}
-          disabled={mutation.isPending}
-          onClick={() => mutation.mutate()}
-        >
-          {mutation.isPending ? 'Running…' : '▶ Run'}
-        </button>
-      </div>
+      </SolToolbar>
 
       {/* ── Error ────────────────────────────────────────────────────── */}
       {mutation.error && (
@@ -193,20 +137,3 @@ export function SolExplorerPanel({ entityType }: Props) {
   )
 }
 
-// ── Micro styles ───────────────────────────────────────────────────────────────
-
-const primaryBtnSm: React.CSSProperties = {
-  padding: '5px 12px',
-  background: 'var(--accent)', color: 'var(--accent-ink)',
-  border: '1px solid var(--accent)',
-  borderRadius: 'var(--radius-sm)', cursor: 'pointer',
-  fontFamily: 'var(--font-body)', fontSize: 'var(--type-body-sm-size)', fontWeight: 500,
-}
-
-const secondaryBtnSm: React.CSSProperties = {
-  padding: '5px 10px',
-  background: 'transparent', color: 'var(--ink-secondary)',
-  border: '1px solid var(--rule)',
-  borderRadius: 'var(--radius-sm)', cursor: 'pointer',
-  fontFamily: 'var(--font-body)', fontSize: 'var(--type-body-sm-size)',
-}

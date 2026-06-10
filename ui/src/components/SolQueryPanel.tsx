@@ -4,7 +4,7 @@ import { cassettesApi, type EntityRecord } from '../api/client'
 import { JsonView } from './JsonView'
 import { SolEditor } from './SolEditor'
 import { SolSequenceInspector } from './SolSequenceInspector'
-import { SOL_RECIPES } from './sol-recipes'
+import { SolToolbar } from './SolToolbar'
 
 interface Props {
   mode: 'entity' | 'topic'
@@ -43,7 +43,6 @@ export function SolQueryPanel({ mode, entityType, entityId, topic, from, to }: P
   const [query, setQuery] = useState(
     'match A(event_name) >> * >> B(other_event)\nif duration(A, B) < 5min',
   )
-  const [recipesOpen, setRecipesOpen] = useState(false)
   const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set())
   const [typeField, setTypeField] = useState('')
 
@@ -97,11 +96,6 @@ export function SolQueryPanel({ mode, entityType, entityId, topic, from, to }: P
     onSuccess: () => setSelectedTags(new Set()),
   })
 
-  function applyRecipe(sol: string) {
-    setQuery(sol)
-    setRecipesOpen(false)
-  }
-
   const result = mutation.data
   const hasResult = !!result
 
@@ -121,54 +115,14 @@ export function SolQueryPanel({ mode, entityType, entityId, topic, from, to }: P
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
 
-      {/* ── Editor header ─────────────────────────────────────────────── */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-        <span style={{ fontSize: 'var(--type-body-sm-size)', fontWeight: 600, color: 'var(--ink-primary)', marginRight: 4 }}>
-          SOL Query
-        </span>
-
-        {/* Recipes dropdown */}
-        <div style={{ position: 'relative' }}>
-          <button
-            style={secondaryBtnSm}
-            onClick={() => setRecipesOpen(o => !o)}
-          >
-            ☰ Recipes ▾
-          </button>
-          {recipesOpen && (
-            <div
-              style={{
-                position: 'absolute', top: '100%', left: 0, zIndex: 50,
-                background: 'var(--surface-paper)',
-                border: '1px solid var(--rule)',
-                borderRadius: 'var(--radius-sm)',
-                boxShadow: 'var(--shadow-md)',
-                minWidth: 360, marginTop: 4,
-              }}
-            >
-              {SOL_RECIPES.map(r => (
-                <button
-                  key={r.label}
-                  onClick={() => applyRecipe(r.sol)}
-                  style={{
-                    display: 'block', width: '100%', textAlign: 'left',
-                    padding: '8px 14px',
-                    background: 'none', border: 'none', cursor: 'pointer',
-                    fontFamily: 'var(--font-body)',
-                  }}
-                  onMouseEnter={e => (e.currentTarget.style.background = 'var(--ink-wash)')}
-                  onMouseLeave={e => (e.currentTarget.style.background = 'none')}
-                >
-                  <div style={{ fontSize: 'var(--type-body-sm-size)', color: 'var(--ink-primary)' }}>{r.label}</div>
-                  <div style={{ fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)', marginTop: 2 }}>{r.description}</div>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div style={{ flex: 1 }} />
-
+      {/* ── Toolbar ───────────────────────────────────────────────────── */}
+      <SolToolbar
+        onRun={() => mutation.mutate()}
+        isPending={mutation.isPending}
+        messageTypes={messageTypes}
+        fieldPaths={fieldPaths}
+        onQueryChange={setQuery}
+      >
         {/* Type field — only shown for topic mode where message_type may be null */}
         {mode === 'topic' && (
           <div style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
@@ -197,26 +151,7 @@ export function SolQueryPanel({ mode, entityType, entityId, topic, from, to }: P
             />
           </div>
         )}
-
-        {(messageTypes.length > 0 || fieldPaths.length > 0) && (
-          <span style={{ fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)' }}>
-            {messageTypes.length > 0 && `${messageTypes.length} event types`}
-            {messageTypes.length > 0 && fieldPaths.length > 0 && ' · '}
-            {fieldPaths.length > 0 && `${fieldPaths.length} fields`}
-            {' · Ctrl+Space'}
-          </span>
-        )}
-        <span style={{ fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)' }}>
-          ⌘↵ to run
-        </span>
-        <button
-          style={{ ...primaryBtnSm, minWidth: 72 }}
-          disabled={mutation.isPending}
-          onClick={() => mutation.mutate()}
-        >
-          {mutation.isPending ? 'Running…' : '▶ Run'}
-        </button>
-      </div>
+      </SolToolbar>
 
       {/* ── CodeMirror SOL editor ─────────────────────────────────────── */}
       <SolEditor
@@ -344,22 +279,6 @@ function ValueExpanded({ raw }: { raw: string }) {
 }
 
 // ── Micro styles ───────────────────────────────────────────────────────────────
-
-const primaryBtnSm: React.CSSProperties = {
-  padding: '5px 12px',
-  background: 'var(--accent)', color: 'var(--accent-ink)',
-  border: '1px solid var(--accent)',
-  borderRadius: 'var(--radius-sm)', cursor: 'pointer',
-  fontFamily: 'var(--font-body)', fontSize: 'var(--type-body-sm-size)', fontWeight: 500,
-}
-
-const secondaryBtnSm: React.CSSProperties = {
-  padding: '5px 10px',
-  background: 'transparent', color: 'var(--ink-secondary)',
-  border: '1px solid var(--rule)',
-  borderRadius: 'var(--radius-sm)', cursor: 'pointer',
-  fontFamily: 'var(--font-body)', fontSize: 'var(--type-body-sm-size)',
-}
 
 const thSt: React.CSSProperties = {
   textAlign: 'left', padding: '8px 12px',
