@@ -13,6 +13,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
+
 /**
  * Reconciles a {@link RecordedTopic} into a running cluster's {@code /topics} REST
  * API (not Kubernetes objects).
@@ -39,10 +41,22 @@ public class RecordedTopicReconciler implements Reconciler<RecordedTopic>, Clean
         this.clientFactory = clientFactory;
     }
 
+    /** How long to wait before re-checking a cluster that isn't ready yet. */
+    private static final Duration CLUSTER_NOT_READY_BACKOFF = Duration.ofSeconds(15);
+
     @Override
     public UpdateControl<RecordedTopic> reconcile(RecordedTopic resource, Context<RecordedTopic> context) {
         RecordedTopicSpec spec = resource.getSpec();
         JoxetteRestClient client = clientFor(resource);
+
+        // Don't hammer the REST API before the target cluster is serving — reschedule.
+        if (!client.ready()) {
+            log.info("RecordedTopic '{}': cluster '{}' not ready, rescheduling",
+                    resource.getMetadata().getName(), spec.getClusterRef().getName());
+            resource.setStatus(progressing(resource, "Waiting for cluster '"
+                    + spec.getClusterRef().getName() + "' to become ready"));
+            return UpdateControl.patchStatus(resource).rescheduleAfter(CLUSTER_NOT_READY_BACKOFF);
+        }
 
         JoxetteRestClient.ChangeResult result = new TopicConverger(client).converge(spec);
         log.info("RecordedTopic '{}' -> topic '{}' on {}: {}",
@@ -63,6 +77,13 @@ public class RecordedTopicReconciler implements Reconciler<RecordedTopic>, Clean
         log.info("RecordedTopic '{}' deletion ({}): topic '{}' -> {}",
                 resource.getMetadata().getName(), spec.getDeletionPolicy(), spec.getTopic(), result);
         return DeleteControl.defaultDelete();
+    }
+
+    private RecordedTopicStatus progressing(RecordedTopic resource, String message) {
+        RecordedTopicStatus status = new RecordedTopicStatus("Progressing", message);
+        status.setRegistered(false);
+        status.setObservedGeneration(resource.getMetadata().getGeneration());
+        return status;
     }
 
     private JoxetteRestClient clientFor(RecordedTopic resource) {

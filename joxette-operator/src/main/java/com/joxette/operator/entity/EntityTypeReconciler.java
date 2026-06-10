@@ -13,6 +13,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import java.time.Duration;
+
 /**
  * Reconciles an {@link EntityType} into a running cluster's {@code /entities} REST
  * API: resolve clusterRef → create/update the type → upsert source mappings, and
@@ -30,10 +32,25 @@ public class EntityTypeReconciler implements Reconciler<EntityType>, Cleaner<Ent
         this.clientFactory = clientFactory;
     }
 
+    private static final Duration CLUSTER_NOT_READY_BACKOFF = Duration.ofSeconds(15);
+
     @Override
     public UpdateControl<EntityType> reconcile(EntityType resource, Context<EntityType> context) {
         EntityTypeSpec spec = resource.getSpec();
-        int sources = new EntityConverger(clientFor(resource)).converge(spec);
+        JoxetteRestClient client = clientFor(resource);
+
+        if (!client.ready()) {
+            log.info("EntityType '{}': cluster '{}' not ready, rescheduling",
+                    resource.getMetadata().getName(), spec.getClusterRef().getName());
+            EntityTypeStatus progressing = new EntityTypeStatus("Progressing",
+                    "Waiting for cluster '" + spec.getClusterRef().getName() + "' to become ready");
+            progressing.setRegistered(false);
+            progressing.setObservedGeneration(resource.getMetadata().getGeneration());
+            resource.setStatus(progressing);
+            return UpdateControl.patchStatus(resource).rescheduleAfter(CLUSTER_NOT_READY_BACKOFF);
+        }
+
+        int sources = new EntityConverger(client).converge(spec);
         log.info("EntityType '{}' -> type '{}': {} source(s) applied",
                 resource.getMetadata().getName(), spec.getType(), sources);
 

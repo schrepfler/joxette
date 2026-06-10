@@ -43,6 +43,24 @@ public class JoxetteRestClient {
     /** Outcome of a converge call, so reconcilers can report what happened. */
     public enum ChangeResult { CREATED, UPDATED, UNCHANGED, DELETED, NOT_FOUND }
 
+    // ---- readiness ----------------------------------------------------------
+
+    /**
+     * Best-effort readiness probe used by the API reconcilers to decide whether to
+     * converge now or reschedule. Returns {@code false} (never throws) when the
+     * cluster's REST endpoint is unreachable or not yet ready — i.e. before the
+     * JoxetteCluster pods are serving. Hits Spring Boot's readiness group, which
+     * gates on catalog ATTACH.
+     */
+    public boolean ready() {
+        try {
+            HttpResponse<String> res = send(request("/actuator/health/readiness").GET().build());
+            return res.statusCode() / 100 == 2;
+        } catch (JoxetteRestException e) {
+            return false;
+        }
+    }
+
     // ---- generic verbs ------------------------------------------------------
 
     /** GET; returns the parsed body, or empty on 404. */
