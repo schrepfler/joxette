@@ -177,6 +177,12 @@
             <artifactId>json-path</artifactId>
         </dependency>
 
+        <!-- Caffeine: high-performance in-process cache for compiled JsonPath expressions -->
+        <dependency>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
+        </dependency>
+
         <!-- Pekko ActorTestKit (unit-tests for actor behaviours) -->
         <dependency>
             <groupId>org.apache.pekko</groupId>

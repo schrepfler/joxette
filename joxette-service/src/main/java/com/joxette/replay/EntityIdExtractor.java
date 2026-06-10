@@ -1,5 +1,7 @@
 package com.joxette.replay;
 
+import com.github.benmanes.caffeine.cache.Caffeine;
+import com.github.benmanes.caffeine.cache.LoadingCache;
 import com.jayway.jsonpath.JsonPath;
 import com.jayway.jsonpath.PathNotFoundException;
 import org.springframework.stereotype.Component;
@@ -32,6 +34,24 @@ import java.util.Optional;
 public class EntityIdExtractor {
 
     /**
+     * Cache of pre-compiled {@link JsonPath} instances, keyed on the raw
+     * expression string (e.g. {@code $.order_id}).
+     *
+     * <p>Compiling a JsonPath expression is pure-syntax work that produces an
+     * identical AST for the same string every time — it carries no
+     * per-message or per-topic state.  The set of configured expressions is
+     * small (typically &lt; 20) and fixed at startup, so the cache never
+     * evicts in practice; {@code maximumSize} is a defensive safety cap.
+     *
+     * <p>{@code recordStats()} adds zero overhead on the hot path and allows
+     * the stats to be exposed via Micrometer/Prometheus in the future.
+     */
+    private final LoadingCache<String, JsonPath> compiledPaths = Caffeine.newBuilder()
+            .maximumSize(1_000)
+            .recordStats()
+            .build(JsonPath::compile);
+
+    /**
      * Attempts to extract an entity ID from {@code message} using the given
      * {@code source} discriminant and {@code expression}.
      *
@@ -60,9 +80,12 @@ public class EntityIdExtractor {
             return Optional.empty();
         }
         try {
+            // compiledPaths.get() returns the cached compiled JsonPath after the
+            // first call, avoiding repeated expression parsing on the hot path.
             // Decode to String before passing to JsonPath: avoids the InputStreamReader +
             // json-smart character-by-character reader path, reducing CPU by ~15% per profile.
-            Object result = JsonPath.read(new String(value, StandardCharsets.UTF_8), expression);
+            JsonPath compiled = compiledPaths.get(expression);
+            Object result = compiled.read(new String(value, StandardCharsets.UTF_8));
             if (result == null) {
                 return Optional.empty();
             }
