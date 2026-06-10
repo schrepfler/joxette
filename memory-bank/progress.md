@@ -257,10 +257,9 @@
 - [x] **Phase 0 — Track B Pekko Management**: `joxette.clustering.mode = catalog (default) | pekko-management`; mgmt+bootstrap+k8s-discovery+k8s-lease deps at 2.0.0-M1 (core aligned M3→M1); HOCON overlay (kubernetes-api discovery + lease-majority SBR), mgmt port 7626, no self-join in mgmt mode; `PekkoConfigClusteringTest` (commit 9a9bfa7). 844 tests green
 - [x] **Helm chart** — `deploy/helm/joxette/`: embedded→StatefulSet / quack+pg→per-tier Deployments; clustering.mode drives Services+RBAC (headless Svc + pod RBAC + POD_IP for pekko-management); render-time single-writer guardrail; values-kind + values-cluster examples; lint+template verified (commit 8370ecf)
 - [~] **Build the operator** — JOSDK module (Phases 1–3 in `operator-design.md`)
-  - [x] Phase 1 scaffold — `joxette-operator` module (JOSDK 5.3.4 + Fabric8 7.7.0, Spring Boot 4 starter 6.4.2); JoxetteCluster CRD (generated YAML), JoxetteClusterReconciler (guardrail→apply→status), CatalogGuardrail, JoxetteClusterResources (embedded StatefulSet / shared per-tier Deployments + Services); 12 tests incl. context-load proving the starter works on Boot 4/JDK 25 (commit 6febd0d)
-  - [ ] Phase 1 remaining — admission webhook, /health status polling, ConfigMap + pod RBAC as dependent resources
-  - [ ] Phase 2 — RecordedTopic + EntityType API reconcilers (clusterRef resolution, diff/converge into REST, finalizers + deletionPolicy)
-  - [ ] Phase 3 — ServiceMonitor/HPA, admission hardening, generated OpenAPI client
+  - [x] Phase 1 — `joxette-operator` module (JOSDK 5.3.4 + Fabric8 7.7.0, Spring Boot 4 starter 6.4.2). JoxetteCluster CRD (generated YAML); JoxetteClusterReconciler (guardrail→SSA apply→readiness status, reschedules while Progressing); CatalogGuardrail; JoxetteClusterResources (embedded StatefulSet+PVC / shared per-tier Deployments, ServiceAccount wired into pods, pekko-management headless Svc + pod RBAC); WorkloadReadiness. 22 tests incl. context-load (starter on Boot4/JDK25) + reconciler tests vs Fabric8 mock (commits 6febd0d, plus RBAC/readiness). ConfigMap intentionally omitted (env-vars suffice); admission webhook deferred to Phase 3 (reconcile guardrail is the backstop)
+  - [ ] Phase 2 (NEXT) — RecordedTopic + EntityType API reconcilers (clusterRef resolution, diff/converge into REST, finalizers + deletionPolicy)
+  - [ ] Phase 3 — admission webhook (TLS/cert), ServiceMonitor/HPA, generated OpenAPI client
 
 #### `sol` library
 - [ ] Group ID rename `com.joxette → com.sol` — deferred until ready to publish independently
