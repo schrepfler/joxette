@@ -62,6 +62,9 @@ only connects to them.
 | `clustering.mode` | `catalog` | `catalog` \| `pekko-management` |
 | `clustering.requiredContactPointNr` | `null` | defaults to `tiers.recorder.replicas` |
 | `tiers.<t>.replicas` | `1` | recorder/replay; compaction always pinned to 1 |
+| `tiers.replay.hpa.enabled` | `false` | autoscale the replay tier (shared backend only; needs metrics-server) |
+| `tiers.replay.hpa.{min,max}Replicas` | `2` / `10` | HPA bounds |
+| `tiers.replay.hpa.targetCPUUtilizationPercentage` | `70` | HPA CPU target |
 | `kafka.bootstrapServers` | `kafka:9092` | |
 | `objectStore.existingSecret` | `""` | Secret with `access-key` / `secret-key`; omit for IRSA |
 | `serviceAccount.annotations` | `{}` | e.g. `eks.amazonaws.com/role-arn` |
@@ -69,6 +72,15 @@ only connects to them.
 
 All `joxette.*` properties can be overridden via `extraEnv` (Spring relaxed
 binding, e.g. `JOXETTE_RECORDING_BATCH-SIZE: "20000"`).
+
+### Replay autoscaling
+
+Only the **replay** tier is HPA-eligible — it is stateless reads. Recorders are
+bounded by the Kafka partition count (extra pods would idle) and compaction is
+pinned to one node, so neither is autoscaled. Enabling `tiers.replay.hpa` with an
+embedded catalog is rejected (single all-in-one pod, no replay tier). When the HPA
+is enabled the replay Deployment omits a static `replicas` so the HPA owns it.
+Requires `metrics-server` in the cluster.
 
 See also: [`docs/clustering-deployment.md`](../../../docs/clustering-deployment.md),
 [`docs/operator-design.md`](../../../docs/operator-design.md),

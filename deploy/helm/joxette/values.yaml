@@ -83,6 +83,15 @@ tiers:
     replayEnabled: true
     resources:
       requests: { cpu: 500m, memory: 1Gi }
+    # Horizontal autoscaling for the (stateless) replay tier. Shared-catalog
+    # backends only — rejected with an embedded catalog (single pod). Requires
+    # metrics-server in the cluster. When enabled the Deployment omits a static
+    # replica count so the HPA owns it (avoids replica fighting on each reconcile).
+    hpa:
+      enabled: false
+      minReplicas: 2
+      maxReplicas: 10
+      targetCPUUtilizationPercentage: 70
   compaction:
     enabled: true
     # replicas always 1 — the chart pins it regardless of this value.

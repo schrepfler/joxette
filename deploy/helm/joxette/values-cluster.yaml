@@ -36,6 +36,13 @@ tiers:
     replayEnabled: true
     resources:
       requests: { cpu: 500m, memory: 1Gi }
+    # Autoscale the stateless replay tier (needs metrics-server). When enabled,
+    # `replicas` above is ignored — the HPA owns the replica count.
+    hpa:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 10
+      targetCPUUtilizationPercentage: 70
   compaction:
     enabled: true
     roles: [compaction]

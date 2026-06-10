@@ -11,6 +11,8 @@ table is the cross-pod backstop). recorder/replay scale freely.
 {{- if $tier.enabled }}
 {{- $replicas := int (default 1 $tier.replicas) }}
 {{- if eq $tierName "compaction" }}{{- $replicas = 1 }}{{- end }}
+{{- /* When the replay HPA owns scaling, omit replicas so the two don't fight. */}}
+{{- $hpaManaged := and (eq $tierName "replay") $tier.hpa $tier.hpa.enabled }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -20,7 +22,9 @@ metadata:
     {{- include "joxette.labels" $root | nindent 4 }}
     app.kubernetes.io/component: {{ $tierName }}
 spec:
+  {{- if not $hpaManaged }}
   replicas: {{ $replicas }}
+  {{- end }}
   selector:
     matchLabels:
       {{- include "joxette.selectorLabels" $root | nindent 6 }}

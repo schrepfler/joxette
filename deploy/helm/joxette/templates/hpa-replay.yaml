@@ -1,0 +1,30 @@
+{{- include "joxette.validate" . -}}
+{{- /*
+HorizontalPodAutoscaler for the replay tier. Only valid with a shared catalog
+(the guardrail rejects HPA + embedded) and when the replay tier is enabled.
+Requires metrics-server in the cluster. The replay Deployment omits a static
+replica count while this is enabled (see deployment-tiers.yaml).
+*/}}
+{{- if and (ne .Values.catalog.backend "embedded") .Values.tiers.replay.enabled .Values.tiers.replay.hpa.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "joxette.fullname" . }}-replay
+  labels:
+    {{- include "joxette.labels" . | nindent 4 }}
+    app.kubernetes.io/component: replay
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "joxette.fullname" . }}-replay
+  minReplicas: {{ .Values.tiers.replay.hpa.minReplicas }}
+  maxReplicas: {{ .Values.tiers.replay.hpa.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.tiers.replay.hpa.targetCPUUtilizationPercentage }}
+{{- end }}

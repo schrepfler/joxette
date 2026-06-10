@@ -97,6 +97,9 @@ This mirrors operator-design.md §5 in chart form.
 {{- if and (eq .Values.clustering.mode "pekko-management") (eq .Values.catalog.backend "embedded") -}}
   {{- fail "clustering.mode=pekko-management forms a multi-pod cluster, which is incompatible with the single-writer embedded catalog. Use a quack/postgresql backend, or clustering.mode=catalog." -}}
 {{- end -}}
+{{- if and .Values.tiers.replay.hpa.enabled (eq .Values.catalog.backend "embedded") -}}
+  {{- fail "tiers.replay.hpa.enabled requires a shared (quack/postgresql) catalog: the embedded catalog runs a single all-in-one pod with no separate replay tier to scale." -}}
+{{- end -}}
 {{- end -}}
 
 {{/*
