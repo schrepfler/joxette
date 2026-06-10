@@ -107,7 +107,8 @@ interface DataPoint {
   topicKeys: string[]           // safe keys (t0, t1…) in order
   topicLabels: Record<string, string>  // t0 → "feed.betgenius.fixture.v1"
   // per-topic (indexed by tN) — aggregated across partitions
-  lag:          Record<string, number>
+  lag:          Record<string, number>   // fetch-position lag (cheap, updated every poll)
+  committedLag: Record<string, number>   // committed-offset lag (AdminClient, 15 s cache)
   consumed:     Record<string, number>
   written:      Record<string, number>
   consumedRate: Record<string, number>
@@ -146,6 +147,7 @@ function scrapeToPoint(family: Record<string, MetricFamily>): DataPoint {
   const topicKeys: string[] = []
   const topicLabels: Record<string, string> = {}
   const lag: Record<string, number> = {}
+  const committedLag: Record<string, number> = {}
   const consumed: Record<string, number> = {}
   const written: Record<string, number> = {}
   const consumedRate: Record<string, number> = {}
@@ -160,7 +162,8 @@ function scrapeToPoint(family: Record<string, MetricFamily>): DataPoint {
   for (const topic of topicNames) {
     const k = safeKey(topic)
     topicKeys.push(k); topicLabels[k] = topic
-    lag[k]          = getSample(family, 'joxette_consumer_lag',                        { topic }) || 0
+    lag[k]          = getSample(family, 'joxette_consumer_lag',           { topic }) || 0
+    committedLag[k] = getSample(family, 'joxette_consumer_committed_lag', { topic }) || 0
     consumed[k]     = getSample(family, 'joxette_messages_consumed_total',             { topic }) || 0
     written[k]      = getSample(family, 'joxette_messages_written_total',               { topic }) || 0
     consumedRate[k] = getSample(family, 'joxette_kafka_consumer_records_consumed_rate', { topic }) || 0
@@ -188,7 +191,7 @@ function scrapeToPoint(family: Record<string, MetricFamily>): DataPoint {
 
   return {
     ts: Date.now(), topicKeys, topicLabels,
-    lag, consumed, written, consumedRate, bytesRate, fetchLatency,
+    lag, committedLag, consumed, written, consumedRate, bytesRate, fetchLatency,
     pollDurationP50, pollDurationP99, fetchLatencyMax, fetchThrottle, networkIoRate,
     partitionLag, partitionConsumedRate,
     writeDepth: getSample(family, 'joxette_write_channel_depth') || 0,
@@ -234,9 +237,9 @@ const PALETTE = ['#6674cc', '#3E9A7A', '#A26612', '#8B2121', '#1E5A8A', '#6B46A0
 // Stat pill
 // ---------------------------------------------------------------------------
 
-function Stat({ label, value, sub }: { label: string; value: string; sub?: string }) {
+function Stat({ label, value, sub, title }: { label: string; value: string; sub?: string; title?: string }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', minWidth: 110 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', minWidth: 110 }} title={title}>
       <span style={{ fontSize: '0.5625rem', color: 'var(--ink-tertiary)', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 600 }}>{label}</span>
       <span style={{ fontFamily: 'var(--font-mono)', fontSize: '1.125rem', fontWeight: 700, color: 'var(--ink-primary)', lineHeight: 1.3 }}>{value}</span>
       {sub && <span style={{ fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)' }}>{sub}</span>}
@@ -395,10 +398,14 @@ function MetricsPage() {
         <div style={{ ...cardStyle, padding: '16px 24px', marginBottom: 24, display: 'flex', gap: 32, flexWrap: 'wrap', alignItems: 'flex-start' }}>
           {/* Total across all topics/partitions */}
           {topicKeys.length > 0 && (() => {
-            const totalLag  = topicKeys.reduce((s, k) => s + (latest.lag[k] ?? 0), 0)
-            const totalRate = topicKeys.reduce((s, k) => s + (latest.consumedRate[k] ?? 0), 0)
+            const fetchLag     = topicKeys.reduce((s, k) => s + (latest.lag[k] ?? 0), 0)
+            const committed    = topicKeys.reduce((s, k) => s + (latest.committedLag[k] ?? 0), 0)
+            const totalRate    = topicKeys.reduce((s, k) => s + (latest.consumedRate[k] ?? 0), 0)
             return (
-              <Stat label="total lag" value={fmt(totalLag, 0)} sub={`${fmt(totalRate, 1)} msg/s total`} />
+              <>
+                <Stat label="fetch lag"     value={fmt(fetchLag, 0)}  sub="position-based" title="Messages fetched but not yet consumed by the KafkaConsumer. Updated every poll cycle." />
+                <Stat label="committed lag" value={committed > 0 ? fmt(committed, 0) : '—'} sub={`${fmt(totalRate, 1)} msg/s · 15 s cache`} title="endOffset − committedOffset. Matches what Redpanda/Kafka console shows. Updated every 15 s." />
+              </>
             )
           })()}
           {/* Per-partition breakdown */}

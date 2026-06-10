@@ -18,9 +18,10 @@ import java.util.function.Supplier;
  *
  * <h2>Recording metrics</h2>
  * <ul>
- *   <li>{@code joxette.messages.consumed} — cumulative messages consumed per topic</li>
- *   <li>{@code joxette.messages.written}  — cumulative messages written to DuckLake per topic</li>
- *   <li>{@code joxette.consumer.lag}      — current consumer lag per topic (gauge)</li>
+ *   <li>{@code joxette.messages.consumed}          — cumulative messages consumed per topic</li>
+ *   <li>{@code joxette.messages.written}            — cumulative messages written to DuckLake per topic</li>
+ *   <li>{@code joxette.consumer.lag}                — fetch-position lag per topic (gauge, zero network cost)</li>
+ *   <li>{@code joxette.consumer.committed_lag}      — committed-offset lag per topic (gauge, updated on health-cache refresh every 15 s)</li>
  *   <li>{@code joxette.write.channel.depth} — current depth of the write-channel backpressure buffer</li>
  *   <li>{@code joxette.write.duration}    — DuckDB batch write latency (timer)</li>
  *   <li>{@code joxette.write.batch.size}  — records per batch (distribution summary)</li>
@@ -165,6 +166,22 @@ public class JoxetteMetrics {
     /** Convenience overload for whole-topic lag gauges. */
     public void registerLagGauge(String topic, AtomicLong lagHolder) {
         registerLagGauge(topic, null, lagHolder);
+    }
+
+    /**
+     * Registers a gauge for committed-offset lag (endOffset − committedOffset),
+     * updated whenever the health endpoint refreshes its AdminClient-based lag cache.
+     * Unlike {@link #registerLagGauge}, this reflects what Kafka would re-deliver after
+     * a crash — the number visible in tools like Redpanda Console.
+     */
+    public void registerCommittedLagGauge(String topic, AtomicLong lagHolder) {
+        String id = "committed-lag:" + topic;
+        if (registeredGaugeIds.add(id)) {
+            Gauge.builder("joxette.consumer.committed_lag", lagHolder, AtomicLong::get)
+                    .description("Kafka committed-offset consumer lag (endOffset − committedOffset)")
+                    .tag("topic", topic)
+                    .register(registry);
+        }
     }
 
     /**

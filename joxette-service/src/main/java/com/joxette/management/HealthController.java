@@ -31,6 +31,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -163,6 +164,12 @@ public class HealthController {
     private final AtomicLong lagCacheTime = new AtomicLong(0);
     private static final long LAG_CACHE_TTL_MS = 15_000;
 
+    /**
+     * Per-topic holders for the committed-lag Prometheus gauge.
+     * Populated after each successful AdminClient refresh; lazily created on first use.
+     */
+    private final Map<String, AtomicLong> committedLagHolders = new ConcurrentHashMap<>();
+
     private final JoxetteMetrics joxetteMetrics;
 
     public HealthController(
@@ -287,7 +294,21 @@ public class HealthController {
         }
         lagCache.set(List.copyOf(result));
         lagCacheTime.set(now);
+        updateCommittedLagGauges(result);
         return result;
+    }
+
+    private void updateCommittedLagGauges(List<TopicLag> lags) {
+        for (TopicLag tl : lags) {
+            if (tl.totalLag() < 0) continue;
+            committedLagHolders
+                    .computeIfAbsent(tl.topic(), t -> {
+                        AtomicLong holder = new AtomicLong(0);
+                        joxetteMetrics.registerCommittedLagGauge(t, holder);
+                        return holder;
+                    })
+                    .set(tl.totalLag());
+        }
     }
 
     private TopicLag lagForTopic(AdminClient client, String topic,
