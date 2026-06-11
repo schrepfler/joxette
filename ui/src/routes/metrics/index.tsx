@@ -2,7 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useEffect, useRef, useState } from 'react'
 import {
   AreaChart, Area, LineChart, Line,
-  XAxis, YAxis, CartesianGrid, Legend,
+  XAxis, YAxis, CartesianGrid, Legend, ReferenceLine,
 } from 'recharts'
 import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from '@/components/ui/chart'
 import { healthApi } from '../../api/client'
@@ -208,11 +208,20 @@ function scrapeToPoint(family: Record<string, MetricFamily>): DataPoint {
     networkIoRate[k]   = getSample(family, 'joxette_kafka_consumer_network_io_rate',         { topic }) || 0
   }
 
-  // JVM heap: Micrometer uses label `id` not `area`
-  const heapUsed = getSample(family, 'jvm_memory_used_bytes',  { id: 'heap' })
-             || getSample(family, 'jvm_memory_used_bytes', { area: 'heap' }) || 0
-  const heapMax  = getSample(family, 'jvm_memory_max_bytes',   { id: 'heap' })
-             || getSample(family, 'jvm_memory_max_bytes',  { area: 'heap' }) || 0
+  // heapUsed: sum all heap-area pools from Micrometer's JVM binder
+  // heapMax: read from our custom joxette.jvm.heap.max.bytes gauge (Runtime.maxMemory())
+  function sumHeapUsed(): number {
+    const f = familyFor(family, 'jvm_memory_used_bytes')
+    if (!f) return 0
+    let total = 0
+    for (const s of f.samples) {
+      if (s.labels.__name__ !== 'jvm_memory_used_bytes') continue
+      if (s.labels['area'] === 'heap' && s.value > 0) total += s.value
+    }
+    return total
+  }
+  const heapUsed = sumHeapUsed()
+  const heapMax  = getSample(family, 'joxette_jvm_heap_max_bytes') || 0
 
   return {
     ts: Date.now(), topicKeys, topicLabels,
@@ -350,7 +359,12 @@ function TopicRow({ tk, label, latest, pts, axisProps }: {
 
   const rateSeries = pts.map(pt => {
     const row: Record<string, string | number> = { ts: pt.ts }
-    for (const p of partitions) row[`p${p}`] = Math.max(0, pt.partitionConsumedRate?.[label]?.[p] ?? 0)
+    for (const p of partitions) {
+      row[`p${p}`] = Math.max(0, pt.partitionConsumedRate?.[label]?.[p] ?? 0)
+    }
+    // Always use the topic-level rate as the authoritative total — Kafka's
+    // records-consumed-rate is not broken down per partition.
+    row['total'] = pt.consumedRate[tk] ?? 0
     return row
   })
 
@@ -358,6 +372,10 @@ function TopicRow({ tk, label, latest, pts, axisProps }: {
   partitions.forEach((p, i) => {
     pConfig[`p${p}`] = { label: `p${p}`, color: PALETTE[i % PALETTE.length] }
   })
+  const rateConfig: ChartConfig = {
+    ...pConfig,
+    total: { label: 'total', color: '#f0c040' },
+  }
 
   const netConfig: ChartConfig = {
     p50:  { label: 'poll p50',  color: PALETTE[0] },
@@ -410,22 +428,23 @@ function TopicRow({ tk, label, latest, pts, axisProps }: {
         </Card>
 
         <Card title="Consume Rate" subtitle="msg/s per partition"
-          description="Messages consumed per second from the broker, broken down by partition. Derived from the Kafka consumer records-consumed-rate metric. A drop here while lag rises means the consumer is stalling.">
-          <ChartContainer config={pConfig} className="h-[180px] w-full">
-            <AreaChart data={rateSeries} stackOffset="none">
+          description="Messages consumed per second from the broker, broken down by partition. The dashed white line is the cumulative total across all partitions. A drop here while lag rises means the consumer is stalling.">
+          <ChartContainer config={rateConfig} className="h-[180px] w-full">
+            <LineChart data={rateSeries}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
               <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
               <YAxis tickFormatter={v => fmt(v, 0)} {...axisProps} width={44} />
               <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => `${fmt(Number(v), 1)}/s`} />} />
               <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
               {partitions.map((p, i) => (
-                <Area key={p} type="monotone" dataKey={`p${p}`} name={`p${p}`}
-                  stackId="rate"
+                <Line key={p} type="monotone" dataKey={`p${p}`} name={`p${p}`}
                   stroke={PALETTE[i % PALETTE.length]}
-                  fill={PALETTE[i % PALETTE.length] + '55'}
                   strokeWidth={1.5} dot={false} isAnimationActive={false} />
               ))}
-            </AreaChart>
+              <Line type="monotone" dataKey="total" name="total"
+                stroke="#f0c040" strokeWidth={2} strokeDasharray="5 3"
+                dot={false} isAnimationActive={false} />
+            </LineChart>
           </ChartContainer>
         </Card>
 
@@ -518,7 +537,6 @@ function MetricsPage() {
     inlinedBytes: { label: 'inlined',       color: '#A26612' },
   }
   const heapConfig: ChartConfig = {
-    heapMax:  { label: 'heap max',  color: 'var(--rule-strong)' },
     heapUsed: { label: 'heap used', color: '#1E5A8A' },
   }
   const writeConfig: ChartConfig = {
@@ -606,7 +624,7 @@ function MetricsPage() {
       {/* Infrastructure charts */}
       <div style={{ marginTop: 8 }}>
         <div style={{ paddingBottom: 6, borderBottom: '1px solid var(--rule)', marginBottom: 12 }}>
-          <span style={{ fontWeight: 600, fontSize: 'var(--type-body-sm-size)', color: 'var(--ink-secondary)', textTransform: 'uppercase', letterSpacing: '0.06em', fontSize: '0.6875rem' }}>
+          <span style={{ fontWeight: 600, fontSize: '0.6875rem', color: 'var(--ink-secondary)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
             Infrastructure
           </span>
         </div>
@@ -655,7 +673,12 @@ function MetricsPage() {
                 <YAxis tickFormatter={fmtBytes} {...axisProps} width={68} />
                 <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => fmtBytes(Number(v))} />} />
                 <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
-                <Area type="monotone" dataKey="heapMax"  name="heap max"  stroke="var(--color-heapMax)"  fill="transparent"               strokeDasharray="4 3" strokeWidth={1}   dot={false} isAnimationActive={false} />
+                {(latest?.heapMax ?? 0) > 0 && <>
+                  <ReferenceLine y={latest!.heapMax} stroke="#aaaaaa" strokeWidth={1.5} strokeDasharray="6 3"
+                    label={{ value: `max  ${fmtBytes(latest!.heapMax)}`, position: 'insideTopLeft', fontSize: 9, fill: '#aaaaaa', fontFamily: 'var(--font-mono)' }} />
+                  <ReferenceLine y={latest!.heapMax * 0.8} stroke="#e07040" strokeWidth={1.5} strokeDasharray="4 3"
+                    label={{ value: `80%  ${fmtBytes(latest!.heapMax * 0.8)}`, position: 'insideTopLeft', fontSize: 9, fill: '#e07040', fontFamily: 'var(--font-mono)' }} />
+                </>}
                 <Area type="monotone" dataKey="heapUsed" name="heap used" stroke="var(--color-heapUsed)" fill="var(--color-heapUsed)" fillOpacity={0.12} strokeWidth={1.5} dot={false} isAnimationActive={false} />
               </AreaChart>
             </ChartContainer>

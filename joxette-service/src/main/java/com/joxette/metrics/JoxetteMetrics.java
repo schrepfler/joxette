@@ -100,6 +100,10 @@ public class JoxetteMetrics {
 
     public JoxetteMetrics(MeterRegistry registry) {
         this.registry = registry;
+        Gauge.builder("joxette.jvm.heap.max.bytes", Runtime.getRuntime(), Runtime::maxMemory)
+                .description("JVM max heap size as configured by -Xmx (Runtime.maxMemory())")
+                .baseUnit("bytes")
+                .register(registry);
     }
 
     // =========================================================================

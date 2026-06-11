@@ -386,7 +386,6 @@ function ExampleRow({
   rowFocused,
   onChipClick,
   onRowFocus,
-  onChipFocus,
   chipRefs,
 }: {
   example: SolSequenceExample
@@ -395,7 +394,6 @@ function ExampleRow({
   rowFocused: boolean
   onChipClick: (eventIdx: number) => void
   onRowFocus: () => void
-  onChipFocus: (eventIdx: number) => void
   chipRefs: React.MutableRefObject<(HTMLButtonElement | null)[]>
 }) {
   const segments = segment(example)
@@ -546,7 +544,6 @@ export function SolExamplesPane({ entityType, examples, totalSequences, matchedS
               focused={focusedRow === ri && popup === null ? 0 : -1}
               onRowFocus={() => setFocusedRow(ri)}
               onChipClick={eventIdx => openPopup(ri, eventIdx)}
-              onChipFocus={eventIdx => { setFocusedRow(ri); void eventIdx }}
               chipRefs={{ current: chipRefs.current[ri] ??= [] }}
             />
           )
