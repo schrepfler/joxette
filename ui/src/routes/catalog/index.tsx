@@ -2,9 +2,11 @@ import { createFileRoute } from '@tanstack/react-router'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { EditorView, keymap } from '@codemirror/view'
-import { EditorState } from '@codemirror/state'
+import { Compartment, EditorState } from '@codemirror/state'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
-import { sql } from '@codemirror/lang-sql'
+import { sql, type SQLConfig } from '@codemirror/lang-sql'
+import { DuckDB, PostgreSQL } from '../../components/duckdb-dialect'
+import { autocompletion, completionKeymap } from '@codemirror/autocomplete'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { catalogApi, type CatalogQueryResponse } from '../../api/client'
 import { Layout } from '../../components/Layout'
@@ -149,13 +151,16 @@ function SchemaBrowser({ onTableClick }: SchemaBrowserProps) {
 // ---- SQL Editor ----
 
 interface SqlEditorProps {
-  tableSchema: Record<string, string[]>
+  sqlConfig: SQLConfig
   onRun: (sql: string) => void
   editorViewRef: React.MutableRefObject<EditorView | null>
 }
 
-function SqlEditor({ tableSchema, onRun, editorViewRef }: SqlEditorProps) {
+function SqlEditor({ sqlConfig, onRun, editorViewRef }: SqlEditorProps) {
   const containerRef = useRef<HTMLDivElement>(null)
+  // Compartment lets us hot-swap the SQL language extension (schema) without
+  // touching the document or cursor position.
+  const sqlCompartment = useRef(new Compartment())
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -166,16 +171,18 @@ function SqlEditor({ tableSchema, onRun, editorViewRef }: SqlEditorProps) {
     }
 
     const state = EditorState.create({
-      doc: 'SELECT * FROM lake.cassette_',
+      doc: 'SELECT * FROM ',
       extensions: [
         history(),
         keymap.of([
           ...defaultKeymap,
           ...historyKeymap,
+          ...completionKeymap,
           { key: 'Ctrl-Enter', run: runCurrentSql },
           { key: 'Mod-Enter', run: runCurrentSql },
         ]),
-        sql({ schema: tableSchema }),
+        autocompletion({ activateOnTyping: true }),
+        sqlCompartment.current.of(sql(sqlConfig)),
         oneDark,
         EditorView.theme({
           '&': { borderRadius: 'var(--radius-sm)', overflow: 'hidden', fontSize: '13px' },
@@ -195,12 +202,15 @@ function SqlEditor({ tableSchema, onRun, editorViewRef }: SqlEditorProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Update SQL extension when tableSchema changes without recreating editor
+  // Hot-swap the SQL language extension when schema data arrives (columns loaded).
+  // Uses the compartment so document and cursor are preserved.
   useEffect(() => {
-    // tableSchema changes are handled by re-creating the extension on first mount only;
-    // for a live schema-aware autocomplete refresh the editor would need a StateEffect.
-    // Acceptable for this use case since schema is loaded once.
-  }, [tableSchema])
+    const view = editorViewRef.current
+    if (!view) return
+    view.dispatch({
+      effects: sqlCompartment.current.reconfigure(sql(sqlConfig)),
+    })
+  }, [sqlConfig]) // eslint-disable-line react-hooks/exhaustive-deps
 
   return <div ref={containerRef} style={{ border: '1px solid var(--rule)', borderRadius: 'var(--radius-sm)' }} />
 }
@@ -285,11 +295,40 @@ function CatalogPage() {
     staleTime: 30_000,
   })
 
-  const tableSchema = useMemo<Record<string, string[]>>(() => {
-    if (!tablesQuery.data) return {}
-    const rows = parseTableRows(tablesQuery.data)
-    return groupBySchema(rows)
-  }, [tablesQuery.data])
+  const columnsQuery = useQuery({
+    queryKey: ['catalog', 'columns'],
+    queryFn: catalogApi.columns,
+    staleTime: 30_000,
+  })
+
+  const backendQuery = useQuery({
+    queryKey: ['catalog', 'backend'],
+    queryFn: catalogApi.backend,
+    staleTime: Infinity, // backend type never changes at runtime
+  })
+
+  // Build SQLConfig: schema maps each "schema.table" to its column names so the
+  // SQL language extension can offer column-level autocomplete after a dot.
+  // Dialect is DuckDB for embedded/Quack, PostgreSQL for pg catalog.
+  const sqlConfig = useMemo<SQLConfig>(() => {
+    const dialect = backendQuery.data === 'POSTGRESQL' ? PostgreSQL : DuckDB
+
+    const tableRows = tablesQuery.data ? parseTableRows(tablesQuery.data) : []
+    const colRows = columnsQuery.data?.rows ?? []
+    const schemaIdx = columnsQuery.data?.columns.findIndex(c => c.name === 'table_schema') ?? 0
+    const tableIdx  = columnsQuery.data?.columns.findIndex(c => c.name === 'table_name')  ?? 1
+    const colIdx    = columnsQuery.data?.columns.findIndex(c => c.name === 'column_name') ?? 2
+
+    const schema: Record<string, string[]> = {}
+    for (const row of tableRows) {
+      schema[`${row.schema_name}.${row.name}`] = []
+    }
+    for (const row of colRows) {
+      const key = `${row[schemaIdx]}.${row[tableIdx]}`
+      ;(schema[key] ??= []).push(String(row[colIdx]))
+    }
+    return { dialect, schema }
+  }, [tablesQuery.data, columnsQuery.data, backendQuery.data])
 
   const queryMutation = useMutation({
     mutationFn: (sqlText: string) => catalogApi.query(sqlText),
@@ -348,7 +387,7 @@ function CatalogPage() {
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div style={cardStyle}>
             <SqlEditor
-              tableSchema={tableSchema}
+              sqlConfig={sqlConfig}
               onRun={handleRun}
               editorViewRef={editorViewRef}
             />

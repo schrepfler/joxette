@@ -125,6 +125,7 @@ export function SolExplorerPanel({ entityType }: Props) {
         {result && (
           <div style={{ minWidth: 0, border: '1px solid var(--rule)', borderRadius: 'var(--radius-sm)', padding: '8px 12px' }}>
             <SolExamplesPane
+              entityType={entityType}
               examples={result.examples}
               totalSequences={result.totalSequences}
               matchedSequences={result.matchedSequences}

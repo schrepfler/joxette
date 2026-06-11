@@ -1276,4 +1276,20 @@ export const catalogApi = {
     }),
   tables: () =>
     catalogApi.query('SHOW ALL TABLES', 10_000),
+  columns: () =>
+    catalogApi.query(
+      `SELECT table_schema, table_name, column_name
+       FROM information_schema.columns
+       ORDER BY table_schema, table_name, ordinal_position`,
+      100_000,
+    ),
+  /** Returns the catalog backend name: EMBEDDED_DUCKDB | QUACK | POSTGRESQL */
+  backend: async (): Promise<'EMBEDDED_DUCKDB' | 'QUACK' | 'POSTGRESQL'> => {
+    const res = await fetch('/actuator/health/catalog')
+    if (!res.ok) return 'EMBEDDED_DUCKDB'
+    const json = await res.json() as { details?: { backend?: string } }
+    const b = json.details?.backend ?? 'EMBEDDED_DUCKDB'
+    if (b === 'POSTGRESQL') return 'POSTGRESQL'
+    return 'EMBEDDED_DUCKDB'
+  },
 }

@@ -64,37 +64,42 @@ DuckDB is used as the DuckLake catalog database (not PostgreSQL). This means:
 
 ### General Cassette Table (one per topic, in DuckLake)
 
-Table name: `lake.cassette_{sanitized_topic}`
+Table name: `lake.main.general_{sanitized_topic}` (dots → underscores, lowercased — e.g. `my.topic.name` → `lake.main.general_my_topic_name`)
 
 ```sql
-CREATE TABLE IF NOT EXISTS lake.cassette_{sanitized_topic} (
-    topic           VARCHAR NOT NULL,
-    headers         LIST(STRUCT(key VARCHAR, value BLOB)),
-    "timestamp"     TIMESTAMPTZ NOT NULL,
-    "partition"     INTEGER NOT NULL,
-    "offset"        BIGINT NOT NULL,
-    key             VARCHAR,
-    value           VARIANT,  -- confirmed working: duckdb_jdbc 1.5.3.0 + ducklake; see SchemaManager.probeVariant()
-    recorded_at     TIMESTAMPTZ NOT NULL
+CREATE TABLE IF NOT EXISTS lake.main.general_{sanitized_topic} (
+    recorded_at       TIMESTAMPTZ NOT NULL,
+    kafka_offset      BIGINT NOT NULL,
+    kafka_partition   INTEGER NOT NULL,
+    kafka_timestamp   TIMESTAMPTZ NOT NULL,
+    kafka_key         BLOB,
+    kafka_value       BLOB,
+    kafka_value_str   VARCHAR,
+    metadata          VARIANT,  -- confirmed working: duckdb_jdbc 1.5.3.0 + ducklake; see SchemaManager.probeVariant()
+    headers           STRUCT(key VARCHAR, value VARCHAR)[],
+    message_type      VARCHAR
 );
 ```
 
 ### Entity Cassette Table (one per entity type, in DuckLake)
 
-Table name: `lake.entity_{sanitized_type}`
+Table name: `lake.main.entity_{sanitized_type}`
 
 ```sql
-CREATE TABLE IF NOT EXISTS lake.entity_{sanitized_type} (
-    entity_id       VARCHAR NOT NULL,
-    entity_bucket   INTEGER NOT NULL,
-    source_topic    VARCHAR NOT NULL,
-    headers         LIST(STRUCT(key VARCHAR, value BLOB)),
-    "timestamp"     TIMESTAMPTZ NOT NULL,
-    source_partition INTEGER NOT NULL,
-    source_offset   BIGINT NOT NULL,
-    key             VARCHAR,
-    value           VARIANT,  -- confirmed working: duckdb_jdbc 1.5.3.0 + ducklake; see SchemaManager.probeVariant()
-    recorded_at     TIMESTAMPTZ NOT NULL
+CREATE TABLE IF NOT EXISTS lake.main.entity_{sanitized_type} (
+    recorded_at       TIMESTAMPTZ NOT NULL,
+    entity_id         VARCHAR NOT NULL,
+    bucket            INTEGER NOT NULL,
+    message_type      VARCHAR,
+    topic             VARCHAR NOT NULL,
+    kafka_offset      BIGINT NOT NULL,
+    kafka_partition   INTEGER NOT NULL,
+    kafka_timestamp   TIMESTAMPTZ NOT NULL,
+    kafka_key         BLOB,
+    kafka_value       BLOB,
+    kafka_value_str   VARCHAR,
+    metadata          VARIANT,  -- confirmed working: duckdb_jdbc 1.5.3.0 + ducklake; see SchemaManager.probeVariant()
+    headers           STRUCT(key VARCHAR, value VARCHAR)[]
 );
 ```
 

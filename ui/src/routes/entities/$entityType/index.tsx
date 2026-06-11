@@ -32,6 +32,7 @@ import { SequenceBarcodeView, BarcodeLegend, NumericLegend, BarcodeXModeToggle, 
 import { SunburstChart } from '../../../components/SunburstChart'
 import { SunburstDistributionPanel } from '../../../components/SunburstDistributionPanel'
 import { SolEditor } from '../../../components/SolEditor'
+import { SolExplorerPanel } from '../../../components/SolExplorerPanel'
 import { useQueries } from '@tanstack/react-query'
 
 export const Route = createFileRoute('/entities/$entityType/')({
@@ -307,7 +308,7 @@ function EntityTypeDetailPage() {
   const [showAddSource, setShowAddSource] = useState(false)
   const [confirmDeleteSource, setConfirmDeleteSource] = useState<string | null>(null)
   const [showTruncateDialog, setShowTruncateDialog] = useState(false)
-  const [knownEntitiesView, setKnownEntitiesView] = useState<'list' | 'barcode' | 'sunburst'>('list')
+  const [knownEntitiesView, setKnownEntitiesView] = useState<'list' | 'barcode' | 'sunburst' | 'sol'>('list')
   const [searchRaw, setSearchRaw] = useState('')
   const search = useDebounce(searchRaw, 300)
   const [sortBy, setSortBy] = useState<EntitySortBy>('id')
@@ -495,6 +496,7 @@ function EntityTypeDetailPage() {
                   { id: 'list',     label: 'List',     icon: '☰' },
                   { id: 'barcode',  label: 'Barcode',  icon: '▦' },
                   { id: 'sunburst', label: 'Sunburst', icon: '◎' },
+                  { id: 'sol',      label: 'SOL',      icon: '⌥' },
                 ]}
                 active={knownEntitiesView}
                 onChange={setKnownEntitiesView}
@@ -524,14 +526,16 @@ function EntityTypeDetailPage() {
                 ))}
               </div>
             )}
-            <input
-              style={{ ...inputStyle, width: 280, marginBottom: '0.75rem' }}
-              placeholder="Search entity ID…"
-              value={searchRaw}
-              onChange={e => { setSearchRaw(e.target.value); setCursor(undefined); setCursors([]) }}
-            />
-            {entitiesQuery.isLoading && <LoadingSpinner />}
-            {entitiesQuery.error && <ErrorMessage message={(entitiesQuery.error as Error).message} />}
+            {knownEntitiesView !== 'sol' && (
+              <input
+                style={{ ...inputStyle, width: 280, marginBottom: '0.75rem' }}
+                placeholder="Search entity ID…"
+                value={searchRaw}
+                onChange={e => { setSearchRaw(e.target.value); setCursor(undefined); setCursors([]) }}
+              />
+            )}
+            {knownEntitiesView !== 'sol' && entitiesQuery.isLoading && <LoadingSpinner />}
+            {knownEntitiesView !== 'sol' && entitiesQuery.error && <ErrorMessage message={(entitiesQuery.error as Error).message} />}
             {!entitiesQuery.isLoading && knownEntitiesView === 'list' && (
               <>
                 <table aria-label="Known entities" style={tableStyle}>
@@ -569,6 +573,9 @@ function EntityTypeDetailPage() {
             )}
             {knownEntitiesView === 'sunburst' && (
               <SunburstPanel entityType={entityType} />
+            )}
+            {knownEntitiesView === 'sol' && (
+              <SolExplorerPanel entityType={entityType} />
             )}
           </div>
         </>
