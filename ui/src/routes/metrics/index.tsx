@@ -179,14 +179,23 @@ function scrapeToPoint(family: Record<string, MetricFamily>): DataPoint {
   const fetchThrottle:   Record<string, number> = {}
   const networkIoRate:   Record<string, number> = {}
 
+  // Compute per-partition breakdowns first so we can derive correct per-topic totals.
+  // getSample() returns only the first matching sample (partition 0), not the topic total.
+  const partitionLag          = getSamplesByTopicAndPartition(family, 'joxette_consumer_lag')
+  const partitionConsumedRate = getSamplesByTopicAndPartition(family, 'joxette_kafka_consumer_records_consumed_rate')
+
   for (const topic of topicNames) {
     const k = safeKey(topic)
     topicKeys.push(k); topicLabels[k] = topic
-    lag[k]          = getSample(family, 'joxette_consumer_lag',           { topic }) || 0
+    // Sum all partition values so lag[k] is the true total for this topic,
+    // not just partition 0 (which getSample() would have returned).
+    lag[k]          = Object.values(partitionLag[topic] ?? {}).reduce((a, b) => a + b, 0)
+                      || getSample(family, 'joxette_consumer_lag', { topic }) || 0
     committedLag[k] = getSample(family, 'joxette_consumer_committed_lag', { topic }) || 0
     consumed[k]     = getSample(family, 'joxette_messages_consumed_total',             { topic }) || 0
     written[k]      = getSample(family, 'joxette_messages_written_total',               { topic }) || 0
-    consumedRate[k] = getSample(family, 'joxette_kafka_consumer_records_consumed_rate', { topic }) || 0
+    consumedRate[k] = Object.values(partitionConsumedRate[topic] ?? {}).reduce((a, b) => a + b, 0)
+                      || getSample(family, 'joxette_kafka_consumer_records_consumed_rate', { topic }) || 0
     bytesRate[k]    = getSample(family, 'joxette_kafka_consumer_bytes_consumed_rate',   { topic }) || 0
     fetchLatency[k] = getSample(family, 'joxette_kafka_consumer_fetch_latency_avg',     { topic }) || 0
     // poll() instrumentation: Micrometer timer → _seconds_sum/_count + percentile gauges
@@ -204,10 +213,6 @@ function scrapeToPoint(family: Record<string, MetricFamily>): DataPoint {
              || getSample(family, 'jvm_memory_used_bytes', { area: 'heap' }) || 0
   const heapMax  = getSample(family, 'jvm_memory_max_bytes',   { id: 'heap' })
              || getSample(family, 'jvm_memory_max_bytes',  { area: 'heap' }) || 0
-
-  // Per-partition metrics keyed by base topic name
-  const partitionLag         = getSamplesByTopicAndPartition(family, 'joxette_consumer_lag')
-  const partitionConsumedRate = getSamplesByTopicAndPartition(family, 'joxette_kafka_consumer_records_consumed_rate')
 
   return {
     ts: Date.now(), topicKeys, topicLabels,
@@ -257,15 +262,44 @@ function timeTick(ts: number) {
 const PALETTE = ['#6674cc', '#3E9A7A', '#A26612', '#8B2121', '#1E5A8A', '#6B46A0']
 
 // ---------------------------------------------------------------------------
+// Tooltip bubble (shared)
+// ---------------------------------------------------------------------------
+
+const TIP_STYLE: React.CSSProperties = {
+  position: 'absolute', bottom: 'calc(100% + 8px)', left: 0,
+  zIndex: 200,
+  background: '#1a1d2e',
+  border: '1px solid #3a3d52',
+  borderRadius: 6,
+  padding: '8px 11px',
+  width: 260,
+  fontSize: '0.72rem',
+  color: '#d4d8f0',
+  lineHeight: 1.55,
+  boxShadow: '0 8px 24px rgba(0,0,0,0.55)',
+  pointerEvents: 'none',
+  whiteSpace: 'normal',
+  textAlign: 'left',
+}
+
+// ---------------------------------------------------------------------------
 // Stat pill
 // ---------------------------------------------------------------------------
 
 function Stat({ label, value, sub, title }: { label: string; value: string; sub?: string; title?: string }) {
+  const [tip, setTip] = useState(false)
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', minWidth: 110 }} title={title}>
-      <span style={{ fontSize: '0.5625rem', color: 'var(--ink-tertiary)', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 600 }}>{label}</span>
+    <div
+      style={{ display: 'flex', flexDirection: 'column', minWidth: 110, position: 'relative', cursor: title ? 'default' : undefined }}
+      onMouseEnter={() => title && setTip(true)}
+      onMouseLeave={() => setTip(false)}
+    >
+      <span style={{ fontSize: '0.5625rem', color: 'var(--ink-tertiary)', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 600 }}>
+        {label}
+      </span>
       <span style={{ fontFamily: 'var(--font-mono)', fontSize: '1.125rem', fontWeight: 700, color: 'var(--ink-primary)', lineHeight: 1.3 }}>{value}</span>
       {sub && <span style={{ fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)' }}>{sub}</span>}
+      {tip && title && <div style={TIP_STYLE}>{title}</div>}
     </div>
   )
 }
@@ -274,14 +308,174 @@ function Stat({ label, value, sub, title }: { label: string; value: string; sub?
 // Chart card
 // ---------------------------------------------------------------------------
 
-function Card({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
+function Card({ title, subtitle, description, children }: { title: string; subtitle?: string; description?: string; children: React.ReactNode }) {
+  const [tip, setTip] = useState(false)
   return (
     <div style={{ ...cardStyle, padding: '16px 20px' }}>
-      <div style={{ marginBottom: 10 }}>
-        <span style={{ fontWeight: 600, fontSize: 'var(--type-body-sm-size)', color: 'var(--ink-primary)' }}>{title}</span>
+      <div style={{ marginBottom: 10, display: 'flex', alignItems: 'baseline', gap: 0, position: 'relative' }}>
+        <span
+          style={{ fontWeight: 600, fontSize: 'var(--type-body-sm-size)', color: 'var(--ink-primary)', cursor: description ? 'default' : undefined, borderBottom: description ? '1px dotted var(--rule-strong)' : undefined }}
+          onMouseEnter={() => description && setTip(true)}
+          onMouseLeave={() => setTip(false)}
+        >{title}</span>
         {subtitle && <span style={{ marginLeft: 8, fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)' }}>{subtitle}</span>}
+        {tip && description && <div style={TIP_STYLE}>{description}</div>}
       </div>
       {children}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Per-topic chart row
+// ---------------------------------------------------------------------------
+
+type PtRecord = Omit<DataPoint, 'ts'> & { ts: string }
+
+function TopicRow({ tk, label, latest, pts, axisProps }: {
+  tk: string
+  label: string
+  latest: DataPoint | undefined
+  pts: PtRecord[]
+  axisProps: { tick: { fontSize: number; fill: string }; axisLine: boolean; tickLine: boolean }
+}) {
+  const partitions = Object.keys(latest?.partitionLag?.[label] ?? {})
+    .sort((a, b) => Number(a) - Number(b))
+
+  const lagSeries = pts.map(pt => {
+    const row: Record<string, string | number> = { ts: pt.ts }
+    for (const p of partitions) row[`p${p}`] = pt.partitionLag?.[label]?.[p] ?? 0
+    return row
+  })
+
+  const rateSeries = pts.map(pt => {
+    const row: Record<string, string | number> = { ts: pt.ts }
+    for (const p of partitions) row[`p${p}`] = Math.max(0, pt.partitionConsumedRate?.[label]?.[p] ?? 0)
+    return row
+  })
+
+  const pConfig: ChartConfig = {}
+  partitions.forEach((p, i) => {
+    pConfig[`p${p}`] = { label: `p${p}`, color: PALETTE[i % PALETTE.length] }
+  })
+
+  const netConfig: ChartConfig = {
+    p50:  { label: 'poll p50',  color: PALETTE[0] },
+    p99:  { label: 'poll p99',  color: PALETTE[1] },
+    flmax: { label: 'fetch max', color: PALETTE[2] },
+  }
+  const netPts = pts.map(pt => ({
+    ts: pt.ts,
+    p50:  pt.pollDurationP50[tk] ?? 0,
+    p99:  pt.pollDurationP99[tk] ?? 0,
+    flmax: pt.fetchLatencyMax[tk] ?? 0,
+  }))
+
+  const currentLag  = latest ? Object.values(latest.partitionLag?.[label] ?? {}).reduce((a, b) => a + b, 0) : 0
+  const currentRate = latest?.consumedRate[tk] ?? 0
+
+  return (
+    <div style={{ marginBottom: 28 }}>
+      <div style={{
+        display: 'flex', alignItems: 'baseline', gap: 16, marginBottom: 10,
+        paddingBottom: 6, borderBottom: '1px solid var(--rule)',
+      }}>
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--type-body-sm-size)', fontWeight: 600, color: 'var(--ink-primary)' }}>
+          {label}
+        </span>
+        <span style={{ fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)', fontFamily: 'var(--font-mono)' }}>
+          lag {fmt(currentLag, 0)} · {fmt(currentRate, 1)} msg/s
+        </span>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: 12 }}>
+        <Card title="Lag" subtitle="stacked per partition"
+          description="Messages available on the broker that the consumer has fetched but not yet processed. Stacked by partition. High lag means the consumer is behind — either slow writes or a burst of incoming messages.">
+          <ChartContainer config={pConfig} className="h-[180px] w-full">
+            <AreaChart data={lagSeries} stackOffset="none">
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
+              <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
+              <YAxis tickFormatter={v => fmt(v, 0)} {...axisProps} width={44} />
+              <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => fmt(Number(v), 0)} />} />
+              <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
+              {partitions.map((p, i) => (
+                <Area key={p} type="monotone" dataKey={`p${p}`} name={`p${p}`}
+                  stackId="lag"
+                  stroke={PALETTE[i % PALETTE.length]}
+                  fill={PALETTE[i % PALETTE.length] + '55'}
+                  strokeWidth={1.5} dot={false} isAnimationActive={false} />
+              ))}
+            </AreaChart>
+          </ChartContainer>
+        </Card>
+
+        <Card title="Consume Rate" subtitle="msg/s per partition"
+          description="Messages consumed per second from the broker, broken down by partition. Derived from the Kafka consumer records-consumed-rate metric. A drop here while lag rises means the consumer is stalling.">
+          <ChartContainer config={pConfig} className="h-[180px] w-full">
+            <AreaChart data={rateSeries} stackOffset="none">
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
+              <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
+              <YAxis tickFormatter={v => fmt(v, 0)} {...axisProps} width={44} />
+              <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => `${fmt(Number(v), 1)}/s`} />} />
+              <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
+              {partitions.map((p, i) => (
+                <Area key={p} type="monotone" dataKey={`p${p}`} name={`p${p}`}
+                  stackId="rate"
+                  stroke={PALETTE[i % PALETTE.length]}
+                  fill={PALETTE[i % PALETTE.length] + '55'}
+                  strokeWidth={1.5} dot={false} isAnimationActive={false} />
+              ))}
+            </AreaChart>
+          </ChartContainer>
+        </Card>
+
+        <Card title="Bytes Rate" subtitle="bytes / s from broker"
+          description="Raw bytes fetched per second from the broker for this topic. Useful for estimating network bandwidth and DuckLake write pressure. Includes message overhead, not just payload size.">
+          <ChartContainer config={{ val: { label: 'bytes/s', color: PALETTE[0] } }} className="h-[180px] w-full">
+            <LineChart data={pts.map(pt => ({ ts: pt.ts, val: pt.bytesRate[tk] ?? 0 }))}>
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
+              <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
+              <YAxis tickFormatter={v => fmtBytes(v) + '/s'} {...axisProps} width={72} />
+              <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => fmtBytes(Number(v)) + '/s'} />} />
+              <Line type="monotone" dataKey="val" name="bytes/s"
+                stroke={PALETTE[0]} strokeWidth={1.5} dot={false} isAnimationActive={false} />
+            </LineChart>
+          </ChartContainer>
+        </Card>
+
+        <Card title="Fetch Latency" subtitle="avg Kafka fetch round-trip (ms)"
+          description="Average time between sending a FETCH request to the broker and receiving a response. On a quiet topic this will sit near fetch.max.wait.ms (500 ms) — the broker holds the request until data arrives. High latency on a busy topic indicates broker saturation or network issues.">
+          <ChartContainer config={{ val: { label: 'fetch avg', color: PALETTE[1] } }} className="h-[180px] w-full">
+            <LineChart data={pts.map(pt => ({ ts: pt.ts, val: pt.fetchLatency[tk] ?? 0 }))}>
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
+              <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
+              <YAxis tickFormatter={v => v + 'ms'} {...axisProps} width={44} />
+              <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => fmtMs(Number(v))} />} />
+              <Line type="monotone" dataKey="val" name="fetch avg"
+                stroke={PALETTE[1]} strokeWidth={1.5} dot={false} isAnimationActive={false} />
+            </LineChart>
+          </ChartContainer>
+        </Card>
+
+        <Card title="Network" subtitle="poll() p50/p99 + fetch-latency-max (ms)"
+          description="poll() p50/p99: time spent inside KafkaConsumer.poll(), including broker wait. Near 100 ms means the consumer is broker-bound (waiting on fetch.max.wait.ms). Near 0 ms means local processing is the bottleneck. fetch-latency-max is the worst single fetch round-trip seen in the interval.">
+          <ChartContainer config={netConfig} className="h-[180px] w-full">
+            <LineChart data={netPts}>
+              <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
+              <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
+              <YAxis tickFormatter={v => fmtMs(v)} {...axisProps} width={56} domain={[0, 120]} />
+              <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => fmtMs(Number(v))} />} />
+              <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
+              <Line type="monotone" dataKey="p50" name="poll p50"
+                stroke={PALETTE[0]} strokeWidth={2} dot={false} isAnimationActive={false} />
+              <Line type="monotone" dataKey="p99" name="poll p99"
+                stroke={PALETTE[1]} strokeWidth={1} strokeDasharray="4 2" dot={false} isAnimationActive={false} />
+              <Line type="monotone" dataKey="flmax" name="fetch max"
+                stroke={PALETTE[2]} strokeWidth={1} strokeDasharray="1 3" dot={false} isAnimationActive={false} />
+            </LineChart>
+          </ChartContainer>
+        </Card>
+      </div>
     </div>
   )
 }
@@ -319,63 +513,6 @@ function MetricsPage() {
   // Stringify ts to avoid Recharts treating numbers as object keys
   const pts = history.map(p => ({ ...p, ts: String(p.ts) }))
 
-  // Collect stable partition list across all topics (e.g. ["0","1","2"])
-  const allPartitions = [...new Set(
-    Object.values(latest?.partitionLag ?? {}).flatMap(parts => Object.keys(parts))
-  )].sort((a, b) => Number(a) - Number(b))
-
-  // Per-partition stacked lag series: each point has p0, p1, p2 ...
-  const lagStackedSeries = pts.map(pt => {
-    const row: Record<string, string | number> = { ts: pt.ts }
-    // sum across all topics for each partition
-    for (const p of allPartitions) {
-      let sum = 0
-      for (const parts of Object.values(pt.partitionLag ?? {})) sum += parts[p] ?? 0
-      row[`p${p}`] = sum
-    }
-    row['total'] = allPartitions.reduce((acc, p) => acc + (Number(row[`p${p}`]) || 0), 0)
-    return row
-  })
-
-  // Per-partition stacked consume-rate series
-  const rateStackedSeries = history.map((pt, i) => {
-    const row: Record<string, string | number> = { ts: String(pt.ts) }
-    if (i === 0) { allPartitions.forEach(p => { row[`p${p}`] = 0 }); row['total'] = 0; return row }
-    const prev = history[i - 1]
-    const dtSec = (pt.ts - prev.ts) / 1000
-    let total = 0
-    for (const p of allPartitions) {
-      let sum = 0
-      for (const parts of Object.values(pt.partitionConsumedRate ?? {})) {
-        sum += parts[p] ?? 0
-      }
-      row[`p${p}`] = dtSec > 0 ? Math.max(0, sum) : 0
-      total += Number(row[`p${p}`])
-    }
-    row['total'] = total
-    return row
-  })
-
-  // Build ChartConfig for partition stacks
-  function partitionConfig(partitions: string[]): ChartConfig {
-    const cfg: ChartConfig = { total: { label: 'total', color: '#6674cc' } }
-    partitions.forEach((p, i) => {
-      cfg[`p${p}`] = { label: `partition ${p}`, color: PALETTE[(i + 1) % PALETTE.length] }
-    })
-    return cfg
-  }
-  const pLagConfig  = partitionConfig(allPartitions)
-  const pRateConfig = partitionConfig(allPartitions)
-
-  // Build ChartConfig for shadcn chart theming
-  function topicConfig(keys: string[], labels: Record<string, string>): ChartConfig {
-    const cfg: ChartConfig = {}
-    keys.forEach((k, i) => {
-      cfg[k] = { label: labels[k] ?? k, color: PALETTE[i % PALETTE.length] }
-    })
-    return cfg
-  }
-
   const catalogConfig: ChartConfig = {
     catalogBytes: { label: 'catalog file', color: '#6674cc' },
     inlinedBytes: { label: 'inlined',       color: '#A26612' },
@@ -391,8 +528,6 @@ function MetricsPage() {
   const replaysConfig: ChartConfig = {
     activeReplays: { label: 'active replays', color: '#6B46A0' },
   }
-
-  const tConfig = topicConfig(topicKeys, topicLabels)
 
   const axisProps = {
     tick: { fontSize: 10, fill: 'var(--ink-tertiary)' },
@@ -419,230 +554,128 @@ function MetricsPage() {
       {/* Headline stats */}
       {latest && (
         <div style={{ ...cardStyle, padding: '16px 24px', marginBottom: 24, display: 'flex', gap: 32, flexWrap: 'wrap', alignItems: 'flex-start' }}>
-          {/* Total across all topics/partitions */}
           {topicKeys.length > 0 && (() => {
-            const fetchLag     = topicKeys.reduce((s, k) => s + (latest.lag[k] ?? 0), 0)
-            const committed    = topicKeys.reduce((s, k) => s + (latest.committedLag[k] ?? 0), 0)
-            const totalRate    = topicKeys.reduce((s, k) => s + (latest.consumedRate[k] ?? 0), 0)
+            const fetchLag  = topicKeys.reduce((s, k) => s + (latest.lag[k] ?? 0), 0)
+            const committed = topicKeys.reduce((s, k) => s + (latest.committedLag[k] ?? 0), 0)
+            const totalRate = topicKeys.reduce((s, k) => s + (latest.consumedRate[k] ?? 0), 0)
             return (
               <>
-                <Stat label="fetch lag"     value={fmt(fetchLag, 0)}  sub="position-based" title="Messages fetched but not yet consumed by the KafkaConsumer. Updated every poll cycle." />
-                <Stat label="committed lag" value={committed > 0 ? fmt(committed, 0) : '—'} sub={`${fmt(totalRate, 1)} msg/s · 15 s cache`} title="endOffset − committedOffset. Matches what Redpanda/Kafka console shows. Updated every 15 s." />
+                <Stat label="fetch lag" value={fmt(fetchLag, 0)} sub="position-based"
+                  title="Messages available on the broker that the consumer has fetched into its internal buffer but not yet processed. Updated every poll cycle. This lags slightly behind the true broker lag." />
+                <Stat label="committed lag" value={committed > 0 ? fmt(committed, 0) : '—'}
+                  sub={`${fmt(totalRate, 1)} msg/s · 15 s cache`}
+                  title="endOffset − committedOffset, queried via the Kafka AdminClient. This matches what Redpanda Console and kafka-consumer-groups show. Cached for 15 s to avoid AdminClient overhead." />
               </>
             )
           })()}
-          {/* Per-partition breakdown */}
-          {allPartitions.length > 0 && allPartitions.map(p => {
-            const pLag  = Object.values(latest.partitionLag  ?? {}).reduce((s, parts) => s + (parts[p] ?? 0), 0)
-            const pRate = Object.values(latest.partitionConsumedRate ?? {}).reduce((s, parts) => s + (parts[p] ?? 0), 0)
-            return (
-              <Stat key={p} label={`lag · p${p}`}
-                value={fmt(pLag, 0)}
-                sub={`${fmt(pRate, 1)} msg/s`} />
-            )
-          })}
           {topicKeys.length > 0 && <div style={{ width: 1, background: 'var(--rule)', alignSelf: 'stretch' }} />}
-          <Stat label="write depth"   value={String(latest.writeDepth)}    sub="in-flight batches" />
-          <Stat label="write latency" value={fmtMs(latest.writeDuration)}  sub="avg batch" />
+          <Stat label="write depth" value={String(latest.writeDepth)} sub="in-flight batches"
+            title="Batches currently queued in the bounded write channel waiting for DuckDB. Non-zero is fine under load; sustained high values mean DuckDB writes are the bottleneck." />
+          <Stat label="write latency" value={fmtMs(latest.writeDuration)} sub="avg batch"
+            title="Average time to execute one INSERT batch against DuckLake. Includes the DuckDB JDBC call and any inline-to-Parquet flush triggered by the write." />
           {topicKeys.length > 0 && (() => {
-            // poll p99 across all topics — near 100ms = broker-gated, near 0 = local-bound
-            const maxP99 = topicKeys.reduce((m, k) => Math.max(m, latest.pollDurationP99[k] ?? 0), 0)
+            const maxP99      = topicKeys.reduce((m, k) => Math.max(m, latest.pollDurationP99[k] ?? 0), 0)
             const maxThrottle = topicKeys.reduce((m, k) => Math.max(m, latest.fetchThrottle[k] ?? 0), 0)
             return (
               <Stat label="poll p99" value={fmtMs(maxP99)}
-                sub={maxThrottle > 1 ? `throttled ${fmtMs(maxThrottle)}` : 'no throttle'} />
+                sub={maxThrottle > 1 ? `throttled ${fmtMs(maxThrottle)}` : 'no throttle'}
+                title="Worst-case KafkaConsumer.poll() duration across all topics (p99). Near 100 ms means consumers are broker-bound (waiting on fetch.max.wait.ms). Near 0 ms means local DuckDB writes are pacing consumption. A throttle value > 0 means the broker is rate-limiting this client." />
             )
           })()}
-          <Stat label="catalog"       value={fmtBytes(latest.catalogBytes)} sub={`${fmtBytes(latest.inlinedBytes)} inlined`} />
-          <Stat label="replays"       value={String(latest.activeReplays)} sub="active" />
-          <Stat label="heap"          value={fmtBytes(latest.heapUsed)}    sub={`of ${fmtBytes(latest.heapMax)}`} />
+          <Stat label="catalog" value={fmtBytes(latest.catalogBytes)} sub={`${fmtBytes(latest.inlinedBytes)} inlined`}
+            title="Total size of the DuckDB catalog file. The inlined sub-value is data buffered inside the catalog before being flushed to Parquet on object storage." />
+          <Stat label="replays" value={String(latest.activeReplays)} sub="active"
+            title="Active replay-to-topic operations in progress. Each holds a Kafka producer and reads from DuckLake concurrently." />
+          <Stat label="heap" value={fmtBytes(latest.heapUsed)} sub={`of ${fmtBytes(latest.heapMax)}`}
+            title="JVM heap used vs max (-Xmx). Virtual threads are cheap, but batch buffers and DuckDB result sets live here. Consider increasing heap if consistently above 80% of max." />
         </div>
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(480px, 1fr))', gap: 20 }}>
+      {/* Per-topic rows */}
+      {topicKeys.map(tk => (
+        <TopicRow
+          key={tk}
+          tk={tk}
+          label={topicLabels[tk] ?? tk}
+          latest={latest}
+          pts={pts}
+          axisProps={axisProps}
+        />
+      ))}
 
-        {/* Consumer Lag — stacked per partition + total */}
-        <Card title="Consumer Lag" subtitle="stacked per partition · top line = total">
-          <ChartContainer config={pLagConfig} className="h-[200px] w-full">
-            <AreaChart data={lagStackedSeries} stackOffset="none">
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
-              <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
-              <YAxis tickFormatter={v => fmt(v, 0)} {...axisProps} width={44} />
-              <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => fmt(Number(v), 0)} />} />
-              <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
-              {allPartitions.map((p, i) => (
-                <Area key={p} type="monotone" dataKey={`p${p}`} name={`partition ${p}`}
-                  stackId="lag"
-                  stroke={PALETTE[(i + 1) % PALETTE.length]}
-                  fill={PALETTE[(i + 1) % PALETTE.length] + '55'}
-                  strokeWidth={1.5} dot={false} isAnimationActive={false} />
-              ))}
-            </AreaChart>
-          </ChartContainer>
-        </Card>
+      {/* Infrastructure charts */}
+      <div style={{ marginTop: 8 }}>
+        <div style={{ paddingBottom: 6, borderBottom: '1px solid var(--rule)', marginBottom: 12 }}>
+          <span style={{ fontWeight: 600, fontSize: 'var(--type-body-sm-size)', color: 'var(--ink-secondary)', textTransform: 'uppercase', letterSpacing: '0.06em', fontSize: '0.6875rem' }}>
+            Infrastructure
+          </span>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 16 }}>
 
-        {/* Consume Rate — stacked per partition + total */}
-        <Card title="Consume Rate" subtitle="stacked per partition · top = total msg/s">
-          <ChartContainer config={pRateConfig} className="h-[200px] w-full">
-            <AreaChart data={rateStackedSeries} stackOffset="none">
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
-              <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
-              <YAxis tickFormatter={v => fmt(v, 0)} {...axisProps} width={44} />
-              <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => `${fmt(Number(v), 1)}/s`} />} />
-              <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
-              {allPartitions.map((p, i) => (
-                <Area key={p} type="monotone" dataKey={`p${p}`} name={`partition ${p}`}
-                  stackId="rate"
-                  stroke={PALETTE[(i + 1) % PALETTE.length]}
-                  fill={PALETTE[(i + 1) % PALETTE.length] + '55'}
-                  strokeWidth={1.5} dot={false} isAnimationActive={false} />
-              ))}
-            </AreaChart>
-          </ChartContainer>
-        </Card>
+          <Card title="Write Pipeline" subtitle="channel depth & batch latency"
+            description="Depth: number of batches currently queued in the bounded write channel waiting for DuckDB. Batch ms: average time to execute one INSERT batch. A rising depth means DuckDB writes are slower than Kafka consumption — the channel is the backpressure valve."
+          >
+            <ChartContainer config={writeConfig} className="h-[180px] w-full">
+              <LineChart data={pts}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
+                <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
+                <YAxis yAxisId="depth" {...axisProps} width={28} />
+                <YAxis yAxisId="ms" orientation="right" tickFormatter={v => v + 'ms'} {...axisProps} width={48} />
+                <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} />} />
+                <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
+                <Line yAxisId="depth" type="monotone" dataKey="writeDepth"    name="depth"    stroke="var(--color-writeDepth)"    strokeWidth={1.5} dot={false} isAnimationActive={false} />
+                <Line yAxisId="ms"    type="monotone" dataKey="writeDuration" name="batch ms" stroke="var(--color-writeDuration)" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+              </LineChart>
+            </ChartContainer>
+          </Card>
 
-        {/* Bytes consumed rate */}
-        <Card title="Bytes Consumed Rate" subtitle="bytes / s from broker">
-          <ChartContainer config={tConfig} className="h-[200px] w-full">
-            <LineChart data={pts}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
-              <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
-              <YAxis tickFormatter={v => fmtBytes(v) + '/s'} {...axisProps} width={72} />
-              <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => fmtBytes(Number(v)) + '/s'} />} />
-              <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
-              {topicKeys.map((k, i) => (
-                <Line key={k} type="monotone" dataKey={`bytesRate.${k}`} name={topicLabels[k] ?? k}
-                  stroke={PALETTE[i % PALETTE.length]} strokeWidth={1.5} dot={false} isAnimationActive={false} />
-              ))}
-            </LineChart>
-          </ChartContainer>
-        </Card>
+          <Card title="Catalog Storage" subtitle="catalog file · inlined data"
+            description="Catalog file: total size of the DuckDB .ducklake file on disk, including inlined data and metadata. Inlined: bytes currently buffered inside the catalog before being flushed to Parquet on object storage. DuckLake flushes automatically when the inline threshold is reached."
+          >
+            <ChartContainer config={catalogConfig} className="h-[180px] w-full">
+              <AreaChart data={pts}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
+                <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
+                <YAxis tickFormatter={fmtBytes} {...axisProps} width={68} />
+                <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => fmtBytes(Number(v))} />} />
+                <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
+                <Area type="monotone" dataKey="catalogBytes" name="catalog file" stroke="var(--color-catalogBytes)" fill="var(--color-catalogBytes)" fillOpacity={0.15} strokeWidth={1.5} dot={false} isAnimationActive={false} />
+                <Area type="monotone" dataKey="inlinedBytes" name="inlined"       stroke="var(--color-inlinedBytes)" fill="var(--color-inlinedBytes)" fillOpacity={0.15} strokeWidth={1.5} dot={false} isAnimationActive={false} />
+              </AreaChart>
+            </ChartContainer>
+          </Card>
 
-        {/* Write pipeline */}
-        <Card title="Write Pipeline" subtitle="channel depth & batch latency">
-          <ChartContainer config={writeConfig} className="h-[200px] w-full">
-            <LineChart data={pts}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
-              <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
-              <YAxis yAxisId="depth" {...axisProps} width={28} />
-              <YAxis yAxisId="ms" orientation="right" tickFormatter={v => v + 'ms'} {...axisProps} width={48} />
-              <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} />} />
-              <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
-              <Line yAxisId="depth" type="monotone" dataKey="writeDepth"    name="depth"    stroke="var(--color-writeDepth)"    strokeWidth={1.5} dot={false} isAnimationActive={false} />
-              <Line yAxisId="ms"    type="monotone" dataKey="writeDuration" name="batch ms" stroke="var(--color-writeDuration)" strokeWidth={1.5} dot={false} isAnimationActive={false} />
-            </LineChart>
-          </ChartContainer>
-        </Card>
+          <Card title="JVM Heap" subtitle="used · max"
+            description="JVM heap memory used vs the max heap size (-Xmx). Virtual threads are cheap on heap, but large DuckDB result sets and batch buffers are allocated here. Sustained usage above 80% of max warrants a heap increase."
+          >
+            <ChartContainer config={heapConfig} className="h-[180px] w-full">
+              <AreaChart data={pts}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
+                <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
+                <YAxis tickFormatter={fmtBytes} {...axisProps} width={68} />
+                <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => fmtBytes(Number(v))} />} />
+                <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
+                <Area type="monotone" dataKey="heapMax"  name="heap max"  stroke="var(--color-heapMax)"  fill="transparent"               strokeDasharray="4 3" strokeWidth={1}   dot={false} isAnimationActive={false} />
+                <Area type="monotone" dataKey="heapUsed" name="heap used" stroke="var(--color-heapUsed)" fill="var(--color-heapUsed)" fillOpacity={0.12} strokeWidth={1.5} dot={false} isAnimationActive={false} />
+              </AreaChart>
+            </ChartContainer>
+          </Card>
 
-        {/* Fetch latency */}
-        <Card title="Fetch Latency" subtitle="avg Kafka fetch round-trip (ms)">
-          <ChartContainer config={tConfig} className="h-[200px] w-full">
-            <LineChart data={pts}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
-              <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
-              <YAxis tickFormatter={v => v + 'ms'} {...axisProps} width={44} />
-              <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => fmtMs(Number(v))} />} />
-              <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
-              {topicKeys.map((k, i) => (
-                <Line key={k} type="monotone" dataKey={`fetchLatency.${k}`} name={topicLabels[k] ?? k}
-                  stroke={PALETTE[i % PALETTE.length]} strokeWidth={1.5} dot={false} isAnimationActive={false} />
-              ))}
-            </LineChart>
-          </ChartContainer>
-        </Card>
+          <Card title="Active Replays" subtitle="concurrent replay-to-topic operations"
+            description="Number of in-flight replay-to-topic operations currently running. Each replay reads from DuckLake and produces back to Kafka. Multiple concurrent replays share the same DuckDB read path (concurrent reads are safe) but each holds a Kafka producer."
+          >
+            <ChartContainer config={replaysConfig} className="h-[180px] w-full">
+              <AreaChart data={pts}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
+                <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
+                <YAxis {...axisProps} allowDecimals={false} width={28} />
+                <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} />} />
+                <Area type="stepAfter" dataKey="activeReplays" name="active replays" stroke="var(--color-activeReplays)" fill="var(--color-activeReplays)/20" strokeWidth={1.5} dot={false} isAnimationActive={false} />
+              </AreaChart>
+            </ChartContainer>
+          </Card>
 
-        {/* Catalog storage */}
-        <Card title="Catalog Storage" subtitle="catalog file · inlined data">
-          <ChartContainer config={catalogConfig} className="h-[200px] w-full">
-            <AreaChart data={pts}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
-              <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
-              <YAxis tickFormatter={fmtBytes} {...axisProps} width={68} />
-              <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => fmtBytes(Number(v))} />} />
-              <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
-              <Area type="monotone" dataKey="catalogBytes" name="catalog file" stroke="var(--color-catalogBytes)" fill="var(--color-catalogBytes)" fillOpacity={0.15} strokeWidth={1.5} dot={false} isAnimationActive={false} />
-              <Area type="monotone" dataKey="inlinedBytes" name="inlined"       stroke="var(--color-inlinedBytes)" fill="var(--color-inlinedBytes)" fillOpacity={0.15} strokeWidth={1.5} dot={false} isAnimationActive={false} />
-            </AreaChart>
-          </ChartContainer>
-        </Card>
-
-        {/* JVM Heap */}
-        <Card title="JVM Heap" subtitle="used · max">
-          <ChartContainer config={heapConfig} className="h-[200px] w-full">
-            <AreaChart data={pts}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
-              <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
-              <YAxis tickFormatter={fmtBytes} {...axisProps} width={68} />
-              <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => fmtBytes(Number(v))} />} />
-              <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
-              <Area type="monotone" dataKey="heapMax"  name="heap max"  stroke="var(--color-heapMax)"  fill="transparent"               strokeDasharray="4 3" strokeWidth={1}   dot={false} isAnimationActive={false} />
-              <Area type="monotone" dataKey="heapUsed" name="heap used" stroke="var(--color-heapUsed)" fill="var(--color-heapUsed)" fillOpacity={0.12} strokeWidth={1.5} dot={false} isAnimationActive={false} />
-            </AreaChart>
-          </ChartContainer>
-        </Card>
-
-        {/* Active replays */}
-        <Card title="Active Replays" subtitle="concurrent replay-to-topic operations">
-          <ChartContainer config={replaysConfig} className="h-[200px] w-full">
-            <AreaChart data={pts}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
-              <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
-              <YAxis {...axisProps} allowDecimals={false} width={28} />
-              <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} />} />
-              <Area type="stepAfter" dataKey="activeReplays" name="active replays" stroke="var(--color-activeReplays)" fill="var(--color-activeReplays)/20" strokeWidth={1.5} dot={false} isAnimationActive={false} />
-            </AreaChart>
-          </ChartContainer>
-        </Card>
-
-        {/* Network Diagnostics — poll() latency vs fetch-latency-max */}
-        {(() => {
-          const netConfig: ChartConfig = {}
-          topicKeys.forEach((k, i) => {
-            netConfig[`poll50_${k}`] = { label: `${topicLabels[k]} poll p50`, color: PALETTE[i % PALETTE.length] }
-            netConfig[`poll99_${k}`] = { label: `${topicLabels[k]} poll p99`, color: PALETTE[i % PALETTE.length] }
-            netConfig[`flmax_${k}`]  = { label: `${topicLabels[k]} fetch max`, color: PALETTE[i % PALETTE.length] }
-          })
-          const netPts = history.map(dp => {
-            const row: Record<string, string | number> = { ts: String(dp.ts) }
-            topicKeys.forEach(k => {
-              row[`poll50_${k}`] = dp.pollDurationP50[k] ?? 0
-              row[`poll99_${k}`] = dp.pollDurationP99[k] ?? 0
-              row[`flmax_${k}`]  = dp.fetchLatencyMax[k] ?? 0
-            })
-            return row
-          })
-          return (
-            <Card title="Network Diagnostics"
-              subtitle="poll() p50/p99 + Kafka fetch-latency-max · near 100ms = broker-bound">
-              <ChartContainer config={netConfig} className="h-[200px] w-full">
-                <LineChart data={netPts}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
-                  <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
-                  <YAxis tickFormatter={v => fmtMs(v)} {...axisProps} width={56}
-                    domain={[0, 120]} />
-                  <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => fmtMs(Number(v))} />} />
-                  <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
-                  {topicKeys.map((k, i) => (
-                    <Line key={`p50-${k}`} type="monotone" dataKey={`poll50_${k}`}
-                      name={`${topicLabels[k] ?? k} poll p50`}
-                      stroke={PALETTE[i % PALETTE.length]} strokeWidth={2} dot={false} isAnimationActive={false} />
-                  ))}
-                  {topicKeys.map((k, i) => (
-                    <Line key={`p99-${k}`} type="monotone" dataKey={`poll99_${k}`}
-                      name={`${topicLabels[k] ?? k} poll p99`}
-                      stroke={PALETTE[i % PALETTE.length]} strokeWidth={1} strokeDasharray="4 2" dot={false} isAnimationActive={false} />
-                  ))}
-                  {topicKeys.map((k, i) => (
-                    <Line key={`flmax-${k}`} type="monotone" dataKey={`flmax_${k}`}
-                      name={`${topicLabels[k] ?? k} fetch max`}
-                      stroke={PALETTE[i % PALETTE.length]} strokeWidth={1} strokeDasharray="1 3" dot={false} isAnimationActive={false} />
-                  ))}
-                </LineChart>
-              </ChartContainer>
-            </Card>
-          )
-        })()}
-
+        </div>
       </div>
     </Layout>
   )
