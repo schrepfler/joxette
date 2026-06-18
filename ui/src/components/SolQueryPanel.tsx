@@ -6,6 +6,7 @@ import { JsonView } from './JsonView'
 import { SolEditor } from './SolEditor'
 import { SolSequenceInspector } from './SolSequenceInspector'
 import { SolToolbar } from './SolToolbar'
+import { decodeB64, tryParseValue } from '../lib/encoding'
 
 interface Props {
   mode: 'entity' | 'topic'
@@ -216,11 +217,6 @@ export function SolQueryPanel({ mode, entityType, entityId, topic, from, to }: P
 
 // ── Message popup ──────────────────────────────────────────────────────────────
 
-function decodeB64(s: string | null): string | null {
-  if (!s) return null
-  try { return atob(s.replace(/-/g, '+').replace(/_/g, '/')) } catch { return s }
-}
-
 function MessagePopup({
   records,
   index,
@@ -244,8 +240,9 @@ function MessagePopup({
   let parsedValue: object | null = null
   let rawValue: string | null = null
   if (r.value) {
-    try { parsedValue = JSON.parse(decodeB64(r.value) ?? '') as object }
-    catch { rawValue = r.value }
+    const result = tryParseValue(r.value)
+    if (result) parsedValue = result.parsed as object
+    else rawValue = r.value
   }
   const keyStr = decodeB64(r.key)
 

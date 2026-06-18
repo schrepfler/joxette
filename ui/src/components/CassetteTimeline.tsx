@@ -25,6 +25,7 @@ import {
   type ReactNode,
 } from 'react'
 import { JsonView } from './JsonView'
+import { tryParseValue } from '../lib/encoding'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -67,24 +68,7 @@ export interface CassetteTimelineProps {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function tryDecodeBase64(s: string): string | null {
-  try {
-    if (!/^[A-Za-z0-9+/\-_]+=*$/.test(s)) return null
-    return atob(s.replace(/-/g, '+').replace(/_/g, '/'))
-  } catch {
-    return null
-  }
-}
-
-function tryParseJson(s: string | null): { parsed: unknown; raw: string } | null {
-  if (!s) return null
-  try { return { parsed: JSON.parse(s) as unknown, raw: s } } catch { /* */ }
-  const decoded = tryDecodeBase64(s)
-  if (decoded) {
-    try { return { parsed: JSON.parse(decoded) as unknown, raw: decoded } } catch { /* */ }
-  }
-  return null
-}
+const tryParseJson = tryParseValue
 
 function isoToMs(ts: string): number {
   return new Date(ts).getTime()

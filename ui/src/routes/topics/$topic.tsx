@@ -9,6 +9,7 @@ import {
 import { useForm } from '@tanstack/react-form'
 import { useState, useRef, useEffect, type CSSProperties } from 'react'
 import { JsonView } from '../../components/JsonView'
+import { tryParseValue } from '../../lib/encoding'
 import {
   topicsApi,
   brokersApi,
@@ -38,24 +39,6 @@ import type { FragmentDefinition } from '../../transforms/types'
 import { SequenceQueryPanel } from '../../components/SequenceQueryPanel'
 
 // ── JSON viewer ────────────────────────────────────────────────────────────────
-function tryDecodeBase64(s: string): string | null {
-  try {
-    if (!/^[A-Za-z0-9+/\-_]+=*$/.test(s)) return null
-    return atob(s.replace(/-/g, '+').replace(/_/g, '/'))
-  } catch {
-    return null
-  }
-}
-
-function tryParseValue(s: string | null): { parsed: unknown; raw: string } | null {
-  if (!s) return null
-  try { return { parsed: JSON.parse(s) as unknown, raw: s } } catch { /* continue */ }
-  const decoded = tryDecodeBase64(s)
-  if (decoded) {
-    try { return { parsed: JSON.parse(decoded) as unknown, raw: decoded } } catch { /* continue */ }
-  }
-  return null
-}
 
 function ValueCell({ raw }: { raw: string | null }) {
   const [open, setOpen] = useState(false)

@@ -18,6 +18,7 @@ import { useQuery } from '@tanstack/react-query'
 import { cassettesApi, type EntityRecord, type SolSequenceExample } from '../api/client'
 import { JsonView } from './JsonView'
 import { SOL_NEUTRAL, type SolTagColor } from './sol-colors'
+import { decodeB64, tryParseValue } from '../lib/encoding'
 
 interface Props {
   entityType: string
@@ -130,13 +131,6 @@ function EventChip({
   )
 }
 
-// ── Shared decode helper ───────────────────────────────────────────────────────
-
-function decodeB64(s: string | null): string | null {
-  if (!s) return null
-  try { return atob(s.replace(/-/g, '+').replace(/_/g, '/')) } catch { return s }
-}
-
 // ── Event popup ────────────────────────────────────────────────────────────────
 
 function EventPopup({
@@ -192,8 +186,9 @@ function EventPopup({
   let parsedValue: object | null = null
   let rawValue: string | null = null
   if (record?.value) {
-    try { parsedValue = JSON.parse(decodeB64(record.value) ?? '') as object }
-    catch { rawValue = record.value }
+    const result = tryParseValue(record.value)
+    if (result) parsedValue = result.parsed as object
+    else rawValue = record.value
   }
   const keyStr = decodeB64(record?.key ?? null)
 

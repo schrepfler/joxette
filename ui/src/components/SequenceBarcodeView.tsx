@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from 'react'
 import type { EntityRecord } from '../api/client'
+import { extractNumeric } from '../lib/encoding'
 
 /**
  * SequenceBarcodeView
@@ -73,24 +74,7 @@ export function buildTagMap(tags: Record<string, SolTagSpan>): Map<number, strin
 
 // ── Numeric colour helpers ─────────────────────────────────────────────────────
 
-/** Decode a base64url event value and extract a numeric field by dot-path (e.g. "amount" or "order.total"). */
-export function extractNumeric(valueB64: string | null, path: string): number | null {
-  if (!valueB64) return null
-  try {
-    const bytes = atob(valueB64.replace(/-/g, '+').replace(/_/g, '/'))
-    const obj = JSON.parse(bytes) as Record<string, unknown>
-    const parts = path.split('.')
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let cur: any = obj
-    for (const p of parts) {
-      if (cur == null || typeof cur !== 'object') return null
-      cur = (cur as Record<string, unknown>)[p]
-    }
-    return typeof cur === 'number' ? cur : null
-  } catch {
-    return null
-  }
-}
+export { extractNumeric }
 
 /**
  * Diverging red→white→green scale.
