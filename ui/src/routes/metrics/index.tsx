@@ -410,7 +410,7 @@ function TopicRow({ tk, label, latest, pts, axisProps }: {
         <Card title="Lag" subtitle="stacked per partition"
           description="Messages available on the broker that the consumer has fetched but not yet processed. Stacked by partition. High lag means the consumer is behind — either slow writes or a burst of incoming messages.">
           <ChartContainer config={pConfig} className="h-[180px] w-full">
-            <AreaChart data={lagSeries} stackOffset="none">
+            <AreaChart syncId="metrics" data={lagSeries} stackOffset="none">
               <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
               <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
               <YAxis tickFormatter={v => fmt(v, 0)} {...axisProps} width={44} />
@@ -430,7 +430,7 @@ function TopicRow({ tk, label, latest, pts, axisProps }: {
         <Card title="Consume Rate" subtitle="msg/s per partition"
           description="Messages consumed per second from the broker, broken down by partition. The dashed white line is the cumulative total across all partitions. A drop here while lag rises means the consumer is stalling.">
           <ChartContainer config={rateConfig} className="h-[180px] w-full">
-            <LineChart data={rateSeries}>
+            <LineChart syncId="metrics" data={rateSeries}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
               <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
               <YAxis tickFormatter={v => fmt(v, 0)} {...axisProps} width={44} />
@@ -451,7 +451,7 @@ function TopicRow({ tk, label, latest, pts, axisProps }: {
         <Card title="Bytes Rate" subtitle="bytes / s from broker"
           description="Raw bytes fetched per second from the broker for this topic. Useful for estimating network bandwidth and DuckLake write pressure. Includes message overhead, not just payload size.">
           <ChartContainer config={{ val: { label: 'bytes/s', color: PALETTE[0] } }} className="h-[180px] w-full">
-            <LineChart data={pts.map(pt => ({ ts: pt.ts, val: pt.bytesRate[tk] ?? 0 }))}>
+            <LineChart syncId="metrics" data={pts.map(pt => ({ ts: pt.ts, val: pt.bytesRate[tk] ?? 0 }))}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
               <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
               <YAxis tickFormatter={v => fmtBytes(v) + '/s'} {...axisProps} width={72} />
@@ -465,7 +465,7 @@ function TopicRow({ tk, label, latest, pts, axisProps }: {
         <Card title="Fetch Latency" subtitle="avg Kafka fetch round-trip (ms)"
           description="Average time between sending a FETCH request to the broker and receiving a response. On a quiet topic this will sit near fetch.max.wait.ms (500 ms) — the broker holds the request until data arrives. High latency on a busy topic indicates broker saturation or network issues.">
           <ChartContainer config={{ val: { label: 'fetch avg', color: PALETTE[1] } }} className="h-[180px] w-full">
-            <LineChart data={pts.map(pt => ({ ts: pt.ts, val: pt.fetchLatency[tk] ?? 0 }))}>
+            <LineChart syncId="metrics" data={pts.map(pt => ({ ts: pt.ts, val: pt.fetchLatency[tk] ?? 0 }))}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
               <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
               <YAxis tickFormatter={v => v + 'ms'} {...axisProps} width={44} />
@@ -479,7 +479,7 @@ function TopicRow({ tk, label, latest, pts, axisProps }: {
         <Card title="Network" subtitle="poll() p50/p99 + fetch-latency-max (ms)"
           description="poll() p50/p99: time spent inside KafkaConsumer.poll(), including broker wait. Near 100 ms means the consumer is broker-bound (waiting on fetch.max.wait.ms). Near 0 ms means local processing is the bottleneck. fetch-latency-max is the worst single fetch round-trip seen in the interval.">
           <ChartContainer config={netConfig} className="h-[180px] w-full">
-            <LineChart data={netPts}>
+            <LineChart syncId="metrics" data={netPts}>
               <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
               <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
               <YAxis tickFormatter={v => fmtMs(v)} {...axisProps} width={56} domain={[0, 120]} />
@@ -634,7 +634,7 @@ function MetricsPage() {
             description="Depth: number of batches currently queued in the bounded write channel waiting for DuckDB. Batch ms: average time to execute one INSERT batch. A rising depth means DuckDB writes are slower than Kafka consumption — the channel is the backpressure valve."
           >
             <ChartContainer config={writeConfig} className="h-[180px] w-full">
-              <LineChart data={pts}>
+              <LineChart syncId="metrics" data={pts}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
                 <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
                 <YAxis yAxisId="depth" {...axisProps} width={28} />
@@ -651,7 +651,7 @@ function MetricsPage() {
             description="Catalog file: total size of the DuckDB .ducklake file on disk, including inlined data and metadata. Inlined: bytes currently buffered inside the catalog before being flushed to Parquet on object storage. DuckLake flushes automatically when the inline threshold is reached."
           >
             <ChartContainer config={catalogConfig} className="h-[180px] w-full">
-              <AreaChart data={pts}>
+              <AreaChart syncId="metrics" data={pts}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
                 <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
                 <YAxis tickFormatter={fmtBytes} {...axisProps} width={68} />
@@ -667,7 +667,7 @@ function MetricsPage() {
             description="JVM heap memory used vs the max heap size (-Xmx). Virtual threads are cheap on heap, but large DuckDB result sets and batch buffers are allocated here. Sustained usage above 80% of max warrants a heap increase."
           >
             <ChartContainer config={heapConfig} className="h-[180px] w-full">
-              <AreaChart data={pts}>
+              <AreaChart syncId="metrics" data={pts}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
                 <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
                 <YAxis tickFormatter={fmtBytes} {...axisProps} width={68}
@@ -689,7 +689,7 @@ function MetricsPage() {
             description="Number of in-flight replay-to-topic operations currently running. Each replay reads from DuckLake and produces back to Kafka. Multiple concurrent replays share the same DuckDB read path (concurrent reads are safe) but each holds a Kafka producer."
           >
             <ChartContainer config={replaysConfig} className="h-[180px] w-full">
-              <AreaChart data={pts}>
+              <AreaChart syncId="metrics" data={pts}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
                 <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
                 <YAxis {...axisProps} allowDecimals={false} width={28} />
