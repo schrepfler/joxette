@@ -28,6 +28,168 @@ export const Route = createFileRoute('/catalog/')({
   component: CatalogPage,
 })
 
+// ---- Example query generator ----
+
+interface ExampleQuery { label: string; sql: string }
+
+function exampleQueriesFor(schemaTable: string): ExampleQuery[] {
+  // schemaTable is e.g. "lake.general_feed_betgenius_fixture_v1" or "main.entity_order"
+  const parts = schemaTable.split('.')
+  const tableName = parts[parts.length - 1]
+  const fqt = schemaTable
+
+  if (tableName.startsWith('general_')) {
+    const topic = tableName.slice('general_'.length).replace(/_/g, '.')
+    return [
+      {
+        label: 'Recent messages (decoded)',
+        sql:
+`SELECT recorded_at, kafka_partition, kafka_offset, kafka_timestamp,
+       kafka_key,
+       decode(kafka_value) AS value,
+       message_type
+FROM ${fqt}
+ORDER BY recorded_at DESC
+LIMIT 50`,
+      },
+      {
+        label: 'Message count & time range',
+        sql:
+`SELECT COUNT(*) AS total_messages,
+       MIN(kafka_timestamp) AS first_message,
+       MAX(kafka_timestamp) AS last_message,
+       MAX(kafka_timestamp) - MIN(kafka_timestamp) AS span
+FROM ${fqt}`,
+      },
+      {
+        label: 'Top-level JSON key distribution',
+        sql:
+`SELECT json_keys(try_cast(decode(kafka_value) AS JSON))[1] AS primary_key,
+       COUNT(*) AS cnt
+FROM ${fqt}
+WHERE kafka_value IS NOT NULL
+GROUP BY 1
+ORDER BY cnt DESC
+LIMIT 20`,
+      },
+      {
+        label: 'Messages per hour',
+        sql:
+`SELECT DATE_TRUNC('hour', kafka_timestamp) AS hour,
+       COUNT(*) AS messages
+FROM ${fqt}
+GROUP BY 1
+ORDER BY 1 DESC
+LIMIT 48`,
+      },
+      {
+        label: 'Messages per partition',
+        sql:
+`SELECT kafka_partition, COUNT(*) AS messages,
+       MIN(kafka_offset) AS min_offset,
+       MAX(kafka_offset) AS max_offset
+FROM ${fqt}
+GROUP BY 1
+ORDER BY 1`,
+      },
+      {
+        label: `Inspect a specific field across messages (${topic})`,
+        sql:
+`SELECT recorded_at,
+       try_cast(decode(kafka_value) AS JSON)->>'$.id'     AS id,
+       try_cast(decode(kafka_value) AS JSON)->>'$.status' AS status
+FROM ${fqt}
+WHERE try_cast(decode(kafka_value) AS JSON)->>'$.status' IS NOT NULL
+ORDER BY recorded_at DESC
+LIMIT 50`,
+      },
+    ]
+  }
+
+  if (tableName.startsWith('entity_')) {
+    const entityType = tableName.slice('entity_'.length)
+    return [
+      {
+        label: 'Top entities by message count',
+        sql:
+`SELECT entity_id, COUNT(*) AS messages,
+       MIN(kafka_timestamp) AS first_seen,
+       MAX(kafka_timestamp) AS last_seen
+FROM ${fqt}
+GROUP BY entity_id
+ORDER BY messages DESC
+LIMIT 20`,
+      },
+      {
+        label: 'Recent events (replace entity_id)',
+        sql:
+`SELECT recorded_at, entity_id, message_type, topic,
+       kafka_offset, kafka_partition, kafka_timestamp,
+       decode(kafka_value) AS value
+FROM ${fqt}
+WHERE entity_id = '<entity_id>'
+ORDER BY kafka_timestamp ASC`,
+      },
+      {
+        label: 'Message type breakdown',
+        sql:
+`SELECT message_type, COUNT(*) AS cnt
+FROM ${fqt}
+GROUP BY message_type
+ORDER BY cnt DESC`,
+      },
+      {
+        label: 'Events per topic',
+        sql:
+`SELECT topic, COUNT(*) AS messages
+FROM ${fqt}
+GROUP BY topic
+ORDER BY messages DESC`,
+      },
+      {
+        label: `Active ${entityType}s in last 24 hours`,
+        sql:
+`SELECT entity_id, COUNT(*) AS recent_messages,
+       MAX(kafka_timestamp) AS last_event
+FROM ${fqt}
+WHERE kafka_timestamp >= NOW() - INTERVAL '24 hours'
+GROUP BY entity_id
+ORDER BY last_event DESC
+LIMIT 50`,
+      },
+      {
+        label: 'Deduplicated event stream (replace entity_id)',
+        sql:
+`SELECT recorded_at, entity_id, message_type, topic,
+       kafka_offset, kafka_partition, kafka_timestamp,
+       decode(kafka_value) AS value
+FROM (
+  SELECT *, ROW_NUMBER() OVER (
+    PARTITION BY topic, kafka_partition, kafka_offset
+    ORDER BY recorded_at DESC
+  ) AS rn
+  FROM ${fqt}
+  WHERE entity_id = '<entity_id>'
+) t
+WHERE rn = 1
+ORDER BY kafka_timestamp ASC`,
+      },
+    ]
+  }
+
+  // Generic fallback for config/other tables
+  return [
+    {
+      label: 'Preview table',
+      sql: `SELECT * FROM ${fqt} LIMIT 50`,
+    },
+    {
+      label: 'Row count',
+      sql: `SELECT COUNT(*) AS total FROM ${fqt}`,
+    },
+  ]
+}
+
 // ---- Schema browser ----
 
 interface TableRow {
@@ -61,9 +223,11 @@ function groupBySchema(rows: TableRow[]): Record<string, string[]> {
 
 interface SchemaBrowserProps {
   onTableClick: (schemaTable: string) => void
+  selectedTable: string | null
+  onTableSelect: (schemaTable: string) => void
 }
 
-function SchemaBrowser({ onTableClick }: SchemaBrowserProps) {
+function SchemaBrowser({ onTableClick, selectedTable, onTableSelect }: SchemaBrowserProps) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
 
   const { data, isLoading, error } = useQuery({
@@ -114,26 +278,26 @@ function SchemaBrowser({ onTableClick }: SchemaBrowserProps) {
                 {tables.map(t => (
                   <li key={t}>
                     <button
-                      onClick={() => onTableClick(`${schema}.${t}`)}
+                      onClick={() => { onTableClick(`${schema}.${t}`); onTableSelect(`${schema}.${t}`) }}
                       title={`Insert ${schema}.${t}`}
                       style={{
                         display: 'block',
                         width: '100%',
-                        background: 'none',
+                        background: selectedTable === `${schema}.${t}` ? 'var(--surface-raised)' : 'none',
                         border: 'none',
                         cursor: 'pointer',
                         padding: '3px 8px',
                         borderRadius: 'var(--radius-xs)',
                         fontFamily: 'var(--font-mono)',
                         fontSize: 'var(--type-caption-size, 0.75rem)',
-                        color: 'var(--ink-primary)',
+                        color: selectedTable === `${schema}.${t}` ? 'var(--accent)' : 'var(--ink-primary)',
                         textAlign: 'left',
                         overflow: 'hidden',
                         textOverflow: 'ellipsis',
                         whiteSpace: 'nowrap',
                       }}
                       onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = 'var(--surface-raised)' }}
-                      onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = 'none' }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = selectedTable === `${schema}.${t}` ? 'var(--surface-raised)' : 'none' }}
                     >
                       {t}
                     </button>
@@ -288,6 +452,7 @@ function ResultsTable({ result }: { result: CatalogQueryResponse }) {
 function CatalogPage() {
   const { addToast } = useToast()
   const editorViewRef = useRef<EditorView | null>(null)
+  const [selectedTable, setSelectedTable] = useState<string | null>(null)
 
   const tablesQuery = useQuery({
     queryKey: ['catalog', 'tables'],
@@ -352,6 +517,16 @@ function CatalogPage() {
     view.focus()
   }
 
+  function handleExampleClick(sql: string) {
+    const view = editorViewRef.current
+    if (!view) return
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert: sql },
+      selection: { anchor: sql.length },
+    })
+    view.focus()
+  }
+
   const errorMessage = queryMutation.error
     ? (() => {
         const raw = (queryMutation.error as Error).message
@@ -370,17 +545,72 @@ function CatalogPage() {
       <h1 style={{ ...pageTitle, marginBottom: 20 }}>Catalog SQL Console</h1>
 
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', minHeight: 0 }}>
-        {/* Left: schema browser */}
+        {/* Left: schema browser + example queries */}
         <div style={{
-          ...cardStyle,
-          width: 220,
+          width: 240,
           flexShrink: 0,
-          padding: '12px 8px',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 12,
           maxHeight: 'calc(100vh - 160px)',
-          overflowY: 'auto',
         }}>
-          <h2 style={{ ...sectionTitle, padding: '0 8px', marginBottom: 8 }}>Schema</h2>
-          <SchemaBrowser onTableClick={handleTableClick} />
+          <div style={{
+            ...cardStyle,
+            padding: '12px 8px',
+            overflowY: 'auto',
+            flex: selectedTable ? '0 1 auto' : '1 1 auto',
+            maxHeight: selectedTable ? '40%' : '100%',
+          }}>
+            <h2 style={{ ...sectionTitle, padding: '0 8px', marginBottom: 8 }}>Schema</h2>
+            <SchemaBrowser
+              onTableClick={handleTableClick}
+              selectedTable={selectedTable}
+              onTableSelect={setSelectedTable}
+            />
+          </div>
+
+          {selectedTable && (
+            <div style={{
+              ...cardStyle,
+              padding: '12px 8px',
+              overflowY: 'auto',
+              flex: '1 1 0',
+            }}>
+              <h2 style={{ ...sectionTitle, padding: '0 8px', marginBottom: 8 }}>
+                Example queries
+              </h2>
+              <p style={{ padding: '0 8px', margin: '0 0 8px', fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)' }}>
+                {selectedTable.split('.').pop()}
+              </p>
+              <ul role="list" style={{ listStyle: 'none', margin: 0, padding: 0 }}>
+                {exampleQueriesFor(selectedTable).map(ex => (
+                  <li key={ex.label}>
+                    <button
+                      onClick={() => handleExampleClick(ex.sql)}
+                      title={ex.sql}
+                      style={{
+                        display: 'block',
+                        width: '100%',
+                        background: 'none',
+                        border: 'none',
+                        cursor: 'pointer',
+                        padding: '5px 8px',
+                        borderRadius: 'var(--radius-xs)',
+                        fontSize: 'var(--type-caption-size, 0.75rem)',
+                        color: 'var(--ink-primary)',
+                        textAlign: 'left',
+                        lineHeight: 1.4,
+                      }}
+                      onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.background = 'var(--surface-raised)' }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.background = 'none' }}
+                    >
+                      {ex.label}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
 
         {/* Right: editor + results */}
