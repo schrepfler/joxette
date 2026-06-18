@@ -8,7 +8,7 @@ import {
 } from '@tanstack/react-table'
 import { useState, useRef, useEffect } from 'react'
 import { JsonView } from '../../../components/JsonView'
-import { tryParseValue } from '../../../lib/encoding'
+import { ValueCell } from '../../../components/ValueCell'
 import { cassettesApi, entityOutputApi, entitiesApi, streamEntityRecords, type EntityRecord, type Order, type StreamMode, type EntityStreamParams, type PortraitResult } from '../../../api/client'
 import { Layout } from '../../../components/Layout'
 import { LoadingSpinner } from '../../../components/LoadingSpinner'
@@ -37,39 +37,6 @@ export const Route = createFileRoute('/entities/$entityType/$entityId')({
   },
 })
 
-// ── JSON viewer ───────────────────────────────────────────────────────────────
-
-function ValueCell({ raw }: { raw: string | null }) {
-  const [open, setOpen] = useState(false)
-  if (!raw) return <span style={{ color: '#a0aec0' }}>—</span>
-  const result = tryParseValue(raw)
-  const isJson = result !== null
-  const preview = raw.length > 80 ? raw.slice(0, 80) + '…' : raw
-
-  if (!isJson) return <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{preview}</span>
-
-  const decodedPreview = result.raw.length > 80 ? result.raw.slice(0, 80) + '…' : result.raw
-
-  return (
-    <div>
-      <span
-        onClick={() => setOpen(o => !o)}
-        title={open ? 'Collapse' : 'Expand JSON'}
-        style={{
-          cursor: 'pointer',
-          fontFamily: 'monospace',
-          fontSize: 12,
-          color: '#2b6cb0',
-          userSelect: 'none',
-        }}
-      >
-        <span style={{ marginRight: 4, fontSize: 10, display: 'inline-block', transform: open ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.15s' }}>▶</span>
-        {open ? (result.raw !== raw ? 'JSON (base64-decoded)' : 'JSON') : decodedPreview}
-      </span>
-      {open && <JsonView src={result.parsed as object} />}
-    </div>
-  )
-}
 
 // ── Portrait panel ─────────────────────────────────────────────────────────────
 function PortraitPanel({ portrait }: { portrait: PortraitResult }) {
