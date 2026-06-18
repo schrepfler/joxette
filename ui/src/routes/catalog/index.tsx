@@ -382,6 +382,23 @@ function SqlEditor({ sqlConfig, onRun, editorViewRef }: SqlEditorProps) {
 
 // ---- Results table ----
 
+function downloadCsv(result: CatalogQueryResponse) {
+  const escape = (v: unknown) => {
+    const s = v === null ? '' : String(v)
+    return s.includes(',') || s.includes('"') || s.includes('\n')
+      ? `"${s.replace(/"/g, '""')}"` : s
+  }
+  const lines = [
+    result.columns.map(c => escape(c.name)).join(','),
+    ...result.rows.map(r => r.map(escape).join(',')),
+  ]
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url; a.download = 'query-result.csv'; a.click()
+  URL.revokeObjectURL(url)
+}
+
 function ResultsTable({ result }: { result: CatalogQueryResponse }) {
   if (!result.isQuery) {
     return (
@@ -439,10 +456,16 @@ function ResultsTable({ result }: { result: CatalogQueryResponse }) {
         </table>
       </div>
 
-      <div style={{ ...overlineStyle, marginTop: 8, display: 'flex', gap: 16 }}>
+      <div style={{ ...overlineStyle, marginTop: 8, display: 'flex', gap: 16, alignItems: 'center' }}>
         <span>{result.rowCount.toLocaleString()} rows</span>
         <span>·</span>
         <span>{result.durationMs} ms</span>
+        <button
+          onClick={() => downloadCsv(result)}
+          style={{ marginLeft: 'auto', background: 'none', border: '1px solid var(--rule)', borderRadius: 'var(--radius-xs)', padding: '2px 10px', fontSize: 'var(--type-caption-size)', cursor: 'pointer', color: 'var(--ink-secondary)' }}
+        >
+          Download CSV
+        </button>
       </div>
     </>
   )
