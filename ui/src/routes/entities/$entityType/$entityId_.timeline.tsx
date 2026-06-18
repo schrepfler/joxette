@@ -103,42 +103,50 @@ function EntityTimelinePage() {
   const { entityType, entityId } = Route.useParams()
 
   const [records, setRecords] = useState<EntityRecord[]>([])
-  const [nextCursor, setNextCursor] = useState<string | undefined>()
-  const [hasMoreAfter, setHasMoreAfter] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [loadedCount, setLoadedCount] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const [initialLoaded, setInitialLoaded] = useState(false)
   const [groupByKind, setGroupByKind] = useState<GroupByMode['kind']>('messageType')
+  const abortRef = useState<{ cancelled: boolean }>({ cancelled: false })[0]
 
   const PAGE_SIZE = 200
 
-  const loadPage = useCallback(async (cursor?: string) => {
+  const loadAll = useCallback(async () => {
+    abortRef.cancelled = false
     setLoading(true)
     setError(null)
+    setLoadedCount(0)
+    let cursor: string | undefined
+    let all: EntityRecord[] = []
     try {
-      const page = await cassettesApi.getEntityRecords(entityType, entityId, {
-        cursor,
-        limit: PAGE_SIZE,
-      })
-      setRecords((prev: EntityRecord[]) => cursor ? [...prev, ...page.data] : page.data)
-      setNextCursor(page.nextCursor)
-      setHasMoreAfter(page.hasMore)
+      do {
+        if (abortRef.cancelled) break
+        const page = await cassettesApi.getEntityRecords(entityType, entityId, {
+          cursor,
+          limit: PAGE_SIZE,
+          order: 'asc',
+        })
+        all = [...all, ...page.data]
+        cursor = page.hasMore ? page.nextCursor : undefined
+        setRecords([...all])
+        setLoadedCount(all.length)
+      } while (cursor)
     } catch (e) {
       setError((e as Error).message)
     } finally {
       setLoading(false)
     }
-  }, [entityType, entityId])
+  }, [entityType, entityId, abortRef])
 
   const handleInitialLoad = useCallback(() => {
     setInitialLoaded(true)
-    void loadPage(undefined)
-  }, [loadPage])
+    void loadAll()
+  }, [loadAll])
 
-  const handleLoadAfter = useCallback(() => {
-    if (!hasMoreAfter || !nextCursor || loading) return
-    void loadPage(nextCursor)
-  }, [hasMoreAfter, nextCursor, loading, loadPage])
+  const handleCancel = useCallback(() => {
+    abortRef.cancelled = true
+  }, [abortRef])
 
   const timelineRecords = useMemo<TimelineRecord[]>(
     () => records.map(toTimelineRecord),
@@ -169,7 +177,7 @@ function EntityTimelinePage() {
               Load recorded messages for <strong>{entityId}</strong> ({entityType}) to begin.
             </p>
             <button style={primaryBtn} onClick={handleInitialLoad} disabled={loading}>
-              {loading ? 'Loading…' : 'Load Messages'}
+              Load Messages
             </button>
           </div>
         ) : loading && records.length === 0 ? (
@@ -184,15 +192,17 @@ function EntityTimelinePage() {
             <div style={{ flex: '1 1 0', minHeight: 0, border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'hidden' }}>
               <CassetteTimeline
                 records={timelineRecords}
-                onLoadAfter={handleLoadAfter}
-                hasMore={hasMoreAfter}
+                hasMore={false}
                 loading={loading}
                 title={`${entityType} / ${entityId}`}
                 supportsMessageType={true}
                 onGroupByModeChange={mode => setGroupByKind(mode.kind)}
                 extraControls={
-                  hasMoreAfter && !loading
-                    ? <button style={secondaryBtn} onClick={handleLoadAfter}>Load next page</button>
+                  loading
+                    ? <span style={{ fontSize: 12, color: '#718096' }}>
+                        Loading… {loadedCount} messages
+                        <button style={{ ...secondaryBtn, marginLeft: 8 }} onClick={handleCancel}>Cancel</button>
+                      </span>
                     : undefined
                 }
               />
