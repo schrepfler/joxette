@@ -278,7 +278,8 @@ function SchemaBrowser({ onTableClick, selectedTable, onTableSelect }: SchemaBro
                 {tables.map(t => (
                   <li key={t}>
                     <button
-                      onClick={() => { onTableClick(`${schema}.${t}`); onTableSelect(`${schema}.${t}`) }}
+                      onClick={() => onTableSelect(`${schema}.${t}`)}
+                      onDoubleClick={() => onTableClick(`${schema}.${t}`)}
                       title={`Insert ${schema}.${t}`}
                       style={{
                         display: 'block',
@@ -544,7 +545,7 @@ function CatalogPage() {
     <Layout>
       <h1 style={{ ...pageTitle, marginBottom: 20 }}>Catalog SQL Console</h1>
 
-      <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', minHeight: 0 }}>
+      <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', height: 'calc(100vh - 140px)', minHeight: 0 }}>
         {/* Left: schema browser + example queries */}
         <div style={{
           width: 240,
@@ -552,14 +553,15 @@ function CatalogPage() {
           display: 'flex',
           flexDirection: 'column',
           gap: 12,
-          maxHeight: 'calc(100vh - 160px)',
+          height: '100%',
+          minHeight: 0,
         }}>
           <div style={{
             ...cardStyle,
             padding: '12px 8px',
             overflowY: 'auto',
-            flex: selectedTable ? '0 1 auto' : '1 1 auto',
-            maxHeight: selectedTable ? '40%' : '100%',
+            flex: selectedTable ? '0 0 40%' : '1 1 auto',
+            minHeight: 0,
           }}>
             <h2 style={{ ...sectionTitle, padding: '0 8px', marginBottom: 8 }}>Schema</h2>
             <SchemaBrowser
@@ -575,11 +577,12 @@ function CatalogPage() {
               padding: '12px 8px',
               overflowY: 'auto',
               flex: '1 1 0',
+              minHeight: 0,
             }}>
-              <h2 style={{ ...sectionTitle, padding: '0 8px', marginBottom: 8 }}>
-                Example queries
+              <h2 style={{ ...sectionTitle, padding: '0 8px', marginBottom: 4 }}>
+                Examples
               </h2>
-              <p style={{ padding: '0 8px', margin: '0 0 8px', fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)' }}>
+              <p style={{ padding: '0 8px', margin: '0 0 6px', fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)', fontFamily: 'var(--font-mono)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                 {selectedTable.split('.').pop()}
               </p>
               <ul role="list" style={{ listStyle: 'none', margin: 0, padding: 0 }}>
@@ -614,7 +617,7 @@ function CatalogPage() {
         </div>
 
         {/* Right: editor + results */}
-        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 12 }}>
+        <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 12, height: '100%', minHeight: 0, overflowY: 'auto' }}>
           <div style={cardStyle}>
             <SqlEditor
               sqlConfig={sqlConfig}
