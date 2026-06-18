@@ -213,7 +213,6 @@ class TopicRecorderTest {
      *   <li>{@code kafka_timestamp} — Kafka producer timestamp, must match exactly</li>
      *   <li>{@code kafka_key}     — exact string key</li>
      *   <li>{@code kafka_value}   — exact raw bytes (BLOB)</li>
-     *   <li>{@code kafka_value_str} — UTF-8 string view of the value</li>
      *   <li>{@code metadata}      — NULL (not set by the writer)</li>
      *   <li>{@code headers}       — both key <em>and</em> value of every header</li>
      * </ul>
@@ -246,11 +245,11 @@ class TopicRecorderTest {
         // the BLOB column (kafka_value) is predictable.
         // Positions: 1=recorded_at, 2=kafka_offset, 3=kafka_partition,
         //            4=kafka_timestamp, 5=kafka_key, 6=kafka_value (BLOB),
-        //            7=kafka_value_str, 8=metadata, 9=headers
+        //            7=metadata, 8=headers
         try (Statement st = duckDB.createStatement();
              ResultSet rs = st.executeQuery(
                      "SELECT recorded_at, kafka_offset, kafka_partition, kafka_timestamp," +
-                     "       kafka_key, kafka_value, kafka_value_str, metadata, headers" +
+                     "       kafka_key, kafka_value, metadata, headers" +
                      " FROM " + CASSETTE_TABLE)) {
 
             assertThat(rs.next()).isTrue();
@@ -272,9 +271,6 @@ class TopicRecorderTest {
             // kafka_value is BLOB — DuckDB JDBC 1.5.x does not support getBytes(String),
             // so access by positional index (column 6 in the SELECT above).
             assertThat(rs.getBytes(6)).isEqualTo(msgValue);
-
-            assertThat(rs.getString("kafka_value_str"))
-                    .isEqualTo(new String(msgValue, StandardCharsets.UTF_8));
 
             assertThat(rs.getString("metadata")).isNull();
 

@@ -736,10 +736,10 @@ public class CassetteLifecycleService {
                 "INSERT INTO " + catalogSrc +
                 " (recorded_at, entity_id, bucket, message_type, topic," +
                 "  kafka_offset, kafka_partition, kafka_timestamp," +
-                "  kafka_key, kafka_value, kafka_value_str, metadata, headers)" +
+                "  kafka_key, kafka_value, metadata, headers)" +
                 " SELECT recorded_at, entity_id, bucket, message_type, topic," +
                 "        kafka_offset, kafka_partition, kafka_timestamp," +
-                "        kafka_key, kafka_value, kafka_value_str, metadata, headers" +
+                "        kafka_key, kafka_value, metadata, headers" +
                 " FROM " + parquetSrc +
                 " WHERE entity_id IS NOT NULL AND recorded_at IS NOT NULL"
             );

@@ -72,6 +72,7 @@ public class SchemaManager {
         }
         createLakeTables(conn, catalog);
         migrateGeneralCassetteTables(conn, catalog);
+        migrateEntityCassetteTables(conn, catalog);
 
         log.info("Schema initialisation complete");
     }
@@ -565,7 +566,6 @@ public class SchemaManager {
                 kafka_timestamp TIMESTAMPTZ NOT NULL,
                 kafka_key       BLOB,
                 kafka_value     BLOB,
-                kafka_value_str VARCHAR,
                 metadata        %s,
                 headers         STRUCT(key VARCHAR, value VARCHAR)[],
                 message_type    VARCHAR
@@ -595,7 +595,6 @@ public class SchemaManager {
                 kafka_timestamp TIMESTAMPTZ NOT NULL,
                 kafka_key       BLOB,
                 kafka_value     BLOB,
-                kafka_value_str VARCHAR,
                 metadata        %s,
                 headers         STRUCT(key VARCHAR, value VARCHAR)[]
             )
@@ -761,6 +760,46 @@ public class SchemaManager {
             } catch (SQLException e) {
                 log.debug("Migration skipped for {}.main.{} ({})", catalog, tableName, e.getMessage());
             }
+            dropColumnIfExists(conn, catalog + ".main." + tableName, "kafka_value_str");
+        }
+    }
+
+    private void migrateEntityCassetteTables(Connection conn, String catalog) {
+        List<String> tableNames = new ArrayList<>();
+        try (Statement stmt = conn.createStatement();
+             var rs = stmt.executeQuery(
+                     "SELECT table_name FROM duckdb_tables()" +
+                     " WHERE database_name = '" + catalog + "'" +
+                     " AND schema_name = 'main'" +
+                     " AND table_name LIKE 'entity_%'")) {
+            while (rs.next()) {
+                tableNames.add(rs.getString("table_name"));
+            }
+        } catch (SQLException e) {
+            log.warn("Could not list entity cassette tables for migration: {}", e.getMessage());
+            return;
+        }
+        for (String tableName : tableNames) {
+            dropColumnIfExists(conn, catalog + ".main." + tableName, "kafka_value_str");
+        }
+    }
+
+    private void dropColumnIfExists(Connection conn, String qualifiedTable, String column) {
+        try (Statement stmt = conn.createStatement();
+             var rs = stmt.executeQuery(
+                     "SELECT count(*) FROM duckdb_columns()" +
+                     " WHERE CONCAT(database_name, '.', schema_name, '.', table_name) = '" + qualifiedTable + "'" +
+                     " AND column_name = '" + column + "'")) {
+            if (!rs.next() || rs.getLong(1) == 0) return;
+        } catch (SQLException e) {
+            log.debug("Could not check column existence {}.{}: {}", qualifiedTable, column, e.getMessage());
+            return;
+        }
+        try (Statement stmt = conn.createStatement()) {
+            stmt.execute("ALTER TABLE " + qualifiedTable + " DROP COLUMN " + column);
+            log.info("Dropped column {}.{} (no longer used)", qualifiedTable, column);
+        } catch (SQLException e) {
+            log.warn("Could not drop column {}.{}: {}", qualifiedTable, column, e.getMessage());
         }
     }
 

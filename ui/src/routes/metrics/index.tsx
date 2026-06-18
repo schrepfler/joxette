@@ -670,7 +670,8 @@ function MetricsPage() {
               <AreaChart data={pts}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
                 <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
-                <YAxis tickFormatter={fmtBytes} {...axisProps} width={68} />
+                <YAxis tickFormatter={fmtBytes} {...axisProps} width={68}
+                  domain={[0, (latest?.heapMax ?? 0) > 0 ? latest!.heapMax * 1.05 : 'auto']} />
                 <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => fmtBytes(Number(v))} />} />
                 <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
                 {(latest?.heapMax ?? 0) > 0 && <>

@@ -72,7 +72,7 @@ public class CassetteBatchWriter implements AutoCloseable {
         StringBuilder sql = new StringBuilder(
                 "INSERT INTO " + qualifiedTable +
                 " (recorded_at, kafka_offset, kafka_partition, kafka_timestamp," +
-                "  kafka_key, kafka_value, kafka_value_str, metadata, headers, message_type) VALUES ");
+                "  kafka_key, kafka_value, metadata, headers, message_type) VALUES ");
 
         Timestamp now = Timestamp.from(Instant.now());
         boolean first = true;
@@ -81,8 +81,8 @@ public class CassetteBatchWriter implements AutoCloseable {
             ConsumerRecord<String, byte[]> record = batch.get(i);
             if (!first) sql.append(',');
             first = false;
-            // 8 bound params; headers and metadata are inlined as literals
-            sql.append("(?, ?, ?, ?, ?, ?, ?, NULL, ")
+            // 7 bound params; headers and metadata are inlined as literals
+            sql.append("(?, ?, ?, ?, ?, ?, NULL, ")
                .append(headersToStructLiteral(record))
                .append(", ?)");
             params.add(new Object[]{
@@ -92,7 +92,6 @@ public class CassetteBatchWriter implements AutoCloseable {
                 new Timestamp(record.timestamp()),
                 record.key(),
                 record.value(),
-                record.value() != null ? new String(record.value(), StandardCharsets.UTF_8) : null,
                 messageTypes.get(i)
             });
         }
@@ -107,7 +106,6 @@ public class CassetteBatchWriter implements AutoCloseable {
                 ps.setString(idx++, (String) row[4]);
                 ps.setBytes(idx++, (byte[]) row[5]);
                 ps.setString(idx++, (String) row[6]);
-                ps.setString(idx++, (String) row[7]);
             }
             ps.executeUpdate();
         }

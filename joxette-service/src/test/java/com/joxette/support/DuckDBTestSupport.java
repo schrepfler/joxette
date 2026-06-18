@@ -287,7 +287,6 @@ public final class DuckDBTestSupport {
                         kafka_timestamp TIMESTAMPTZ NOT NULL,
                         kafka_key       VARCHAR,
                         kafka_value     BLOB,
-                        kafka_value_str VARCHAR,
                         metadata        VARCHAR,
                         headers         STRUCT(key VARCHAR, value VARCHAR)[],
                         message_type    VARCHAR
@@ -315,7 +314,6 @@ public final class DuckDBTestSupport {
                         kafka_timestamp TIMESTAMPTZ NOT NULL,
                         kafka_key       VARCHAR,
                         kafka_value     BLOB,
-                        kafka_value_str VARCHAR,
                         metadata        VARCHAR,
                         headers         STRUCT(key VARCHAR, value VARCHAR)[]
                     )""", type));
@@ -349,8 +347,8 @@ public final class DuckDBTestSupport {
         try (PreparedStatement ps = conn.prepareStatement(String.format("""
                 INSERT INTO %s
                     (recorded_at, kafka_offset, kafka_partition, kafka_timestamp,
-                     kafka_key, kafka_value, kafka_value_str, metadata, headers, message_type)
-                VALUES (?, ?, ?, ?, ?, ?, ?, NULL, [], ?)
+                     kafka_key, kafka_value, metadata, headers, message_type)
+                VALUES (?, ?, ?, ?, ?, ?, NULL, [], ?)
                 """, tableName))) {
             ps.setTimestamp(1, Timestamp.from(recordedAt));
             ps.setLong(2, offset);
@@ -358,8 +356,7 @@ public final class DuckDBTestSupport {
             ps.setTimestamp(4, Timestamp.from(timestamp));
             ps.setString(5, key);
             ps.setBytes(6, value);
-            ps.setString(7, value != null ? new String(value) : null);
-            ps.setString(8, messageType);
+            ps.setString(7, messageType);
             ps.executeUpdate();
         }
     }
@@ -376,8 +373,8 @@ public final class DuckDBTestSupport {
                 INSERT INTO lake.main.entity_%s
                     (recorded_at, entity_id, bucket, message_type, topic,
                      kafka_offset, kafka_partition, kafka_timestamp,
-                     kafka_key, kafka_value, kafka_value_str, metadata, headers)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, [])
+                     kafka_key, kafka_value, metadata, headers)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, [])
                 """, entityType))) {
             ps.setTimestamp(1, Timestamp.from(recordedAt));
             ps.setString(2, entityId);
@@ -389,7 +386,6 @@ public final class DuckDBTestSupport {
             ps.setTimestamp(8, Timestamp.from(timestamp));
             ps.setString(9, key);
             ps.setBytes(10, value);
-            ps.setString(11, value != null ? new String(value) : null);
             ps.executeUpdate();
         }
     }

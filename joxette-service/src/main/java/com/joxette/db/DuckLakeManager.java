@@ -165,6 +165,56 @@ public class DuckLakeManager {
         if (properties.getCatalog().isMetadataQueryLogging()) {
             drainMetadataLogs("startup");
         }
+
+        startQuackServerIfEnabled();
+    }
+
+    private void startQuackServerIfEnabled() {
+        var quack = properties.getCatalog().getQuack();
+        if (!quack.isEnabled()) return;
+        // Only makes sense for embedded DuckDB — the session must own the file.
+        CatalogBackend backend = CatalogBackend.detect(properties.getCatalog().getPath());
+        if (backend != CatalogBackend.EMBEDDED_DUCKDB) {
+            log.warn("quack.enabled=true is ignored for non-embedded backends ({})", backend);
+            return;
+        }
+        try {
+            try (var stmt = connection.createStatement()) {
+                stmt.execute("INSTALL quack");
+                log.info("INSTALL quack: ok");
+            }
+            try (var stmt = connection.createStatement()) {
+                stmt.execute("LOAD quack");
+                log.info("LOAD quack: ok");
+            }
+            try (var stmt = connection.createStatement();
+                 var rs = stmt.executeQuery("SELECT extension_name, loaded, installed, install_path FROM duckdb_extensions() WHERE extension_name = 'quack'")) {
+                if (rs.next()) {
+                    log.info("quack extension: loaded={} installed={} path={}", rs.getString("loaded"), rs.getString("installed"), rs.getString("install_path"));
+                } else {
+                    log.warn("quack extension not found in duckdb_extensions()");
+                }
+            }
+            String address = "quack:localhost:" + quack.getPort();
+            String call = quack.getToken() != null && !quack.getToken().isBlank()
+                ? "CALL quack_serve('" + address + "', token = '" + quack.getToken() + "')"
+                : "CALL quack_serve('" + address + "')";
+            try (var stmt = connection.createStatement();
+                 var rs = stmt.executeQuery(call)) {
+                if (rs.next()) {
+                    var meta = rs.getMetaData();
+                    var sb = new StringBuilder("DuckDB Quack server started —");
+                    for (int i = 1; i <= meta.getColumnCount(); i++) {
+                        sb.append(" ").append(meta.getColumnName(i)).append("=").append(rs.getString(i));
+                    }
+                    log.info(sb.toString());
+                } else {
+                    log.info("DuckDB Quack server started on {} (no result row)", address);
+                }
+            }
+        } catch (SQLException e) {
+            log.warn("Failed to start DuckDB Quack server: {}", e.getMessage());
+        }
     }
 
     /**

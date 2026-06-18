@@ -129,6 +129,13 @@ public class JoxetteProperties {
         /** Optional S3-compatible storage credentials and endpoint. */
         private S3 s3 = new S3();
 
+        /**
+         * When set, starts the DuckDB Quack server on the embedded connection so
+         * external tools (DBeaver, another Joxette process, duckdb CLI) can connect.
+         * Only meaningful when the backend is EMBEDDED_DUCKDB — ignored otherwise.
+         */
+        private Quack quack = new Quack();
+
         public String getPath() { return path; }
         public void setPath(String path) { this.path = path; }
 
@@ -146,6 +153,27 @@ public class JoxetteProperties {
 
         public S3 getS3() { return s3; }
         public void setS3(S3 s3) { this.s3 = s3; }
+
+        public Quack getQuack() { return quack; }
+        public void setQuack(Quack quack) { this.quack = quack; }
+
+        public static class Quack {
+            /** Whether to enable the DuckDB Quack server on the embedded connection. */
+            private boolean enabled = false;
+            /** TCP port the Quack server listens on. Default 9999. */
+            private int port = 9999;
+            /** Optional auth token required by connecting clients. Null = no auth. */
+            private String token = null;
+
+            public boolean isEnabled() { return enabled; }
+            public void setEnabled(boolean enabled) { this.enabled = enabled; }
+
+            public int getPort() { return port; }
+            public void setPort(int port) { this.port = port; }
+
+            public String getToken() { return token; }
+            public void setToken(String token) { this.token = token; }
+        }
 
         public static class S3 {
             /** S3 endpoint host (and optional port), e.g. {@code localhost:9000}. */

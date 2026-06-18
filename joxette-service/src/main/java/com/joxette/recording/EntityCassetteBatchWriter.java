@@ -6,7 +6,6 @@ import org.duckdb.DuckDBConnection;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
@@ -90,21 +89,20 @@ public class EntityCassetteBatchWriter implements AutoCloseable {
                 "INSERT INTO " + tbl +
                 " (recorded_at, entity_id, bucket, message_type, topic," +
                 "  kafka_offset, kafka_partition, kafka_timestamp," +
-                "  kafka_key, kafka_value, kafka_value_str, metadata, headers) VALUES ");
+                "  kafka_key, kafka_value, metadata, headers) VALUES ");
 
         boolean first = true;
         for (RouteWithMessage rwm : rows) {
             if (!first) sql.append(',');
             first = false;
             String headersLiteral = CassetteBatchWriter.headersToStructLiteral(rwm.message().headers());
-            sql.append("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ").append(headersLiteral).append(')');
+            sql.append("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ").append(headersLiteral).append(')');
         }
 
         try (PreparedStatement ps = conn.prepareStatement(sql.toString())) {
             int idx = 1;
             for (RouteWithMessage rwm : rows) {
                 KafkaMessage msg = rwm.message();
-                String valueStr = msg.value() != null ? new String(msg.value(), StandardCharsets.UTF_8) : null;
                 ps.setTimestamp(idx++, recordedAt);
                 ps.setString(idx++, rwm.route().entityId());
                 ps.setInt(idx++, rwm.route().entityBucket());
@@ -115,7 +113,6 @@ public class EntityCassetteBatchWriter implements AutoCloseable {
                 ps.setTimestamp(idx++, new Timestamp(msg.timestampMs()));
                 ps.setString(idx++, msg.key());
                 ps.setBytes(idx++, msg.value());
-                ps.setString(idx++, valueStr);
             }
             ps.executeUpdate();
         }
