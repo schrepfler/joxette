@@ -1275,7 +1275,12 @@ export const catalogApi = {
       body: JSON.stringify({ sql, maxRows }),
     }),
   tables: () =>
-    catalogApi.query('SHOW ALL TABLES', 10_000),
+    catalogApi.query(
+      `SELECT table_catalog || '.' || table_schema AS schema_name, table_name AS name
+       FROM information_schema.tables
+       ORDER BY table_catalog, table_schema, table_name`,
+      10_000,
+    ),
   columns: () =>
     catalogApi.query(
       `SELECT table_schema, table_name, column_name
