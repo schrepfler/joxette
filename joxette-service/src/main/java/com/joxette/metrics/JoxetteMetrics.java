@@ -347,7 +347,8 @@ public class JoxetteMetrics {
 
     public void registerCatalogSizeGauge(Supplier<Long> bytesSupplier) {
         if (registeredGaugeIds.add("catalog:size")) {
-            Gauge.builder("joxette.catalog.size.bytes", bytesSupplier, Supplier::get)
+            Gauge.builder("joxette.catalog.size.bytes", bytesSupplier,
+                          s -> { try { Long v = s.get(); return v != null ? v.doubleValue() : 0.0; } catch (Exception e) { return 0.0; } })
                     .description("DuckLake catalog file size in bytes")
                     .baseUnit("bytes")
                     .register(registry);
@@ -356,8 +357,28 @@ public class JoxetteMetrics {
 
     public void registerInlinedDataGauge(Supplier<Long> bytesSupplier) {
         if (registeredGaugeIds.add("catalog:inlined")) {
-            Gauge.builder("joxette.catalog.inlined.bytes", bytesSupplier, Supplier::get)
+            Gauge.builder("joxette.catalog.inlined.bytes", bytesSupplier,
+                          s -> { try { Long v = s.get(); return v != null ? v.doubleValue() : 0.0; } catch (Exception e) { return 0.0; } })
                     .description("Estimated bytes of data inlined in the catalog (not yet flushed to Parquet)")
+                    .baseUnit("bytes")
+                    .register(registry);
+        }
+    }
+
+    // =========================================================================
+    // Process RSS
+    // =========================================================================
+
+    /**
+     * Registers a gauge for process resident set size (RSS) in bytes.
+     * Useful for detecting native/off-heap memory growth from DuckDB's C++ allocator
+     * that does not appear in JVM heap metrics.
+     */
+    public void registerProcessRssGauge(Supplier<Long> rssSupplier) {
+        if (registeredGaugeIds.add("process:rss")) {
+            Gauge.builder("joxette.process.rss.bytes", rssSupplier,
+                          s -> { try { Long v = s.get(); return v != null && v >= 0 ? v.doubleValue() : Double.NaN; } catch (Exception e) { return Double.NaN; } })
+                    .description("Process resident set size (RSS) in bytes — includes JVM heap, metaspace, and DuckDB native allocations")
                     .baseUnit("bytes")
                     .register(registry);
         }

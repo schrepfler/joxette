@@ -200,6 +200,28 @@ public class HealthController {
         joxetteMetrics.registerCatalogSizeGauge(this::catalogSizeBytes);
         joxetteMetrics.registerInlinedDataGauge(this::inlinedDataSizeBytes);
         registerDuckDbMemoryGauges();
+        joxetteMetrics.registerProcessRssGauge(this::processRssBytes);
+    }
+
+    /**
+     * Returns the resident set size (RSS) of this process in bytes by running
+     * {@code ps -o rss= -p <pid>}. Works on macOS and Linux.
+     * Returns -1 on failure.
+     */
+    private long processRssBytes() {
+        try {
+            long pid = ProcessHandle.current().pid();
+            Process ps = new ProcessBuilder("ps", "-o", "rss=", "-p", String.valueOf(pid))
+                    .redirectErrorStream(true)
+                    .start();
+            String out = new String(ps.getInputStream().readAllBytes()).trim();
+            ps.waitFor();
+            if (out.isBlank()) return -1;
+            return Long.parseLong(out.trim()) * 1024L; // ps reports kB
+        } catch (Exception e) {
+            log.debug("processRssBytes() failed: {}", e.getMessage());
+            return -1;
+        }
     }
 
     private void registerDuckDbMemoryGauges() {

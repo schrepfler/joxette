@@ -155,6 +155,7 @@ interface DataPoint {
   activeReplays:   number
   heapUsed:        number
   heapMax:         number
+  processRss:      number
 }
 
 // Stable topic-to-key mapping across scrapes
@@ -245,6 +246,7 @@ function scrapeToPoint(family: Record<string, MetricFamily>): DataPoint {
     activeReplays: getSample(family, 'joxette_replay_active') || 0,
     heapUsed: Math.max(0, heapUsed),
     heapMax:  Math.max(0, heapMax),
+    processRss: getSample(family, 'joxette_process_rss_bytes') || 0,
   }
 }
 
@@ -541,7 +543,8 @@ function MetricsPage() {
     inlinedBytes: { label: 'inlined',       color: '#A26612' },
   }
   const heapConfig: ChartConfig = {
-    heapUsed: { label: 'heap used', color: '#1E5A8A' },
+    heapUsed:   { label: 'heap used', color: '#1E5A8A' },
+    processRss: { label: 'process RSS', color: '#e07040' },
   }
   const duckdbMemTags = latest
     ? Object.keys(latest.duckdbMemoryByTag).filter(t => (latest.duckdbMemoryByTag[t] ?? 0) > 0)
@@ -700,8 +703,8 @@ function MetricsPage() {
             </ChartContainer>
           </Card>
 
-          <Card title="JVM Heap" subtitle="used · max"
-            description="JVM heap memory used vs the max heap size (-Xmx). Virtual threads are cheap on heap, but large DuckDB result sets and batch buffers are allocated here. Sustained usage above 80% of max warrants a heap increase."
+          <Card title="JVM Heap &amp; Process RSS" subtitle="heap used · process RSS · max"
+            description="JVM heap used vs max (-Xmx). Process RSS (orange) is the total physical memory used by the process — heap + metaspace + DuckDB native allocations. If RSS grows steadily while heap stays flat, the leak is in DuckDB's C++ allocator or JVM off-heap (metaspace, code cache). Sustained heap above 80% of max warrants a heap increase."
           >
             <ChartContainer config={heapConfig} className="h-[180px] w-full">
               <AreaChart syncId="metrics" data={pts}>
@@ -718,6 +721,7 @@ function MetricsPage() {
                     label={{ value: `80%  ${fmtBytes(latest!.heapMax * 0.8)}`, position: 'insideTopLeft', fontSize: 9, fill: '#e07040', fontFamily: 'var(--font-mono)' }} />
                 </>}
                 <Area type="monotone" dataKey="heapUsed" name="heap used" stroke="var(--color-heapUsed)" fill="var(--color-heapUsed)" fillOpacity={0.12} strokeWidth={1.5} dot={false} isAnimationActive={false} />
+                <Area type="monotone" dataKey="processRss" name="process RSS" stroke="var(--color-processRss)" fill="none" strokeWidth={1.5} strokeDasharray="4 2" dot={false} isAnimationActive={false} />
               </AreaChart>
             </ChartContainer>
           </Card>
