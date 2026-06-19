@@ -527,6 +527,12 @@ public class JoxetteProperties {
         private double writeRetryMultiplier = 2.0;
         /** Maximum backoff (ms) between write retry attempts. */
         private long writeRetryMaxMs = 60_000;
+        /**
+         * Maximum number of consecutive transient write failures before the drain VT
+         * declares the sink FAILED and signals the actor supervisor to restart.
+         * Set to -1 for unlimited retries (never escalate to actor restart).
+         */
+        private int writeRetryMaxAttempts = 10;
 
         // NOTE: defaultSourceParallelism and topicParallelism were removed.
         // Each topic already gets its own TopicRecorder (one consumer group member per topic).
@@ -549,6 +555,9 @@ public class JoxetteProperties {
 
         public long getWriteRetryMaxMs() { return writeRetryMaxMs; }
         public void setWriteRetryMaxMs(long v) { this.writeRetryMaxMs = v; }
+
+        public int getWriteRetryMaxAttempts() { return writeRetryMaxAttempts; }
+        public void setWriteRetryMaxAttempts(int v) { this.writeRetryMaxAttempts = v; }
     }
 
     // -----------------------------------------------------------------------

@@ -18,6 +18,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 
 /**
  * Serializes all DuckDB writes through a single virtual thread.
@@ -43,12 +46,19 @@ public class DuckLakeWriteChannel {
 
     private static final Logger log = LoggerFactory.getLogger(DuckLakeWriteChannel.class);
 
+    enum SinkState { HEALTHY, DEGRADED, FAILED }
+
     private final Connection duckDbConnection;
     private final int capacity;
     private final CassetteRecordingBus bus;
     private final long writeRetryInitialMs;
     private final double writeRetryMultiplier;
     private final long writeRetryMaxMs;
+    private final int writeRetryMaxAttempts;
+
+    private final AtomicReference<SinkState> sinkState = new AtomicReference<>(SinkState.HEALTHY);
+    /** Callback invoked by drain VT when max retries are exhausted — signals actor to restart. */
+    private volatile Consumer<Throwable> failureCallback;
 
     private Channel<WriteBatch> channel;
     private Thread drainThread;
@@ -70,6 +80,7 @@ public class DuckLakeWriteChannel {
         this.writeRetryInitialMs = properties.getThreading().getWriteRetryInitialMs();
         this.writeRetryMultiplier = properties.getThreading().getWriteRetryMultiplier();
         this.writeRetryMaxMs = properties.getThreading().getWriteRetryMaxMs();
+        this.writeRetryMaxAttempts = properties.getThreading().getWriteRetryMaxAttempts();
         this.bus = bus;
         this.joxetteMetrics = joxetteMetrics;
     }
@@ -108,13 +119,50 @@ public class DuckLakeWriteChannel {
         log.info("DuckLakeWriteChannel stopped");
     }
 
+    /** Registers the callback invoked when the drain VT exhausts max retries. */
+    public void setFailureCallback(Consumer<Throwable> callback) {
+        this.failureCallback = callback;
+    }
+
+    /** Returns the current sink health state. */
+    public SinkState getSinkState() {
+        return sinkState.get();
+    }
+
+    /** Returns true when the sink is healthy and accepting writes. */
+    public boolean isHealthy() {
+        return sinkState.get() == SinkState.HEALTHY;
+    }
+
+    /**
+     * Resets a FAILED sink back to HEALTHY. Called by the actor supervisor after
+     * restarting the sink — clears the failure state so consumers can resume.
+     */
+    public void resetSinkState() {
+        SinkState prev = sinkState.getAndSet(SinkState.HEALTHY);
+        if (prev != SinkState.HEALTHY) {
+            log.info("DuckLakeWriteChannel: sink state reset to HEALTHY (was {})", prev);
+        }
+    }
+
     /**
      * Enqueues a batch and blocks until the drain VT has written it.
+     *
+     * <p>Throws {@link SinkDegradedException} immediately if the sink is in DEGRADED
+     * state — callers must pause consumption and wait for {@link #isHealthy()} rather
+     * than re-submitting. The batch is NOT enqueued in this case.
      *
      * <p>Blocking is intentional: it propagates backpressure into the Jox flow
      * pipeline so fast Kafka consumers do not outrun the DuckDB write path.
      */
     public WriteResult submit(WriteBatch batch) throws InterruptedException {
+        SinkState state = sinkState.get();
+        if (state == SinkState.DEGRADED) {
+            throw new SinkDegradedException("Sink is DEGRADED (object store unreachable) for topic " + batch.topic());
+        }
+        if (state == SinkState.FAILED) {
+            throw new SinkDegradedException("Sink is FAILED (max retries exhausted) for topic " + batch.topic());
+        }
         inFlight.add(batch);
         try {
             channel.send(batch);
@@ -201,7 +249,9 @@ public class DuckLakeWriteChannel {
                 }
 
                 if (attempt > 0) {
-                    log.info("Write succeeded for topic '{}' after {} retries", batch.topic(), attempt);
+                    log.info("Write succeeded for topic '{}' after {} retries — sink recovering to HEALTHY",
+                            batch.topic(), attempt);
+                    sinkState.set(SinkState.HEALTHY);
                 }
                 batch.result().complete(new WriteResult(batch.topic(), written));
                 if (bus != null) {
@@ -218,11 +268,35 @@ public class DuckLakeWriteChannel {
                 if (!isTransientStorageError(e)) {
                     log.error("Non-retryable write failure for topic '{}': {}", batch.topic(), e.getMessage(), e);
                     batch.result().completeExceptionally(e);
+                    sinkState.set(SinkState.HEALTHY); // not a storage issue — stay healthy
                     return;
                 }
+
                 attempt++;
-                log.warn("Transient object-store failure for topic '{}' (attempt {}), retrying in {} ms: {}",
-                        batch.topic(), attempt, delayMs, rootMessage(e));
+                // Transition to DEGRADED on first transient failure so consumers pause
+                if (attempt == 1) {
+                    sinkState.set(SinkState.DEGRADED);
+                    log.warn("Sink DEGRADED for topic '{}': object store unreachable — consumers will pause",
+                            batch.topic());
+                }
+
+                // Escalate to FAILED after max attempts
+                if (writeRetryMaxAttempts > 0 && attempt >= writeRetryMaxAttempts) {
+                    log.error("Sink FAILED for topic '{}' after {} attempts — signalling supervisor restart: {}",
+                            batch.topic(), attempt, rootMessage(e));
+                    sinkState.set(SinkState.FAILED);
+                    batch.result().completeExceptionally(e);
+                    Consumer<Throwable> cb = failureCallback;
+                    if (cb != null) {
+                        cb.accept(e);
+                    }
+                    return;
+                }
+
+                log.warn("Transient object-store failure for topic '{}' (attempt {}/{}), retrying in {} ms: {}",
+                        batch.topic(), attempt,
+                        writeRetryMaxAttempts < 0 ? "∞" : writeRetryMaxAttempts,
+                        delayMs, rootMessage(e));
                 try {
                     Thread.sleep(delayMs);
                 } catch (InterruptedException ie) {

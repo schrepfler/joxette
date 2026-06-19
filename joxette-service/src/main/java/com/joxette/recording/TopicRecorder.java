@@ -273,6 +273,12 @@ public class TopicRecorder {
                     (acc, records) -> { acc.addAll(records); return acc; })
                 .map(this::buildWriteBatch)
                 .runForeach(wb -> {
+                    // If the sink is degraded, pause consumption and spin-wait for recovery
+                    // before submitting. This keeps the consumer alive (heartbeats via poll)
+                    // without committing offsets or tearing down the pipeline.
+                    if (!writeChannel.isHealthy()) {
+                        pauseForSinkRecovery(kc, label);
+                    }
                     submitWriteBatch(wb);
                     pendingCommit.set(buildOffsets(wb.sourceRecords()));
                 });
@@ -369,6 +375,31 @@ public class TopicRecorder {
         lastIngestNanos = System.nanoTime();
 
         return WriteBatch.of(topic, batch, generalRecords, generalMessageTypes, entityItems);
+    }
+
+    /**
+     * Pauses all assigned partitions and spin-polls until the write sink recovers
+     * to HEALTHY. Keeps the consumer alive (heartbeats via empty poll calls) without
+     * advancing offsets or committing, so no rebalance is triggered.
+     */
+    private void pauseForSinkRecovery(KafkaConsumer<String, byte[]> kc, String label) throws InterruptedException {
+        Set<TopicPartition> paused = new java.util.HashSet<>(kc.assignment());
+        if (!paused.isEmpty()) {
+            kc.pause(paused);
+            log.warn("Recorder '{}': sink DEGRADED — paused {} partition(s); waiting for recovery", label, paused.size());
+        }
+        try {
+            while (!writeChannel.isHealthy() && !stopped && !Thread.currentThread().isInterrupted()) {
+                // Keep polling to send heartbeats — discard records (consumer is paused)
+                kc.poll(POLL_TIMEOUT);
+                updateLag(kc);
+            }
+        } finally {
+            if (!paused.isEmpty() && !stopped) {
+                kc.resume(paused);
+                log.info("Recorder '{}': sink recovered — resumed {} partition(s)", label, paused.size());
+            }
+        }
     }
 
     /**

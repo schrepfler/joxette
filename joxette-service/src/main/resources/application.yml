@@ -147,6 +147,7 @@ joxette:
     write-retry-initial-ms: 1000     # first retry delay after a transient object-store failure
     write-retry-multiplier: 2.0      # backoff multiplier per attempt
     write-retry-max-ms: 60000        # cap on retry delay (1 minute)
+    write-retry-max-attempts: 10     # escalate to actor restart after this many attempts (-1 = unlimited)
 
   replay:
     # enabled: true   # set false to disable /cassettes/** endpoints on pure write-only nodes

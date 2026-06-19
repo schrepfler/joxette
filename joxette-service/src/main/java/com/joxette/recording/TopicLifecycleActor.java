@@ -52,6 +52,9 @@ public class TopicLifecycleActor {
 
     public sealed interface Cmd {}
 
+    /** Sent by the DuckLakeWriteChannel drain VT when max write retries are exhausted. */
+    private record SinkFailed(Throwable cause) implements Cmd {}
+
     public record Stop(org.apache.pekko.actor.typed.ActorRef<StopReply> replyTo) implements Cmd {}
     public record GetStatus(org.apache.pekko.actor.typed.ActorRef<RecorderStatus> replyTo) implements Cmd {}
 
@@ -152,6 +155,13 @@ public class TopicLifecycleActor {
             );
         }
 
+        // Register failure callback: when drain VT exhausts retries it sends SinkFailed
+        // to this actor, which throws to trigger the Pekko backoff restart.
+        // resetSinkState() is called on the next starting() invocation so consumers resume.
+        writeChannel.setFailureCallback(cause ->
+                ctx.getSelf().tell(new SinkFailed(cause)));
+        writeChannel.resetSinkState();
+
         return recording(ctx, topic, startFrom, startedAt, recorders,
                          props, brokerFactory, brokerId, writeChannel, router, knownEntities,
                          vtExecutor, joxetteMetrics);
@@ -198,6 +208,14 @@ public class TopicLifecycleActor {
                             msg.partition(), topic, msg.cause().getMessage());
                     joxetteMetrics.recordingMetrics(topic).restarts().increment();
                     throw new RuntimeException(msg.cause());
+                })
+                .onMessage(SinkFailed.class, msg -> {
+                    log.error("TopicLifecycleActor: write sink exhausted retries for topic '{}' — restarting actor: {}",
+                            topic, msg.cause().getMessage());
+                    joxetteMetrics.recordingMetrics(topic).restarts().increment();
+                    // Consumers are already paused; Pekko will restart this actor via backoff.
+                    // The next starting() call resets sink state so consumers can resume.
+                    throw new RuntimeException("Sink failed for topic " + topic, msg.cause());
                 })
                 .build();
     }
