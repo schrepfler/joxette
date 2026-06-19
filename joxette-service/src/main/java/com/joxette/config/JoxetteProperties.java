@@ -521,6 +521,13 @@ public class JoxetteProperties {
          */
         private String compactionThreadType = "virtual";
 
+        /** Initial backoff (ms) before the first write retry after an object-store failure. */
+        private long writeRetryInitialMs = 1_000;
+        /** Multiplicative factor applied to the backoff on each successive write retry. */
+        private double writeRetryMultiplier = 2.0;
+        /** Maximum backoff (ms) between write retry attempts. */
+        private long writeRetryMaxMs = 60_000;
+
         // NOTE: defaultSourceParallelism and topicParallelism were removed.
         // Each topic already gets its own TopicRecorder (one consumer group member per topic).
         // Intra-topic parallelism via multiple VTs is not implemented: all partitions for a
@@ -533,6 +540,15 @@ public class JoxetteProperties {
 
         public String getCompactionThreadType() { return compactionThreadType; }
         public void setCompactionThreadType(String compactionThreadType) { this.compactionThreadType = compactionThreadType; }
+
+        public long getWriteRetryInitialMs() { return writeRetryInitialMs; }
+        public void setWriteRetryInitialMs(long v) { this.writeRetryInitialMs = v; }
+
+        public double getWriteRetryMultiplier() { return writeRetryMultiplier; }
+        public void setWriteRetryMultiplier(double v) { this.writeRetryMultiplier = v; }
+
+        public long getWriteRetryMaxMs() { return writeRetryMaxMs; }
+        public void setWriteRetryMaxMs(long v) { this.writeRetryMaxMs = v; }
     }
 
     // -----------------------------------------------------------------------

@@ -46,6 +46,9 @@ public class DuckLakeWriteChannel {
     private final Connection duckDbConnection;
     private final int capacity;
     private final CassetteRecordingBus bus;
+    private final long writeRetryInitialMs;
+    private final double writeRetryMultiplier;
+    private final long writeRetryMaxMs;
 
     private Channel<WriteBatch> channel;
     private Thread drainThread;
@@ -64,6 +67,9 @@ public class DuckLakeWriteChannel {
                                  JoxetteMetrics joxetteMetrics) {
         this.duckDbConnection = duckDbConnection;
         this.capacity = properties.getThreading().getWriteChannelCapacity();
+        this.writeRetryInitialMs = properties.getThreading().getWriteRetryInitialMs();
+        this.writeRetryMultiplier = properties.getThreading().getWriteRetryMultiplier();
+        this.writeRetryMaxMs = properties.getThreading().getWriteRetryMaxMs();
         this.bus = bus;
         this.joxetteMetrics = joxetteMetrics;
     }
@@ -175,35 +181,87 @@ public class DuckLakeWriteChannel {
     }
 
     private void processBatch(WriteBatch batch, WriterSet writers) {
-        try {
-            int written = 0;
+        long delayMs = writeRetryInitialMs;
+        int attempt = 0;
+        while (true) {
+            try {
+                int written = 0;
 
-            if (!batch.generalRecords().isEmpty()) {
-                CassetteBatchWriter gw = writers.generalWriterFor(batch.topic());
-                gw.writeBatch(batch.generalRecords(), batch.generalMessageTypes());
-                written += batch.generalRecords().size();
-            }
-
-            if (!batch.entityItems().isEmpty()) {
-                writers.entityWriter().writeBatch(batch.entityItems());
-                for (WriteBatch.EntityWriteItem item : batch.entityItems()) {
-                    written += item.routes().size();
+                if (!batch.generalRecords().isEmpty()) {
+                    CassetteBatchWriter gw = writers.generalWriterFor(batch.topic());
+                    gw.writeBatch(batch.generalRecords(), batch.generalMessageTypes());
+                    written += batch.generalRecords().size();
                 }
-            }
 
-            batch.result().complete(new WriteResult(batch.topic(), written));
-            if (bus != null) {
+                if (!batch.entityItems().isEmpty()) {
+                    writers.entityWriter().writeBatch(batch.entityItems());
+                    for (WriteBatch.EntityWriteItem item : batch.entityItems()) {
+                        written += item.routes().size();
+                    }
+                }
+
+                if (attempt > 0) {
+                    log.info("Write succeeded for topic '{}' after {} retries", batch.topic(), attempt);
+                }
+                batch.result().complete(new WriteResult(batch.topic(), written));
+                if (bus != null) {
+                    try {
+                        bus.publish(batch);
+                    } catch (RuntimeException be) {
+                        log.warn("Recording bus publish failed for topic '{}': {}",
+                                batch.topic(), be.getMessage(), be);
+                    }
+                }
+                return;
+
+            } catch (Exception e) {
+                if (!isTransientStorageError(e)) {
+                    log.error("Non-retryable write failure for topic '{}': {}", batch.topic(), e.getMessage(), e);
+                    batch.result().completeExceptionally(e);
+                    return;
+                }
+                attempt++;
+                log.warn("Transient object-store failure for topic '{}' (attempt {}), retrying in {} ms: {}",
+                        batch.topic(), attempt, delayMs, rootMessage(e));
                 try {
-                    bus.publish(batch);
-                } catch (RuntimeException be) {
-                    log.warn("Recording bus publish failed for topic '{}': {}",
-                            batch.topic(), be.getMessage(), be);
+                    Thread.sleep(delayMs);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    batch.result().completeExceptionally(ie);
+                    return;
+                }
+                delayMs = Math.min((long) (delayMs * writeRetryMultiplier), writeRetryMaxMs);
+            }
+        }
+    }
+
+    // A failure is transient if it originates from an SQL/IO error that mentions
+    // network connectivity (HTTP PUT/GET, connect, timeout). Schema errors,
+    // constraint violations, and other DuckDB errors are not retryable.
+    private static boolean isTransientStorageError(Throwable t) {
+        Throwable cur = t;
+        while (cur != null) {
+            if (cur instanceof java.sql.SQLException) {
+                String msg = cur.getMessage();
+                if (msg != null && (
+                        msg.contains("Could not connect") ||
+                        msg.contains("HTTP PUT") ||
+                        msg.contains("HTTP GET") ||
+                        msg.contains("Connection refused") ||
+                        msg.contains("Connection timed out") ||
+                        msg.contains("IO Error"))) {
+                    return true;
                 }
             }
-        } catch (Exception e) {
-            log.error("Failed to write batch for topic '{}': {}", batch.topic(), e.getMessage(), e);
-            batch.result().completeExceptionally(e);
+            cur = cur.getCause();
         }
+        return false;
+    }
+
+    private static String rootMessage(Throwable t) {
+        Throwable cur = t;
+        while (cur.getCause() != null) cur = cur.getCause();
+        return cur.getMessage();
     }
 
     // -----------------------------------------------------------------------
