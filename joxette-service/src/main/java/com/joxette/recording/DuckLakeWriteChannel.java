@@ -1,6 +1,7 @@
 package com.joxette.recording;
 
 import com.joxette.config.JoxetteProperties;
+import com.joxette.db.DuckDbErrors;
 import com.joxette.metrics.JoxetteMetrics;
 import com.softwaremill.jox.Channel;
 import com.softwaremill.jox.ChannelClosedException;
@@ -265,7 +266,7 @@ public class DuckLakeWriteChannel {
                 return;
 
             } catch (Exception e) {
-                if (!isTransientStorageError(e)) {
+                if (!DuckDbErrors.isTransient(e)) {
                     log.error("Non-retryable write failure for topic '{}': {}", batch.topic(), e.getMessage(), e);
                     batch.result().completeExceptionally(e);
                     sinkState.set(SinkState.HEALTHY); // not a storage issue — stay healthy
@@ -307,29 +308,6 @@ public class DuckLakeWriteChannel {
                 delayMs = Math.min((long) (delayMs * writeRetryMultiplier), writeRetryMaxMs);
             }
         }
-    }
-
-    // A failure is transient if it originates from an SQL/IO error that mentions
-    // network connectivity (HTTP PUT/GET, connect, timeout). Schema errors,
-    // constraint violations, and other DuckDB errors are not retryable.
-    private static boolean isTransientStorageError(Throwable t) {
-        Throwable cur = t;
-        while (cur != null) {
-            if (cur instanceof java.sql.SQLException) {
-                String msg = cur.getMessage();
-                if (msg != null && (
-                        msg.contains("Could not connect") ||
-                        msg.contains("HTTP PUT") ||
-                        msg.contains("HTTP GET") ||
-                        msg.contains("Connection refused") ||
-                        msg.contains("Connection timed out") ||
-                        msg.contains("IO Error"))) {
-                    return true;
-                }
-            }
-            cur = cur.getCause();
-        }
-        return false;
     }
 
     private static String rootMessage(Throwable t) {

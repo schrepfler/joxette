@@ -1,6 +1,7 @@
 package com.joxette.compaction;
 
 import com.joxette.config.JoxetteProperties;
+import com.joxette.db.DuckDbErrors;
 import com.joxette.management.ConfigRepository;
 import com.joxette.metrics.JoxetteMetrics;
 import io.micrometer.core.instrument.Timer;
@@ -307,7 +308,7 @@ public class CompactionService {
                 }
             }
         } catch (SQLException e) {
-            if (isTransientStorageError(e)) {
+            if (DuckDbErrors.isTransient(e)) {
                 log.warn("ducklake_merge_adjacent_files transient S3 failure for entity_type='{}' (will retry next run): {}",
                         entityType, e.getMessage());
             } else {
@@ -374,7 +375,7 @@ public class CompactionService {
                 }
             }
         } catch (SQLException e) {
-            if (isTransientStorageError(e)) {
+            if (DuckDbErrors.isTransient(e)) {
                 log.warn("ducklake_merge_adjacent_files transient S3 failure for general cassette topic='{}' (will retry next run): {}",
                         topic, e.getMessage());
             } else {
@@ -383,22 +384,6 @@ public class CompactionService {
             }
             return CompactionResult.NONE;
         }
-    }
-
-    private static boolean isTransientStorageError(Throwable t) {
-        Throwable cur = t;
-        while (cur != null) {
-            if (cur instanceof SQLException) {
-                String msg = cur.getMessage();
-                if (msg != null && (msg.contains("IO Error") || msg.contains("HTTP PUT")
-                        || msg.contains("HTTP GET") || msg.contains("Could not connect")
-                        || msg.contains("Connection refused") || msg.contains("Connection timed out"))) {
-                    return true;
-                }
-            }
-            cur = cur.getCause();
-        }
-        return false;
     }
 
     /** Normalises a topic name to {@code [a-z0-9_]}, matching {@code SchemaManager.normalize}. */

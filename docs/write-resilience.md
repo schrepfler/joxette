@@ -189,7 +189,7 @@ aborting the entire replay job.
 `markFailed()` to be called permanently — the user had to re-trigger the export.
 
 **Fix:** Retry loop in `execute()` wraps the entire export attempt. Uses the
-same `isTransientStorageError(Throwable)` check as `DuckLakeWriteChannel` (IO
+same `DuckDbErrors.isTransient()` check as `DuckLakeWriteChannel` (IO
 Error / HTTP PUT / HTTP GET / Could not connect / Connection refused / timed
 out). Up to 5 attempts with 2 s initial backoff, capped at 60 s.
 
@@ -250,12 +250,12 @@ progress recorded rather than fully failing. Same isolation applied to
 at the same WARN level. A transient S3 timeout was indistinguishable from a
 schema error in the logs.
 
-**Fix:** `isTransientStorageError(Throwable)` (same logic as
-`DuckLakeWriteChannel`) added as a private static method. Transient errors get a
-distinct log message: `"transient S3 failure … will retry next run"`. Non-
-transient errors keep the existing `"failed for entity_type='...'"` message.
-Both still return `CompactionResult.NONE` — compaction is idempotent, so the
-next scheduled run will re-attempt the same file merge.
+**Fix:** `DuckDbErrors.isTransient()` used to distinguish S3 failures from
+schema errors. Transient errors get a distinct log message:
+`"transient S3 failure … will retry next run"`. Non-transient errors keep the
+existing `"failed for entity_type='...'"` message. Both return
+`CompactionResult.NONE` — compaction is idempotent, so the next scheduled run
+re-attempts the same file merge.
 
 ### 7. `TopicRecorder` Kafka poll loop
 
@@ -274,33 +274,70 @@ one log line per retry window instead of a storm at 100 ms cadence.
 
 ---
 
-## Shared Transient Detection
+## Shared Transient Detection — `DuckDbErrors.isTransient()`
 
-`isTransientStorageError(Throwable t)` is duplicated in
-`DuckLakeWriteChannel`, `ExportService`, and `CompactionService` to keep
-`joxette-core` and `joxette-kafka` free of service-level dependencies. The
-three copies are identical:
+**File:** `joxette-service/.../db/DuckDbErrors.java`
+
+All three callers (`DuckLakeWriteChannel`, `ExportService`, `CompactionService`)
+delegate to a single shared utility.
+
+### Why message matching?
+
+DuckDB JDBC always returns `null` for `getSQLState()` and `0` for
+`getErrorCode()` across every error type — IO errors, schema errors, and
+constraint violations all look the same to the JDBC API. There is no exception
+subclass hierarchy; every error surfaces as a bare `java.sql.SQLException`
+thrown from native JNI code. Message prefix matching against DuckDB's own
+error-type labels is the only reliable signal available.
+
+This was verified empirically with a probe against DuckDB JDBC 1.5.4 (`IO Error`,
+`Catalog Error`, and `Constraint Error` all returned `getSQLState() == null`).
+
+### Denylist-first strategy
+
+Rather than allowlisting transient patterns (the previous approach), we
+**denylist known non-transient ones**. Any `SQLException` that does not match
+a non-transient prefix is treated as transient and retried. This is safe
+because all Joxette write paths are idempotent:
+
+- A false-positive retry (unknown error retried unnecessarily) wastes time but causes no data corruption.
+- A false-negative (transient error treated as permanent) drops data permanently.
+
+**Non-transient prefixes — never retried:**
+
+| Prefix | Meaning |
+|---|---|
+| `Catalog Error` | Missing table or schema |
+| `Binder Error` | Type or name resolution failure |
+| `Parser Error` | Malformed SQL |
+| `Constraint Error` | PK / FK / unique violation |
+| `Invalid Input Error` | Bad function argument |
+| `Not implemented Error` | Unsupported feature |
+| `Permission Error` | Access control denial |
+| `Out of Range Error` | Value overflow |
+
+**Transient prefixes — retried:**
+
+| Pattern | Meaning |
+|---|---|
+| `IO Error` | Generic DuckLake storage error |
+| `HTTP PUT` / `HTTP GET` / `HTTP Error` | Object store request failure |
+| `Could not connect` | Store unreachable / DNS failure |
+| `Connection refused` / `Connection timed out` | Network timeout |
+
+Everything else (unrecognised prefix, null message) is treated as transient.
+
+### Updating the classification
+
+Edit `DuckDbErrors.java` — it is the single source of truth. To verify the
+exact message prefix for a new error type, run:
 
 ```java
-private static boolean isTransientStorageError(Throwable t) {
-    Throwable cur = t;
-    while (cur != null) {
-        if (cur instanceof SQLException) {
-            String msg = cur.getMessage();
-            if (msg != null && (
-                    msg.contains("IO Error")           ||
-                    msg.contains("HTTP PUT")           ||
-                    msg.contains("HTTP GET")           ||
-                    msg.contains("Could not connect")  ||
-                    msg.contains("Connection refused") ||
-                    msg.contains("Connection timed out"))) {
-                return true;
-            }
-        }
-        cur = cur.getCause();
-    }
-    return false;
+try (Statement st = conn.createStatement()) {
+    st.execute("/* trigger the error */");
+} catch (SQLException e) {
+    System.out.println(e.getMessage());      // the prefix to match
+    System.out.println(e.getSQLState());     // always null in DuckDB JDBC
+    System.out.println(e.getErrorCode());    // always 0 in DuckDB JDBC
 }
 ```
-
-If new patterns need to be added (e.g. `"SSL handshake"`), update all three.
