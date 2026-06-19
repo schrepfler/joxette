@@ -150,6 +150,8 @@ interface DataPoint {
   retentionRows:   number
   catalogBytes:    number
   inlinedBytes:    number
+  duckdbMemoryTotal: number
+  duckdbMemoryByTag: Record<string, number>
   activeReplays:   number
   heapUsed:        number
   heapMax:         number
@@ -238,6 +240,8 @@ function scrapeToPoint(family: Record<string, MetricFamily>): DataPoint {
     retentionRows: Object.values(getSamplesBy(family, 'joxette_retention_rows_deleted_total', 'table_type')).reduce((a, b) => a + b, 0),
     catalogBytes: getSample(family, 'joxette_catalog_size_bytes')   || 0,
     inlinedBytes: getSample(family, 'joxette_catalog_inlined_bytes') || 0,
+    duckdbMemoryTotal: getSample(family, 'joxette_duckdb_memory_total_bytes') || 0,
+    duckdbMemoryByTag: getSamplesBy(family, 'joxette_duckdb_memory_bytes', 'tag'),
     activeReplays: getSample(family, 'joxette_replay_active') || 0,
     heapUsed: Math.max(0, heapUsed),
     heapMax:  Math.max(0, heapMax),
@@ -539,6 +543,12 @@ function MetricsPage() {
   const heapConfig: ChartConfig = {
     heapUsed: { label: 'heap used', color: '#1E5A8A' },
   }
+  const duckdbMemTags = latest
+    ? Object.keys(latest.duckdbMemoryByTag).filter(t => (latest.duckdbMemoryByTag[t] ?? 0) > 0)
+    : []
+  const duckdbMemConfig: ChartConfig = Object.fromEntries(
+    duckdbMemTags.map((t, i) => [t, { label: t, color: PALETTE[i % PALETTE.length] }])
+  )
   const writeConfig: ChartConfig = {
     writeDepth:    { label: 'depth',    color: '#6674cc' },
     writeDuration: { label: 'batch ms', color: '#3E9A7A' },
@@ -602,6 +612,8 @@ function MetricsPage() {
           })()}
           <Stat label="catalog" value={fmtBytes(latest.catalogBytes)} sub={`${fmtBytes(latest.inlinedBytes)} inlined`}
             title="Total size of the DuckDB catalog file. The inlined sub-value is data buffered inside the catalog before being flushed to Parquet on object storage." />
+          <Stat label="duckdb mem" value={fmtBytes(latest.duckdbMemoryTotal)} sub="allocator total"
+            title="Total memory used by DuckDB's internal allocator across all allocation tags (duckdb_memory()). A value that keeps growing without compaction may indicate a memory leak inside the embedded DuckDB instance." />
           <Stat label="replays" value={String(latest.activeReplays)} sub="active"
             title="Active replay-to-topic operations in progress. Each holds a Kafka producer and reads from DuckLake concurrently." />
           <Stat label="heap" value={fmtBytes(latest.heapUsed)} sub={`of ${fmtBytes(latest.heapMax)}`}
@@ -659,6 +671,31 @@ function MetricsPage() {
                 <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
                 <Area type="monotone" dataKey="catalogBytes" name="catalog file" stroke="var(--color-catalogBytes)" fill="var(--color-catalogBytes)" fillOpacity={0.15} strokeWidth={1.5} dot={false} isAnimationActive={false} />
                 <Area type="monotone" dataKey="inlinedBytes" name="inlined"       stroke="var(--color-inlinedBytes)" fill="var(--color-inlinedBytes)" fillOpacity={0.15} strokeWidth={1.5} dot={false} isAnimationActive={false} />
+              </AreaChart>
+            </ChartContainer>
+          </Card>
+
+          <Card title="DuckDB Memory" subtitle="total · per allocation tag"
+            description="Memory used by DuckDB's internal allocator, broken down by tag (BASE_TABLE, HASH_TABLE, PARQUET_READER, ALLOCATOR, etc.). Sourced from duckdb_memory() on every scrape. A steadily growing ALLOCATOR or BASE_TABLE value that does not shrink after compaction may indicate a memory leak inside the embedded DuckDB instance."
+          >
+            <ChartContainer config={{ total: { label: 'total', color: PALETTE[0] }, ...duckdbMemConfig }} className="h-[180px] w-full">
+              <AreaChart syncId="metrics" data={pts.map(pt => ({
+                ts: pt.ts,
+                total: pt.duckdbMemoryTotal,
+                ...Object.fromEntries(duckdbMemTags.map(t => [t, pt.duckdbMemoryByTag[t] ?? 0])),
+              }))}>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
+                <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
+                <YAxis tickFormatter={fmtBytes} {...axisProps} width={68} />
+                <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => fmtBytes(Number(v))} />} />
+                <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
+                <Area type="monotone" dataKey="total" name="total"
+                  stroke={PALETTE[0]} fill={PALETTE[0]} fillOpacity={0.15} strokeWidth={2} dot={false} isAnimationActive={false} />
+                {duckdbMemTags.map((t, i) => (
+                  <Area key={t} type="monotone" dataKey={t} name={t}
+                    stroke={PALETTE[(i + 1) % PALETTE.length]} fill="none"
+                    strokeWidth={1} strokeDasharray="3 2" dot={false} isAnimationActive={false} />
+                ))}
               </AreaChart>
             </ChartContainer>
           </Card>

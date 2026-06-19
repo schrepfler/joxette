@@ -364,6 +364,53 @@ public class JoxetteMetrics {
     }
 
     // =========================================================================
+    // DuckDB memory (duckdb_memory() per-tag gauges)
+    // =========================================================================
+
+    /**
+     * Registers per-tag memory gauges from {@code duckdb_memory()} and a
+     * total gauge summing all tags. Each gauge is backed by a supplier that
+     * runs the query on every scrape, so values stay current.
+     *
+     * <p>The supplier runs on a separate {@code Statement} without holding
+     * the write-serialisation lock — safe because DuckDB allows concurrent
+     * reads via separate {@code Statement} objects.
+     *
+     * @param memorySupplier returns {@code Map<tag, memory_usage_bytes>}
+     * @param tags           the full set of tags returned by {@code duckdb_memory()}
+     */
+    public void registerDuckDbMemoryGauges(Supplier<java.util.Map<String, Long>> memorySupplier,
+                                           java.util.Set<String> tags) {
+        // Per-tag gauges — state object is the Supplier; ToDoubleFunction calls .get() then looks up tag
+        for (String tag : tags) {
+            String gaugeId = "duckdb:mem:" + tag;
+            if (registeredGaugeIds.add(gaugeId)) {
+                String metricTag = tag.toLowerCase();
+                Gauge.builder("joxette.duckdb.memory.bytes",
+                              memorySupplier,
+                              s -> {
+                                  java.util.Map<String, Long> m = s.get();
+                                  Long v = m.get(tag);
+                                  return v != null ? v.doubleValue() : 0.0;
+                              })
+                        .description("DuckDB memory usage in bytes for allocation tag " + tag)
+                        .tag("tag", metricTag)
+                        .baseUnit("bytes")
+                        .register(registry);
+            }
+        }
+        // Total across all tags
+        if (registeredGaugeIds.add("duckdb:mem:total")) {
+            Gauge.builder("joxette.duckdb.memory.total.bytes",
+                          memorySupplier,
+                          s -> s.get().values().stream().mapToLong(Long::longValue).sum())
+                    .description("Total DuckDB memory usage in bytes across all allocation tags")
+                    .baseUnit("bytes")
+                    .register(registry);
+        }
+    }
+
+    // =========================================================================
     // Inner record
     // =========================================================================
 
