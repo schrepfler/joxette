@@ -161,3 +161,146 @@ poll() → emit records → batchWeighted → buildWriteBatch
 During `pauseForSinkRecovery`, `pendingCommit` is null for the current batch
 (the previous batch's offsets may be pending but are not advanced). No
 commit fires until the write succeeds.
+
+---
+
+## Resilience Coverage Across Other I/O Flows
+
+The same principles (classify transient vs non-transient, retry with backoff,
+never silently drop) are applied to all other external I/O paths.
+
+### 1. `KafkaRecordSink` — replay-to-topic Kafka producer
+
+**File:** `joxette-kafka/.../sink/kafka/KafkaRecordSink.java`
+
+**Problem:** `producer.send().get()` on a `RetriableException` (broker restart,
+leader election, network blip) threw `SinkException` immediately, permanently
+aborting the entire replay job.
+
+**Fix:** Retry loop inside `doSend()` — up to `RETRY_MAX_ATTEMPTS` (5) on any
+`RetriableException`, with exponential backoff starting at 500 ms, capped at
+30 s. Non-retriable `ExecutionException` causes abort immediately.
+
+### 2. `ExportService` — DuckDB COPY to S3
+
+**File:** `joxette-service/.../exports/ExportService.java`
+
+**Problem:** A single S3 throttle or network blip during `COPY … TO …` caused
+`markFailed()` to be called permanently — the user had to re-trigger the export.
+
+**Fix:** Retry loop in `execute()` wraps the entire export attempt. Uses the
+same `isTransientStorageError(Throwable)` check as `DuckLakeWriteChannel` (IO
+Error / HTTP PUT / HTTP GET / Could not connect / Connection refused / timed
+out). Up to 5 attempts with 2 s initial backoff, capped at 60 s.
+
+### 3. `CassetteLifecycleService` — S3 snapshot upload
+
+**File:** `joxette-service/.../replay/CassetteLifecycleService.java`
+
+**Problem:** Uploading a snapshot to S3 iterated all files in a loop with no
+retry. A transient S3 error mid-upload left a partial snapshot in object
+storage (some files uploaded, some missing) with no recovery path.
+
+**Fix:** Each file is uploaded via `uploadWithRetry(file, key, bucket)`. Uses
+`SdkException.retryable()` (the AWS SDK's own signal) to distinguish transient
+from permanent failures. Up to 5 attempts per file, 1 s initial backoff, capped
+at 30 s. A non-retryable failure throws `UpstreamUnavailableException`, which
+aborts the entire snapshot upload cleanly.
+
+### 4. `KnownEntitiesRepository` — entity registry upserts
+
+**File:** `joxette-service/.../replay/KnownEntitiesRepository.java`
+
+**Problem:** `upsertBatch()` threw `SQLException` on failure. The caller
+(`TopicRecorder`) caught and logged it at WARN and continued — correct for
+best-effort semantics, but silent drift was invisible until it became severe.
+
+**Fix:** Exception handling moved inside `upsertBatch()`. A `consecutiveFailures`
+`AtomicInteger` tracks how many batches have failed in a row:
+
+| Failures | Log level |
+|---|---|
+| 1–2 | WARN — isolated failure |
+| 3–9 | WARN — escalating, mentions count |
+| 10+ | ERROR — "registry is drifting from reality" |
+
+Counter resets to 0 on any success. `consecutiveFailures()` is exposed as a
+public method so health checks or metrics can surface it.
+
+### 5. `RetentionService` — per-entity-type progress isolation
+
+**File:** `joxette-service/.../compaction/RetentionService.java`
+
+**Problem:** `enforceEntityRetention()` iterated entity types and threw on any
+`SQLException`. A failure on entity type N caused the entire run to be marked
+FAILED, discarding the N−1 types already processed. The next scheduled run
+restarted from entity type 1, re-processing all prior work.
+
+**Fix:** Each entity type (`deleteFromEntityCassette` + `deleteFromKnownEntities`)
+is wrapped in its own try/catch. A failure logs at WARN with "will retry next
+schedule" and continues to the next entity type. The run completes with partial
+progress recorded rather than fully failing. Same isolation applied to
+`enforceTopicRetention()` per-topic.
+
+### 6. `CompactionService` — transient S3 error classification
+
+**File:** `joxette-service/.../compaction/CompactionService.java`
+
+**Problem:** All `SQLException` from `ducklake_merge_adjacent_files` were logged
+at the same WARN level. A transient S3 timeout was indistinguishable from a
+schema error in the logs.
+
+**Fix:** `isTransientStorageError(Throwable)` (same logic as
+`DuckLakeWriteChannel`) added as a private static method. Transient errors get a
+distinct log message: `"transient S3 failure … will retry next run"`. Non-
+transient errors keep the existing `"failed for entity_type='...'"` message.
+Both still return `CompactionResult.NONE` — compaction is idempotent, so the
+next scheduled run will re-attempt the same file merge.
+
+### 7. `TopicRecorder` Kafka poll loop
+
+**File:** `joxette-service/.../recording/TopicRecorder.java`
+
+**Problem:** On `RetriableException` (broker restart, network loss), the poll
+loop continued immediately with the next `kc.poll()` call (100 ms timeout). A
+sustained broker failure produced WARN log entries at 10/s, saturating log
+aggregators and obscuring other signals.
+
+**Fix:** `kafkaRetryDelayMs` field (initially `KAFKA_RETRY_INITIAL_MS` = 500 ms)
+tracks the current backoff. On each `RetriableException`: sleep `kafkaRetryDelayMs`,
+then multiply by `KAFKA_RETRY_MULTIPLIER` (2.0), capped at `KAFKA_RETRY_MAX_MS`
+(30 s). On any successful poll that returns records: reset to 500 ms. This gives
+one log line per retry window instead of a storm at 100 ms cadence.
+
+---
+
+## Shared Transient Detection
+
+`isTransientStorageError(Throwable t)` is duplicated in
+`DuckLakeWriteChannel`, `ExportService`, and `CompactionService` to keep
+`joxette-core` and `joxette-kafka` free of service-level dependencies. The
+three copies are identical:
+
+```java
+private static boolean isTransientStorageError(Throwable t) {
+    Throwable cur = t;
+    while (cur != null) {
+        if (cur instanceof SQLException) {
+            String msg = cur.getMessage();
+            if (msg != null && (
+                    msg.contains("IO Error")           ||
+                    msg.contains("HTTP PUT")           ||
+                    msg.contains("HTTP GET")           ||
+                    msg.contains("Could not connect")  ||
+                    msg.contains("Connection refused") ||
+                    msg.contains("Connection timed out"))) {
+                return true;
+            }
+        }
+        cur = cur.getCause();
+    }
+    return false;
+}
+```
+
+If new patterns need to be added (e.g. `"SSL handshake"`), update all three.
