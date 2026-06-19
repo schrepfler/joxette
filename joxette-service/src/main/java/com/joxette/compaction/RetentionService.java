@@ -199,12 +199,17 @@ public class RetentionService {
             if (tc.retentionDays() == null) continue;
             // Only general-mode topics have a cassette table; entity_only topics skip this
             if (tc.mode() == TopicMode.ENTITY_ONLY) continue;
-            long deleted = deleteFromGeneralCassette(tc.topic(), tc.retentionDays());
-            if (deleted > 0) {
-                log.debug("Retention: deleted {} rows from general cassette for topic '{}' (retention={} days)",
-                        deleted, tc.topic(), tc.retentionDays());
+            try {
+                long deleted = deleteFromGeneralCassette(tc.topic(), tc.retentionDays());
+                if (deleted > 0) {
+                    log.debug("Retention: deleted {} rows from general cassette for topic '{}' (retention={} days)",
+                            deleted, tc.topic(), tc.retentionDays());
+                }
+                total += deleted;
+            } catch (Exception e) {
+                log.warn("Retention: skipping topic '{}' due to error: {}", tc.topic(), e.getMessage());
+                // Continue with remaining topics rather than aborting the entire run
             }
-            total += deleted;
         }
         return total;
     }
@@ -234,14 +239,21 @@ public class RetentionService {
             int days    = etc.retentionDays();
             String type = etc.entityType();
             SchemaManager.validateEntityType(type);
-            long cassDeleted = deleteFromEntityCassette(type, days);
-            long keDeleted   = deleteFromKnownEntities(type, days);
-            if (cassDeleted > 0 || keDeleted > 0) {
-                log.debug("Retention: deleted {} entity rows, {} known_entities rows for type '{}' (retention={} days)",
-                        cassDeleted, keDeleted, type, days);
+            try {
+                long cassDeleted = deleteFromEntityCassette(type, days);
+                long keDeleted   = deleteFromKnownEntities(type, days);
+                if (cassDeleted > 0 || keDeleted > 0) {
+                    log.debug("Retention: deleted {} entity rows, {} known_entities rows for type '{}' (retention={} days)",
+                            cassDeleted, keDeleted, type, days);
+                }
+                entityRows        += cassDeleted;
+                knownEntitiesRows += keDeleted;
+            } catch (Exception e) {
+                // Per-entity failure: log and continue so a transient S3 error on one
+                // entity type does not cause the entire run to fail and restart from scratch.
+                log.warn("Retention: skipping entity type '{}' due to error (will retry next schedule): {}",
+                        type, e.getMessage());
             }
-            entityRows        += cassDeleted;
-            knownEntitiesRows += keDeleted;
         }
         return new long[]{entityRows, knownEntitiesRows};
     }

@@ -73,7 +73,10 @@ import java.util.concurrent.atomic.AtomicReference;
 public class TopicRecorder {
 
     private static final Logger log = LoggerFactory.getLogger(TopicRecorder.class);
-    private static final Duration POLL_TIMEOUT = Duration.ofMillis(100);
+    private static final Duration POLL_TIMEOUT          = Duration.ofMillis(100);
+    private static final long     KAFKA_RETRY_INITIAL_MS = 500;
+    private static final double   KAFKA_RETRY_MULTIPLIER = 2.0;
+    private static final long     KAFKA_RETRY_MAX_MS     = 30_000;
 
     private final String topic;
     private final ConsumerSettings<String, byte[]> settings;
@@ -103,6 +106,8 @@ public class TopicRecorder {
             new AtomicReference<>();
 
     private volatile boolean stopped = false;
+    /** Current backoff delay (ms) for Kafka RetriableException; resets to initial on success. */
+    private long kafkaRetryDelayMs = KAFKA_RETRY_INITIAL_MS;
 
     private volatile Instant lastBatchAt;
     private final AtomicLong consumerLag     = new AtomicLong(-1);
@@ -242,6 +247,8 @@ public class TopicRecorder {
                                 }
                                 continue;
                             }
+                            // Successful poll — reset Kafka retry backoff
+                            kafkaRetryDelayMs = KAFKA_RETRY_INITIAL_MS;
                             List<ConsumerRecord<String, byte[]>> pollBatch = new ArrayList<>();
                             for (ConsumerRecord<String, byte[]> r : records) {
                                 pollBatch.add(r);
@@ -255,10 +262,14 @@ public class TopicRecorder {
                         } catch (RetriableException e) {
                             // Transient broker/network error (e.g. network loss, broker restart,
                             // laptop sleep/wake). The Kafka client will reconnect automatically;
-                            // skip the failed poll and retry on the next iteration rather than
-                            // propagating the exception and killing the recorder.
-                            log.warn("Transient Kafka error on topic '{}', will retry: {} {}",
-                                    label, e.getClass().getSimpleName(), e.getMessage());
+                            // back off before retrying to avoid a log storm on sustained failure.
+                            log.warn("Transient Kafka error on topic '{}', retrying in {} ms: {} {}",
+                                    label, kafkaRetryDelayMs, e.getClass().getSimpleName(), e.getMessage());
+                            try { Thread.sleep(kafkaRetryDelayMs); } catch (InterruptedException ie) {
+                                Thread.currentThread().interrupt(); break outer;
+                            }
+                            kafkaRetryDelayMs = Math.min(
+                                    (long) (kafkaRetryDelayMs * KAFKA_RETRY_MULTIPLIER), KAFKA_RETRY_MAX_MS);
                         } catch (InterruptedException e) {
                             Thread.currentThread().interrupt();
                             break outer;

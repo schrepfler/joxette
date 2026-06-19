@@ -24,6 +24,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
+import software.amazon.awssdk.core.exception.SdkException;
 
 import static com.joxette.replay.TopicReplayService.normalizeTopicName;
 
@@ -504,9 +505,7 @@ public class CassetteLifecycleService {
         for (Path file : files) {
             String relPath = snapshotDir.relativize(file).toString().replace('\\', '/');
             String key = keyPrefix + relPath;
-            log.debug("Uploading snapshot file: {}", relPath);
-            s3Client.putObject(req -> req.bucket(os.getBucket()).key(key),
-                    RequestBody.fromFile(file));
+            uploadWithRetry(file, key, os.getBucket());
         }
         log.info("Snapshot '{}' uploaded: {} files to s3://{}/{}", name, files.size(), os.getBucket(), keyPrefix);
 
@@ -520,6 +519,45 @@ public class CassetteLifecycleService {
 
         String uri = "s3://" + os.getBucket() + "/" + keyPrefix;
         return new ObjectStoreSnapshotInfo(snapshot.name(), snapshot.createdAt(), snapshot.sizeBytes(), uri);
+    }
+
+    // -------------------------------------------------------------------------
+    // S3 upload helpers
+    // -------------------------------------------------------------------------
+
+    private static final long S3_RETRY_INITIAL_MS  = 1_000;
+    private static final double S3_RETRY_MULTIPLIER = 2.0;
+    private static final long S3_RETRY_MAX_MS      = 30_000;
+    private static final int  S3_RETRY_MAX_ATTEMPTS = 5;
+
+    private void uploadWithRetry(Path file, String key, String bucket) {
+        long delayMs = S3_RETRY_INITIAL_MS;
+        int attempt  = 0;
+        while (true) {
+            try {
+                log.debug("Uploading snapshot file: {}", key);
+                s3Client.putObject(req -> req.bucket(bucket).key(key), RequestBody.fromFile(file));
+                if (attempt > 0) {
+                    log.info("S3 upload succeeded for '{}' after {} retries", key, attempt);
+                }
+                return;
+            } catch (SdkException e) {
+                if (!e.retryable() || ++attempt >= S3_RETRY_MAX_ATTEMPTS) {
+                    throw com.joxette.api.error.UpstreamUnavailableException.objectStore(
+                            "S3 upload failed for '" + key + "' after " + attempt + " attempt(s): " + e.getMessage(), e);
+                }
+                log.warn("S3 upload transient failure for '{}' (attempt {}/{}), retrying in {} ms: {}",
+                        key, attempt, S3_RETRY_MAX_ATTEMPTS, delayMs, e.getMessage());
+                try {
+                    Thread.sleep(delayMs);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw com.joxette.api.error.UpstreamUnavailableException.objectStore(
+                            "Interrupted during S3 upload retry for " + key, ie);
+                }
+                delayMs = Math.min((long) (delayMs * S3_RETRY_MULTIPLIER), S3_RETRY_MAX_MS);
+            }
+        }
     }
 
     // -------------------------------------------------------------------------

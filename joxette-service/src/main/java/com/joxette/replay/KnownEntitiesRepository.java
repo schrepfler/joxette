@@ -1,6 +1,8 @@
 package com.joxette.replay;
 
 import org.jooq.DSLContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Repository;
 
 import java.sql.Connection;
@@ -11,6 +13,7 @@ import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Maintains the {@code known_entities} registry (plain DuckDB, main schema).
@@ -28,7 +31,12 @@ import java.util.Map;
 @Repository
 public class KnownEntitiesRepository {
 
+    private static final Logger log = LoggerFactory.getLogger(KnownEntitiesRepository.class);
+    private static final int WARN_THRESHOLD  = 3;
+    private static final int ERROR_THRESHOLD = 10;
+
     private final Connection duckDB;
+    private final AtomicInteger consecutiveFailures = new AtomicInteger(0);
 
     public KnownEntitiesRepository(DSLContext dsl) {
         // Extract the underlying JDBC connection — jOOQ's DSLContext.connectionResult()
@@ -43,7 +51,7 @@ public class KnownEntitiesRepository {
      * message count, distinct topics, and last messageType for this batch, then
      * issues one PreparedStatement execution per distinct entity.
      */
-    public void upsertBatch(List<EntityRoute> routes, Instant observedAt) throws SQLException {
+    public void upsertBatch(List<EntityRoute> routes, Instant observedAt) {
         if (routes.isEmpty()) return;
 
         OffsetDateTime odt = observedAt.atOffset(ZoneOffset.UTC);
@@ -88,6 +96,23 @@ public class KnownEntitiesRepository {
                 ps.addBatch();
             }
             ps.executeBatch();
+            consecutiveFailures.set(0);
+        } catch (SQLException e) {
+            int failures = consecutiveFailures.incrementAndGet();
+            if (failures >= ERROR_THRESHOLD) {
+                log.error("known_entities upsert has failed {} consecutive times — registry is drifting from reality: {}",
+                        failures, e.getMessage(), e);
+            } else if (failures >= WARN_THRESHOLD) {
+                log.warn("known_entities upsert failed {} consecutive times: {}", failures, e.getMessage());
+            } else {
+                log.warn("known_entities upsert failed (attempt {}): {}", failures, e.getMessage());
+            }
+            // Best-effort: swallow to avoid aborting the write pipeline
         }
+    }
+
+    /** Returns the count of consecutive upsert failures since the last success. */
+    public int consecutiveFailures() {
+        return consecutiveFailures.get();
     }
 }

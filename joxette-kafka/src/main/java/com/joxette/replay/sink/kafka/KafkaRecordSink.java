@@ -7,7 +7,10 @@ import com.joxette.replay.sink.SinkException;
 import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.clients.producer.RecordMetadata;
+import org.apache.kafka.common.errors.RetriableException;
 import org.apache.kafka.common.header.internals.RecordHeaders;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -42,7 +45,13 @@ import java.util.concurrent.Future;
  */
 public final class KafkaRecordSink implements RecordSink {
 
+    private static final Logger log = LoggerFactory.getLogger(KafkaRecordSink.class);
     private static final Base64.Decoder BASE64 = Base64.getUrlDecoder();
+
+    private static final long RETRY_INITIAL_MS  = 500;
+    private static final double RETRY_MULTIPLIER = 2.0;
+    private static final long RETRY_MAX_MS      = 30_000;
+    private static final int  RETRY_MAX_ATTEMPTS = 5;
 
     private final Producer<byte[], byte[]> producer;
 
@@ -90,16 +99,35 @@ public final class KafkaRecordSink implements RecordSink {
         var record = new ProducerRecord<>(
                 targetTopic, partition, ts, keyBytes, valueBytes, buildHeaders(headers));
 
-        try {
-            RecordMetadata md = producer.send(record).get();
-            Instant resultTs = md.hasTimestamp() ? Instant.ofEpochMilli(md.timestamp()) : timestamp;
-            return new SendResult(md.topic(), md.partition(), md.offset(), resultTs);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            throw new SinkException("Interrupted during Kafka send to " + targetTopic, e);
-        } catch (ExecutionException e) {
-            Throwable cause = e.getCause() != null ? e.getCause() : e;
-            throw new SinkException("Kafka send failed: " + cause.getMessage(), cause);
+        long delayMs = RETRY_INITIAL_MS;
+        int attempt  = 0;
+        while (true) {
+            try {
+                RecordMetadata md = producer.send(record).get();
+                Instant resultTs = md.hasTimestamp() ? Instant.ofEpochMilli(md.timestamp()) : timestamp;
+                if (attempt > 0) {
+                    log.info("Kafka send to '{}' succeeded after {} retries", targetTopic, attempt);
+                }
+                return new SendResult(md.topic(), md.partition(), md.offset(), resultTs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new SinkException("Interrupted during Kafka send to " + targetTopic, e);
+            } catch (ExecutionException e) {
+                Throwable cause = e.getCause() != null ? e.getCause() : e;
+                if (!(cause instanceof RetriableException) || ++attempt >= RETRY_MAX_ATTEMPTS) {
+                    throw new SinkException("Kafka send failed after " + attempt + " attempt(s): "
+                            + cause.getMessage(), cause);
+                }
+                log.warn("Transient Kafka send failure to '{}' (attempt {}/{}), retrying in {} ms: {}",
+                        targetTopic, attempt, RETRY_MAX_ATTEMPTS, delayMs, cause.getMessage());
+                try {
+                    Thread.sleep(delayMs);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw new SinkException("Interrupted during Kafka send retry to " + targetTopic, ie);
+                }
+                delayMs = Math.min((long) (delayMs * RETRY_MULTIPLIER), RETRY_MAX_MS);
+            }
         }
     }
 

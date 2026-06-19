@@ -110,23 +110,66 @@ public class ExportService {
 
     // -------------------------------------------------------------------------
 
+    private static final long EXPORT_RETRY_INITIAL_MS  = 2_000;
+    private static final double EXPORT_RETRY_MULTIPLIER = 2.0;
+    private static final long EXPORT_RETRY_MAX_MS      = 60_000;
+    private static final int  EXPORT_RETRY_MAX_ATTEMPTS = 5;
+
     private void execute(String jobId, String entityType, List<String> entityIds,
                          Instant from, Instant to, List<String> messageTypes,
                          ExportOutputFormat outputFormat) {
         repository.markRunning(jobId);
-        try {
-            String outputPath = resolveOutputPath(jobId, outputFormat);
-            long rowCount = switch (outputFormat) {
-                case PARQUET -> exportParquet(jobId, entityType, entityIds, from, to, messageTypes, outputPath);
-                case NDJSON  -> exportNdjson(jobId, entityType, entityIds, from, to, messageTypes, outputPath);
-            };
-            repository.markCompleted(jobId, outputPath, rowCount);
-            log.info("Export job {} completed: {} rows → {}", jobId, rowCount, outputPath);
-        } catch (Exception e) {
-            String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getName();
-            repository.markFailed(jobId, msg);
-            log.error("Export job {} failed", jobId, e);
+        String outputPath = resolveOutputPath(jobId, outputFormat);
+        long delayMs = EXPORT_RETRY_INITIAL_MS;
+        int attempt  = 0;
+        while (true) {
+            try {
+                long rowCount = switch (outputFormat) {
+                    case PARQUET -> exportParquet(jobId, entityType, entityIds, from, to, messageTypes, outputPath);
+                    case NDJSON  -> exportNdjson(jobId, entityType, entityIds, from, to, messageTypes, outputPath);
+                };
+                repository.markCompleted(jobId, outputPath, rowCount);
+                if (attempt > 0) {
+                    log.info("Export job {} completed after {} retries: {} rows → {}", jobId, attempt, rowCount, outputPath);
+                } else {
+                    log.info("Export job {} completed: {} rows → {}", jobId, rowCount, outputPath);
+                }
+                return;
+            } catch (Exception e) {
+                if (!isTransientStorageError(e) || ++attempt >= EXPORT_RETRY_MAX_ATTEMPTS) {
+                    String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getName();
+                    repository.markFailed(jobId, msg);
+                    log.error("Export job {} failed after {} attempt(s)", jobId, attempt, e);
+                    return;
+                }
+                log.warn("Export job {} transient failure (attempt {}/{}), retrying in {} ms: {}",
+                        jobId, attempt, EXPORT_RETRY_MAX_ATTEMPTS, delayMs, e.getMessage());
+                try {
+                    Thread.sleep(delayMs);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    repository.markFailed(jobId, "Interrupted during retry");
+                    return;
+                }
+                delayMs = Math.min((long) (delayMs * EXPORT_RETRY_MULTIPLIER), EXPORT_RETRY_MAX_MS);
+            }
         }
+    }
+
+    private static boolean isTransientStorageError(Throwable t) {
+        Throwable cur = t;
+        while (cur != null) {
+            if (cur instanceof java.sql.SQLException) {
+                String msg = cur.getMessage();
+                if (msg != null && (msg.contains("IO Error") || msg.contains("HTTP PUT")
+                        || msg.contains("HTTP GET") || msg.contains("Could not connect")
+                        || msg.contains("Connection refused") || msg.contains("Connection timed out"))) {
+                    return true;
+                }
+            }
+            cur = cur.getCause();
+        }
+        return false;
     }
 
     private long exportParquet(String jobId, String entityType, List<String> entityIds,

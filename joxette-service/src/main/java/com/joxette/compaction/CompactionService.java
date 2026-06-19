@@ -307,7 +307,12 @@ public class CompactionService {
                 }
             }
         } catch (SQLException e) {
-            log.warn("ducklake_merge_adjacent_files failed for entity_type='{}': {}", entityType, e.getMessage());
+            if (isTransientStorageError(e)) {
+                log.warn("ducklake_merge_adjacent_files transient S3 failure for entity_type='{}' (will retry next run): {}",
+                        entityType, e.getMessage());
+            } else {
+                log.warn("ducklake_merge_adjacent_files failed for entity_type='{}': {}", entityType, e.getMessage());
+            }
             return CompactionResult.NONE;
         }
     }
@@ -369,10 +374,31 @@ public class CompactionService {
                 }
             }
         } catch (SQLException e) {
-            log.warn("ducklake_merge_adjacent_files failed for general cassette topic='{}': {}",
-                    topic, e.getMessage());
+            if (isTransientStorageError(e)) {
+                log.warn("ducklake_merge_adjacent_files transient S3 failure for general cassette topic='{}' (will retry next run): {}",
+                        topic, e.getMessage());
+            } else {
+                log.warn("ducklake_merge_adjacent_files failed for general cassette topic='{}': {}",
+                        topic, e.getMessage());
+            }
             return CompactionResult.NONE;
         }
+    }
+
+    private static boolean isTransientStorageError(Throwable t) {
+        Throwable cur = t;
+        while (cur != null) {
+            if (cur instanceof SQLException) {
+                String msg = cur.getMessage();
+                if (msg != null && (msg.contains("IO Error") || msg.contains("HTTP PUT")
+                        || msg.contains("HTTP GET") || msg.contains("Could not connect")
+                        || msg.contains("Connection refused") || msg.contains("Connection timed out"))) {
+                    return true;
+                }
+            }
+            cur = cur.getCause();
+        }
+        return false;
     }
 
     /** Normalises a topic name to {@code [a-z0-9_]}, matching {@code SchemaManager.normalize}. */
