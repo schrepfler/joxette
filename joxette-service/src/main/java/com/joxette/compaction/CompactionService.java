@@ -438,9 +438,19 @@ public class CompactionService {
             } catch (SQLException e) {
                 log.warn("ducklake_flush failed ({}); data may remain inlined", e.getMessage());
             }
+            // ducklake_flush_inlined_data leaves an implicit transaction open with the
+            // catalog updates for the flushed files. CHECKPOINT requires no active
+            // transaction — commit first so the WAL can be flushed to disk.
+            // A skipped commit here causes CHECKPOINT to fail every run, leaving the
+            // WAL to grow unbounded in native memory (visible as rising process RSS).
+            try {
+                duckDB.commit();
+            } catch (SQLException e) {
+                log.debug("commit before CHECKPOINT: {} (may be auto-commit mode)", e.getMessage());
+            }
             try (Statement st = duckDB.createStatement()) {
-                // Persist catalog metadata to local disk
                 st.execute("CHECKPOINT");
+                log.debug("CHECKPOINT complete — WAL flushed to disk");
             } catch (SQLException e) {
                 // In-memory DuckDB (e.g. in tests) does not support CHECKPOINT — safe to ignore.
                 log.warn("CHECKPOINT failed ({}); catalog metadata may not be persisted", e.getMessage());

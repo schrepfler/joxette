@@ -285,6 +285,14 @@ public class RetentionService {
 
     private void checkpoint() throws SQLException {
         synchronized (duckDB) {
+            // Commit any open transaction from the DELETE statements before checkpointing.
+            // CHECKPOINT requires no active transaction; skipping this causes the WAL to
+            // grow unbounded in native memory.
+            try {
+                duckDB.commit();
+            } catch (SQLException e) {
+                log.debug("commit before retention CHECKPOINT: {} (may be auto-commit mode)", e.getMessage());
+            }
             try (Statement st = duckDB.createStatement()) {
                 st.execute("CHECKPOINT");
                 log.debug("Retention checkpoint complete");
