@@ -420,7 +420,7 @@ function TopicRow({ tk, label, latest, pts, axisProps }: {
               <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
               <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
               <YAxis tickFormatter={v => fmt(v, 0)} {...axisProps} width={44} />
-              <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => fmt(Number(v), 0)} />} />
+              <ChartTooltip position={{ x: 10, y: 10 }} content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => fmt(Number(v), 0)} />} />
               <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
               {partitions.map((p, i) => (
                 <Area key={p} type="monotone" dataKey={`p${p}`} name={`p${p}`}
@@ -440,7 +440,7 @@ function TopicRow({ tk, label, latest, pts, axisProps }: {
               <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
               <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
               <YAxis tickFormatter={v => fmt(v, 0)} {...axisProps} width={44} />
-              <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => `${fmt(Number(v), 1)}/s`} />} />
+              <ChartTooltip position={{ x: 10, y: 10 }} content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => `${fmt(Number(v), 1)}/s`} />} />
               <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
               {partitions.map((p, i) => (
                 <Line key={p} type="monotone" dataKey={`p${p}`} name={`p${p}`}
@@ -461,7 +461,7 @@ function TopicRow({ tk, label, latest, pts, axisProps }: {
               <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
               <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
               <YAxis tickFormatter={v => fmtBytes(v) + '/s'} {...axisProps} width={72} />
-              <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => fmtBytes(Number(v)) + '/s'} />} />
+              <ChartTooltip position={{ x: 10, y: 10 }} content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => fmtBytes(Number(v)) + '/s'} />} />
               <Line type="monotone" dataKey="val" name="bytes/s"
                 stroke={PALETTE[0]} strokeWidth={1.5} dot={false} isAnimationActive={false} />
             </LineChart>
@@ -475,7 +475,7 @@ function TopicRow({ tk, label, latest, pts, axisProps }: {
               <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
               <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
               <YAxis tickFormatter={v => v + 'ms'} {...axisProps} width={44} />
-              <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => fmtMs(Number(v))} />} />
+              <ChartTooltip position={{ x: 10, y: 10 }} content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => fmtMs(Number(v))} />} />
               <Line type="monotone" dataKey="val" name="fetch avg"
                 stroke={PALETTE[1]} strokeWidth={1.5} dot={false} isAnimationActive={false} />
             </LineChart>
@@ -489,7 +489,7 @@ function TopicRow({ tk, label, latest, pts, axisProps }: {
               <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
               <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
               <YAxis tickFormatter={v => fmtMs(v)} {...axisProps} width={56} domain={[0, 120]} />
-              <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => fmtMs(Number(v))} />} />
+              <ChartTooltip position={{ x: 10, y: 10 }} content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => fmtMs(Number(v))} />} />
               <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
               <Line type="monotone" dataKey="p50" name="poll p50"
                 stroke={PALETTE[0]} strokeWidth={2} dot={false} isAnimationActive={false} />
@@ -654,7 +654,7 @@ function MetricsPage() {
                 <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
                 <YAxis yAxisId="depth" {...axisProps} width={28} />
                 <YAxis yAxisId="ms" orientation="right" tickFormatter={v => v + 'ms'} {...axisProps} width={48} />
-                <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} />} />
+                <ChartTooltip position={{ x: 10, y: 10 }} content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} />} />
                 <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
                 <Line yAxisId="depth" type="monotone" dataKey="writeDepth"    name="depth"    stroke="var(--color-writeDepth)"    strokeWidth={1.5} dot={false} isAnimationActive={false} />
                 <Line yAxisId="ms"    type="monotone" dataKey="writeDuration" name="batch ms" stroke="var(--color-writeDuration)" strokeWidth={1.5} dot={false} isAnimationActive={false} />
@@ -670,7 +670,7 @@ function MetricsPage() {
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
                 <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
                 <YAxis tickFormatter={fmtBytes} {...axisProps} width={68} />
-                <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => fmtBytes(Number(v))} />} />
+                <ChartTooltip position={{ x: 10, y: 10 }} content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => fmtBytes(Number(v))} />} />
                 <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
                 <Area type="monotone" dataKey="catalogBytes" name="catalog file" stroke="var(--color-catalogBytes)" fill="var(--color-catalogBytes)" fillOpacity={0.15} strokeWidth={1.5} dot={false} isAnimationActive={false} />
                 <Area type="monotone" dataKey="inlinedBytes" name="inlined"       stroke="var(--color-inlinedBytes)" fill="var(--color-inlinedBytes)" fillOpacity={0.15} strokeWidth={1.5} dot={false} isAnimationActive={false} />
@@ -690,7 +690,7 @@ function MetricsPage() {
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
                 <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
                 <YAxis tickFormatter={fmtBytes} {...axisProps} width={68} />
-                <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => fmtBytes(Number(v))} />} />
+                <ChartTooltip position={{ x: 10, y: 10 }} content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => fmtBytes(Number(v))} />} />
                 <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
                 <Area type="monotone" dataKey="total" name="total"
                   stroke={PALETTE[0]} fill={PALETTE[0]} fillOpacity={0.15} strokeWidth={2} dot={false} isAnimationActive={false} />
@@ -712,7 +712,7 @@ function MetricsPage() {
                 <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
                 <YAxis tickFormatter={fmtBytes} {...axisProps} width={68}
                   domain={[0, (latest?.heapMax ?? 0) > 0 ? latest!.heapMax * 1.05 : 'auto']} />
-                <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => fmtBytes(Number(v))} />} />
+                <ChartTooltip position={{ x: 10, y: 10 }} content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} formatter={(v: unknown) => fmtBytes(Number(v))} />} />
                 <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
                 {(latest?.heapMax ?? 0) > 0 && <>
                   <ReferenceLine y={latest!.heapMax} stroke="#aaaaaa" strokeWidth={1.5} strokeDasharray="6 3"
@@ -734,7 +734,7 @@ function MetricsPage() {
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
                 <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
                 <YAxis {...axisProps} allowDecimals={false} width={28} />
-                <ChartTooltip content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} />} />
+                <ChartTooltip position={{ x: 10, y: 10 }} content={<ChartTooltipContent labelFormatter={v => timeTick(Number(v))} />} />
                 <Area type="stepAfter" dataKey="activeReplays" name="active replays" stroke="var(--color-activeReplays)" fill="var(--color-activeReplays)/20" strokeWidth={1.5} dot={false} isAnimationActive={false} />
               </AreaChart>
             </ChartContainer>
