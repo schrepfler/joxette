@@ -7,9 +7,11 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Supplier;
 
@@ -97,6 +99,15 @@ public class JoxetteMetrics {
 
     // Track registered gauge IDs to avoid duplicate registration on recorder restart
     private final Set<String> registeredGaugeIds = ConcurrentHashMap.newKeySet();
+
+    // Gauge.builder(name, stateObject, fn) holds only a WEAK reference to stateObject so
+    // metrics don't artificially keep large objects alive. Every gauge below is backed by
+    // a bare Supplier lambda / method reference with no other strong reference anywhere —
+    // without retaining it here, the JVM collects it shortly after registration and the
+    // gauge silently reports NaN forever after. (AtomicLong- and KafkaMetric-backed gauges
+    // don't need this: those state objects are already held strongly by their owning
+    // recorder, or by the Kafka client's own internal metrics registry.)
+    private final List<Object> retainedGaugeState = new CopyOnWriteArrayList<>();
 
     public JoxetteMetrics(MeterRegistry registry) {
         this.registry = registry;
@@ -193,6 +204,7 @@ public class JoxetteMetrics {
      * Called once at startup by {@link com.joxette.recording.DuckLakeWriteChannel}.
      */
     public void registerWriteChannelDepthGauge(Supplier<Integer> depthSupplier) {
+        retainedGaugeState.add(depthSupplier);
         Gauge.builder("joxette.write.channel.depth", depthSupplier, Supplier::get)
                 .description("Current depth of the DuckDB write-channel backpressure buffer")
                 .register(registry);
@@ -327,6 +339,7 @@ public class JoxetteMetrics {
 
     public void registerActiveReplaysGauge(Supplier<Integer> supplier) {
         if (registeredGaugeIds.add("replay:active")) {
+            retainedGaugeState.add(supplier);
             Gauge.builder("joxette.replay.active", supplier, Supplier::get)
                     .description("Number of currently running replay-to-topic operations")
                     .register(registry);
@@ -347,6 +360,7 @@ public class JoxetteMetrics {
 
     public void registerCatalogSizeGauge(Supplier<Long> bytesSupplier) {
         if (registeredGaugeIds.add("catalog:size")) {
+            retainedGaugeState.add(bytesSupplier);
             Gauge.builder("joxette.catalog.size.bytes", bytesSupplier,
                           s -> { try { Long v = s.get(); return v != null ? v.doubleValue() : 0.0; } catch (Exception e) { return 0.0; } })
                     .description("DuckLake catalog file size in bytes")
@@ -357,6 +371,7 @@ public class JoxetteMetrics {
 
     public void registerInlinedDataGauge(Supplier<Long> bytesSupplier) {
         if (registeredGaugeIds.add("catalog:inlined")) {
+            retainedGaugeState.add(bytesSupplier);
             Gauge.builder("joxette.catalog.inlined.bytes", bytesSupplier,
                           s -> { try { Long v = s.get(); return v != null ? v.doubleValue() : 0.0; } catch (Exception e) { return 0.0; } })
                     .description("Estimated bytes of data inlined in the catalog (not yet flushed to Parquet)")
@@ -376,8 +391,9 @@ public class JoxetteMetrics {
      */
     public void registerProcessRssGauge(Supplier<Long> rssSupplier) {
         if (registeredGaugeIds.add("process:rss")) {
+            retainedGaugeState.add(rssSupplier);
             Gauge.builder("joxette.process.rss.bytes", rssSupplier,
-                          s -> { try { Long v = s.get(); return v != null && v >= 0 ? v.doubleValue() : Double.NaN; } catch (Exception e) { return Double.NaN; } })
+                          s -> { try { Long v = s.get(); return v != null && v >= 0 ? v.doubleValue() : 0.0; } catch (Exception e) { return 0.0; } })
                     .description("Process resident set size (RSS) in bytes — includes JVM heap, metaspace, and DuckDB native allocations")
                     .baseUnit("bytes")
                     .register(registry);
@@ -393,15 +409,16 @@ public class JoxetteMetrics {
      * total gauge summing all tags. Each gauge is backed by a supplier that
      * runs the query on every scrape, so values stay current.
      *
-     * <p>The supplier runs on a separate {@code Statement} without holding
-     * the write-serialisation lock — safe because DuckDB allows concurrent
-     * reads via separate {@code Statement} objects.
+     * <p>The supplier itself synchronizes on the shared DuckDB connection per
+     * query (see {@code HealthController.duckDbMemoryByTag()}); this method
+     * just wires the gauges up.
      *
      * @param memorySupplier returns {@code Map<tag, memory_usage_bytes>}
      * @param tags           the full set of tags returned by {@code duckdb_memory()}
      */
     public void registerDuckDbMemoryGauges(Supplier<java.util.Map<String, Long>> memorySupplier,
                                            java.util.Set<String> tags) {
+        retainedGaugeState.add(memorySupplier);
         // Per-tag gauges — state object is the Supplier; ToDoubleFunction calls .get() then looks up tag
         for (String tag : tags) {
             String gaugeId = "duckdb:mem:" + tag;
@@ -424,7 +441,7 @@ public class JoxetteMetrics {
         if (registeredGaugeIds.add("duckdb:mem:total")) {
             Gauge.builder("joxette.duckdb.memory.total.bytes",
                           memorySupplier,
-                          s -> s.get().values().stream().mapToLong(Long::longValue).sum())
+                          s -> { try { return s.get().values().stream().mapToLong(Long::longValue).sum(); } catch (Exception e) { return 0.0; } })
                     .description("Total DuckDB memory usage in bytes across all allocation tags")
                     .baseUnit("bytes")
                     .register(registry);

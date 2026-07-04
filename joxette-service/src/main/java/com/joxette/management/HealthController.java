@@ -227,32 +227,36 @@ public class HealthController {
     private void registerDuckDbMemoryGauges() {
         // Discover the full set of tags by running duckdb_memory() once at startup,
         // then register one gauge per tag (supplier re-queries on every scrape).
+        // Unlike inlinedDataSizeBytes(), duckdb_memory() reads live allocator state,
+        // not stored statistics — it must go through the normal write-serialisation lock.
         Set<String> tags = new LinkedHashSet<>();
-        try (Statement st = duckDB.createStatement();
-             ResultSet rs = st.executeQuery("SELECT tag FROM duckdb_memory()")) {
-            while (rs.next()) tags.add(rs.getString("tag"));
-        } catch (SQLException e) {
-            log.warn("Could not discover duckdb_memory() tags at startup: {}", e.getMessage());
-            return;
+        synchronized (duckDB) {
+            try (Statement st = duckDB.createStatement();
+                 ResultSet rs = st.executeQuery("SELECT tag FROM duckdb_memory()")) {
+                while (rs.next()) tags.add(rs.getString("tag"));
+            } catch (SQLException e) {
+                log.warn("Could not discover duckdb_memory() tags at startup: {}", e.getMessage());
+                return;
+            }
         }
         if (tags.isEmpty()) return;
 
-        // The supplier is called on every Prometheus scrape — runs without the write lock
-        // (same rationale as inlinedDataSizeBytes: separate Statement, read-only).
         joxetteMetrics.registerDuckDbMemoryGauges(this::duckDbMemoryByTag, tags);
         log.info("Registered duckdb_memory gauges for {} tag(s): {}", tags.size(), tags);
     }
 
     private Map<String, Long> duckDbMemoryByTag() {
         Map<String, Long> result = new LinkedHashMap<>();
-        try (Statement st = duckDB.createStatement();
-             ResultSet rs = st.executeQuery(
-                     "SELECT tag, memory_usage_bytes FROM duckdb_memory()")) {
-            while (rs.next()) {
-                result.put(rs.getString("tag"), rs.getLong("memory_usage_bytes"));
+        synchronized (duckDB) {
+            try (Statement st = duckDB.createStatement();
+                 ResultSet rs = st.executeQuery(
+                         "SELECT tag, memory_usage_bytes FROM duckdb_memory()")) {
+                while (rs.next()) {
+                    result.put(rs.getString("tag"), rs.getLong("memory_usage_bytes"));
+                }
+            } catch (SQLException e) {
+                log.debug("duckdb_memory() query failed during scrape: {}", e.getMessage());
             }
-        } catch (SQLException e) {
-            log.debug("duckdb_memory() query failed during scrape: {}", e.getMessage());
         }
         return result;
     }
