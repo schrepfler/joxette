@@ -17,10 +17,14 @@ import static org.mockito.Mockito.mock;
  *
  * <p>{@link CompactionService#doCompactEntityType} and
  * {@link CompactionService#doCompactGeneralTopic} start one of these alongside every
- * held lock so a legitimately long {@code ducklake_merge_adjacent_files} call does not
- * let the lock's TTL expire out from under it (see
+ * held lock, attempting to refresh the lock's expiry between merges (see
  * {@code CompactionLockManager#HEARTBEAT_INTERVAL_MINUTES} and
- * {@link CompactionLockManager#refresh}). These tests use a short, test-injected
+ * {@link CompactionLockManager#refresh}). Because that refresh call and the merge SQL
+ * both execute under {@code synchronized(duckDB)} on the single shared embedded-mode
+ * connection, it cannot land — and so cannot extend the TTL — <em>during</em> an
+ * in-progress merge; it only ever succeeds between merges. The lock's TTL
+ * ({@code lock-ttl-minutes}) is therefore the real safety margin against a merge
+ * outliving its lock, not this heartbeat. These tests use a short, test-injected
  * interval instead of the real 10-minute one — proving the mechanism fires
  * periodically and stops cleanly does not require waiting out a real interval.
  */
