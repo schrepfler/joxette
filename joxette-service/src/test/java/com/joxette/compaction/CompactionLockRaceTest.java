@@ -16,6 +16,7 @@ import org.slf4j.LoggerFactory;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
+import java.sql.SQLException;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
@@ -62,10 +63,59 @@ class CompactionLockRaceTest {
         DuckDBTestSupport.registerLiveInstance(duckDB, "node-a:1001");
         DuckDBTestSupport.registerLiveInstance(duckDB, "node-b:2002");
 
-        CompactionLockManager lockA = new CompactionLockManager(duckDB, 120, "node-a:1001", instanceRegistry);
-        CompactionLockManager lockB = new CompactionLockManager(duckDB, 120, "node-b:2002", instanceRegistry);
+        // Deterministic-race wiring: nothing else forces the loser's tryAcquire() attempt
+        // to happen before the winner's release() completes — on an unlucky thread
+        // schedule the winner can run acquire -> merge -> release to completion before the
+        // loser even calls tryAcquire(), in which case the loser also succeeds (the row is
+        // already gone), yielding 2 merges and 0 skips instead of the intended 1-and-1.
+        //
+        // loserAttempted is counted down by whichever side's tryAcquire() call returns
+        // false (the loser, by construction — DB-level ON CONFLICT guarantees exactly one
+        // side wins). Both lock managers' release() blocks on it first, so whichever side
+        // turns out to be the winner cannot release the lock until the loser has definitely
+        // already observed it held. This makes the "1 merge, 1 skip" outcome deterministic
+        // instead of merely probable.
+        CountDownLatch loserAttempted = new CountDownLatch(1);
+        CompactionLockManager lockA = deterministicLockManager(duckDB, "node-a:1001", instanceRegistry, loserAttempted);
+        CompactionLockManager lockB = deterministicLockManager(duckDB, "node-b:2002", instanceRegistry, loserAttempted);
         serviceA = new CompactionService(duckDB, props, configRepo, TEST_METRICS, lockA);
         serviceB = new CompactionService(duckDB, props, configRepo, TEST_METRICS, lockB);
+    }
+
+    /**
+     * Wraps a real {@link CompactionLockManager} so that {@code tryAcquire()} signals
+     * {@code loserAttempted} when it loses the race, and {@code release()} blocks on that
+     * same latch before delegating — see the "Deterministic-race wiring" comment in
+     * {@link #setUp()} for why this removes the test's ~1-in-13 flake.
+     */
+    private static CompactionLockManager deterministicLockManager(
+            Connection duckDB, String instanceId, InstanceRegistry instanceRegistry, CountDownLatch loserAttempted) {
+        return new CompactionLockManager(duckDB, 120, instanceId, instanceRegistry) {
+            @Override
+            public boolean tryAcquire(String target) throws SQLException {
+                boolean acquired = super.tryAcquire(target);
+                if (!acquired) {
+                    loserAttempted.countDown();
+                }
+                return acquired;
+            }
+
+            @Override
+            public void release(String target) {
+                try {
+                    boolean loserHasAttempted = loserAttempted.await(10, TimeUnit.SECONDS);
+                    if (!loserHasAttempted) {
+                        throw new AssertionError(
+                                "Timed out waiting for the losing instance's tryAcquire() attempt "
+                                        + "before releasing target '" + target + "'");
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    throw new AssertionError(e);
+                }
+                super.release(target);
+            }
+        };
     }
 
     @AfterEach

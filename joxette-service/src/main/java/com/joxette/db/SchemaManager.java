@@ -323,7 +323,8 @@ public class SchemaManager {
                 CREATE TABLE IF NOT EXISTS snapshots (
                     name        VARCHAR     NOT NULL PRIMARY KEY,
                     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-                    size_bytes  BIGINT
+                    size_bytes  BIGINT,
+                    row_counts  JSON
                 )
                 """);
 
@@ -741,6 +742,11 @@ public class SchemaManager {
      * Idempotent migration: adds {@code row_counts JSON} to {@code snapshots},
      * used by {@code CassetteLifecycleService} to verify restored data against
      * the counts recorded at snapshot-creation time.
+     *
+     * <p>A brand-new install already has this column via the {@code CREATE TABLE IF NOT
+     * EXISTS snapshots (...)} statement above — the {@code IF NOT EXISTS} guard here makes
+     * this a no-op in that case. This migration exists solely to backfill the column on
+     * existing installs whose {@code snapshots} table predates {@code row_counts}.
      */
     private void migrateSnapshots(Connection conn) {
         try (Statement st = conn.createStatement()) {
