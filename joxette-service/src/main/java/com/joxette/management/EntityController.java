@@ -6,6 +6,7 @@ import com.joxette.config.events.ConfigEventBus;
 import com.joxette.config.events.EntityConfigChanged;
 import com.joxette.db.SchemaManager;
 import com.joxette.management.IdSource;
+import com.joxette.replay.KnownEntitiesRepository;
 import jakarta.validation.Valid;
 import jakarta.validation.constraints.NotBlank;
 import org.slf4j.Logger;
@@ -45,6 +46,7 @@ public class EntityController {
     private final ConfigRepository config;
     private final SchemaManager schemaManager;
     private final ConfigEventBus eventBus;
+    private final KnownEntitiesRepository knownEntities;
 
     public record CreateEntityRequest(@NotBlank String type, int buckets) {}
     public record UpdateEntityRequest(int buckets) {}
@@ -57,10 +59,11 @@ public class EntityController {
     public record AddMatcherRequest(@NotBlank String messageType, String idSource, String idExpression) {}
 
     public EntityController(ConfigRepository config, SchemaManager schemaManager,
-                            ConfigEventBus eventBus) {
+                            ConfigEventBus eventBus, KnownEntitiesRepository knownEntities) {
         this.config        = config;
         this.schemaManager = schemaManager;
         this.eventBus      = eventBus;
+        this.knownEntities = knownEntities;
     }
 
     private void publish(String entityType, String changeType) {
@@ -99,7 +102,11 @@ public class EntityController {
     public EntityTypeConfig updateEntityType(
             @PathVariable String type,
             @Valid @RequestBody UpdateEntityRequest body) throws SQLException {
-        config.findEntityType(type).orElseThrow(() -> ResourceNotFoundException.entityType(type));
+        EntityTypeConfig existing = config.findEntityType(type)
+                .orElseThrow(() -> ResourceNotFoundException.entityType(type));
+        if (body.buckets() != existing.buckets() && knownEntities.countByType(type) > 0) {
+            throw ConflictException.bucketCountChangeRejected(type, existing.buckets(), body.buckets());
+        }
         EntityTypeConfig updated = config.upsertEntityType(type, body.buckets());
         publish(type, "updated");
         return updated;

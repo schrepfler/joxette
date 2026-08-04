@@ -48,4 +48,13 @@ public class ConflictException extends JoxetteException {
     public static ConflictException scheduledReplayCannotCancel(String status) {
         return new ConflictException("Cannot cancel replay in status: " + status);
     }
+
+    public static ConflictException bucketCountChangeRejected(String entityType, int currentBuckets, int requestedBuckets) {
+        return new ConflictException(
+                "Cannot change bucket count for entity type '" + entityType + "' from " + currentBuckets +
+                " to " + requestedBuckets + ": entity type already has recorded data in known_entities. " +
+                "Changing the bucket modulus after data exists would silently desynchronize existing rows' " +
+                "bucket assignments from new writes and break bucket-pruned compaction/replay. " +
+                "Use a documented rebalance procedure instead.");
+    }
 }

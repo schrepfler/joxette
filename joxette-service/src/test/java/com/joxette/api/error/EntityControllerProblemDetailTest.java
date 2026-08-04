@@ -6,11 +6,13 @@ import com.joxette.management.ConfigRepository;
 import com.joxette.management.EntityController;
 import com.joxette.management.EntityTypeConfig;
 import com.joxette.config.events.ConfigEventBus;
+import com.joxette.replay.KnownEntitiesRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -28,6 +30,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 /**
  * MockMvc coverage of the RFC 7807 ProblemDetail contract for
@@ -42,13 +45,14 @@ class EntityControllerProblemDetailTest {
     @Mock ConfigRepository config;
     @Mock SchemaManager schemaManager;
     @Mock ConfigEventBus eventBus;
+    @Mock KnownEntitiesRepository knownEntities;
 
     private MockMvc mvc;
     private final ObjectMapper mapper = new ObjectMapper();
 
     @BeforeEach
     void setUp() {
-        EntityController controller = new EntityController(config, schemaManager, eventBus);
+        EntityController controller = new EntityController(config, schemaManager, eventBus, knownEntities);
         mvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
@@ -71,6 +75,37 @@ class EntityControllerProblemDetailTest {
                    ErrorCodes.CONFLICT,
                    "/entities"))
            .andExpect(jsonPath("$.detail").value("Entity type already registered: order"));
+    }
+
+    // =========================================================================
+    // 409 / 200 — bucket-count change guarded by existing known_entities data
+    // =========================================================================
+
+    @ParameterizedTest(name = "knownEntityCount={0} -> status {1}")
+    @CsvSource({
+        "0, 200",
+        "1, 409"
+    })
+    void updateEntityType_bucketCountChange_rejectedOnlyWhenEntitiesExist(
+            long knownEntityCount, int expectedStatus) throws Exception {
+        when(config.findEntityType("order")).thenReturn(Optional.of(new EntityTypeConfig("order", 256, null)));
+        when(config.upsertEntityType("order", 512)).thenReturn(new EntityTypeConfig("order", 512, null));
+        when(knownEntities.countByType("order")).thenReturn(knownEntityCount);
+
+        String body = mapper.writeValueAsString(Map.of("buckets", 512));
+
+        if (expectedStatus == 409) {
+            mvc.perform(put("/entities/order").contentType(MediaType.APPLICATION_JSON).content(body))
+               .andExpectAll(ProblemDetailAssertions.problemDetail(
+                       409,
+                       ErrorTypes.CONFLICT.toString(),
+                       ErrorCodes.CONFLICT,
+                       "/entities/order"));
+        } else {
+            mvc.perform(put("/entities/order").contentType(MediaType.APPLICATION_JSON).content(body))
+               .andExpect(status().isOk())
+               .andExpect(jsonPath("$.buckets").value(512));
+        }
     }
 
     // =========================================================================

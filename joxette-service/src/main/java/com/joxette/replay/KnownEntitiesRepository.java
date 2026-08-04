@@ -7,6 +7,7 @@ import org.springframework.stereotype.Repository;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Instant;
 import java.time.OffsetDateTime;
@@ -114,5 +115,25 @@ public class KnownEntitiesRepository {
     /** Returns the count of consecutive upsert failures since the last success. */
     public int consecutiveFailures() {
         return consecutiveFailures.get();
+    }
+
+    /**
+     * Returns the number of known entities recorded for {@code entityType}.
+     *
+     * <p>Used by {@link com.joxette.management.EntityController} to block a
+     * bucket-count change on an entity type that already has recorded data —
+     * changing the modulus after data exists would silently desynchronize
+     * existing rows' bucket assignments from new writes.
+     */
+    public long countByType(String entityType) throws SQLException {
+        synchronized (duckDB) {
+            try (PreparedStatement ps = duckDB.prepareStatement(
+                    "SELECT COUNT(*) FROM known_entities WHERE entity_type = ?")) {
+                ps.setString(1, entityType);
+                try (ResultSet rs = ps.executeQuery()) {
+                    return rs.next() ? rs.getLong(1) : 0L;
+                }
+            }
+        }
     }
 }
