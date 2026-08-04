@@ -51,6 +51,13 @@ public class KnownEntitiesRepository {
      * <p>Groups routes by (entityType, entityId) to compute the per-entity
      * message count, distinct topics, and last messageType for this batch, then
      * issues one PreparedStatement execution per distinct entity.
+     *
+     * <p>Wrapped in {@code synchronized(duckDB)} — required by the shared single-writer
+     * connection model, and also what makes {@link com.joxette.management.EntityController
+     * #updateEntityType} atomic: that method's guard-check-then-write sequence takes the
+     * same lock, so no first-ever insert for an entity type can land in the gap between
+     * its count check and its bucket-count write. Without this lock here, that outer
+     * synchronized block would provide no exclusion against this method at all.
      */
     public void upsertBatch(List<EntityRoute> routes, Instant observedAt) {
         if (routes.isEmpty()) return;
@@ -83,32 +90,34 @@ public class KnownEntitiesRepository {
                     last_message_type = excluded.last_message_type
                 """;
 
-        try (PreparedStatement ps = duckDB.prepareStatement(sql)) {
-            for (Map.Entry<String, EntitySummary> entry : byKey.entrySet()) {
-                String[] parts = entry.getKey().split("\0", 2);
-                EntitySummary s = entry.getValue();
-                ps.setString(1, parts[0]);                   // entity_type
-                ps.setString(2, parts[1]);                   // entity_id
-                ps.setObject(3, odt);                        // first_seen
-                ps.setObject(4, odt);                        // last_seen
-                ps.setInt(5, s.count());                     // message_count
-                ps.setString(6, s.topic());                  // source_topics element
-                ps.setString(7, s.lastMessageType());        // last_message_type
-                ps.addBatch();
+        synchronized (duckDB) {
+            try (PreparedStatement ps = duckDB.prepareStatement(sql)) {
+                for (Map.Entry<String, EntitySummary> entry : byKey.entrySet()) {
+                    String[] parts = entry.getKey().split("\0", 2);
+                    EntitySummary s = entry.getValue();
+                    ps.setString(1, parts[0]);                   // entity_type
+                    ps.setString(2, parts[1]);                   // entity_id
+                    ps.setObject(3, odt);                        // first_seen
+                    ps.setObject(4, odt);                        // last_seen
+                    ps.setInt(5, s.count());                     // message_count
+                    ps.setString(6, s.topic());                  // source_topics element
+                    ps.setString(7, s.lastMessageType());        // last_message_type
+                    ps.addBatch();
+                }
+                ps.executeBatch();
+                consecutiveFailures.set(0);
+            } catch (SQLException e) {
+                int failures = consecutiveFailures.incrementAndGet();
+                if (failures >= ERROR_THRESHOLD) {
+                    log.error("known_entities upsert has failed {} consecutive times — registry is drifting from reality: {}",
+                            failures, e.getMessage(), e);
+                } else if (failures >= WARN_THRESHOLD) {
+                    log.warn("known_entities upsert failed {} consecutive times: {}", failures, e.getMessage());
+                } else {
+                    log.warn("known_entities upsert failed (attempt {}): {}", failures, e.getMessage());
+                }
+                // Best-effort: swallow to avoid aborting the write pipeline
             }
-            ps.executeBatch();
-            consecutiveFailures.set(0);
-        } catch (SQLException e) {
-            int failures = consecutiveFailures.incrementAndGet();
-            if (failures >= ERROR_THRESHOLD) {
-                log.error("known_entities upsert has failed {} consecutive times — registry is drifting from reality: {}",
-                        failures, e.getMessage(), e);
-            } else if (failures >= WARN_THRESHOLD) {
-                log.warn("known_entities upsert failed {} consecutive times: {}", failures, e.getMessage());
-            } else {
-                log.warn("known_entities upsert failed (attempt {}): {}", failures, e.getMessage());
-            }
-            // Best-effort: swallow to avoid aborting the write pipeline
         }
     }
 

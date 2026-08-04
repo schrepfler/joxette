@@ -22,6 +22,7 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 
+import java.sql.Connection;
 import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Stream;
@@ -46,13 +47,17 @@ class EntityControllerProblemDetailTest {
     @Mock SchemaManager schemaManager;
     @Mock ConfigEventBus eventBus;
     @Mock KnownEntitiesRepository knownEntities;
+    // A plain Object would do as a lock target, but mocking the real type keeps the
+    // constructor signature honest; updateEntityType() only synchronizes on it,
+    // never calls a method on it, so no stubbing is needed.
+    @Mock Connection duckDB;
 
     private MockMvc mvc;
     private final ObjectMapper mapper = new ObjectMapper();
 
     @BeforeEach
     void setUp() {
-        EntityController controller = new EntityController(config, schemaManager, eventBus, knownEntities);
+        EntityController controller = new EntityController(config, schemaManager, eventBus, knownEntities, duckDB);
         mvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();

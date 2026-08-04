@@ -15,6 +15,7 @@ import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.List;
 
@@ -47,6 +48,7 @@ public class EntityController {
     private final SchemaManager schemaManager;
     private final ConfigEventBus eventBus;
     private final KnownEntitiesRepository knownEntities;
+    private final Connection duckDB;
 
     public record CreateEntityRequest(@NotBlank String type, int buckets) {}
     public record UpdateEntityRequest(int buckets) {}
@@ -58,12 +60,23 @@ public class EntityController {
     public record SetRetentionRequest(Integer days) {}
     public record AddMatcherRequest(@NotBlank String messageType, String idSource, String idExpression) {}
 
+    /**
+     * {@code duckDB} is the same singleton {@link Connection} bean injected into
+     * {@link ConfigRepository} and (transitively, via jOOQ's {@code DSLContext}) into
+     * {@link KnownEntitiesRepository} — see {@code DuckDBConfig}. Injecting it here too
+     * (mirroring {@code CassetteLifecycleService}) lets {@link #updateEntityType} wrap
+     * its guard-check-then-write sequence in a single {@code synchronized(duckDB)} block,
+     * closing the race where a concurrent {@code known_entities} insert for the same
+     * entity type could land between the count check and the bucket-count write.
+     */
     public EntityController(ConfigRepository config, SchemaManager schemaManager,
-                            ConfigEventBus eventBus, KnownEntitiesRepository knownEntities) {
+                            ConfigEventBus eventBus, KnownEntitiesRepository knownEntities,
+                            Connection duckDB) {
         this.config        = config;
         this.schemaManager = schemaManager;
         this.eventBus      = eventBus;
         this.knownEntities = knownEntities;
+        this.duckDB        = duckDB;
     }
 
     private void publish(String entityType, String changeType) {
@@ -102,12 +115,26 @@ public class EntityController {
     public EntityTypeConfig updateEntityType(
             @PathVariable String type,
             @Valid @RequestBody UpdateEntityRequest body) throws SQLException {
-        EntityTypeConfig existing = config.findEntityType(type)
-                .orElseThrow(() -> ResourceNotFoundException.entityType(type));
-        if (body.buckets() != existing.buckets() && knownEntities.countByType(type) > 0) {
-            throw ConflictException.bucketCountChangeRejected(type, existing.buckets(), body.buckets());
+        // The guard (countByType) and the conditional write (upsertEntityType) must be
+        // atomic as a whole, not just individually synchronized: without a single lock
+        // spanning both calls, the recording pipeline's write path could insert the
+        // first known_entities row for `type` (via TopicRecorder -> KnownEntitiesRepository
+        // .upsertBatch, on the drain/consumer thread) in the gap between the count check
+        // returning 0 and the bucket-count write committing, silently reproducing the
+        // bucket-desync bug this guard exists to prevent. findEntityType, countByType, and
+        // upsertEntityType each still take synchronized(duckDB) internally — reentrant on
+        // the same monitor, so nesting them inside this outer block is safe, not a
+        // deadlock risk. knownEntities.upsertBatch() also takes this same lock (see
+        // KnownEntitiesRepository), which is what makes this block actually exclude it.
+        EntityTypeConfig updated;
+        synchronized (duckDB) {
+            EntityTypeConfig existing = config.findEntityType(type)
+                    .orElseThrow(() -> ResourceNotFoundException.entityType(type));
+            if (body.buckets() != existing.buckets() && knownEntities.countByType(type) > 0) {
+                throw ConflictException.bucketCountChangeRejected(type, existing.buckets(), body.buckets());
+            }
+            updated = config.upsertEntityType(type, body.buckets());
         }
-        EntityTypeConfig updated = config.upsertEntityType(type, body.buckets());
         publish(type, "updated");
         return updated;
     }
