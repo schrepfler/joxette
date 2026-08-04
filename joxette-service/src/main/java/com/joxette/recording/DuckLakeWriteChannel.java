@@ -19,6 +19,8 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
@@ -65,6 +67,14 @@ public class DuckLakeWriteChannel {
 
     private Channel<WriteBatch> channel;
     private Thread drainThread;
+    /**
+     * Dispatches {@link CassetteRecordingBus#publish} off the drain VT so a slow
+     * or blocked follow-subscriber can never delay the next batch's write — bus
+     * delivery is explicitly best-effort (see {@link CassetteRecordingBus}'s
+     * class javadoc) and must never sit on the same critical path as DuckDB
+     * write serialization.
+     */
+    private final ExecutorService busPublishExecutor = Executors.newVirtualThreadPerTaskExecutor();
 
     /**
      * Tracks in-flight {@link WriteBatch}es by their completion future.
@@ -127,6 +137,7 @@ public class DuckLakeWriteChannel {
                 Thread.currentThread().interrupt();
             }
         }
+        busPublishExecutor.shutdown();
         log.info("DuckLakeWriteChannel stopped");
     }
 
@@ -266,12 +277,14 @@ public class DuckLakeWriteChannel {
                 }
                 batch.result().complete(new WriteResult(batch.topic(), written));
                 if (bus != null) {
-                    try {
-                        bus.publish(batch);
-                    } catch (RuntimeException be) {
-                        log.warn("Recording bus publish failed for topic '{}': {}",
-                                batch.topic(), be.getMessage(), be);
-                    }
+                    busPublishExecutor.execute(() -> {
+                        try {
+                            bus.publish(batch);
+                        } catch (RuntimeException be) {
+                            log.warn("Recording bus publish failed for topic '{}': {}",
+                                    batch.topic(), be.getMessage(), be);
+                        }
+                    });
                 }
                 return;
 
