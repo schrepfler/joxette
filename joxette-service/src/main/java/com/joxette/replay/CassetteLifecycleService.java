@@ -8,6 +8,7 @@ import com.joxette.management.ConfigRepository;
 import com.joxette.recording.RecordingCoordinator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import software.amazon.awssdk.core.sync.RequestBody;
 import software.amazon.awssdk.services.s3.S3Client;
@@ -68,7 +69,7 @@ public class CassetteLifecycleService {
 
     public CassetteLifecycleService(Connection duckDB, JoxetteProperties properties,
                                     ConfigRepository configRepo, Optional<S3Client> s3Client,
-                                    RecordingCoordinator recordingCoordinator, ObjectMapper objectMapper) {
+                                    @Lazy RecordingCoordinator recordingCoordinator, ObjectMapper objectMapper) {
         this.duckDB               = duckDB;
         this.configRepo           = configRepo;
         this.properties           = properties;
@@ -341,12 +342,17 @@ public class CassetteLifecycleService {
      * Restores the database from a named snapshot via {@code IMPORT DATABASE}.
      * All existing tables in the export are replaced.
      *
-     * <p>All active recorders are paused via {@link RecordingCoordinator#stopAll()}
-     * before the restore begins and resumed in a {@code finally} block regardless
-     * of outcome, so a failed or successful restore never leaves a topic stopped
-     * indefinitely. Once the restore completes, the restored row counts are
-     * verified against the counts recorded in {@code snapshots.row_counts} at
-     * snapshot-creation time; a mismatch throws {@link com.joxette.api.error.SnapshotVerificationException}
+     * <p>The set of currently-active topics is captured <em>before</em> anything
+     * is stopped, and every topic in that set is resumed in a {@code finally}
+     * block regardless of outcome — including when {@link RecordingCoordinator#stopAll()}
+     * itself throws partway through pausing recorders, and including when an
+     * individual {@link RecordingCoordinator#restartTopic(String)} call fails for
+     * one topic (that failure is caught and logged so it can never mask the
+     * original exception, and the remaining topics are still resumed). A failed
+     * or successful restore therefore never leaves a topic stopped indefinitely.
+     * Once the restore completes, the restored row counts are verified against
+     * the counts recorded in {@code snapshots.row_counts} at snapshot-creation
+     * time; a mismatch throws {@link com.joxette.api.error.SnapshotVerificationException}
      * rather than silently returning with corrupted or truncated data.
      */
     public void restoreSnapshot(String name) throws SQLException {
@@ -358,10 +364,12 @@ public class CassetteLifecycleService {
         Map<String, Long> expectedRowCounts = loadStoredRowCounts(name);
         log.warn("Restoring snapshot '{}' from {} — all existing tables will be replaced", name, snapshotDir);
 
+        // Captured before any stop attempt so the finally block below always knows
+        // the full set of topics to resume, even if stopAll() fails partway through.
         Set<String> pausedTopics = recordingCoordinator.activeTopics();
         log.info("Restore '{}': pausing {} active recorder(s): {}", name, pausedTopics.size(), pausedTopics);
-        recordingCoordinator.stopAll();
         try {
+            recordingCoordinator.stopAll();
             patchSchemaSqlForRestore(snapshotDir);
             synchronized (duckDB) {
                 try (Statement st = duckDB.createStatement()) {
@@ -375,8 +383,24 @@ public class CassetteLifecycleService {
             log.info("Snapshot '{}' restored", name);
         } finally {
             log.info("Restore '{}': resuming {} recorder(s)", name, pausedTopics.size());
+            List<String> failedToResume = new ArrayList<>();
             for (String topic : pausedTopics) {
-                recordingCoordinator.restartTopic(topic);
+                try {
+                    recordingCoordinator.restartTopic(topic);
+                } catch (RuntimeException e) {
+                    // Never let a single topic's resume failure propagate: that would
+                    // both skip resuming the remaining topics and (classic try/finally
+                    // footgun) replace whatever exception the try block was already
+                    // throwing (e.g. a SnapshotVerificationException) with this one.
+                    failedToResume.add(topic);
+                    log.error("Restore '{}': failed to resume recorder for topic '{}' — " +
+                            "it may remain stopped until manually restarted via POST /topics/{}/resume",
+                            name, topic, topic, e);
+                }
+            }
+            if (!failedToResume.isEmpty()) {
+                log.error("Restore '{}': {} of {} recorder(s) failed to resume automatically: {}",
+                        name, failedToResume.size(), pausedTopics.size(), failedToResume);
             }
         }
     }
