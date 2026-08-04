@@ -198,6 +198,30 @@ row in the `compaction_locks` table (plain DuckDB, not DuckLake):
   above the typical case.
 - Targets already locked by another instance are **silently skipped** and counted
   as skipped in the run result.
+- **Dead-instance cleanup**: `CompactionLockManager.cleanLocksForDeadInstances()`
+  reclaims locks left behind by an instance that crashed or was rescheduled,
+  rather than waiting out the full `lock-ttl-minutes`. It runs at startup and
+  opportunistically at the top of every compaction run. A lock's owning
+  `instance_id` is judged dead by reading that instance's
+  `InstanceRecord.lastHeartbeat()` (from `joxette_instances`, §4.3) directly and
+  comparing it against `joxette.compaction.dead-instance-threshold-minutes`
+  (default **30**) — **not** by checking `InstanceRecord.status()`. `status()` is
+  computed from `InstanceRegistry`'s own 90-second `ALIVE_THRESHOLD` (§4.3), which
+  exists for a different purpose — `GET /instances` dashboard freshness — and is
+  tuned for the ~30 s heartbeat cadence, not for a safety-critical
+  lock-reclamation decision. Since `InstanceRegistry.sendHeartbeat()` and the
+  merge SQL both execute under the same `synchronized(duckDB)` monitor on the
+  single embedded-mode connection, a merge that legitimately runs past 90 seconds
+  (routine, given the 240-minute `lock-ttl-minutes` default above) blocks the
+  heartbeat thread and would make `status()` report `"stale"` for a healthy,
+  actively-merging instance. Using `status()` here would let any other instance's
+  cleanup sweep steal — and corrupt — that live merge's lock. The separate,
+  more generous `dead-instance-threshold-minutes` avoids that: it is deliberately
+  independent of `InstanceRegistry`'s own alive/stale thresholds, sized to be
+  comfortably longer than any single merge should block a heartbeat, and
+  comfortably shorter than `lock-ttl-minutes` so a genuinely dead instance's lock
+  is usually reclaimed by this check well before the TTL would have expired it
+  anyway.
 
 Because the lock lives in the shared catalog, it works across processes **when the
 catalog is shared (Stage 2/3)**. This is what makes it safe even if more than one
@@ -208,7 +232,12 @@ catalog is shared (Stage 2/3)**. This is what makes it safe even if more than on
 Every instance upserts a row (`instance_id = hostname:pid`, roles,
 `catalog_backend`, `started_at`, `last_heartbeat`, `kafka_assignments`) and
 refreshes `last_heartbeat` every **30 s**. Rows stale for >90 s are reported as
-`stale`; rows older than 2 min are reaped at the next startup. Surfaced at:
+`stale`; rows older than 2 min are reaped at the next startup. These 90 s/2 min
+thresholds are for dashboard freshness and startup reaping only — §4.2's
+dead-instance lock cleanup deliberately uses a separate, more generous
+`dead-instance-threshold-minutes` (default 30) against the same `last_heartbeat`
+column, so a merge that blocks the heartbeat thread past 90 s is never mistaken
+for a dead instance. Surfaced at:
 
 | Endpoint | Source | Resolution |
 |---|---|---|
@@ -441,6 +470,9 @@ joxette:
     lock-ttl-minutes: 240                    # must comfortably exceed worst-case merge
                                               # duration — the heartbeat cannot extend
                                               # it during an in-progress merge (see §4.2)
+    dead-instance-threshold-minutes: 30      # cleanLocksForDeadInstances() dead-instance
+                                              # check — independent of InstanceRegistry's
+                                              # own 90s/2min alive/stale thresholds (§4.2)
 
   retention:
     schedule: "0 0 1 * * *"                  # daily 01:00 (before compaction)

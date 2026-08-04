@@ -81,6 +81,7 @@ public class CompactionLockManager {
     private final int              lockTtlMinutes;
     private final String           instanceId;
     private final InstanceRegistry instanceRegistry;
+    private final int              deadInstanceThresholdMinutes;
 
     // -------------------------------------------------------------------------
     // Construction
@@ -93,20 +94,34 @@ public class CompactionLockManager {
      */
     @Autowired
     public CompactionLockManager(Connection duckDB, JoxetteProperties props, InstanceRegistry instanceRegistry) {
-        this(duckDB, props.getCompaction().getLockTtlMinutes(), instanceRegistry.getInstanceId(), instanceRegistry);
+        this(duckDB, props.getCompaction().getLockTtlMinutes(), instanceRegistry.getInstanceId(), instanceRegistry,
+                props.getCompaction().getDeadInstanceThresholdMinutes());
     }
 
     /**
      * Test / internal constructor — allows injecting an explicit instance ID (so that
      * two lock managers can be created in the same test process without colliding) and
      * an explicit {@link InstanceRegistry} (so tests can control which instance IDs
-     * appear "alive" for {@link #cleanLocksForDeadInstances()}).
+     * appear "alive" for {@link #cleanLocksForDeadInstances()}). Uses the default
+     * {@code dead-instance-threshold-minutes} (30); use the five-argument constructor
+     * to override it explicitly.
      */
     CompactionLockManager(Connection duckDB, int lockTtlMinutes, String instanceId, InstanceRegistry instanceRegistry) {
-        this.duckDB           = duckDB;
-        this.lockTtlMinutes   = lockTtlMinutes;
-        this.instanceId       = instanceId;
-        this.instanceRegistry = instanceRegistry;
+        this(duckDB, lockTtlMinutes, instanceId, instanceRegistry, new JoxetteProperties.Compaction().getDeadInstanceThresholdMinutes());
+    }
+
+    /**
+     * Test / internal constructor — as above, but also allows overriding
+     * {@code deadInstanceThresholdMinutes} explicitly, e.g. so a test can use a small
+     * threshold without waiting real wall-clock minutes for a heartbeat to age out.
+     */
+    CompactionLockManager(Connection duckDB, int lockTtlMinutes, String instanceId, InstanceRegistry instanceRegistry,
+                           int deadInstanceThresholdMinutes) {
+        this.duckDB                       = duckDB;
+        this.lockTtlMinutes               = lockTtlMinutes;
+        this.instanceId                   = instanceId;
+        this.instanceRegistry             = instanceRegistry;
+        this.deadInstanceThresholdMinutes = deadInstanceThresholdMinutes;
     }
 
     // -------------------------------------------------------------------------
@@ -114,9 +129,25 @@ public class CompactionLockManager {
     // -------------------------------------------------------------------------
 
     /**
-     * Removes all {@code compaction_locks} rows whose {@code instance_id} is not
-     * currently "alive" in {@link InstanceRegistry#listAll()} — i.e. has no
-     * {@code joxette_instances} row with a recent heartbeat.
+     * Removes all {@code compaction_locks} rows whose {@code instance_id}'s
+     * {@link InstanceRecord#lastHeartbeat()} is older than
+     * {@code joxette.compaction.dead-instance-threshold-minutes} (default 30) —
+     * i.e. no {@code joxette_instances} row has heartbeated recently enough to count
+     * as "alive" for lock-reclamation purposes.
+     *
+     * <p><b>Deliberately does not use {@link InstanceRecord#status()}</b> (the
+     * {@code InstanceRegistry}-computed {@code "alive"}/{@code "stale"} field, driven
+     * by its own 90-second {@code ALIVE_THRESHOLD}). That threshold is tuned for
+     * {@code GET /instances} dashboard freshness, not for a safety-critical decision to
+     * steal another instance's compaction lock. {@code InstanceRegistry.sendHeartbeat()}
+     * and the {@code ducklake_merge_adjacent_files} merge SQL both execute under
+     * {@code synchronized(duckDB)} on the single shared embedded-mode connection, so a
+     * merge that legitimately holds that monitor for more than 90 seconds — entirely
+     * plausible, given {@code lock-ttl-minutes} defaults to 240 <em>minutes</em> — blocks
+     * the heartbeat thread and would make {@code status()} report "stale" for a healthy,
+     * actively-merging instance. Reading {@code lastHeartbeat()} directly and comparing
+     * against the separate, more generous {@code dead-instance-threshold-minutes}
+     * avoids reclaiming (and corrupting) a live merge's lock on that false signal.
      *
      * <p>Called automatically on Spring bean initialisation via {@link PostConstruct}
      * (ordered, via {@code @DependsOn("instanceRegistry")}, after
@@ -129,16 +160,18 @@ public class CompactionLockManager {
      * <p>Unlike the identity-matching scheme this replaces, this method's outcome does
      * not depend on which instance calls it — it reclaims <em>any</em> dead instance's
      * locks, not just "its own". A lock owned by a live instance (present in the
-     * registry) is left untouched no matter which instance runs the sweep, which is
-     * what closes the co-location collision: two processes sharing a host now have
-     * distinct {@code hostname:pid} identities in {@code joxette_instances}, so neither
-     * can mistake the other's live lock for a dead one.
+     * registry, heartbeating within the threshold) is left untouched no matter which
+     * instance runs the sweep, which is what closes the co-location collision: two
+     * processes sharing a host now have distinct {@code hostname:pid} identities in
+     * {@code joxette_instances}, so neither can mistake the other's live lock for a dead
+     * one.
      */
     @PostConstruct
     public void cleanLocksForDeadInstances() {
         try {
+            Instant deadBefore = Instant.now().minus(deadInstanceThresholdMinutes, ChronoUnit.MINUTES);
             Set<String> liveInstanceIds = instanceRegistry.listAll().stream()
-                    .filter(r -> "alive".equals(r.status()))
+                    .filter(r -> !r.lastHeartbeat().isBefore(deadBefore))
                     .map(InstanceRecord::instanceId)
                     .collect(Collectors.toCollection(LinkedHashSet::new));
             int deleted = deleteLocksForDeadInstances(liveInstanceIds);

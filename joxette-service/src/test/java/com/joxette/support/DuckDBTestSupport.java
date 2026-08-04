@@ -441,6 +441,31 @@ public final class DuckDBTestSupport {
         }
     }
 
+    /**
+     * Inserts (or refreshes) a {@code joxette_instances} row for {@code instanceId}
+     * with {@code last_heartbeat} backdated by {@code age}, simulating an instance
+     * whose heartbeat has aged by a controlled, arbitrary amount — without waiting real
+     * wall-clock time. Used to test heartbeat-age thresholds (e.g.
+     * {@code CompactionLockManager.cleanLocksForDeadInstances()}'s
+     * {@code dead-instance-threshold-minutes}) directly, independent of
+     * {@code InstanceRegistry}'s own 90-second {@code ALIVE_THRESHOLD}.
+     */
+    public static void registerInstanceWithHeartbeatAge(Connection conn, String instanceId, java.time.Duration age)
+            throws SQLException {
+        Instant backdatedHeartbeat = Instant.now().minus(age);
+        try (PreparedStatement ps = conn.prepareStatement("""
+                INSERT INTO joxette_instances
+                    (instance_id, catalog_backend, started_at, last_heartbeat)
+                VALUES (?, 'EMBEDDED_DUCKDB', ?, ?)
+                ON CONFLICT (instance_id) DO UPDATE SET last_heartbeat = EXCLUDED.last_heartbeat
+                """)) {
+            ps.setString(1, instanceId);
+            ps.setTimestamp(2, Timestamp.from(backdatedHeartbeat));
+            ps.setTimestamp(3, Timestamp.from(backdatedHeartbeat));
+            ps.executeUpdate();
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------

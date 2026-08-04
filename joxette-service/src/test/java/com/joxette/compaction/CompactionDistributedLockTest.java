@@ -7,10 +7,15 @@ import com.joxette.support.DuckDBTestSupport;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.sql.*;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -204,6 +209,54 @@ class CompactionDistributedLockTest {
                 .isFalse();
 
         lockA.release(LOCK_TARGET);
+    }
+
+    /**
+     * Proves {@code cleanLocksForDeadInstances()} decides "dead" from
+     * {@code InstanceRecord.lastHeartbeat()} compared against the independent
+     * {@code joxette.compaction.dead-instance-threshold-minutes} (default 30) —
+     * NOT from {@code InstanceRecord.status()}, which is computed by
+     * {@code InstanceRegistry} using its own 90-second {@code ALIVE_THRESHOLD} for a
+     * different purpose ({@code GET /instances} dashboard freshness).
+     *
+     * <p>A 5-minute-old heartbeat is already {@code "stale"} by {@code InstanceRegistry}'s
+     * 90-second threshold — the pre-fix predicate ({@code !"alive".equals(status())})
+     * would have reclaimed this lock, exactly the bug: a merge that legitimately blocks
+     * the heartbeat thread past 90 seconds (routine, since {@code lock-ttl-minutes}
+     * defaults to 240 minutes) would have its lock stolen mid-merge. The fixed
+     * threshold-based check must instead treat 5 minutes as comfortably alive, and only
+     * reclaim once the heartbeat is older than the 30-minute dead-instance threshold.
+     */
+    @ParameterizedTest(name = "heartbeatAge={0} -> reclaimedAsDead={1}")
+    @MethodSource("heartbeatAgeCases")
+    void cleanLocksForDeadInstances_usesDeadInstanceThresholdNotRegistryStatus(
+            Duration heartbeatAge, boolean expectReclaimed) throws Exception {
+        DuckDBTestSupport.registerInstanceWithHeartbeatAge(conn, INSTANCE_A, heartbeatAge);
+        assertThat(lockA.tryAcquire(LOCK_TARGET)).isTrue();
+
+        lockB.cleanLocksForDeadInstances();
+
+        boolean reclaimed = lockB.tryAcquire(LOCK_TARGET);
+        assertThat(reclaimed)
+                .as("heartbeatAge=%s: lock reclaimed by another instance's cleanup", heartbeatAge)
+                .isEqualTo(expectReclaimed);
+
+        if (reclaimed) {
+            lockB.release(LOCK_TARGET);
+        } else {
+            lockA.release(LOCK_TARGET);
+        }
+    }
+
+    static Stream<Arguments> heartbeatAgeCases() {
+        return Stream.of(
+                // Older than InstanceRegistry's 90-second ALIVE_THRESHOLD (so status()
+                // would already report "stale") but well within the 30-minute
+                // dead-instance threshold: must NOT be reclaimed.
+                Arguments.of(Duration.ofMinutes(5), false),
+                // Older than the 30-minute dead-instance threshold: must be reclaimed.
+                Arguments.of(Duration.ofMinutes(35), true)
+        );
     }
 
     @Test

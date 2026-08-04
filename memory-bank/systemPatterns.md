@@ -122,8 +122,8 @@ KafkaConsumer.poll() → emit → groupedWithin(batchSize, batchTimeout)
 ### 13. Distributed Compaction Lock
 - `CompactionLockManager` uses the `compaction_locks` DuckDB table as a mutex: `INSERT … ON CONFLICT DO NOTHING` + row count check
 - Lock scoped to `(instance_id, target)` with `expires_at` TTL (`joxette.compaction.lock-ttl-minutes`, default 240; heartbeat every 10 min). Heartbeat and merge SQL share `synchronized(duckDB)` on the single embedded connection, so the heartbeat can only refresh *between* merges, not during one — the TTL, not the heartbeat, is the real safety margin against a long merge losing its lock
-- `cleanExpiredLocks()` runs at the start of each compaction trigger to remove stale locks
-- `releaseOwnLocks()` called at startup to clean up locks from a previous crash
+- `cleanExpiredLocks()` runs at the start of each compaction trigger to remove stale (TTL-expired) locks
+- `cleanLocksForDeadInstances()` called at startup and opportunistically at the top of every compaction run; reclaims locks whose owning `instance_id` has no live row in `joxette_instances` within `joxette.compaction.dead-instance-threshold-minutes` (default 30, checked directly against `InstanceRecord.lastHeartbeat()`) — **deliberately not** the `InstanceRegistry`-computed `status()`/90s `ALIVE_THRESHOLD`, since a legitimately long merge can block the heartbeat thread past 90s under the same `synchronized(duckDB)` monitor; using the dashboard-facing threshold here would let a live merge's lock get stolen. See `docs/clustering-deployment.md` §4.2.
 - Other instances skip (not fail) when the lock is held; they log at DEBUG and move on
 - **This is the real cross-process exclusivity mechanism.** The Pekko `ClusterSingleton` (`CompactionSingletonActor`) only serialises *within a process* because each process self-joins its own one-member cluster (`seed-nodes = []` + programmatic `Join` in `PekkoConfig`). So `compaction_locks` — not the singleton — is what makes multiple compaction nodes safe on a shared Stage 2/3 catalog. Operational rule: run exactly one `compaction` node. See `docs/clustering-deployment.md`.
 

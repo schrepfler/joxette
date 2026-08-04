@@ -264,6 +264,36 @@ public class JoxetteProperties {
          */
         private int lockTtlMinutes = 240;
 
+        /**
+         * How old an instance's {@code InstanceRecord.lastHeartbeat()} must be, in
+         * minutes, before {@code CompactionLockManager.cleanLocksForDeadInstances()}
+         * treats that instance as dead and reclaims its locks.
+         *
+         * <p><b>Deliberately independent of {@code InstanceRegistry}'s own
+         * {@code ALIVE_THRESHOLD} (90 seconds) / {@code STALE_THRESHOLD} (2 minutes).</b>
+         * Those thresholds exist for a different purpose: giving {@code GET /instances}
+         * a human-facing "is this dashboard row fresh" signal and reaping long-dead rows
+         * at startup. They are tuned for the ~30-second heartbeat cadence and have no
+         * awareness of how long a compaction merge can legitimately hold the shared
+         * {@code synchronized(duckDB)} monitor — {@code InstanceRegistry.sendHeartbeat()}
+         * and {@code ducklake_merge_adjacent_files} both execute under that same lock on
+         * the single embedded-mode JDBC connection, so a merge that runs for minutes
+         * blocks the heartbeat thread for exactly as long. Reusing the 90-second
+         * "alive" threshold for lock reclamation would let one instance steal another's
+         * lock — and corrupt the merge — the moment a legitimate long merge blocked its
+         * own heartbeat past 90 seconds, which is routine (see {@link #lockTtlMinutes}'s
+         * default of 240 minutes for how long a real merge can run).
+         *
+         * <p>This threshold must instead be generous enough that it is never crossed by
+         * a live instance's heartbeat gap alone — only by an instance that has actually
+         * crashed or been rescheduled. Default 30 minutes: comfortably longer than any
+         * single merge should block a heartbeat, comfortably shorter than
+         * {@link #lockTtlMinutes}'s 240-minute default, so a dead instance's lock is
+         * usually reclaimed by this check well before the TTL would have expired it
+         * anyway.
+         */
+        private int deadInstanceThresholdMinutes = 30;
+
         public static class Entity {
             private int minFilesPerBucket = 10;
             private int targetFileSizeMb = 256;
@@ -334,6 +364,11 @@ public class JoxetteProperties {
 
         public int getLockTtlMinutes() { return lockTtlMinutes; }
         public void setLockTtlMinutes(int lockTtlMinutes) { this.lockTtlMinutes = lockTtlMinutes; }
+
+        public int getDeadInstanceThresholdMinutes() { return deadInstanceThresholdMinutes; }
+        public void setDeadInstanceThresholdMinutes(int deadInstanceThresholdMinutes) {
+            this.deadInstanceThresholdMinutes = deadInstanceThresholdMinutes;
+        }
     }
 
     // -----------------------------------------------------------------------

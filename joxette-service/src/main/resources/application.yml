@@ -111,6 +111,12 @@ joxette:
 
   compaction:
     schedule: "0 0 3 * * *"
+    # lock-ttl-minutes: 240              # default — must comfortably exceed worst-case merge
+    #   duration; the heartbeat cannot extend it during an in-progress merge (see docs/clustering-deployment.md §4.2)
+    dead-instance-threshold-minutes: 30  # cleanLocksForDeadInstances() dead-instance check.
+    #   Deliberately independent of InstanceRegistry's own 90s/2min alive/stale thresholds,
+    #   which exist for GET /instances dashboard freshness, not lock-stealing safety — a
+    #   merge can legitimately block the heartbeat thread past 90s (see docs/clustering-deployment.md §4.2).
     entity:
       min-files-per-bucket: 10
       target-file-size-mb: 256
