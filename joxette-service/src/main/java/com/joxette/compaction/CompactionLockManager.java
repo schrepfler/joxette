@@ -25,8 +25,14 @@ import java.util.List;
  *   <li><b>Acquire</b>: {@code INSERT INTO compaction_locks … ON CONFLICT DO NOTHING},
  *       then read back the row to confirm this instance won the INSERT race.</li>
  *   <li><b>Heartbeat</b>: {@code UPDATE compaction_locks SET expires_at = …} every
- *       {@link #HEARTBEAT_INTERVAL_MINUTES} minutes while a target is being compacted,
- *       so the TTL does not expire under a legitimately long run.</li>
+ *       {@link #HEARTBEAT_INTERVAL_MINUTES} minutes while a target is being compacted.
+ *       This is opportunistic, not a guarantee: it shares {@code synchronized(duckDB)}
+ *       with the merge SQL on this instance's single embedded-mode connection, so a tick
+ *       that fires mid-merge simply blocks until the merge's synchronized block exits —
+ *       it cannot extend the TTL <em>during</em> an in-progress merge, only between
+ *       merges. The lock's TTL ({@code joxette.compaction.lock-ttl-minutes}), not the
+ *       heartbeat, is what must comfortably exceed a single merge's worst-case
+ *       duration.</li>
  *   <li><b>Release</b>: {@code DELETE … WHERE target = ? AND instance_id = ?} —
  *       the {@code AND instance_id} guard prevents an instance from accidentally
  *       deleting a lock it no longer owns.</li>
@@ -151,8 +157,13 @@ public class CompactionLockManager {
     /**
      * Extends the expiry of a lock owned by this instance.
      *
-     * <p>Called from the heartbeat thread that runs alongside each compaction target
-     * to prevent the TTL from expiring during a legitimately long merge.
+     * <p>Called from the heartbeat thread that runs alongside each compaction target.
+     * Because this call and the merge SQL both execute under {@code synchronized(duckDB)}
+     * on the single shared embedded-mode connection, a call that fires while a merge is
+     * still executing simply blocks until the merge's synchronized block exits — it
+     * cannot land, and so cannot extend the TTL, <em>during</em> an in-progress merge.
+     * It only ever succeeds between merges. The lock's TTL is therefore the real safety
+     * margin against a merge outliving its lock, not this heartbeat.
      * If the UPDATE matches 0 rows the lock was stolen or expired — logged as a warning.
      */
     public void refresh(String target) throws SQLException {

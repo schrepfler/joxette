@@ -183,8 +183,19 @@ table**. `CompactionLockManager` guards each target (entity type or topic) with 
 row in the `compaction_locks` table (plain DuckDB, not DuckLake):
 
 - Acquire via `INSERT … ON CONFLICT DO NOTHING` then confirm ownership.
-- Heartbeat every `HEARTBEAT_INTERVAL_MINUTES` (10) from a dedicated VT so a long
-  merge never trips its own TTL (`joxette.compaction.lock-ttl-minutes`, default 120).
+- Heartbeat every `HEARTBEAT_INTERVAL_MINUTES` (10) from a dedicated VT, refreshing
+  `expires_at` **between** merges. It is opportunistic, not a guarantee: the
+  heartbeat's `refresh()` call and the merge's SQL both run under
+  `synchronized(duckDB)` on this instance's single embedded-mode JDBC connection
+  (see the "DuckDB Connection Model" section of `CLAUDE.md`), so a heartbeat tick
+  that fires while a merge is still executing simply blocks until that merge's
+  synchronized block exits — it cannot land, and so cannot extend the TTL,
+  *during* an in-progress merge. **The lock TTL (`joxette.compaction.lock-ttl-minutes`,
+  default 240) — not the heartbeat — is therefore the real safety margin**
+  against a merge outliving its lock and being stolen mid-merge by another
+  instance: set it comfortably above the worst-case end-to-end duration of a
+  single `ducklake_merge_adjacent_files` call for your data volumes, not just
+  above the typical case.
 - Targets already locked by another instance are **silently skipped** and counted
   as skipped in the run result.
 
@@ -384,7 +395,7 @@ The same rules apply on VMs / bare metal / `docker compose`:
 |---|---|
 | Recorder pod dies | Kafka rebalances its partitions to surviving recorders (KIP-848, cooperative). Uncommitted offsets reprocess; read-side dedup absorbs duplicates. |
 | Replay pod dies | Stateless — the load balancer drops it; in-flight SSE/NDJSON streams to that pod break and clients reconnect. |
-| Compaction pod dies mid-run | Its `compaction_locks` rows expire after the TTL (default 120 min) and become acquirable again; partial merges are safe (DuckLake is transactional). The next scheduled run resumes. |
+| Compaction pod dies mid-run | Its `compaction_locks` rows expire after the TTL (default 240 min) and become acquirable again; partial merges are safe (DuckLake is transactional). The next scheduled run resumes. |
 | Catalog (Stage 2/3) unavailable | `CatalogHealthIndicator` reports `DOWN`; readiness fails and traffic is withheld until the catalog returns. |
 | Whole catalog lost | Parquet data on object storage survives. Rebuild config + `known_entities` via snapshot restore / `POST /cassettes/entities/rebuild-known-entities`. See [`catalog-scaling.md`](catalog-scaling.md). |
 
@@ -427,7 +438,9 @@ joxette:
 
   compaction:
     schedule: "0 0 3 * * *"                  # daily 03:00 (Spring 6-field cron)
-    lock-ttl-minutes: 120
+    lock-ttl-minutes: 240                    # must comfortably exceed worst-case merge
+                                              # duration — the heartbeat cannot extend
+                                              # it during an in-progress merge (see §4.2)
 
   retention:
     schedule: "0 0 1 * * *"                  # daily 01:00 (before compaction)

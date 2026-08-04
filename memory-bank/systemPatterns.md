@@ -121,7 +121,7 @@ KafkaConsumer.poll() → emit → groupedWithin(batchSize, batchTimeout)
 
 ### 13. Distributed Compaction Lock
 - `CompactionLockManager` uses the `compaction_locks` DuckDB table as a mutex: `INSERT … ON CONFLICT DO NOTHING` + row count check
-- Lock scoped to `(instance_id, target)` with `expires_at` TTL (`joxette.compaction.lock-ttl-minutes`, default 120; heartbeat every 10 min)
+- Lock scoped to `(instance_id, target)` with `expires_at` TTL (`joxette.compaction.lock-ttl-minutes`, default 240; heartbeat every 10 min). Heartbeat and merge SQL share `synchronized(duckDB)` on the single embedded connection, so the heartbeat can only refresh *between* merges, not during one — the TTL, not the heartbeat, is the real safety margin against a long merge losing its lock
 - `cleanExpiredLocks()` runs at the start of each compaction trigger to remove stale locks
 - `releaseOwnLocks()` called at startup to clean up locks from a previous crash
 - Other instances skip (not fail) when the lock is held; they log at DEBUG and move on

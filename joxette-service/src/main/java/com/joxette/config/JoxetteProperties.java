@@ -243,16 +243,26 @@ public class JoxetteProperties {
         /**
          * Time-to-live for a distributed compaction lock, in minutes.
          *
-         * <p>A lock acquired before starting a compaction target is refreshed every
-         * {@code CompactionLockManager.HEARTBEAT_INTERVAL_MINUTES} (10 min) by a
-         * heartbeat thread.  The TTL must therefore exceed the maximum expected
-         * compaction duration for a single target — 2 hours (120 min) is a safe
-         * default for most datasets.
+         * <p>A background heartbeat calls {@code CompactionLockManager.refresh} every
+         * {@code CompactionLockManager.HEARTBEAT_INTERVAL_MINUTES} (10 min), but that
+         * call shares {@code synchronized(duckDB)} with the merge SQL it is meant to
+         * protect — on the single embedded-mode JDBC connection, a heartbeat tick that
+         * fires while a merge is still executing simply blocks until the merge's
+         * synchronized block exits, so it cannot land <em>during</em> an in-progress
+         * merge. The heartbeat is therefore only an opportunistic top-up between merges,
+         * not a guarantee. <b>This TTL — not the heartbeat — is the real safety margin</b>
+         * against a merge outliving its lock and being stolen by another instance
+         * mid-merge: it must comfortably exceed the worst-case end-to-end duration of a
+         * single {@code ducklake_merge_adjacent_files} call for your data volumes.
+         * 4 hours (240 min) is the default, sized for entity buckets that have
+         * accumulated a backlog (compaction runs once daily with a 30-day lookback and
+         * no cap on files merged per call).
          *
          * <p>Set lower only when compaction targets are reliably fast and you want
-         * stale locks from crashed instances to be reclaimed sooner.
+         * stale locks from crashed instances to be reclaimed sooner. Set higher if your
+         * merges routinely run longer than a few hours.
          */
-        private int lockTtlMinutes = 120;
+        private int lockTtlMinutes = 240;
 
         public static class Entity {
             private int minFilesPerBucket = 10;

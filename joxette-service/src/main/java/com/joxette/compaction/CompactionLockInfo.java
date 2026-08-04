@@ -26,8 +26,11 @@ public record CompactionLockInfo(
         @Schema(description = "When the lock was first acquired")
         Instant acquiredAt,
 
-        @Schema(description = "When the lock will expire if no heartbeat refreshes it; " +
-                              "heartbeats extend this by the configured lock-ttl-minutes")
+        @Schema(description = "When the lock expires. A heartbeat opportunistically extends " +
+                              "this between merges, but cannot do so while a merge is actively " +
+                              "running (it shares the single DuckDB connection's lock with the " +
+                              "merge SQL) — lock-ttl-minutes, not the heartbeat, is the real " +
+                              "safety margin against expiry mid-merge")
         Instant expiresAt,
 
         @Schema(description = "Seconds until expiry; negative if expires_at is already in the past",
