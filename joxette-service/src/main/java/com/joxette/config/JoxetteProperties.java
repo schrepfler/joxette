@@ -382,9 +382,22 @@ public class JoxetteProperties {
          * Default: daily at 01:00:00 (runs two hours before compaction at 03:00).
          */
         private String schedule = "0 0 1 * * *";
+        /**
+         * Delete-marker ratio threshold passed to {@code ducklake_rewrite_data_files}
+         * as {@code delete_threshold} when reclaiming files after a bulk retention
+         * delete. A table's Parquet files are rewritten (tombstoned rows physically
+         * dropped) once this fraction of rows in a file are marked deleted.
+         * Default {@code 0.1} (10%).
+         */
+        private double rewriteDeleteThreshold = 0.1;
 
         public String getSchedule() { return schedule; }
         public void setSchedule(String schedule) { this.schedule = schedule; }
+
+        public double getRewriteDeleteThreshold() { return rewriteDeleteThreshold; }
+        public void setRewriteDeleteThreshold(double rewriteDeleteThreshold) {
+            this.rewriteDeleteThreshold = rewriteDeleteThreshold;
+        }
     }
 
     // -----------------------------------------------------------------------

@@ -1,6 +1,7 @@
 package com.joxette.compaction;
 
 import com.joxette.config.JoxetteProperties;
+import com.joxette.db.DuckDbErrors;
 import com.joxette.db.SchemaManager;
 import com.joxette.metrics.JoxetteMetrics;
 import io.micrometer.core.instrument.Counter;
@@ -204,6 +205,7 @@ public class RetentionService {
                 if (deleted > 0) {
                     log.debug("Retention: deleted {} rows from general cassette for topic '{}' (retention={} days)",
                             deleted, tc.topic(), tc.retentionDays());
+                    rewriteGeneralCassette(tc.topic());
                 }
                 total += deleted;
             } catch (Exception e) {
@@ -246,6 +248,9 @@ public class RetentionService {
                     log.debug("Retention: deleted {} entity rows, {} known_entities rows for type '{}' (retention={} days)",
                             cassDeleted, keDeleted, type, days);
                 }
+                if (cassDeleted > 0) {
+                    rewriteEntityCassette(type);
+                }
                 entityRows        += cassDeleted;
                 knownEntitiesRows += keDeleted;
             } catch (Exception e) {
@@ -275,6 +280,48 @@ public class RetentionService {
                     "DELETE FROM known_entities WHERE entity_type = ? AND last_seen < " + cutoff)) {
                 ps.setString(1, type);
                 return ps.executeUpdate();
+            }
+        }
+    }
+
+    // =========================================================================
+    // ducklake_rewrite_data_files — reclaim tombstoned files after a bulk delete
+    // =========================================================================
+
+    private void rewriteGeneralCassette(String topic) {
+        rewriteDataFiles("general_" + SchemaManager.normalize(topic), "general cassette topic='" + topic + "'");
+    }
+
+    private void rewriteEntityCassette(String type) {
+        rewriteDataFiles("entity_" + type, "entity type='" + type + "'");
+    }
+
+    /**
+     * Rewrites Parquet files with a high delete-marker ratio for {@code tableName}
+     * via {@code ducklake_rewrite_data_files} — DuckLake 1.0. Called after a bulk
+     * retention delete so tombstoned rows are actually reclaimed from object
+     * storage instead of only being logically deleted in the catalog. Idempotent
+     * and non-fatal: errors are logged and do not fail the retention run,
+     * mirroring CompactionService.doCompactEntityType's error-handling convention.
+     */
+    private void rewriteDataFiles(String tableName, String label) {
+        double deleteThreshold = props.getRetention().getRewriteDeleteThreshold();
+        String sql = "CALL ducklake_rewrite_data_files('lake', '" + tableName + "',"
+                   + " delete_threshold => " + deleteThreshold + ")";
+        log.debug("Rewriting delete-heavy files for {} ({})", label, tableName);
+        try {
+            synchronized (duckDB) {
+                try (Statement st = duckDB.createStatement()) {
+                    st.execute(sql);
+                }
+            }
+            log.debug("Rewrite complete for {} ({})", label, tableName);
+        } catch (SQLException e) {
+            if (DuckDbErrors.isTransient(e)) {
+                log.warn("ducklake_rewrite_data_files transient S3 failure for {} (will retry next run): {}",
+                        label, e.getMessage());
+            } else {
+                log.warn("ducklake_rewrite_data_files failed for {}: {}", label, e.getMessage());
             }
         }
     }
