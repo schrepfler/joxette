@@ -321,7 +321,7 @@ class FollowModeIntegrationTest {
         return new com.joxette.recording.WriteBatch(
                 topic, java.util.Set.of(), records, records, types, List.of(),
                 java.util.concurrent.CompletableFuture.completedFuture(
-                        new com.joxette.recording.WriteResult(topic, count)));
+                        new com.joxette.recording.WriteResult(topic, count, count)));
     }
 
     // =========================================================================

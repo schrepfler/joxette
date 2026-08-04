@@ -281,7 +281,7 @@ public class DuckLakeWriteChannel {
                             batch.topic(), attempt);
                     sinkState.set(SinkState.HEALTHY);
                 }
-                batch.result().complete(new WriteResult(batch.topic(), written));
+                batch.result().complete(new WriteResult(batch.topic(), written, batch.sourceRecords().size()));
                 if (bus != null) {
                     busPublishExecutor.execute(() -> {
                         try {
@@ -310,7 +310,7 @@ public class DuckLakeWriteChannel {
                                         "topic can make progress: {}",
                                 batch.topic(), failures, identity, batch.sourceRecords().size(), e.getMessage(), e);
                         joxetteMetrics.batchesQuarantined(batch.topic()).increment();
-                        batch.result().complete(new WriteResult(batch.topic(), 0));
+                        batch.result().complete(new WriteResult(batch.topic(), 0, 0));
                         return;
                     }
                     log.error("Non-retryable write failure for topic '{}' (attempt {}/{}, identity={}): {}",
@@ -376,11 +376,14 @@ public class DuckLakeWriteChannel {
                 batch.topic(), batch.partitions(), firstFailure.getMessage());
         sinkState.set(SinkState.HEALTHY); // not a storage issue — same as the existing non-retryable branch
         int totalWritten = 0;
+        int totalSourceWritten = 0;
         Exception firstSubFailure = null;
         for (WriteBatch sub : batch.splitByPartition()) {
             processBatch(sub, writers); // recursive call; sub.partitions().size() == 1 so this cannot re-split
             try {
-                totalWritten += sub.result().join().recordsWritten();
+                WriteResult subResult = sub.result().join();
+                totalWritten += subResult.recordsWritten();
+                totalSourceWritten += subResult.sourceRecordsWritten();
             } catch (Exception subEx) {
                 if (firstSubFailure == null) firstSubFailure = subEx;
             }
@@ -388,7 +391,7 @@ public class DuckLakeWriteChannel {
         if (firstSubFailure != null) {
             batch.result().completeExceptionally(firstSubFailure);
         } else {
-            batch.result().complete(new WriteResult(batch.topic(), totalWritten));
+            batch.result().complete(new WriteResult(batch.topic(), totalWritten, totalSourceWritten));
         }
     }
 

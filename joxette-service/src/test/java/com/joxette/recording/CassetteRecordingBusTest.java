@@ -236,7 +236,7 @@ class CassetteRecordingBusTest {
             types.add(null);
         }
         return new WriteBatch(topic, java.util.Set.of(), records, records, types, List.of(),
-                CompletableFuture.completedFuture(new WriteResult(topic, count)));
+                CompletableFuture.completedFuture(new WriteResult(topic, count, count)));
     }
 
     private static WriteBatch entityBatch(String entityType, String entityId,
@@ -251,6 +251,6 @@ class CassetteRecordingBusTest {
                 List.of(new KafkaMessage.Header("h", "v".getBytes(StandardCharsets.UTF_8))));
         WriteBatch.EntityWriteItem item = new WriteBatch.EntityWriteItem(routes, msg);
         return new WriteBatch(sourceTopic, java.util.Set.of(), List.of(), List.of(), List.of(), List.of(item),
-                CompletableFuture.completedFuture(new WriteResult(sourceTopic, routeCount)));
+                CompletableFuture.completedFuture(new WriteResult(sourceTopic, routeCount, 0)));
     }
 }

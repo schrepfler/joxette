@@ -448,8 +448,11 @@ public class TopicRecorder {
             Thread.currentThread().interrupt();
             throw new RuntimeException(e);
         }
-        messagesWritten.addAndGet(result.recordsWritten());
-        meters.messagesWritten().increment(result.recordsWritten());
+        // Use sourceRecordsWritten (distinct Kafka messages), not recordsWritten (rows —
+        // general row + N entity routes per message on both/entity_only topics), so this
+        // metric stays comparable to messagesConsumed instead of over-counting.
+        messagesWritten.addAndGet(result.sourceRecordsWritten());
+        meters.messagesWritten().increment(result.sourceRecordsWritten());
         lastBatchAt = Instant.now();
 
         // Collect entity routes across all entity items for known_entities upsert
