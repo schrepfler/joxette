@@ -8,6 +8,7 @@ import com.joxette.replay.MessageRouter;
 import com.softwaremill.jox.kafka.ConsumerSettings;
 import com.softwaremill.jox.structured.Scopes;
 import org.apache.pekko.actor.typed.Behavior;
+import org.apache.pekko.actor.typed.PreRestart;
 import org.apache.pekko.actor.typed.SupervisorStrategy;
 import org.apache.pekko.actor.typed.javadsl.ActorContext;
 import org.apache.pekko.actor.typed.javadsl.Behaviors;
@@ -216,6 +217,18 @@ public class TopicLifecycleActor {
                     // Consumers are already paused; Pekko will restart this actor via backoff.
                     // The next starting() call resets sink state so consumers can resume.
                     throw new RuntimeException("Sink failed for topic " + topic, msg.cause());
+                })
+                .onSignal(PreRestart.class, sig -> {
+                    // Pekko sends PreRestart (not PostStop) to the CURRENT behavior before
+                    // discarding it and re-invoking the original Behaviors.setup factory.
+                    // Without this hook the `recorders` captured in this closure are simply
+                    // dropped: their KafkaConsumers keep polling/writing/committing the same
+                    // partitions the new generation is about to also claim.
+                    log.warn("TopicLifecycleActor: restarting topic '{}' — stopping {} in-flight recorder(s) " +
+                                    "to prevent an orphaned-consumer leak",
+                            topic, recorders.size());
+                    recorders.forEach(TopicRecorder::stop);
+                    return Behaviors.same();
                 })
                 .build();
     }

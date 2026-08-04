@@ -31,6 +31,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -77,6 +78,15 @@ public class TopicRecorder {
     private static final long     KAFKA_RETRY_INITIAL_MS = 500;
     private static final double   KAFKA_RETRY_MULTIPLIER = 2.0;
     private static final long     KAFKA_RETRY_MAX_MS     = 30_000;
+    /**
+     * Count of TopicRecorder instances with a currently-open (unclosed)
+     * KafkaConsumer. Incremented right after {@code settings.toConsumer()}
+     * succeeds in {@link #run()}, decremented after {@code kc.close()} in the
+     * matching {@code finally} block — regardless of how run() exits (clean
+     * stop, exception, interrupt). Used to detect orphaned-consumer leaks
+     * across actor restarts (see TopicLifecycleActorRestartLeakTest).
+     */
+    private static final AtomicInteger liveConsumerCount = new AtomicInteger(0);
 
     private final String topic;
     private final ConsumerSettings<String, byte[]> settings;
@@ -209,6 +219,7 @@ public class TopicRecorder {
         log.info("Starting recorder for '{}'", label);
 
         KafkaConsumer<String, byte[]> kc = settings.toConsumer();
+        liveConsumerCount.incrementAndGet();
         try {
             this.consumer = kc;
             joxetteMetrics.bindKafkaConsumerMetrics(kc.metrics(), topic, assignedPartition);
@@ -317,6 +328,7 @@ public class TopicRecorder {
             this.consumer = null;
             assignedPartitions.clear();
             kc.close(Duration.ofSeconds(5));
+            liveConsumerCount.decrementAndGet();
             log.info("Recorder for topic '{}' stopped", topic);
         }
     }
@@ -328,6 +340,9 @@ public class TopicRecorder {
     }
 
     public boolean isStopped() { return stopped; }
+
+    /** Package-visible: number of TopicRecorder instances with a live KafkaConsumer right now. */
+    static int liveConsumerCount() { return liveConsumerCount.get(); }
 
     public Instant lastBatchAt() { return lastBatchAt; }
 
