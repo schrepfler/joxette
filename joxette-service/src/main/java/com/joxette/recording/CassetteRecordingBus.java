@@ -26,10 +26,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /**
  * In-process fanout of newly-durable cassette records.
  *
- * <p>The {@link DuckLakeWriteChannel} drain VT calls {@link #publish(WriteBatch)}
- * immediately after a batch's result future completes successfully.  The bus
- * distributes each record to subscribers whose key matches (topic for general
- * cassettes, {@code (entityType, entityId)} for entity cassettes).
+ * <p>{@link #publish(WriteBatch)} is dispatched from {@link DuckLakeWriteChannel}'s
+ * dedicated single-threaded bus-publish worker, off the drain VT, immediately
+ * after a batch's result future completes successfully. That worker is a single
+ * persistent virtual thread rather than a per-task executor, so publishes for the
+ * same topic are still delivered in strict submission order even though they now
+ * run concurrently with the drain VT writing the next batch. The bus distributes
+ * each record to subscribers whose key matches (topic for general cassettes,
+ * {@code (entityType, entityId)} for entity cassettes).
  *
  * <p>Delivery is non-blocking: each subscriber owns a bounded
  * {@link java.util.concurrent.ArrayBlockingQueue}, and publication uses
@@ -186,7 +190,9 @@ public class CassetteRecordingBus {
     }
 
     // -----------------------------------------------------------------------
-    // Publish — called by DuckLakeWriteChannel on the drain VT
+    // Publish — dispatched by DuckLakeWriteChannel's dedicated single-threaded
+    // bus-publish worker, off the drain VT (same-topic order preserved by that
+    // worker being single-threaded; concurrent with the next batch's DuckDB write)
     // -----------------------------------------------------------------------
 
     /**

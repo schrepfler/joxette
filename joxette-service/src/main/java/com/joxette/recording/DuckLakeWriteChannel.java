@@ -69,12 +69,18 @@ public class DuckLakeWriteChannel {
     private Thread drainThread;
     /**
      * Dispatches {@link CassetteRecordingBus#publish} off the drain VT so a slow
-     * or blocked follow-subscriber can never delay the next batch's write — bus
-     * delivery is explicitly best-effort (see {@link CassetteRecordingBus}'s
-     * class javadoc) and must never sit on the same critical path as DuckDB
-     * write serialization.
+     * or blocked follow-subscriber can never delay the next batch's write.
+     *
+     * <p>Backed by a single persistent virtual thread (not a per-task executor):
+     * {@code newVirtualThreadPerTaskExecutor()} gives no relative-order guarantee
+     * across independently-scheduled tasks (confirmed empirically — see task
+     * review), which would let same-topic {@code follow=true} deliveries arrive
+     * out of cursor order. A single worker draining an internal FIFO queue keeps
+     * publishes for the same topic strictly in submission order while still
+     * running off the write-serialization critical path.
      */
-    private final ExecutorService busPublishExecutor = Executors.newVirtualThreadPerTaskExecutor();
+    private final ExecutorService busPublishExecutor =
+            Executors.newSingleThreadExecutor(Thread.ofVirtual().factory());
 
     /**
      * Tracks in-flight {@link WriteBatch}es by their completion future.

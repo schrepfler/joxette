@@ -14,25 +14,31 @@ import org.junit.jupiter.api.Test;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 /**
- * Proves that a slow/blocked {@link CassetteRecordingBus#publish} call for one
- * topic's batch does not delay {@link DuckLakeWriteChannel#submit} completing
- * for an UNRELATED batch. Uses a test-double bus subclass that blocks on a
- * latch inside publish() — {@code CassetteRecordingBus} is public and
- * non-final specifically so this kind of test double can be built without any
+ * Proves two properties of {@link DuckLakeWriteChannel}'s dispatch of
+ * {@link CassetteRecordingBus#publish}: (1) a slow/blocked publish() call for one
+ * topic's batch does not delay {@link DuckLakeWriteChannel#submit} completing for
+ * an UNRELATED batch, and (2) consecutive same-topic batches are still delivered
+ * to publish() in strict submission order (a dedicated single-threaded worker is
+ * required for this — a per-task executor would not guarantee it). Uses a
+ * test-double bus subclass in each case — {@code CassetteRecordingBus} is public
+ * and non-final specifically so this kind of test double can be built without any
  * production-code changes to the bus itself.
  */
 class DuckLakeWriteChannelBusDecouplingTest {
 
     private static final String TOPIC_SLOW = "bus.decoupling.slow.topic";
     private static final String TOPIC_FAST = "bus.decoupling.fast.topic";
+    private static final String TOPIC_ORDER = "bus.decoupling.order.topic";
 
     private Connection duckDB;
     private DuckLakeWriteChannel writeChannel;
@@ -42,6 +48,7 @@ class DuckLakeWriteChannelBusDecouplingTest {
         duckDB = DuckDBTestSupport.newConnection();
         DuckDBTestSupport.createGeneralCassetteTable(duckDB, TOPIC_SLOW);
         DuckDBTestSupport.createGeneralCassetteTable(duckDB, TOPIC_FAST);
+        DuckDBTestSupport.createGeneralCassetteTable(duckDB, TOPIC_ORDER);
     }
 
     @AfterEach
@@ -83,16 +90,54 @@ class DuckLakeWriteChannelBusDecouplingTest {
         releaseLatch.countDown();
     }
 
+    /**
+     * Submits many consecutive same-topic batches and asserts {@code publish()} is
+     * invoked in exactly the order they were submitted. This is the scenario a
+     * per-task executor (e.g. {@code Executors.newVirtualThreadPerTaskExecutor()})
+     * cannot guarantee: independently-scheduled virtual threads give no relative
+     * ordering, so two consecutive same-topic batches could be delivered to a
+     * {@code follow=true} subscriber out of cursor order. A large batch count is
+     * used to make a reordering regression reliably detectable rather than
+     * relying on a single narrow race window.
+     */
+    @Test
+    void sameTopicBatches_publishedInSubmissionOrder() throws Exception {
+        JoxetteProperties props = new JoxetteProperties();
+        OrderRecordingBus bus = new OrderRecordingBus(props);
+
+        writeChannel = new DuckLakeWriteChannel(duckDB, props, bus, new JoxetteMetrics(new SimpleMeterRegistry()));
+        writeChannel.start();
+
+        int batchCount = 200;
+        List<Long> expectedOrder = new ArrayList<>(batchCount);
+        for (long offset = 0; offset < batchCount; offset++) {
+            expectedOrder.add(offset);
+            writeChannel.submit(generalBatch(TOPIC_ORDER, offset, 1));
+        }
+
+        await().atMost(10, TimeUnit.SECONDS)
+                .untilAsserted(() -> assertThat(bus.publishedOffsets()).hasSize(batchCount));
+
+        assertThat(bus.publishedOffsets())
+                .as("publish() must be invoked in exactly submission order for consecutive same-topic batches")
+                .containsExactlyElementsOf(expectedOrder);
+    }
+
     private static WriteBatch generalBatch(String topic, int count) {
+        return generalBatch(topic, 0, count);
+    }
+
+    private static WriteBatch generalBatch(String topic, long baseOffset, int count) {
         List<ConsumerRecord<String, byte[]>> records = new ArrayList<>(count);
         List<String> types = new ArrayList<>(count);
         for (int i = 0; i < count; i++) {
+            long offset = baseOffset + i;
             ConsumerRecord<String, byte[]> r = new ConsumerRecord<>(
-                    topic, 0, i,
-                    1_700_000_000_000L + i, TimestampType.CREATE_TIME,
+                    topic, 0, offset,
+                    1_700_000_000_000L + offset, TimestampType.CREATE_TIME,
                     -1, -1,
-                    "k" + i,
-                    ("payload-" + i).getBytes(StandardCharsets.UTF_8),
+                    "k" + offset,
+                    ("payload-" + offset).getBytes(StandardCharsets.UTF_8),
                     new RecordHeaders(),
                     Optional.empty());
             records.add(r);
@@ -124,6 +169,31 @@ class DuckLakeWriteChannelBusDecouplingTest {
                 return;
             }
             super.publish(batch);
+        }
+    }
+
+    /**
+     * Test double: records the offset of the first general record in each batch,
+     * in the order {@code publish()} is actually invoked, so a test can compare
+     * that order against submission order.
+     */
+    private static final class OrderRecordingBus extends CassetteRecordingBus {
+        private final List<Long> publishedOffsets = Collections.synchronizedList(new ArrayList<>());
+
+        OrderRecordingBus(JoxetteProperties props) {
+            super(props);
+        }
+
+        @Override
+        public void publish(WriteBatch batch) {
+            publishedOffsets.add(batch.generalRecords().get(0).offset());
+            super.publish(batch);
+        }
+
+        List<Long> publishedOffsets() {
+            synchronized (publishedOffsets) {
+                return new ArrayList<>(publishedOffsets);
+            }
         }
     }
 }
