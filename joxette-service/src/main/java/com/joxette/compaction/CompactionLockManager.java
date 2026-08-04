@@ -165,16 +165,52 @@ public class CompactionLockManager {
      * processes sharing a host now have distinct {@code hostname:pid} identities in
      * {@code joxette_instances}, so neither can mistake the other's live lock for a dead
      * one.
+     *
+     * <h3>Belt-and-braces: the lock itself must also be old</h3>
+     * <p>The DELETE additionally requires {@code acquired_at < deadBefore} — the lock row
+     * itself must be at least {@code deadInstanceThresholdMinutes} old, not merely "owned
+     * by an instance_id absent from the live set". This closes two failure modes that a
+     * pure absent-from-live-set check does not:
+     * <ul>
+     *   <li>{@link InstanceRegistry#reapStaleInstances()} deletes a {@code joxette_instances}
+     *       row after just 2 minutes of heartbeat silence — far shorter than this class's
+     *       own 30-minute threshold — and runs unconditionally at <em>every</em> instance's
+     *       startup, not just the affected one. A busy instance whose heartbeat lags past 2
+     *       minutes under {@code synchronized(duckDB)} contention can have its registry row
+     *       reaped by a completely unrelated instance's startup, well before its lock is
+     *       actually stale. Requiring the lock's own age to also exceed the threshold means
+     *       a freshly-acquired lock survives that premature reap regardless.</li>
+     *   <li>{@link InstanceRegistry#listAll()} swallows {@link SQLException} and returns an
+     *       empty list on a transient read failure. Without the age predicate, an empty live
+     *       set reads as "every instance is dead" and this method would delete every lock in
+     *       the table — including ones held by instances actively merging right now. With the
+     *       age predicate, an empty live set only reclaims locks that are <em>also</em>
+     *       independently old enough; a lock acquired moments ago survives a transient
+     *       registry-read failure no matter what the (empty) live set says.</li>
+     * </ul>
+     *
+     * <h3>Atomicity</h3>
+     * <p>The read of {@link InstanceRegistry#listAll()} and the DELETE both execute inside
+     * one {@code synchronized(duckDB)} block (this class and {@link InstanceRegistry} share
+     * the same connection object, so the lock is the same monitor — {@code listAll()}'s own
+     * internal {@code synchronized(connection)} is simply a reentrant no-op for the thread
+     * already holding it here). This closes the check-then-act window where an instance
+     * that registers and acquires a lock in between the read and the delete would otherwise
+     * have its brand-new lock deleted — the same TOCTOU pattern fixed in
+     * {@code EntityController.updateEntityType}.
      */
     @PostConstruct
     public void cleanLocksForDeadInstances() {
         try {
-            Instant deadBefore = Instant.now().minus(deadInstanceThresholdMinutes, ChronoUnit.MINUTES);
-            Set<String> liveInstanceIds = instanceRegistry.listAll().stream()
-                    .filter(r -> !r.lastHeartbeat().isBefore(deadBefore))
-                    .map(InstanceRecord::instanceId)
-                    .collect(Collectors.toCollection(LinkedHashSet::new));
-            int deleted = deleteLocksForDeadInstances(liveInstanceIds);
+            int deleted;
+            synchronized (duckDB) {
+                Instant deadBefore = Instant.now().minus(deadInstanceThresholdMinutes, ChronoUnit.MINUTES);
+                Set<String> liveInstanceIds = instanceRegistry.listAll().stream()
+                        .filter(r -> !r.lastHeartbeat().isBefore(deadBefore))
+                        .map(InstanceRecord::instanceId)
+                        .collect(Collectors.toCollection(LinkedHashSet::new));
+                deleted = deleteLocksForDeadInstances(liveInstanceIds, deadBefore);
+            }
             if (deleted > 0) {
                 log.warn("Reclaimed {} compaction lock(s) owned by instance(s) no longer present "
                         + "in the live registry (crashed or rescheduled)", deleted);
@@ -349,28 +385,44 @@ public class CompactionLockManager {
 
     /**
      * Deletes every {@code compaction_locks} row whose {@code instance_id} is not in
-     * {@code liveInstanceIds}.
+     * {@code liveInstanceIds} <em>and</em> whose {@code acquired_at} is older than
+     * {@code deadBefore} ({@code now() - deadInstanceThresholdMinutes}).
+     *
+     * <p>The {@code acquired_at < deadBefore} predicate is required in addition to the
+     * absent-from-live-set check — see the "Belt-and-braces" section of
+     * {@link #cleanLocksForDeadInstances()}'s javadoc for why an absent owner alone is not
+     * sufficient grounds to steal a lock.
      *
      * <p>Values are never string-concatenated into the SQL: the {@code IN} clause is
      * built with one {@code ?} placeholder per live instance ID, sized to the live set.
-     * If the live set is empty, every lock row is dead by definition and the statement
-     * degrades to an unconditional {@code DELETE FROM compaction_locks} — there is no
-     * live instance for any row's {@code instance_id} to legitimately match.
+     * If the live set is empty, every lock row's owner is dead by definition and the
+     * statement degrades to {@code DELETE FROM compaction_locks WHERE acquired_at < ?} —
+     * there is no live instance for any row's {@code instance_id} to legitimately match,
+     * but the age predicate still applies.
+     *
+     * <p>Must be called from within a {@code synchronized(duckDB)} block already held by
+     * the caller (see {@link #cleanLocksForDeadInstances()}) so the live-set read and this
+     * delete are atomic; the {@code synchronized(duckDB)} here is a reentrant no-op in that
+     * case and a real guard for any other caller.
      */
-    private int deleteLocksForDeadInstances(Set<String> liveInstanceIds) throws SQLException {
+    private int deleteLocksForDeadInstances(Set<String> liveInstanceIds, Instant deadBefore) throws SQLException {
         synchronized (duckDB) {
             if (liveInstanceIds.isEmpty()) {
-                try (Statement st = duckDB.createStatement()) {
-                    return st.executeUpdate("DELETE FROM compaction_locks");
+                try (PreparedStatement ps = duckDB.prepareStatement(
+                        "DELETE FROM compaction_locks WHERE acquired_at < ?")) {
+                    ps.setTimestamp(1, Timestamp.from(deadBefore));
+                    return ps.executeUpdate();
                 }
             }
             String placeholders = String.join(",", Collections.nCopies(liveInstanceIds.size(), "?"));
             try (PreparedStatement ps = duckDB.prepareStatement(
-                    "DELETE FROM compaction_locks WHERE instance_id NOT IN (" + placeholders + ")")) {
+                    "DELETE FROM compaction_locks WHERE instance_id NOT IN (" + placeholders + ") "
+                            + "AND acquired_at < ?")) {
                 int i = 1;
                 for (String liveId : liveInstanceIds) {
                     ps.setString(i++, liveId);
                 }
+                ps.setTimestamp(i, Timestamp.from(deadBefore));
                 return ps.executeUpdate();
             }
         }

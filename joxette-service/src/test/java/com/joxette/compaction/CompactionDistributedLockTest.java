@@ -14,6 +14,7 @@ import org.junit.jupiter.params.provider.MethodSource;
 import java.sql.*;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.stream.Stream;
 
@@ -179,15 +180,48 @@ class CompactionDistributedLockTest {
         // INSTANCE_A holds the lock but has no row in joxette_instances at all —
         // e.g. it crashed and was reaped, or never registered. Simulates a genuinely
         // dead/crashed instance, on this host or a remote one (shared-catalog mode).
-        assertThat(lockA.tryAcquire(LOCK_TARGET)).isTrue();
+        //
+        // The lock itself is also backdated past dead-instance-threshold-minutes (30):
+        // cleanLocksForDeadInstances() requires BOTH "owner absent from the live set" AND
+        // "lock acquired_at older than the threshold" before reclaiming (see
+        // cleanLocksForDeadInstances_survivesWhenOwnerAbsentButLockIsYoung below for why
+        // absence alone is not sufficient) — so this is the regression guard proving
+        // reclamation still happens once a lock is genuinely both ownerless and old.
+        insertLockWithAcquiredAtAge(LOCK_TARGET, INSTANCE_A, Duration.ofMinutes(35));
 
         lockB.cleanLocksForDeadInstances();
 
         // A's lock is gone; B can now acquire.
         assertThat(lockB.tryAcquire(LOCK_TARGET))
-                .as("Lock owned by an instance absent from the live registry must be reclaimed")
+                .as("Lock owned by an instance absent from the live registry, and older than "
+                        + "the dead-instance threshold, must be reclaimed")
                 .isTrue();
         lockB.release(LOCK_TARGET);
+    }
+
+    @Test
+    void cleanLocksForDeadInstances_survivesWhenOwnerAbsentButLockIsYoung() throws Exception {
+        // INSTANCE_A holds the lock and has no row in joxette_instances at all, exactly
+        // like the "genuinely dead" scenario above — but the lock was JUST acquired.
+        //
+        // This is the regression test for the bug where InstanceRegistry.reapStaleInstances()
+        // (2-minute threshold, runs at every instance's own startup) or a transient
+        // InstanceRegistry.listAll() failure (silently returns an empty live set) could
+        // make a perfectly healthy, actively-merging instance look "absent" long before its
+        // lock is actually stale. Absence from the live set alone must NOT be sufficient to
+        // steal the lock — the lock's own acquired_at must also exceed
+        // dead-instance-threshold-minutes (30, here) before it is fair game.
+        assertThat(lockA.tryAcquire(LOCK_TARGET)).isTrue();   // acquired_at = now
+
+        lockB.cleanLocksForDeadInstances();
+
+        assertThat(lockB.tryAcquire(LOCK_TARGET))
+                .as("A freshly-acquired lock must survive cleanup even when its owner is "
+                        + "absent from the live registry, because the lock itself is not yet "
+                        + "old enough to be considered abandoned")
+                .isFalse();
+
+        lockA.release(LOCK_TARGET);
     }
 
     @Test
@@ -226,13 +260,20 @@ class CompactionDistributedLockTest {
      * defaults to 240 minutes) would have its lock stolen mid-merge. The fixed
      * threshold-based check must instead treat 5 minutes as comfortably alive, and only
      * reclaim once the heartbeat is older than the 30-minute dead-instance threshold.
+     *
+     * <p>The lock's own {@code acquired_at} is backdated by the same {@code heartbeatAge}
+     * (instance registered and grabbed the lock at roughly the same time), so this test
+     * also satisfies the additional {@code acquired_at < deadBefore} predicate
+     * {@code cleanLocksForDeadInstances()} now requires — see
+     * {@code cleanLocksForDeadInstances_survivesWhenOwnerAbsentButLockIsYoung} for the test
+     * that isolates that predicate from the heartbeat-age one.
      */
     @ParameterizedTest(name = "heartbeatAge={0} -> reclaimedAsDead={1}")
     @MethodSource("heartbeatAgeCases")
     void cleanLocksForDeadInstances_usesDeadInstanceThresholdNotRegistryStatus(
             Duration heartbeatAge, boolean expectReclaimed) throws Exception {
         DuckDBTestSupport.registerInstanceWithHeartbeatAge(conn, INSTANCE_A, heartbeatAge);
-        assertThat(lockA.tryAcquire(LOCK_TARGET)).isTrue();
+        insertLockWithAcquiredAtAge(LOCK_TARGET, INSTANCE_A, heartbeatAge);
 
         lockB.cleanLocksForDeadInstances();
 
@@ -336,6 +377,31 @@ class CompactionDistributedLockTest {
             ps.setString(2, instanceId);
             ps.setTimestamp(3, Timestamp.from(pastExpiry));
             ps.setTimestamp(4, Timestamp.from(pastExpiry));
+            ps.executeUpdate();
+        }
+    }
+
+    /**
+     * Directly inserts a lock row whose {@code acquired_at} is backdated by {@code age},
+     * with {@code expires_at} set {@code TTL_MINUTES} after that backdated {@code
+     * acquired_at} (i.e. a lock acquired {@code age} ago on the normal TTL schedule).
+     * Used to control the lock's own age independently of when the test happens to call
+     * {@link CompactionLockManager#tryAcquire}, which always stamps {@code acquired_at}
+     * as "now" — needed to exercise {@code cleanLocksForDeadInstances()}'s
+     * {@code acquired_at < deadBefore} predicate without waiting real wall-clock time.
+     */
+    private void insertLockWithAcquiredAtAge(String target, String instanceId, Duration age) throws SQLException {
+        Instant acquiredAt = Instant.now().minus(age);
+        Instant expiresAt = acquiredAt.plus(TTL_MINUTES, ChronoUnit.MINUTES);
+        try (PreparedStatement ps = conn.prepareStatement("""
+                INSERT INTO compaction_locks (target, instance_id, acquired_at, expires_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (target) DO NOTHING
+                """)) {
+            ps.setString(1, target);
+            ps.setString(2, instanceId);
+            ps.setTimestamp(3, Timestamp.from(acquiredAt));
+            ps.setTimestamp(4, Timestamp.from(expiresAt));
             ps.executeUpdate();
         }
     }
