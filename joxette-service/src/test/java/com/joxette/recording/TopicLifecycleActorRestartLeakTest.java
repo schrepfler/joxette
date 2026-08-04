@@ -32,6 +32,7 @@ import org.testcontainers.utility.DockerImageName;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
+import java.sql.Statement;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -103,6 +104,117 @@ class TopicLifecycleActorRestartLeakTest {
     }
 
     @Test
+    void restartAfterSinkFailure_keepsActorAliveInsteadOfPrematurelyStopping() throws Exception {
+        // Unlike the RecorderFailed scenario above (one poisoned partition, two
+        // healthy siblings), the SinkFailed path is triggered when the DRAIN VT
+        // itself escalates a write failure to FAILED — at that point ALL recorders
+        // are still healthy (none of them individually failed). PreRestart then
+        // stops all SINKFAIL_PARTITIONS of them, producing SINKFAIL_PARTITIONS
+        // stale RecorderFinished messages against the new generation — exactly
+        // enough to hit the pre-fix `finishedCount[0] >= recorders.size()` guard
+        // in recording() and stop the actor outright.
+        //
+        // kafka_key is declared INTEGER here (schema mismatch vs. the VARCHAR key
+        // TopicRecorder actually binds) so every write throws DuckDB's
+        // "Conversion Error: Could not convert string '...' to INT32" — a message
+        // with no recognized non-transient prefix, so DuckDbErrors.isTransient()
+        // classifies it as transient (see docs/write-resilience.md, "denylist-first
+        // strategy"). With writeRetryMaxAttempts=1, the very first failed write
+        // escalates straight from HEALTHY to FAILED and fires the SinkFailed path.
+        try (Statement st = duckDB.createStatement()) {
+            st.execute(String.format("""
+                    CREATE TABLE lake.main.general_%s (
+                        recorded_at     TIMESTAMPTZ NOT NULL,
+                        kafka_offset    BIGINT      NOT NULL,
+                        kafka_partition INTEGER     NOT NULL,
+                        kafka_timestamp TIMESTAMPTZ NOT NULL,
+                        kafka_key       INTEGER,
+                        kafka_value     BLOB,
+                        metadata        VARCHAR,
+                        headers         STRUCT(key VARCHAR, value VARCHAR)[],
+                        message_type    VARCHAR
+                    )""", SINKFAIL_SANITIZED));
+        }
+        try (PreparedStatement ps = duckDB.prepareStatement(
+                "INSERT INTO topic_configs (topic, mode) VALUES (?, 'general') ON CONFLICT DO NOTHING")) {
+            ps.setString(1, SINKFAIL_TOPIC);
+            ps.executeUpdate();
+        }
+        createTopic(SINKFAIL_TOPIC, SINKFAIL_PARTITIONS);
+
+        // A dedicated writeChannel (NOT the shared field from setUp()) so
+        // writeRetryMaxAttempts=1 takes effect: DuckLakeWriteChannel reads it once,
+        // at construction time, into a final field.
+        JoxetteProperties sinkFailProps = new JoxetteProperties();
+        sinkFailProps.getKafka().setBootstrapServers(kafka.getBootstrapServers());
+        sinkFailProps.getRecording().setRetryInitialIntervalMs(200);
+        sinkFailProps.getRecording().setRetryMaxIntervalMs(500);
+        sinkFailProps.getRecording().setBatchSize(10);
+        sinkFailProps.getRecording().setBatchTimeoutMs(100);
+        sinkFailProps.getThreading().setWriteRetryMaxAttempts(1);
+        sinkFailProps.getThreading().setWriteRetryInitialMs(50);
+
+        DuckLakeWriteChannel sinkFailWriteChannel =
+                new DuckLakeWriteChannel(duckDB, sinkFailProps, new CassetteRecordingBus(sinkFailProps), TEST_METRICS);
+        sinkFailWriteChannel.start();
+        try {
+            BrokerRepository brokerRepository = new BrokerRepository(duckDB, sinkFailProps);
+            BrokerConnectionFactory brokerFactory = new BrokerConnectionFactory(brokerRepository, sinkFailProps);
+            ConfigRepository configRepo = new ConfigRepository(duckDB, sinkFailProps);
+            MessageRouter router = new MessageRouter(configRepo, new EntityIdExtractor(), TEST_METRICS);
+            KnownEntitiesRepository knownEntities =
+                    new KnownEntitiesRepository(org.jooq.impl.DSL.using(duckDB, org.jooq.SQLDialect.DUCKDB));
+            Executor vtExecutor = Executors.newVirtualThreadPerTaskExecutor();
+
+            ActorRef<TopicLifecycleActor.Cmd> actor = kit.spawn(
+                    TopicLifecycleActor.create(SINKFAIL_TOPIC, "earliest", Instant.now(), sinkFailProps, brokerFactory,
+                            null, sinkFailWriteChannel, router, knownEntities, vtExecutor, TEST_METRICS));
+
+            await().atMost(Duration.ofSeconds(15))
+                   .untilAsserted(() -> assertThat(TopicRecorder.liveConsumerCount())
+                           .isGreaterThanOrEqualTo(SINKFAIL_PARTITIONS));
+
+            // Any message on partition 0 triggers the write failure that escalates
+            // straight to FAILED (writeRetryMaxAttempts=1) and fires SinkFailed. Its
+            // offset is never committed (the write never succeeds), so every subsequent
+            // generation re-reads and re-fails on it too — a genuine restart STORM, not
+            // just one restart. This is deliberate: it is the sharpest possible signal
+            // for the premature-stop bug. Pre-fix, the very FIRST restart's PreRestart
+            // cleanup (stopping all-healthy recorders) produces exactly SINKFAIL_PARTITIONS
+            // stale RecorderFinished messages, which stop the brand-new generation before
+            // it ever gets to fail again — so the restarts counter freezes at 1 forever
+            // and the actor goes silent. Post-fix, the generation check discards those
+            // stale messages, so the actor keeps genuinely failing and restarting: the
+            // restarts counter climbs past 1 and GetStatus keeps being answered.
+            publishToTopic(SINKFAIL_TOPIC, 0, "trigger");
+
+            var restartsCounter = TEST_METRICS.recordingMetrics(SINKFAIL_TOPIC).restarts();
+            await().atMost(Duration.ofSeconds(20))
+                   .pollInterval(Duration.ofMillis(200))
+                   .untilAsserted(() -> assertThat(restartsCounter.count())
+                           .as("actor must survive past the FIRST restart — freezing at 1 is the " +
+                                   "premature-stop bug: PreRestart's stale RecorderFinished messages " +
+                                   "stopped the new generation before it could fail (and restart) again")
+                           .isGreaterThanOrEqualTo(2.0));
+
+            // The actor must still be alive and answering — not just "restarts counted"
+            // (which happens in the OLD generation right before it throws, so a subtler
+            // bug could still show a restarts count without a live actor behind it).
+            TestProbe<RecorderStatus> probe = kit.createTestProbe(RecorderStatus.class);
+            actor.tell(new TopicLifecycleActor.GetStatus(probe.ref()));
+            RecorderStatus status = probe.receiveMessage(Duration.ofSeconds(5));
+            assertThat(status).isNotNull();
+        } finally {
+            sinkFailWriteChannel.stop();
+            deleteTopic(SINKFAIL_TOPIC);
+        }
+    }
+
+    private static final String SINKFAIL_TOPIC = "lifecycle.sinkfail.test.events";
+    private static final String SINKFAIL_SANITIZED = "lifecycle_sinkfail_test_events";
+    private static final int SINKFAIL_PARTITIONS = 3;
+
+    @Test
     void restartAfterOnePartitionFailure_stopsAllOldRecordersInsteadOfLeakingHealthySiblings() throws Exception {
         BrokerRepository brokerRepository = new BrokerRepository(duckDB, props);
         BrokerConnectionFactory brokerFactory = new BrokerConnectionFactory(brokerRepository, props);
@@ -148,12 +260,16 @@ class TopicLifecycleActorRestartLeakTest {
     // -------------------------------------------------------------------------
 
     private void publishToPartition(int partition, String value) throws Exception {
+        publishToTopic(TOPIC, partition, value);
+    }
+
+    private void publishToTopic(String topic, int partition, String value) throws Exception {
         try (KafkaProducer<String, byte[]> producer = new KafkaProducer<>(Map.of(
                 ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers(),
                 ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class,
                 ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, ByteArraySerializer.class,
                 ProducerConfig.ACKS_CONFIG, "all"))) {
-            producer.send(new ProducerRecord<>(TOPIC, partition, "k", value.getBytes(StandardCharsets.UTF_8))).get();
+            producer.send(new ProducerRecord<>(topic, partition, "k", value.getBytes(StandardCharsets.UTF_8))).get();
         }
     }
 

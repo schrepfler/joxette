@@ -8,6 +8,7 @@ import com.joxette.replay.MessageRouter;
 import com.softwaremill.jox.kafka.ConsumerSettings;
 import com.softwaremill.jox.structured.Scopes;
 import org.apache.pekko.actor.typed.Behavior;
+import org.apache.pekko.actor.typed.PostStop;
 import org.apache.pekko.actor.typed.PreRestart;
 import org.apache.pekko.actor.typed.SupervisorStrategy;
 import org.apache.pekko.actor.typed.javadsl.ActorContext;
@@ -59,8 +60,19 @@ public class TopicLifecycleActor {
     public record Stop(org.apache.pekko.actor.typed.ActorRef<StopReply> replyTo) implements Cmd {}
     public record GetStatus(org.apache.pekko.actor.typed.ActorRef<RecorderStatus> replyTo) implements Cmd {}
 
-    private record RecorderFinished(int partition) implements Cmd {}
-    private record RecorderFailed(int partition, Throwable cause) implements Cmd {}
+    /**
+     * {@code generation} ties this message to the specific {@link #starting(ActorContext, String,
+     * String, Instant, JoxetteProperties, BrokerConnectionFactory, String, DuckLakeWriteChannel,
+     * MessageRouter, KnownEntitiesRepository, Executor, JoxetteMetrics, long)} invocation
+     * that spawned the recorder it came from. Pekko's {@code restart-stash-capacity} stashes
+     * in-flight messages sent to {@code self} across a restart and redelivers them to the
+     * NEW generation's behavior once it comes up — without this tag, stale finishes from the
+     * generation that PreRestart just tore down are indistinguishable from real ones in the
+     * new generation, and can trip {@code finishedCount} into a premature stop. See
+     * TopicLifecycleActorRestartLeakTest.
+     */
+    private record RecorderFinished(int partition, long generation) implements Cmd {}
+    private record RecorderFailed(int partition, Throwable cause, long generation) implements Cmd {}
     // (old single-recorder variants shadowed by the new per-partition versions above)
 
     public sealed interface StopReply {}
@@ -85,9 +97,15 @@ public class TopicLifecycleActor {
             JoxetteMetrics joxetteMetrics) {
 
         JoxetteProperties.Recording cfg = props.getRecording();
+        // Declared here (in create(), NOT inside the Behaviors.setup lambda below) so it
+        // survives across restarts: create() runs exactly once at actor spawn and its local
+        // variables are captured by the lambda's closure; Pekko re-invokes only the lambda
+        // BODY on restart, not create() itself. Pre-incremented so the first generation is 1,
+        // never 0 — avoids ambiguity with any accidental default/uninitialized value.
+        long[] generation = {0};
         Behavior<Cmd> coreBehavior = Behaviors.setup(ctx ->
                 starting(ctx, topic, startFrom, startedAt, props, brokerFactory, brokerId,
-                         writeChannel, router, knownEntities, vtExecutor, joxetteMetrics));
+                         writeChannel, router, knownEntities, vtExecutor, joxetteMetrics, ++generation[0]));
 
         return Behaviors.supervise(coreBehavior)
                 .onFailure(Exception.class, SupervisorStrategy.restartWithBackoff(
@@ -113,7 +131,8 @@ public class TopicLifecycleActor {
             MessageRouter router,
             KnownEntitiesRepository knownEntities,
             Executor vtExecutor,
-            JoxetteMetrics joxetteMetrics) {
+            JoxetteMetrics joxetteMetrics,
+            long myGeneration) {
 
         JoxetteProperties.Recording cfg = props.getRecording();
         ConsumerSettings<String, byte[]> baseSettings = brokerFactory.consumerSettings(brokerId);
@@ -147,12 +166,12 @@ public class TopicLifecycleActor {
                     CompletableFuture.supplyAsync(() -> {
                         try {
                             recorder.run();
-                            return (Cmd) new RecorderFinished(partition);
+                            return (Cmd) new RecorderFinished(partition, myGeneration);
                         } catch (Exception e) {
                             throw new RuntimeException(e);
                         }
                     }, vtExecutor),
-                    (result, ex) -> ex != null ? new RecorderFailed(partition, ex) : result
+                    (result, ex) -> ex != null ? new RecorderFailed(partition, ex, myGeneration) : result
             );
         }
 
@@ -165,7 +184,7 @@ public class TopicLifecycleActor {
 
         return recording(ctx, topic, startFrom, startedAt, recorders,
                          props, brokerFactory, brokerId, writeChannel, router, knownEntities,
-                         vtExecutor, joxetteMetrics);
+                         vtExecutor, joxetteMetrics, myGeneration);
     }
 
     private static Behavior<Cmd> recording(
@@ -181,7 +200,8 @@ public class TopicLifecycleActor {
             MessageRouter router,
             KnownEntitiesRepository knownEntities,
             Executor vtExecutor,
-            JoxetteMetrics joxetteMetrics) {
+            JoxetteMetrics joxetteMetrics,
+            long myGeneration) {
 
         int[] finishedCount = {0};
 
@@ -192,9 +212,14 @@ public class TopicLifecycleActor {
                 })
                 .onMessage(Stop.class, msg -> {
                     recorders.forEach(TopicRecorder::stop);
-                    return stopping(topic, startedAt, recorders, recorders.size(), msg.replyTo());
+                    return stopping(topic, startedAt, recorders, recorders.size(), msg.replyTo(), myGeneration);
                 })
                 .onMessage(RecorderFinished.class, msg -> {
+                    if (msg.generation() != myGeneration) {
+                        // Stale finish, stashed and redelivered by Pekko's restart-stash-capacity
+                        // from a generation PreRestart already tore down. Harmless — ignore it.
+                        return Behaviors.same();
+                    }
                     finishedCount[0]++;
                     log.info("TopicLifecycleActor: partition {} finished for topic '{}' ({}/{})",
                             msg.partition(), topic, finishedCount[0], recorders.size());
@@ -205,6 +230,9 @@ public class TopicLifecycleActor {
                     return Behaviors.same();
                 })
                 .onMessage(RecorderFailed.class, msg -> {
+                    if (msg.generation() != myGeneration) {
+                        return Behaviors.same();
+                    }
                     log.error("TopicLifecycleActor: partition {} failed for topic '{}': {}",
                             msg.partition(), topic, msg.cause().getMessage());
                     joxetteMetrics.recordingMetrics(topic).restarts().increment();
@@ -230,6 +258,14 @@ public class TopicLifecycleActor {
                     recorders.forEach(TopicRecorder::stop);
                     return Behaviors.same();
                 })
+                .onSignal(PostStop.class, sig -> {
+                    // Defensive: tears down recorders whenever this behavior instance ends for
+                    // ANY reason, not just the explicit restart path above. TopicRecorder.stop()
+                    // is idempotent, so calling it here even when PreRestart or the Stop command
+                    // already stopped everything is safe.
+                    recorders.forEach(TopicRecorder::stop);
+                    return Behaviors.same();
+                })
                 .build();
     }
 
@@ -238,12 +274,16 @@ public class TopicLifecycleActor {
             Instant startedAt,
             List<TopicRecorder> recorders,
             int totalPartitions,
-            org.apache.pekko.actor.typed.ActorRef<StopReply> replyTo) {
+            org.apache.pekko.actor.typed.ActorRef<StopReply> replyTo,
+            long myGeneration) {
 
         int[] stoppedCount = {0};
 
         return Behaviors.receive(Cmd.class)
                 .onMessage(RecorderFinished.class, msg -> {
+                    if (msg.generation() != myGeneration) {
+                        return Behaviors.same();
+                    }
                     stoppedCount[0]++;
                     if (stoppedCount[0] >= totalPartitions) {
                         log.info("TopicLifecycleActor: all partitions stopped for topic '{}'", topic);
@@ -253,6 +293,9 @@ public class TopicLifecycleActor {
                     return Behaviors.same();
                 })
                 .onMessage(RecorderFailed.class, msg -> {
+                    if (msg.generation() != myGeneration) {
+                        return Behaviors.same();
+                    }
                     stoppedCount[0]++;
                     log.warn("TopicLifecycleActor: partition {} stopped with error for topic '{}': {}",
                             msg.partition(), topic, msg.cause().getMessage());
