@@ -3,10 +3,14 @@ package com.joxette.replay;
 import com.joxette.management.IdSource;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -139,6 +143,56 @@ class EntityIdExtractorTest {
     void unknownSourceThrows() {
         assertThatThrownBy(() -> IdSource.fromValue("payload"))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    // -----------------------------------------------------------------------
+    // extractDetailed — distinguishes extraction failures from "no match"
+    // -----------------------------------------------------------------------
+
+    static Stream<Arguments> detailedExtractionCases() {
+        return Stream.of(
+                Arguments.of(
+                        // Note: a bare unquoted token like "not-json" does NOT trigger this —
+                        // json-smart's lenient parser accepts it as a plain string literal, and
+                        // JsonPath then throws PathNotFoundException (a normal "no match", not a
+                        // failure) when the expression tries to navigate into it as an object.
+                        // An unterminated/syntactically broken document is what genuinely fails
+                        // to parse (InvalidJsonException). Verified against json-path 2.10.0.
+                        "malformed JSON is a failure",
+                        "{".getBytes(StandardCharsets.UTF_8),
+                        "$.order_id",
+                        true,   // expectFailed
+                        false   // expectPresent
+                ),
+                Arguments.of(
+                        "valid JSON with a missing path is NOT a failure",
+                        "{\"status\":\"pending\"}".getBytes(StandardCharsets.UTF_8),
+                        "$.order_id",
+                        false,
+                        false
+                ),
+                Arguments.of(
+                        "valid JSON with a matching path succeeds",
+                        "{\"order_id\":\"ORD-1\"}".getBytes(StandardCharsets.UTF_8),
+                        "$.order_id",
+                        false,
+                        true
+                )
+        );
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("detailedExtractionCases")
+    void extractDetailed_distinguishesFailureFromNoMatch(
+            String description, byte[] json, String expression, boolean expectFailed, boolean expectPresent) {
+        KafkaMessage msg = message("orders.events", null, json);
+        EntityIdExtractor.Extraction result = extractor.extractDetailed(msg, IdSource.VALUE, expression);
+
+        assertThat(result.failed()).isEqualTo(expectFailed);
+        assertThat(result.value().isPresent()).isEqualTo(expectPresent);
+        if (expectFailed) {
+            assertThat(result.failureReason()).isNotBlank();
+        }
     }
 
     // -----------------------------------------------------------------------

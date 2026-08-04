@@ -107,7 +107,7 @@ class TopicLifecycleActorRestartLeakTest {
         BrokerRepository brokerRepository = new BrokerRepository(duckDB, props);
         BrokerConnectionFactory brokerFactory = new BrokerConnectionFactory(brokerRepository, props);
         ConfigRepository configRepo = new ConfigRepository(duckDB, props);
-        MessageRouter router = new MessageRouter(configRepo, new EntityIdExtractor());
+        MessageRouter router = new MessageRouter(configRepo, new EntityIdExtractor(), TEST_METRICS);
         KnownEntitiesRepository knownEntities =
                 new KnownEntitiesRepository(org.jooq.impl.DSL.using(duckDB, org.jooq.SQLDialect.DUCKDB));
         Executor vtExecutor = Executors.newVirtualThreadPerTaskExecutor();

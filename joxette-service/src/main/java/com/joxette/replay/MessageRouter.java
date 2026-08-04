@@ -6,6 +6,7 @@ import com.joxette.management.EntityTypeConfig;
 import com.joxette.management.IdSource;
 import com.joxette.management.TopicMatcherConfig;
 import com.joxette.management.TopicMode;
+import com.joxette.metrics.JoxetteMetrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.DependsOn;
@@ -58,13 +59,15 @@ public class MessageRouter {
 
     private final ConfigRepository configRepo;
     private final EntityIdExtractor extractor;
+    private final JoxetteMetrics metrics;
 
     /** Snapshot of routing state, replaced atomically on reload(). */
     private volatile RoutingTables tables;
 
-    public MessageRouter(ConfigRepository configRepo, EntityIdExtractor extractor) {
+    public MessageRouter(ConfigRepository configRepo, EntityIdExtractor extractor, JoxetteMetrics metrics) {
         this.configRepo = configRepo;
         this.extractor  = extractor;
+        this.metrics    = metrics;
         try {
             reload();
         } catch (SQLException e) {
@@ -152,8 +155,17 @@ public class MessageRouter {
             for (EntitySourceEntry entry : entries) {
                 // Try each matcher in declaration order; stop at first match
                 for (EntitySourceConfig.MatcherConfig matcher : entry.matchers()) {
-                    Optional<String> entityId =
-                            extractor.extract(message, matcher.idSource(), matcher.idExpression());
+                    EntityIdExtractor.Extraction extraction =
+                            extractor.extractDetailed(message, matcher.idSource(), matcher.idExpression());
+                    if (extraction.failed()) {
+                        log.warn("MessageRouter: entity-id extraction failed topic='{}' entityType='{}' " +
+                                        "messageType='{}' source={} expression='{}': {}",
+                                message.topic(), entry.entityType(), matcher.messageType(),
+                                matcher.idSource(), matcher.idExpression(), extraction.failureReason());
+                        metrics.entityExtractionFailures(message.topic(), entry.entityType()).increment();
+                        continue;
+                    }
+                    Optional<String> entityId = extraction.value();
                     if (entityId.isPresent()) {
                         int bucketCount = t.entityBuckets().getOrDefault(entry.entityType(), 256);
                         int bucket = computeBucket(entry.entityType(), entityId.get(), bucketCount);

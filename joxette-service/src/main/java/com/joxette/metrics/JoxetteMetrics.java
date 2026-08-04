@@ -223,6 +223,20 @@ public class JoxetteMetrics {
                 .register(registry);
     }
 
+    /**
+     * Counter incremented when {@link com.joxette.replay.EntityIdExtractor}
+     * throws while extracting an entity id (malformed JSON, JsonPath evaluation
+     * error) — excludes the normal "no id present" outcome, which is not an
+     * error and must not inflate this counter.
+     */
+    public Counter entityExtractionFailures(String topic, String entityType) {
+        return Counter.builder("joxette.recording.entity_extraction_failures")
+                .description("Entity-id extraction attempts that threw, tagged by topic and entity type")
+                .tag("topic", topic)
+                .tag("entity_type", entityType)
+                .register(registry);
+    }
+
     // =========================================================================
     // Kafka client metric bridging
     // =========================================================================

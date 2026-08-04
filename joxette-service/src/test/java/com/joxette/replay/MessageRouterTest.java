@@ -7,7 +7,12 @@ import com.joxette.management.IdSource;
 import com.joxette.management.TopicConfig;
 import com.joxette.management.TopicMatcherConfig;
 import com.joxette.management.TopicMode;
+import com.joxette.metrics.JoxetteMetrics;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
 
 import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
@@ -16,6 +21,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.Stream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -27,6 +33,9 @@ import static org.assertj.core.api.Assertions.assertThat;
  * needed.
  */
 class MessageRouterTest {
+
+    private static final SimpleMeterRegistry TEST_REGISTRY = new SimpleMeterRegistry();
+    private static final JoxetteMetrics TEST_METRICS = new JoxetteMetrics(TEST_REGISTRY);
 
     // =========================================================================
     // Stub ConfigRepository
@@ -92,7 +101,7 @@ class MessageRouterTest {
 
     private static MessageRouter routerFor(StubConfigRepository repo) {
         // Default InstanceRoles (all roles active) so entity-routing tests exercise the full path
-        return new MessageRouter(repo, new EntityIdExtractor());
+        return new MessageRouter(repo, new EntityIdExtractor(), TEST_METRICS);
     }
 
     private static EntitySourceConfig.MatcherConfig matcher(
@@ -359,5 +368,67 @@ class MessageRouterTest {
                 jsonMessage("orders.events", "{\"order_id\":\"ORD-1\"}"));
         assertThat(after.entityRoutes()).hasSize(1);
         assertThat(after.entityRoutes().get(0).entityId()).isEqualTo("ORD-1");
+    }
+
+    // =========================================================================
+    // Entity ID extraction failures are observable (counter + no spurious route)
+    // =========================================================================
+
+    static Stream<Arguments> extractionFailureCases() {
+        return Stream.of(
+                Arguments.of(
+                        // See EntityIdExtractorTest for why a bare unquoted token like "not-json"
+                        // does NOT exercise this path (json-smart parses it leniently as a string,
+                        // yielding PathNotFoundException — a normal no-match, not a failure).
+                        "malformed JSON increments the failure counter and yields no route",
+                        "{".getBytes(StandardCharsets.UTF_8),
+                        "$.order_id",
+                        false,  // expectRoutePresent
+                        1L      // expectedFailureCount
+                ),
+                Arguments.of(
+                        "valid JSON with a non-existent path yields no route without incrementing the failure counter",
+                        "{\"status\":\"pending\"}".getBytes(StandardCharsets.UTF_8),
+                        "$.order_id",
+                        false,
+                        0L
+                ),
+                Arguments.of(
+                        "valid JSON with a matching path yields a route without incrementing the failure counter",
+                        "{\"order_id\":\"ORD-1\"}".getBytes(StandardCharsets.UTF_8),
+                        "$.order_id",
+                        true,
+                        0L
+                )
+        );
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @MethodSource("extractionFailureCases")
+    void route_distinguishesExtractionFailureFromNoMatch(
+            String description, byte[] json, String expression, boolean expectRoutePresent, long expectedFailureCount) {
+        String topic = "extraction.failure.topic";
+        String entityType = "extraction-failure-" + java.util.UUID.randomUUID();
+        StubConfigRepository repo = new StubConfigRepository();
+        repo.addTopic(topic, TopicMode.BOTH);
+        repo.addEntityType(entityType, 4);
+        repo.addSource(entityType, topic, TopicMode.BOTH,
+                List.of(matcher("created", IdSource.VALUE, expression)));
+
+        MessageRouter router = new MessageRouter(repo, new EntityIdExtractor(), TEST_METRICS);
+        KafkaMessage msg = new KafkaMessage(topic, 0, 0L, System.currentTimeMillis(), null, json, List.of());
+
+        RouteDecision decision = router.route(msg);
+
+        assertThat(decision.entityRoutes()).hasSize(expectRoutePresent ? 1 : 0);
+        assertThat(extractionFailureCount(topic, entityType)).isEqualTo((double) expectedFailureCount);
+    }
+
+    private double extractionFailureCount(String topic, String entityType) {
+        var counter = TEST_REGISTRY.find("joxette.recording.entity_extraction_failures")
+                .tag("topic", topic)
+                .tag("entity_type", entityType)
+                .counter();
+        return counter == null ? 0.0 : counter.count();
     }
 }
