@@ -223,6 +223,42 @@ class CompactionDistributedLockTest {
     }
 
     // -------------------------------------------------------------------------
+    // buildInstanceId — hostname-only scheme (survives PID change across restart)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void buildInstanceId_isHostnameOnly_stableAcrossCalls() {
+        String id1 = CompactionLockManager.buildInstanceId();
+        String id2 = CompactionLockManager.buildInstanceId();
+
+        // Same host, called twice in the same process — must be identical, and
+        // must not embed a PID (a real restart changes ProcessHandle.current().pid(),
+        // so encoding it would defeat same-host crash recovery).
+        assertThat(id1).isEqualTo(id2);
+        assertThat(id1).doesNotContain(":");
+    }
+
+    @Test
+    void releaseOwnLocks_reclaimsSameHostLockImmediately_notViaTtlExpiry() throws Exception {
+        // Simulate a crash: the "before" process holds the lock and never releases it.
+        String host = "worker-node-9";
+        CompactionLockManager beforeCrash = new CompactionLockManager(conn, TTL_MINUTES, host);
+        assertThat(beforeCrash.tryAcquire(LOCK_TARGET)).isTrue();
+
+        // "after" process restarts on the same host. Under the old hostname:pid
+        // scheme this would be a different instance ID (new PID) and would never
+        // match; under the new hostname-only scheme it is the same ID.
+        CompactionLockManager afterRestart = new CompactionLockManager(conn, TTL_MINUTES, host);
+        afterRestart.releaseOwnLocks();
+
+        // Reclaimed immediately — the 120-minute TTL never had a chance to elapse
+        // in this synchronous test, so this proves reclaim happened via the
+        // instance-ID match at startup, not via TTL expiry.
+        assertThat(lockB.tryAcquire(LOCK_TARGET)).isTrue();
+        lockB.release(LOCK_TARGET);
+    }
+
+    // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
 

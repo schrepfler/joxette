@@ -19,8 +19,8 @@ public record CompactionLockInfo(
                 example = "entity:order")
         String target,
 
-        @Schema(description = "Instance that holds the lock, in 'hostname:pid' format",
-                example = "worker-node-1:42")
+        @Schema(description = "Instance that holds the lock (hostname)",
+                example = "worker-node-1")
         String instanceId,
 
         @Schema(description = "When the lock was first acquired")

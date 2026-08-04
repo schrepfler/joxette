@@ -44,9 +44,10 @@ import java.util.List;
  * </ol>
  *
  * <h2>Instance ID</h2>
- * <p>Derived once at construction as {@code hostname:pid}.  The same host+PID pair
- * appearing in a stale lock row is therefore safe to delete on restart — it can only
- * belong to a previous incarnation of this process.
+ * <p>Derived once at construction as this process's hostname alone (no PID — see
+ * {@link #buildInstanceId()} for why). A stale lock row bearing the current
+ * hostname is therefore safe to delete on restart: it can only have been left by
+ * a previous incarnation of this process on this same host.
  *
  * <h2>Thread safety</h2>
  * <p>All DB access is wrapped in {@code synchronized(duckDB)}, matching the convention
@@ -261,7 +262,7 @@ public class CompactionLockManager {
         return result;
     }
 
-    /** The instance identifier used in lock rows ({@code hostname:pid}). */
+    /** The instance identifier used in lock rows (this process's hostname). */
     public String getInstanceId() { return instanceId; }
 
     // -------------------------------------------------------------------------
@@ -278,13 +279,34 @@ public class CompactionLockManager {
         }
     }
 
-    private static String buildInstanceId() {
+    /**
+     * Builds this process's compaction-lock instance identity.
+     *
+     * <h2>Why hostname only (not hostname:pid)</h2>
+     * <p>The previous scheme ({@code hostname:pid}) meant a crashed-and-restarted
+     * process could never match its own prior lock rows in {@link #releaseOwnLocks()},
+     * because the new process has a different PID — the stale lock then had to wait
+     * out the full {@code lock-ttl-minutes} (default 120) before being reclaimed.
+     *
+     * <p>Using the hostname alone fixes the common case: a container that crashes
+     * and is restarted <em>in place</em> by kubelet (the same Kubernetes Pod, hence
+     * the same {@code HOSTNAME}) gets a new PID but the same instance identity, so
+     * its stale locks are reclaimed immediately at startup instead of waiting on TTL.
+     *
+     * <h2>Residual gap — full Pod replacement</h2>
+     * <p>This does <em>not</em> cover a Pod being entirely rescheduled (node
+     * failure, rolling deploy): a {@code Deployment}-managed Pod gets a brand-new
+     * random hostname suffix on replacement, so the new process's identity will not
+     * match the old one either way. That case still relies on {@code lock-ttl-minutes}
+     * TTL expiry as the backstop, exactly as before this fix — see
+     * docs/clustering-deployment.md §6 (the compaction tier is a {@code Deployment},
+     * not a {@code StatefulSet}, so Pod names are not stable across replacement).
+     */
+    static String buildInstanceId() {
         try {
-            String host = InetAddress.getLocalHost().getHostName();
-            long   pid  = ProcessHandle.current().pid();
-            return host + ":" + pid;
+            return InetAddress.getLocalHost().getHostName();
         } catch (Exception e) {
-            return "localhost:" + ProcessHandle.current().pid();
+            return "localhost";
         }
     }
 }
