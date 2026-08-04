@@ -66,9 +66,24 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  * <p>Lock acquisition, heartbeating, and release are transparent to the caller —
  * targets whose lock is held by another instance are silently skipped and counted
- * as skipped in the run result.  Heartbeats fire every
- * {@link CompactionLockManager#HEARTBEAT_INTERVAL_MINUTES} minutes from a dedicated
- * virtual thread so a long-running merge never trips its own TTL.
+ * as skipped in the run result.  A {@link LockHeartbeat} refreshes the lock's
+ * {@code expires_at} every {@link CompactionLockManager#HEARTBEAT_INTERVAL_MINUTES}
+ * minutes from a dedicated virtual thread while the merge is in progress.
+ *
+ * <p><b>Known limitation:</b> the heartbeat's {@link CompactionLockManager#refresh}
+ * call and the merge's own {@code executeQuery} both run under {@code synchronized(duckDB)}
+ * on this instance's single shared connection, so a heartbeat tick that fires while the
+ * merge statement is still executing simply blocks until the merge's synchronized block
+ * exits — it cannot land concurrently with an in-flight merge. In practice this means the
+ * heartbeat protects the common case (merges that finish well inside one TTL window, where
+ * it is a no-op) but does not, by itself, prevent a cross-instance lock steal for a single
+ * {@code ducklake_merge_adjacent_files} call that runs longer than {@code lockTtlMinutes}
+ * end-to-end — closing that residual gap would need lock heartbeat I/O moved off the main
+ * compaction connection (e.g. a small dedicated connection for {@code compaction_locks}
+ * only). The documented mitigation in the meantime is the deployment guidance in
+ * {@code docs/clustering-deployment.md} / {@code docs/operator-design.md}: run exactly one
+ * compaction-enabled replica, which is what actually prevents the two-instance race this
+ * whole mechanism exists as a backstop for.
  */
 @Service
 @DependsOn("dbSchemaManager")
@@ -134,6 +149,13 @@ public class CompactionService {
         FileStats totalFileStats = FileStats.EMPTY;
         long start = System.nanoTime();
         try {
+            // Opportunistic reclaim of locks orphaned by a crashed instance, once per
+            // run rather than once per target — cleanExpiredLocks() is a single sweep
+            // over the whole compaction_locks table, so running it once here up front
+            // covers every target this run is about to attempt instead of re-scanning
+            // the table per entity type / topic.
+            cleanExpiredLocksIfPossible();
+
             CompactionResult entityResult = compactEntityTypes(targets);
             entityTypes    = entityResult.unitsProcessed();
             totalFileStats = totalFileStats.add(entityResult.fileStats());
@@ -230,6 +252,102 @@ public class CompactionService {
     }
 
     // =========================================================================
+    // Distributed lock helpers (opportunistic cleanup + heartbeat)
+    // =========================================================================
+
+    /**
+     * Sweeps {@code compaction_locks} for expired rows once at the top of a run —
+     * see {@link CompactionLockManager#cleanExpiredLocks()}.
+     *
+     * <p>Without this, a lock held by an instance that crashed mid-merge (and so
+     * never reached its {@code finally}-block {@link CompactionLockManager#release})
+     * blocks that target forever: {@link CompactionLockManager#tryAcquire} only checks
+     * whether a row exists, not whether it is expired. This is the same
+     * "log and continue" error-handling style used for {@link #doCompactEntityType}'s
+     * and {@link #doCompactGeneralTopic}'s {@code tryAcquire} calls — a cleanup failure
+     * must not abort the run; it just means expired rows persist until the next
+     * successful sweep (or that instance's own {@link CompactionLockManager#releaseOwnLocks()}
+     * on restart).
+     */
+    private void cleanExpiredLocksIfPossible() {
+        try {
+            lockManager.cleanExpiredLocks();
+        } catch (SQLException e) {
+            log.warn("Could not clean expired compaction locks ({}); proceeding with this run — "
+                    + "any expired lock rows will keep blocking their target until the next "
+                    + "successful cleanup", e.getMessage());
+        }
+    }
+
+    /**
+     * Starts a background heartbeat for {@code target}, refreshing its lock's
+     * {@code expires_at} roughly every {@link CompactionLockManager#HEARTBEAT_INTERVAL_MINUTES}
+     * minutes so a legitimately long merge does not let the TTL expire out from under it.
+     *
+     * <p>Caller must {@link LockHeartbeat#stop()} it once the merge finishes, in the same
+     * {@code finally} block that calls {@link CompactionLockManager#release}.
+     *
+     * <p>See the class-level "Distributed locking" javadoc for a known limitation: each
+     * {@link CompactionLockManager#refresh} tick shares {@code synchronized(duckDB)} with
+     * the merge statement it is meant to protect, so it cannot execute while that
+     * statement is still running — it is a best-effort backstop, not a guarantee, for
+     * merges that individually outlive one TTL window.
+     */
+    private LockHeartbeat startHeartbeat(String target) {
+        return new LockHeartbeat(lockManager, target,
+                Duration.ofMinutes(CompactionLockManager.HEARTBEAT_INTERVAL_MINUTES));
+    }
+
+    /**
+     * Periodic background virtual thread that calls {@link CompactionLockManager#refresh}
+     * on a fixed interval until {@link #stop()} interrupts it — the same
+     * sleep-loop-then-interrupt idiom {@code InstanceRegistry} uses for its 30-second
+     * heartbeat thread. Package-visible (not {@code private}) so unit tests can drive the
+     * mechanism directly with a short interval instead of waiting out a real
+     * {@code HEARTBEAT_INTERVAL_MINUTES}.
+     */
+    static final class LockHeartbeat {
+        private final Thread thread;
+
+        LockHeartbeat(CompactionLockManager lockManager, String target, Duration interval) {
+            this.thread = Thread.startVirtualThread(() -> {
+                while (!Thread.currentThread().isInterrupted()) {
+                    try {
+                        Thread.sleep(interval);
+                        lockManager.refresh(target);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    } catch (SQLException e) {
+                        log.warn("Heartbeat refresh failed for compaction lock '{}': {}",
+                                target, e.getMessage());
+                    }
+                }
+            });
+        }
+
+        /**
+         * Interrupts the heartbeat loop and blocks until it has actually exited
+         * (bounded by a generous timeout so a stuck refresh call can never hang
+         * shutdown forever).
+         *
+         * <p>Joining rather than firing-and-forgetting closes a race: without it, a
+         * heartbeat that woke from sleep and is mid-{@code refresh()} call when
+         * {@link Thread#interrupt()} is invoked can complete that one call after
+         * {@code stop()} has returned — which could otherwise land after the caller's
+         * {@code finally} block has already called {@link CompactionLockManager#release}.
+         * Idempotent — safe to call more than once.
+         */
+        void stop() {
+            thread.interrupt();
+            try {
+                thread.join(Duration.ofSeconds(10));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    // =========================================================================
     // Entity compaction
     // =========================================================================
 
@@ -288,6 +406,7 @@ public class CompactionService {
                     lockTarget);
             return CompactionResult.NONE;
         }
+        LockHeartbeat heartbeat = startHeartbeat(lockTarget);
         try {
             long maxFileSizeBytes = (long) props.getCompaction().getEntity().getTargetFileSizeMb() * 1024L * 1024L;
             int rowGroupMemoryLimitMb = props.getCompaction().getEntity().getRowGroupMemoryLimitMb();
@@ -331,6 +450,7 @@ public class CompactionService {
             }
             return CompactionResult.NONE;
         } finally {
+            heartbeat.stop();
             lockManager.release(lockTarget);
         }
     }
@@ -384,6 +504,7 @@ public class CompactionService {
                     lockTarget);
             return CompactionResult.NONE;
         }
+        LockHeartbeat heartbeat = startHeartbeat(lockTarget);
         try {
             long maxFileSizeBytes = (long) props.getCompaction().getGeneral().getTargetFileSizeMb() * 1024L * 1024L;
             String sql = "CALL ducklake_merge_adjacent_files('lake', '" + tableName + "',"
@@ -414,6 +535,7 @@ public class CompactionService {
             }
             return CompactionResult.NONE;
         } finally {
+            heartbeat.stop();
             lockManager.release(lockTarget);
         }
     }

@@ -491,8 +491,81 @@ class CompactionServiceTest {
     }
 
     // -------------------------------------------------------------------------
+    // Expired-lock cleanup (opportunistic, at the start of every run)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Reproduces the crashed-instance scenario from the task review: a lock row is
+     * left behind with {@code expires_at} in the past (simulating an instance that
+     * died mid-merge and never called {@code release()}). Before this fix, nothing
+     * ever called {@link CompactionLockManager#cleanExpiredLocks()}, so the row stayed
+     * forever and permanently blocked this entity type from ever being compacted again
+     * by any instance.
+     *
+     * <p>{@link CompactionService#executeRun} must now clean expired locks once at the
+     * top of the run, before attempting to acquire any target — proven here by seeding
+     * the expired row directly via SQL (not through a real crash) and asserting a
+     * subsequent run can acquire and attempt the merge instead of skipping with
+     * "held by another instance".
+     */
+    @Test
+    void executeRun_cleansExpiredLocksAtStart_allowingReacquisitionOfAnOrphanedTarget() throws Exception {
+        insertExpiredLock("entity:" + ENTITY_TYPE, "crashed-instance:9999");
+
+        ch.qos.logback.classic.Logger logger =
+                (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(CompactionService.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        Level savedLevel = logger.getLevel();
+        logger.setLevel(Level.DEBUG);
+        logger.addAppender(appender);
+        try {
+            CompactionRun run = service.beginRun(TriggerSource.MANUAL, List.of(ENTITY_TYPE));
+            service.executeRun(run.id(), List.of(ENTITY_TYPE));
+
+            assertThat(service.getRunById(run.id()).status()).isEqualTo(RunStatus.COMPLETED);
+
+            boolean attemptedMerge = appender.list.stream().anyMatch(e ->
+                    e.getFormattedMessage().contains(
+                            "Merging adjacent files for entity_type='" + ENTITY_TYPE + "'"));
+            boolean skippedAsHeldByAnother = appender.list.stream().anyMatch(e ->
+                    e.getFormattedMessage().contains("held by another instance"));
+
+            assertThat(attemptedMerge)
+                    .as("An expired lock left by a crashed instance must be cleaned at the start "
+                            + "of the run, allowing this instance to acquire '" + ENTITY_TYPE + "'")
+                    .isTrue();
+            assertThat(skippedAsHeldByAnother)
+                    .as("The target must not be skipped as held-by-another once its lock has expired")
+                    .isFalse();
+        } finally {
+            logger.detachAppender(appender);
+            logger.setLevel(savedLevel);
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
+
+    /**
+     * Directly inserts a {@code compaction_locks} row with {@code expires_at} one hour
+     * in the past, simulating a lock left behind by a crashed instance.
+     */
+    private void insertExpiredLock(String target, String instanceId) throws Exception {
+        Instant pastExpiry = Instant.now().minusSeconds(3_600);
+        try (PreparedStatement ps = duckDB.prepareStatement("""
+                INSERT INTO compaction_locks (target, instance_id, acquired_at, expires_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (target) DO NOTHING
+                """)) {
+            ps.setString(1, target);
+            ps.setString(2, instanceId);
+            ps.setTimestamp(3, java.sql.Timestamp.from(pastExpiry));
+            ps.setTimestamp(4, java.sql.Timestamp.from(pastExpiry));
+            ps.executeUpdate();
+        }
+    }
 
     private JoxetteProperties testProperties() {
         JoxetteProperties props = new JoxetteProperties();
