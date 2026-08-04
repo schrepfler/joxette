@@ -54,8 +54,20 @@ public class TopicLifecycleActor {
 
     public sealed interface Cmd {}
 
-    /** Sent by the DuckLakeWriteChannel drain VT when max write retries are exhausted. */
-    private record SinkFailed(Throwable cause) implements Cmd {}
+    /**
+     * Sent by the DuckLakeWriteChannel drain VT when max write retries are exhausted.
+     *
+     * <p>{@code generation} carries the same stale-message protection as {@link RecorderFinished}/
+     * {@link RecorderFailed} below: the failure callback is registered fresh in every
+     * {@link #starting} invocation, but the callback closure captured by an OLD generation's
+     * {@code DuckLakeWriteChannel} can still fire after {@code PreRestart} has torn that
+     * generation down (the drain VT racing the restart), delivering a stale {@code SinkFailed}
+     * into the new generation's mailbox. Without this tag that stale message would trip the new
+     * generation's own restart — a spurious extra restart and inflated
+     * {@code joxette.recorder.restarts} count, not a permanent stop like the unguarded
+     * {@code RecorderFinished}/{@code RecorderFailed} case, but the same class of bug.
+     */
+    record SinkFailed(Throwable cause, long generation) implements Cmd {}
 
     public record Stop(org.apache.pekko.actor.typed.ActorRef<StopReply> replyTo) implements Cmd {}
     public record GetStatus(org.apache.pekko.actor.typed.ActorRef<RecorderStatus> replyTo) implements Cmd {}
@@ -71,8 +83,8 @@ public class TopicLifecycleActor {
      * new generation, and can trip {@code finishedCount} into a premature stop. See
      * TopicLifecycleActorRestartLeakTest.
      */
-    private record RecorderFinished(int partition, long generation) implements Cmd {}
-    private record RecorderFailed(int partition, Throwable cause, long generation) implements Cmd {}
+    record RecorderFinished(int partition, long generation) implements Cmd {}
+    record RecorderFailed(int partition, Throwable cause, long generation) implements Cmd {}
     // (old single-recorder variants shadowed by the new per-partition versions above)
 
     public sealed interface StopReply {}
@@ -179,7 +191,7 @@ public class TopicLifecycleActor {
         // to this actor, which throws to trigger the Pekko backoff restart.
         // resetSinkState() is called on the next starting() invocation so consumers resume.
         writeChannel.setFailureCallback(cause ->
-                ctx.getSelf().tell(new SinkFailed(cause)));
+                ctx.getSelf().tell(new SinkFailed(cause, myGeneration)));
         writeChannel.resetSinkState();
 
         return recording(ctx, topic, startFrom, startedAt, recorders,
@@ -239,6 +251,11 @@ public class TopicLifecycleActor {
                     throw new RuntimeException(msg.cause());
                 })
                 .onMessage(SinkFailed.class, msg -> {
+                    if (msg.generation() != myGeneration) {
+                        // Stale failure, tied to a generation PreRestart already tore down —
+                        // same rationale as the RecorderFinished/RecorderFailed guards above.
+                        return Behaviors.same();
+                    }
                     log.error("TopicLifecycleActor: write sink exhausted retries for topic '{}' — restarting actor: {}",
                             topic, msg.cause().getMessage());
                     joxetteMetrics.recordingMetrics(topic).restarts().increment();

@@ -103,17 +103,33 @@ class TopicLifecycleActorRestartLeakTest {
         deleteTopic(TOPIC);
     }
 
+    /**
+     * NOTE (round-2 re-review correction): the original premise behind this test — that a single
+     * {@code SinkFailed} restart stops ALL {@code SINKFAIL_PARTITIONS} recorders and thereby
+     * produces {@code SINKFAIL_PARTITIONS} stale {@code RecorderFinished} messages, enough by
+     * itself to cross the pre-fix {@code finishedCount[0] >= recorders.size()} guard — is
+     * factually wrong. Only the partition whose write actually failed throws inside
+     * {@code TopicRecorder.run()} (its blocking {@code writeChannel.submit()} call receives the
+     * same exception that also fires the {@code SinkFailed} callback), so it produces its own real
+     * {@code RecorderFailed}, not a stale {@code RecorderFinished}. {@code PreRestart} then calls
+     * {@code stop()} on the other {@code SINKFAIL_PARTITIONS - 1} still-healthy siblings, which
+     * exit their poll loops cleanly and produce {@code SINKFAIL_PARTITIONS - 1} stale
+     * {@code RecorderFinished} — one short of the {@code recorders.size()} threshold. A single
+     * restart can therefore never trip {@code finishedCount}'s premature-stop path through this
+     * mechanism alone; see {@link #staleGenerationRecorderFinished_afterCrossingThreshold_doesNotStopTheActor}
+     * for the deterministic test that actually reproduces (and would fail on) that specific bug.
+     *
+     * <p>This test is kept as an honest, weaker smoke test: it drives a real restart STORM
+     * against live Kafka + DuckDB (the failing offset is never committed, so every new generation
+     * re-reads and re-fails on it) and asserts the actor keeps genuinely restarting and answering
+     * {@code GetStatus} rather than going silent. That is real coverage for "the actor survives
+     * repeated real {@code SinkFailed} escalations end-to-end," which is a legitimate thing to
+     * verify, but on its own — as the re-reviewer correctly found — it does NOT distinguish
+     * pre-fix from post-fix code, since ordinary repeated real failures satisfy
+     * {@code restarts >= 2} regardless of whether the generation guard is present.
+     */
     @Test
-    void restartAfterSinkFailure_keepsActorAliveInsteadOfPrematurelyStopping() throws Exception {
-        // Unlike the RecorderFailed scenario above (one poisoned partition, two
-        // healthy siblings), the SinkFailed path is triggered when the DRAIN VT
-        // itself escalates a write failure to FAILED — at that point ALL recorders
-        // are still healthy (none of them individually failed). PreRestart then
-        // stops all SINKFAIL_PARTITIONS of them, producing SINKFAIL_PARTITIONS
-        // stale RecorderFinished messages against the new generation — exactly
-        // enough to hit the pre-fix `finishedCount[0] >= recorders.size()` guard
-        // in recording() and stop the actor outright.
-        //
+    void restartAfterSinkFailure_survivesRepeatedRealFailuresEndToEnd() throws Exception {
         // kafka_key is declared INTEGER here (schema mismatch vs. the VARCHAR key
         // TopicRecorder actually binds) so every write throws DuckDB's
         // "Conversion Error: Could not convert string '...' to INT32" — a message
@@ -175,26 +191,21 @@ class TopicLifecycleActorRestartLeakTest {
                            .isGreaterThanOrEqualTo(SINKFAIL_PARTITIONS));
 
             // Any message on partition 0 triggers the write failure that escalates
-            // straight to FAILED (writeRetryMaxAttempts=1) and fires SinkFailed. Its
-            // offset is never committed (the write never succeeds), so every subsequent
-            // generation re-reads and re-fails on it too — a genuine restart STORM, not
-            // just one restart. This is deliberate: it is the sharpest possible signal
-            // for the premature-stop bug. Pre-fix, the very FIRST restart's PreRestart
-            // cleanup (stopping all-healthy recorders) produces exactly SINKFAIL_PARTITIONS
-            // stale RecorderFinished messages, which stop the brand-new generation before
-            // it ever gets to fail again — so the restarts counter freezes at 1 forever
-            // and the actor goes silent. Post-fix, the generation check discards those
-            // stale messages, so the actor keeps genuinely failing and restarting: the
-            // restarts counter climbs past 1 and GetStatus keeps being answered.
+            // straight to FAILED (writeRetryMaxAttempts=1) and fires SinkFailed for that
+            // partition's own RecorderFailed. Its offset is never committed (the write
+            // never succeeds), so every subsequent generation re-reads and re-fails on it
+            // too — a genuine restart STORM, not just one restart. This is a real
+            // end-to-end smoke check that the actor keeps functioning under repeated
+            // SinkFailed escalations (see the class-level note on this method for why it
+            // is NOT, by itself, a regression test for the generation-guard fix).
             publishToTopic(SINKFAIL_TOPIC, 0, "trigger");
 
             var restartsCounter = TEST_METRICS.recordingMetrics(SINKFAIL_TOPIC).restarts();
             await().atMost(Duration.ofSeconds(20))
                    .pollInterval(Duration.ofMillis(200))
                    .untilAsserted(() -> assertThat(restartsCounter.count())
-                           .as("actor must survive past the FIRST restart — freezing at 1 is the " +
-                                   "premature-stop bug: PreRestart's stale RecorderFinished messages " +
-                                   "stopped the new generation before it could fail (and restart) again")
+                           .as("actor must survive past the FIRST restart and keep genuinely " +
+                                   "failing/restarting against the live, uncommitted-offset failure")
                            .isGreaterThanOrEqualTo(2.0));
 
             // The actor must still be alive and answering — not just "restarts counted"
@@ -213,6 +224,132 @@ class TopicLifecycleActorRestartLeakTest {
     private static final String SINKFAIL_TOPIC = "lifecycle.sinkfail.test.events";
     private static final String SINKFAIL_SANITIZED = "lifecycle_sinkfail_test_events";
     private static final int SINKFAIL_PARTITIONS = 3;
+
+    /**
+     * Real generations from {@link TopicLifecycleActor#create} always start at 1 (the
+     * {@code generation[0]} counter in {@code create()} is pre-incremented from 0 before the
+     * first {@code starting()} call). 0 can therefore never be a real generation — using it here
+     * unambiguously marks every message built with it as "stale", exactly like a message stashed
+     * by Pekko's {@code restart-stash-capacity} from a torn-down prior generation would be once
+     * redelivered to a new one.
+     */
+    private static final long STALE_GENERATION = 0L;
+
+    /**
+     * Deterministic, unit-level reproduction of the bug {@code 7fffde7} fixed for
+     * {@code RecorderFinished}, sidestepping the timing problems that made
+     * {@link #restartAfterSinkFailure_survivesRepeatedRealFailuresEndToEnd} an unreliable
+     * regression test for it (see that method's corrected comment above).
+     *
+     * <p>Rather than trying to time a real restart so that Pekko's stash-and-redeliver produces
+     * stale messages naturally, this test constructs {@code recorders.size()} stale
+     * {@code RecorderFinished} messages directly — now possible because {@code RecorderFinished}
+     * was loosened from {@code private record} to package-private specifically for this — and
+     * tells them straight to a live actor's {@code ActorRef<Cmd>}. This is exactly the payload
+     * shape that trips the pre-fix guard in {@code recording()}:
+     * {@code finishedCount[0] >= recorders.size()} — reached by ANY combination of
+     * {@code recorders.size()} {@code RecorderFinished} deliveries, stale or not, since pre-fix
+     * code could not tell the difference. Post-fix, the generation check discards every one of
+     * them before they touch {@code finishedCount}, so the actor must still be alive and
+     * answering {@code GetStatus} afterwards.
+     *
+     * <p><b>RED evidence (obtained manually, not automated here):</b> commenting out the
+     * {@code if (msg.generation() != myGeneration) return Behaviors.same();} guard at the top of
+     * {@code recording()}'s {@code RecorderFinished} handler and re-running this test fails it —
+     * {@code finishedCount[0]} reaches {@code recorders.size()} on the last synthetic message,
+     * {@code recording()} returns {@code Behaviors.stopped()}, and the final {@code GetStatus}
+     * round-trip times out because no behavior is left to answer it. Restoring the guard makes
+     * the test pass again. See the round-2 report for the exact commands used.
+     */
+    @Test
+    void staleGenerationRecorderFinished_afterCrossingThreshold_doesNotStopTheActor() throws Exception {
+        BrokerRepository brokerRepository = new BrokerRepository(duckDB, props);
+        BrokerConnectionFactory brokerFactory = new BrokerConnectionFactory(brokerRepository, props);
+        ConfigRepository configRepo = new ConfigRepository(duckDB, props);
+        MessageRouter router = new MessageRouter(configRepo, new EntityIdExtractor(), TEST_METRICS);
+        KnownEntitiesRepository knownEntities =
+                new KnownEntitiesRepository(org.jooq.impl.DSL.using(duckDB, org.jooq.SQLDialect.DUCKDB));
+        Executor vtExecutor = Executors.newVirtualThreadPerTaskExecutor();
+
+        ActorRef<TopicLifecycleActor.Cmd> actor = kit.spawn(
+                TopicLifecycleActor.create(TOPIC, "earliest", Instant.now(), props, brokerFactory,
+                        null, writeChannel, router, knownEntities, vtExecutor, TEST_METRICS));
+
+        TestProbe<RecorderStatus> probe = kit.createTestProbe(RecorderStatus.class);
+        await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> {
+            actor.tell(new TopicLifecycleActor.GetStatus(probe.ref()));
+            RecorderStatus status = probe.receiveMessage(Duration.ofSeconds(2));
+            assertThat(status.assignedPartitions()).hasSize(PARTITIONS);
+        });
+
+        // recorders.size() == PARTITIONS stale RecorderFinished messages — exactly enough to
+        // cross the pre-fix `finishedCount[0] >= recorders.size()` guard.
+        for (int p = 0; p < PARTITIONS; p++) {
+            actor.tell(new TopicLifecycleActor.RecorderFinished(p, STALE_GENERATION));
+        }
+
+        // Also inject a stale RecorderFailed for good measure — pre-fix it would have thrown
+        // unconditionally and forced a spurious restart; post-fix it must be discarded too.
+        actor.tell(new TopicLifecycleActor.RecorderFailed(0, new RuntimeException("stale"), STALE_GENERATION));
+
+        await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> {
+            actor.tell(new TopicLifecycleActor.GetStatus(probe.ref()));
+            RecorderStatus status = probe.receiveMessage(Duration.ofSeconds(3));
+            assertThat(status)
+                    .as("actor must still be alive and answering GetStatus — the stale messages " +
+                            "must have been discarded by the generation guard, not counted toward " +
+                            "finishedCount or thrown as a real failure")
+                    .isNotNull();
+            assertThat(status.assignedPartitions()).hasSize(PARTITIONS);
+        });
+    }
+
+    /**
+     * Direct unit-level coverage for the {@code SinkFailed} generation guard added alongside this
+     * test (round-2 fix — {@code SinkFailed} previously carried no generation tag at all and was
+     * unconditionally trusted by {@code recording()}). A stale {@code SinkFailed} redelivered from
+     * a torn-down generation must not increment {@code joxette.recorder.restarts} nor throw.
+     */
+    @Test
+    void staleGenerationSinkFailed_doesNotTriggerASpuriousRestart() throws Exception {
+        BrokerRepository brokerRepository = new BrokerRepository(duckDB, props);
+        BrokerConnectionFactory brokerFactory = new BrokerConnectionFactory(brokerRepository, props);
+        ConfigRepository configRepo = new ConfigRepository(duckDB, props);
+        MessageRouter router = new MessageRouter(configRepo, new EntityIdExtractor(), TEST_METRICS);
+        KnownEntitiesRepository knownEntities =
+                new KnownEntitiesRepository(org.jooq.impl.DSL.using(duckDB, org.jooq.SQLDialect.DUCKDB));
+        Executor vtExecutor = Executors.newVirtualThreadPerTaskExecutor();
+
+        ActorRef<TopicLifecycleActor.Cmd> actor = kit.spawn(
+                TopicLifecycleActor.create(TOPIC, "earliest", Instant.now(), props, brokerFactory,
+                        null, writeChannel, router, knownEntities, vtExecutor, TEST_METRICS));
+
+        TestProbe<RecorderStatus> probe = kit.createTestProbe(RecorderStatus.class);
+        await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> {
+            actor.tell(new TopicLifecycleActor.GetStatus(probe.ref()));
+            RecorderStatus status = probe.receiveMessage(Duration.ofSeconds(2));
+            assertThat(status.assignedPartitions()).hasSize(PARTITIONS);
+        });
+
+        var restartsCounter = TEST_METRICS.recordingMetrics(TOPIC).restarts();
+        double restartsBefore = restartsCounter.count();
+
+        actor.tell(new TopicLifecycleActor.SinkFailed(new RuntimeException("stale sink failure"), STALE_GENERATION));
+
+        // Pre-fix this would throw synchronously in the message handler and increment the
+        // counter immediately; give it a beat, then assert the count is unchanged and the actor
+        // is still answering with its original recorder set (i.e. it never restarted).
+        await().pollDelay(Duration.ofMillis(500))
+               .atMost(Duration.ofSeconds(5))
+               .untilAsserted(() -> assertThat(restartsCounter.count())
+                       .as("stale SinkFailed must be discarded by the generation guard, not counted as a real failure")
+                       .isEqualTo(restartsBefore));
+
+        actor.tell(new TopicLifecycleActor.GetStatus(probe.ref()));
+        RecorderStatus status = probe.receiveMessage(Duration.ofSeconds(3));
+        assertThat(status).isNotNull();
+        assertThat(status.assignedPartitions()).hasSize(PARTITIONS);
+    }
 
     @Test
     void restartAfterOnePartitionFailure_stopsAllOldRecordersInsteadOfLeakingHealthySiblings() throws Exception {
