@@ -70,12 +70,6 @@ public class BrokerConnectionFactory {
                 // TopicLifecycleActor's backoff supervisor to react to genuine broker failures.
                 .property("request.timeout.ms",       "30000")
                 .property("default.api.timeout.ms",   "35000")
-                // Sleep/wake resilience: keep group membership alive for 3 minutes so a
-                // brief laptop sleep does not evict the consumer and trigger a full rebalance.
-                // Default is 45 s — any sleep longer than that causes an unnecessary rebalance.
-                // heartbeat.interval.ms must stay ≤ session.timeout.ms / 3.
-                .property("session.timeout.ms",      "180000")  // 3 min
-                .property("heartbeat.interval.ms",    "30000")  // 30 s
                 // Close idle TCP sockets after 60 s so reconnect after sleep is immediate
                 // rather than discovering a broken socket on the first poll.
                 // Mirrors the AdminClient's connections.max.idle.ms setting.
@@ -89,6 +83,20 @@ public class BrokerConnectionFactory {
                 .property("fetch.max.wait.ms",           String.valueOf(properties.getKafka().getFetchMaxWaitMs()))
                 .property("max.poll.records",            String.valueOf(properties.getKafka().getMaxPollRecords()))
                 .property("max.partition.fetch.bytes",   String.valueOf(properties.getKafka().getMaxPartitionFetchBytes()));
+        if (!"consumer".equalsIgnoreCase(groupProtocol)) {
+            // Sleep/wake resilience: keep group membership alive for 3 minutes so a
+            // brief laptop sleep does not evict the consumer and trigger a full rebalance.
+            // Default is 45 s — any sleep longer than that causes an unnecessary rebalance.
+            // heartbeat.interval.ms must stay ≤ session.timeout.ms / 3.
+            //
+            // Classic-protocol-only: KIP-848's consumer group protocol (group.protocol=consumer)
+            // manages session liveness server-side and the client rejects these properties
+            // outright — "ConfigException: heartbeat.interval.ms, session.timeout.ms cannot be
+            // set when group.protocol=CONSUMER". Only apply them on the classic protocol.
+            settings = settings
+                    .property("session.timeout.ms",   "180000")  // 3 min
+                    .property("heartbeat.interval.ms", "30000"); // 30 s
+        }
         settings = applySecurityProps(settings, cfg);
         return settings;
     }
