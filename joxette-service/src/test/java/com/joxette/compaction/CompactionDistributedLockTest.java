@@ -19,12 +19,11 @@ import static org.assertj.core.api.Assertions.assertThat;
  * <p>Two lock-manager instances share the same in-memory DuckDB connection.
  * Covers lock acquisition, release, expiry cleanup, and startup cleanup.
  *
- * <p>Note: since Stage 2 of the Pekko integration, {@link CompactionService}
- * no longer uses {@link CompactionLockManager} — the Pekko ClusterSingleton
- * guarantee replaces DB-level locking.  Tests that created {@code CompactionService}
- * with a lock manager have been removed; the remaining tests cover the lock
- * manager's own contract (useful if the class is re-enabled for non-singleton
- * deployments).
+ * <p>{@link CompactionService} acquires this lock around every
+ * {@code ducklake_merge_adjacent_files} call (see {@link CompactionLockRaceTest}
+ * for the cross-instance race coverage) — it is the actual cross-node safety net
+ * regardless of {@code joxette.clustering.mode}, since it is a catalog row, not
+ * a Pekko cluster mechanism.
  */
 class CompactionDistributedLockTest {
 

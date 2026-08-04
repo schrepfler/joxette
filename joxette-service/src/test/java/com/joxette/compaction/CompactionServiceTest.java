@@ -71,7 +71,8 @@ class CompactionServiceTest {
         JoxetteProperties props = testProperties();
 
         configRepo = new ConfigRepository(duckDB, props);
-        service = new CompactionService(duckDB, props, configRepo, TEST_METRICS);
+        service = new CompactionService(duckDB, props, configRepo, TEST_METRICS,
+                new CompactionLockManager(duckDB, 120, "test-instance"));
     }
 
     @AfterEach
@@ -457,7 +458,8 @@ class CompactionServiceTest {
 
         JoxetteProperties props = testProperties();
         props.getCompaction().getEntity().setRowGroupMemoryLimitMb(limitMb);
-        CompactionService svc = new CompactionService(duckDB, props, configRepo, TEST_METRICS);
+        CompactionService svc = new CompactionService(duckDB, props, configRepo, TEST_METRICS,
+                new CompactionLockManager(duckDB, 120, "test-instance"));
 
         ch.qos.logback.classic.Logger logger =
                 (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(CompactionService.class);

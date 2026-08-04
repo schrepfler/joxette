@@ -83,15 +83,17 @@ public class CompactionService {
     private final io.micrometer.core.instrument.Counter filesProcessedCounter;
     private final io.micrometer.core.instrument.Counter filesCreatedCounter;
     private final Timer compactionTimer;
+    private final CompactionLockManager lockManager;
 
     public CompactionService(Connection duckDB, JoxetteProperties props, ConfigRepository configRepo,
-                              JoxetteMetrics joxetteMetrics) {
+                              JoxetteMetrics joxetteMetrics, CompactionLockManager lockManager) {
         this.duckDB                = duckDB;
         this.props                 = props;
         this.configRepo            = configRepo;
         this.filesProcessedCounter = joxetteMetrics.compactionFilesProcessed();
         this.filesCreatedCounter   = joxetteMetrics.compactionFilesCreated();
         this.compactionTimer       = joxetteMetrics.compactionDuration();
+        this.lockManager           = lockManager;
     }
 
     // =========================================================================
@@ -273,12 +275,25 @@ public class CompactionService {
      */
     private CompactionResult doCompactEntityType(String entityType) {
         SchemaManager.validateEntityType(entityType);
-        long maxFileSizeBytes = (long) props.getCompaction().getEntity().getTargetFileSizeMb() * 1024L * 1024L;
-        int rowGroupMemoryLimitMb = props.getCompaction().getEntity().getRowGroupMemoryLimitMb();
-        String sql = "CALL ducklake_merge_adjacent_files('lake', 'entity_" + entityType + "',"
-                   + " max_file_size => " + maxFileSizeBytes + ")";
-        log.debug("Merging adjacent files for entity_type='{}'", entityType);
+        String lockTarget = "entity:" + entityType;
+        boolean acquired;
         try {
+            acquired = lockManager.tryAcquire(lockTarget);
+        } catch (SQLException e) {
+            log.warn("Could not acquire compaction lock '{}' ({}); skipping this run", lockTarget, e.getMessage());
+            return CompactionResult.NONE;
+        }
+        if (!acquired) {
+            log.info("Compaction lock '{}' held by another instance — skipping (will retry next scheduled run)",
+                    lockTarget);
+            return CompactionResult.NONE;
+        }
+        try {
+            long maxFileSizeBytes = (long) props.getCompaction().getEntity().getTargetFileSizeMb() * 1024L * 1024L;
+            int rowGroupMemoryLimitMb = props.getCompaction().getEntity().getRowGroupMemoryLimitMb();
+            String sql = "CALL ducklake_merge_adjacent_files('lake', 'entity_" + entityType + "',"
+                       + " max_file_size => " + maxFileSizeBytes + ")";
+            log.debug("Merging adjacent files for entity_type='{}'", entityType);
             synchronized (duckDB) {
                 // Apply the Parquet row-group memory cap before the merge (DuckDB 1.5.3+).
                 // A value of 0 means "use the DuckDB default" — skip the SET entirely.
@@ -315,6 +330,8 @@ public class CompactionService {
                 log.warn("ducklake_merge_adjacent_files failed for entity_type='{}': {}", entityType, e.getMessage());
             }
             return CompactionResult.NONE;
+        } finally {
+            lockManager.release(lockTarget);
         }
     }
 
@@ -354,11 +371,24 @@ public class CompactionService {
      */
     private CompactionResult doCompactGeneralTopic(String topic) {
         String tableName = "general_" + normalizeTopicName(topic);
-        long maxFileSizeBytes = (long) props.getCompaction().getGeneral().getTargetFileSizeMb() * 1024L * 1024L;
-        String sql = "CALL ducklake_merge_adjacent_files('lake', '" + tableName + "',"
-                   + " max_file_size => " + maxFileSizeBytes + ")";
-        log.debug("Merging adjacent files for general cassette topic='{}'", topic);
+        String lockTarget = "topic:" + tableName;
+        boolean acquired;
         try {
+            acquired = lockManager.tryAcquire(lockTarget);
+        } catch (SQLException e) {
+            log.warn("Could not acquire compaction lock '{}' ({}); skipping this run", lockTarget, e.getMessage());
+            return CompactionResult.NONE;
+        }
+        if (!acquired) {
+            log.info("Compaction lock '{}' held by another instance — skipping (will retry next scheduled run)",
+                    lockTarget);
+            return CompactionResult.NONE;
+        }
+        try {
+            long maxFileSizeBytes = (long) props.getCompaction().getGeneral().getTargetFileSizeMb() * 1024L * 1024L;
+            String sql = "CALL ducklake_merge_adjacent_files('lake', '" + tableName + "',"
+                       + " max_file_size => " + maxFileSizeBytes + ")";
+            log.debug("Merging adjacent files for general cassette topic='{}'", topic);
             synchronized (duckDB) {
                 try (Statement st = duckDB.createStatement();
                      ResultSet rs = st.executeQuery(sql)) {
@@ -383,6 +413,8 @@ public class CompactionService {
                         topic, e.getMessage());
             }
             return CompactionResult.NONE;
+        } finally {
+            lockManager.release(lockTarget);
         }
     }
 

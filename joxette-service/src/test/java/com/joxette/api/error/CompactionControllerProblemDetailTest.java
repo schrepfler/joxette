@@ -52,6 +52,7 @@ class CompactionControllerProblemDetailTest {
     @Mock CompactionService compactionService;
     @Mock RetentionService retentionService;
     @Mock JoxetteProperties props;
+    @Mock com.joxette.compaction.CompactionLockManager lockManager;
 
     // Shared actor system — started once, terminated after all tests.
     private static ActorSystem<Void> actorSystem;
@@ -108,7 +109,7 @@ class CompactionControllerProblemDetailTest {
     @Test
     void trigger_whileAlreadyRunning_returnsConflictProblem() throws Exception {
         CompactionController controller = new CompactionController(
-                compactionService, retentionService, busySingleton, actorSystem, props, taskRegistry());
+                compactionService, retentionService, busySingleton, actorSystem, props, taskRegistry(), lockManager);
         mvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
@@ -131,7 +132,7 @@ class CompactionControllerProblemDetailTest {
     @Test
     void status_duckDbUnavailable_returnsUpstreamUnavailableProblem() throws Exception {
         CompactionController controller = new CompactionController(
-                compactionService, retentionService, acceptingSingleton, actorSystem, props, taskRegistry());
+                compactionService, retentionService, acceptingSingleton, actorSystem, props, taskRegistry(), lockManager);
         mvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
@@ -153,7 +154,7 @@ class CompactionControllerProblemDetailTest {
     @Test
     void history_runtime_returnsInternalProblemWithoutDetails() throws Exception {
         CompactionController controller = new CompactionController(
-                compactionService, retentionService, acceptingSingleton, actorSystem, props, taskRegistry());
+                compactionService, retentionService, acceptingSingleton, actorSystem, props, taskRegistry(), lockManager);
         mvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();

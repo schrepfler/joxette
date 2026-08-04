@@ -63,6 +63,7 @@ public class CompactionController {
     private final ActorSystem<?>      system;
     private final JoxetteProperties   props;
     private final BackgroundTaskRegistry taskRegistry;
+    private final CompactionLockManager lockManager;
 
     public CompactionController(
             CompactionService compactionService,
@@ -70,13 +71,15 @@ public class CompactionController {
             ActorRef<CompactionSingletonActor.CompactionCommand> compactionSingleton,
             ActorSystem<?> system,
             JoxetteProperties props,
-            BackgroundTaskRegistry taskRegistry) {
+            BackgroundTaskRegistry taskRegistry,
+            CompactionLockManager lockManager) {
         this.compactionService   = compactionService;
         this.retentionService    = retentionService;
         this.compactionSingleton = compactionSingleton;
         this.system              = system;
         this.props               = props;
         this.taskRegistry        = taskRegistry;
+        this.lockManager         = lockManager;
     }
 
     // =========================================================================
@@ -225,20 +228,22 @@ public class CompactionController {
 
     @Operation(
         operationId = "getCompactionLocks",
-        summary = "List active compaction distributed locks (deprecated)",
-        description = "Always returns an empty list. Distributed compaction locking via the " +
-                      "compaction_locks table has been superseded by the Pekko ClusterSingleton " +
-                      "guarantee — exactly one CompactionSingletonActor runs cluster-wide at any time, " +
-                      "making explicit DB-level locking unnecessary."
+        summary = "List active compaction distributed locks",
+        description = "Returns every row currently held in the compaction_locks table — the cross-node " +
+                      "mutual-exclusion mechanism CompactionService uses before running " +
+                      "ducklake_merge_adjacent_files. Populated regardless of joxette.clustering.mode, " +
+                      "since the lock is a catalog row, not a Pekko cluster mechanism."
     )
     @ApiResponses({
-        @ApiResponse(responseCode = "200", description = "Empty list (locking is now handled by ClusterSingleton)",
+        @ApiResponse(responseCode = "200", description = "Active (and any not-yet-swept stale) compaction locks",
             content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-                schema = @Schema(type = "array", implementation = CompactionLockInfo.class)))
+                schema = @Schema(type = "array", implementation = CompactionLockInfo.class))),
+        @ApiResponse(responseCode = "500", description = "Database error",
+            content = @Content(schema = @Schema(type = "string")))
     })
     @GetMapping(value = "/locks", produces = MediaType.APPLICATION_JSON_VALUE)
-    public List<CompactionLockInfo> getLocks() {
-        return List.of();
+    public List<CompactionLockInfo> getLocks() throws SQLException {
+        return lockManager.listActiveLocks();
     }
 
     @Operation(
