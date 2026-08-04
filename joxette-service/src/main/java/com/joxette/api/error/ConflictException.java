@@ -55,6 +55,9 @@ public class ConflictException extends JoxetteException {
                 " to " + requestedBuckets + ": entity type already has recorded data in known_entities. " +
                 "Changing the bucket modulus after data exists would silently desynchronize existing rows' " +
                 "bucket assignments from new writes and break bucket-pruned compaction/replay. " +
-                "Use a documented rebalance procedure instead.");
+                "Bucket rebalancing is not currently supported for an entity type with existing data — " +
+                "deleting and re-registering this entity type would not help, since prior known_entities " +
+                "rows and cassette data keep their old bucket assignments; register a new entity type " +
+                "with the desired bucket count instead.");
     }
 }

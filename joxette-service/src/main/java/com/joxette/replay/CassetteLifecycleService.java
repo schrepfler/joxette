@@ -366,6 +366,12 @@ public class CassetteLifecycleService {
 
         // Captured before any stop attempt so the finally block below always knows
         // the full set of topics to resume, even if stopAll() fails partway through.
+        //
+        // Known limitation (pre-existing, not fixed here): RecordingCoordinator.activeTopics()
+        // returns an empty set while the coordinator actor is mid-restart. In that narrow
+        // window this call silently captures zero topics, so stopAll() below pauses nothing
+        // and the finally block resumes nothing — the restore proceeds against whatever
+        // recorders are actually live at that moment instead of pausing them first.
         Set<String> pausedTopics = recordingCoordinator.activeTopics();
         log.info("Restore '{}': pausing {} active recorder(s): {}", name, pausedTopics.size(), pausedTopics);
         try {

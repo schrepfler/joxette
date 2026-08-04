@@ -424,7 +424,7 @@ The same rules apply on VMs / bare metal / `docker compose`:
 |---|---|
 | Recorder pod dies | Kafka rebalances its partitions to surviving recorders (KIP-848, cooperative). Uncommitted offsets reprocess; read-side dedup absorbs duplicates. |
 | Replay pod dies | Stateless — the load balancer drops it; in-flight SSE/NDJSON streams to that pod break and clients reconnect. |
-| Compaction pod dies mid-run | Its `compaction_locks` rows expire after the TTL (default 240 min) and become acquirable again; partial merges are safe (DuckLake is transactional). The next scheduled run resumes. |
+| Compaction pod dies mid-run | Its `compaction_locks` rows are reclaimed by one of two independent mechanisms, whichever fires first: (1) **liveness-based** — `cleanLocksForDeadInstances()` (§4.2), run at every instance's startup and opportunistically at the top of every compaction run, reclaims a lock once its owner is both absent from the live `joxette_instances` registry *and* the lock row itself is older than `dead-instance-threshold-minutes` (default **30**) — usually well before the TTL expires it; or (2) **TTL-based** — `cleanExpiredLocks()` deletes any row whose `expires_at` has simply passed (default **240 min**), the backstop for a crash the liveness check somehow misses. Partial merges are safe either way (DuckLake is transactional). The next scheduled run resumes. |
 | Catalog (Stage 2/3) unavailable | `CatalogHealthIndicator` reports `DOWN`; readiness fails and traffic is withheld until the catalog returns. |
 | Whole catalog lost | Parquet data on object storage survives. Rebuild config + `known_entities` via snapshot restore / `POST /cassettes/entities/rebuild-known-entities`. See [`catalog-scaling.md`](catalog-scaling.md). |
 

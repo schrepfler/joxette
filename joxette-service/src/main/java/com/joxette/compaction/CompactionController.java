@@ -238,7 +238,7 @@ public class CompactionController {
         @ApiResponse(responseCode = "200", description = "Active (and any not-yet-swept stale) compaction locks",
             content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
                 schema = @Schema(type = "array", implementation = CompactionLockInfo.class))),
-        @ApiResponse(responseCode = "500", description = "Database error",
+        @ApiResponse(responseCode = "503", description = "Database error",
             content = @Content(schema = @Schema(type = "string")))
     })
     @GetMapping(value = "/locks", produces = MediaType.APPLICATION_JSON_VALUE)

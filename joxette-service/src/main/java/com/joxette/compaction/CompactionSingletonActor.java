@@ -20,9 +20,18 @@ import java.util.concurrent.Executor;
 /**
  * Pekko ClusterSingleton behavior for compaction.
  *
- * <p>Exactly one instance of this actor runs across the cluster at any time.
- * It owns the compaction schedule (replacing {@code CompactionScheduler}) and
- * guarantees that only one run executes globally (replacing {@code CompactionLockManager}).
+ * <p>It owns the compaction schedule (replacing {@code CompactionScheduler}) and, in
+ * {@code joxette.clustering.mode: catalog} (the default), serialises compaction runs
+ * <em>within this process</em> — each process programmatically self-joins its own
+ * one-member Pekko cluster (see {@code PekkoConfig}), so "exactly one instance of this
+ * actor runs" is a per-process guarantee, not a cluster-wide one.
+ *
+ * <p><b>{@code CompactionLockManager} — not this actor — is the real cross-process
+ * exclusivity mechanism.</b> Its {@code compaction_locks} DuckDB-table mutex is what
+ * makes it safe to run more than one {@code compaction}-role node against a shared
+ * Stage 2/3 catalog; this actor only prevents overlapping runs inside a single process.
+ * See {@code memory-bank/systemPatterns.md} §13 and {@code docs/clustering-deployment.md}
+ * §4.2/§4.3 for the full picture, including {@code pekko-management} clustering mode.
  *
  * <h2>States</h2>
  * <ul>
