@@ -69,7 +69,10 @@ public class DuckLakeWriteChannel {
     private Thread drainThread;
     /**
      * Dispatches {@link CassetteRecordingBus#publish} off the drain VT so a slow
-     * or blocked follow-subscriber can never delay the next batch's write.
+     * or blocked follow-subscriber can never delay the next batch's write. Bus
+     * delivery is best-effort fanout for {@code follow=true} subscribers — it must
+     * never sit on the write-serialization critical path that every recorder blocks
+     * on in {@link #submit(WriteBatch)}.
      *
      * <p>Backed by a single persistent virtual thread (not a per-task executor):
      * {@code newVirtualThreadPerTaskExecutor()} gives no relative-order guarantee
@@ -144,6 +147,15 @@ public class DuckLakeWriteChannel {
             }
         }
         busPublishExecutor.shutdown();
+        try {
+            if (!busPublishExecutor.awaitTermination(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                log.warn("Bus-publish executor did not stop within 5 s; forcing shutdown");
+                busPublishExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            busPublishExecutor.shutdownNow();
+        }
         log.info("DuckLakeWriteChannel stopped");
     }
 
@@ -282,15 +294,29 @@ public class DuckLakeWriteChannel {
                     sinkState.set(SinkState.HEALTHY);
                 }
                 batch.result().complete(new WriteResult(batch.topic(), written, batch.sourceRecords().size()));
+                // Dispatched in its OWN try/catch, deliberately outside the write-retry logic
+                // above: batch.result() is already completed successfully at this point, so if
+                // execute() itself throws (e.g. RejectedExecutionException — the drain thread
+                // can still be mid-processBatch when stop() calls busPublishExecutor.shutdown()),
+                // it must never fall into the surrounding catch (Exception e) block below. That
+                // block re-enters the non-retryable-failure/quarantine path for an already-
+                // successful, already-completed batch — which for a multi-partition batch would
+                // re-run splitAndProcessByPartition and re-execute already-successful sub-writes,
+                // and would pollute nonTransientFailureCounts either way.
                 if (bus != null) {
-                    busPublishExecutor.execute(() -> {
-                        try {
-                            bus.publish(batch);
-                        } catch (RuntimeException be) {
-                            log.warn("Recording bus publish failed for topic '{}': {}",
-                                    batch.topic(), be.getMessage(), be);
-                        }
-                    });
+                    try {
+                        busPublishExecutor.execute(() -> {
+                            try {
+                                bus.publish(batch);
+                            } catch (RuntimeException be) {
+                                log.warn("Recording bus publish failed for topic '{}': {}",
+                                        batch.topic(), be.getMessage(), be);
+                            }
+                        });
+                    } catch (java.util.concurrent.RejectedExecutionException ree) {
+                        log.warn("Recording bus publish dispatch rejected for topic '{}' (shutting down?): {}",
+                                batch.topic(), ree.getMessage());
+                    }
                 }
                 return;
 

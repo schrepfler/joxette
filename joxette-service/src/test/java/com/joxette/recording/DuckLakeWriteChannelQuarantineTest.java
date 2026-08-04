@@ -75,9 +75,11 @@ class DuckLakeWriteChannelQuarantineTest {
         // is today's existing fail-fast-but-never-committed behaviour, unchanged.
         for (int attempt = 1; attempt <= QUARANTINE_AFTER_ATTEMPTS - 1; attempt++) {
             WriteBatch batch = poisonBatch(0L);
-            assertThatThrownBy(() -> writeChannel.submit(batch));
+            assertThatThrownBy(() -> writeChannel.submit(batch))
+                    .isInstanceOf(RuntimeException.class)
+                    .hasCauseInstanceOf(SQLException.class);
         }
-        assertThat(extractionFailureFreeCounter()).isZero(); // sanity: nothing quarantined yet
+        assertThat(quarantinedCount(TOPIC)).isZero(); // sanity: nothing quarantined yet
 
         // Attempt == threshold: the channel gives up retrying this exact identity,
         // logs it, and completes the batch successfully with zero records written
@@ -96,7 +98,9 @@ class DuckLakeWriteChannelQuarantineTest {
         // A batch with a DIFFERENT offset identity must NOT be quarantined by the
         // previous batch's failures — only the specific poison identity is skipped.
         WriteBatch differentIdentity = poisonBatch(100L);
-        assertThatThrownBy(() -> writeChannel.submit(differentIdentity));
+        assertThatThrownBy(() -> writeChannel.submit(differentIdentity))
+                .isInstanceOf(RuntimeException.class)
+                .hasCauseInstanceOf(SQLException.class);
     }
 
     @Test
@@ -131,7 +135,9 @@ class DuckLakeWriteChannelQuarantineTest {
         // genuinely poison partition is isolated from a healthy co-batched one
         // within the SAME submit() call, not just across restarts.
         WriteBatch mixed1 = mixedBatch(poisonRecords(0L, 1), healthyRecords(0L, 3));
-        assertThatThrownBy(() -> writeChannel.submit(mixed1));
+        assertThatThrownBy(() -> writeChannel.submit(mixed1))
+                .isInstanceOf(RuntimeException.class)
+                .hasCauseInstanceOf(SQLException.class);
         assertThat(rowCount(MULTI_SANITIZED)).isEqualTo(3L);
         assertThat(quarantinedCount(MULTI_TOPIC)).isZero();
 
@@ -140,7 +146,9 @@ class DuckLakeWriteChannelQuarantineTest {
         // only re-reads partition 0's still-uncommitted poison offset ALONE, with
         // no partition 1 records bundled at all.
         WriteBatch poisonOnly = mixedBatch(poisonRecords(0L, 1), List.of());
-        assertThatThrownBy(() -> writeChannel.submit(poisonOnly));
+        assertThatThrownBy(() -> writeChannel.submit(poisonOnly))
+                .isInstanceOf(RuntimeException.class)
+                .hasCauseInstanceOf(SQLException.class);
         assertThat(quarantinedCount(MULTI_TOPIC)).isZero();
 
         // Attempt 3/3 (threshold): a MIXED batch again, but bundled with a
@@ -234,11 +242,6 @@ class DuckLakeWriteChannelQuarantineTest {
 
     private double quarantinedCount(String topic) {
         var counter = registry.find("joxette.recording.batches_quarantined").tag("topic", topic).counter();
-        return counter == null ? 0.0 : counter.count();
-    }
-
-    private double extractionFailureFreeCounter() {
-        var counter = registry.find("joxette.recording.batches_quarantined").tag("topic", TOPIC).counter();
         return counter == null ? 0.0 : counter.count();
     }
 
