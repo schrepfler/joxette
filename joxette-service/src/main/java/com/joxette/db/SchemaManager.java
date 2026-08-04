@@ -469,6 +469,7 @@ public class SchemaManager {
         migrateCompactionHistory(conn);
         migrateKnownEntities(conn);
         migrateJoxetteInstances(conn);
+        migrateSnapshots(conn);
     }
 
     // -------------------------------------------------------------------------
@@ -732,6 +733,23 @@ public class SchemaManager {
                 try { conn.rollback(); } catch (SQLException re) {
                     log.debug("rollback after joxette_instances migration: {}", re.getMessage());
                 }
+            }
+        }
+    }
+
+    /**
+     * Idempotent migration: adds {@code row_counts JSON} to {@code snapshots},
+     * used by {@code CassetteLifecycleService} to verify restored data against
+     * the counts recorded at snapshot-creation time.
+     */
+    private void migrateSnapshots(Connection conn) {
+        try (Statement st = conn.createStatement()) {
+            st.execute("ALTER TABLE snapshots ADD COLUMN IF NOT EXISTS row_counts JSON");
+            log.debug("snapshots migration applied: row_counts");
+        } catch (SQLException e) {
+            log.warn("snapshots migration failed (row_counts): {}", e.getMessage());
+            try { conn.rollback(); } catch (SQLException re) {
+                log.debug("rollback after snapshots migration: {}", re.getMessage());
             }
         }
     }

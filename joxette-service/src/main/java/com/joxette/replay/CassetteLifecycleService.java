@@ -1,7 +1,11 @@
 package com.joxette.replay;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.joxette.config.JoxetteProperties;
 import com.joxette.management.ConfigRepository;
+import com.joxette.recording.RecordingCoordinator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -59,14 +63,19 @@ public class CassetteLifecycleService {
     private final ConfigRepository configRepo;
     private final JoxetteProperties properties;
     private final S3Client s3Client;
+    private final RecordingCoordinator recordingCoordinator;
+    private final ObjectMapper objectMapper;
 
     public CassetteLifecycleService(Connection duckDB, JoxetteProperties properties,
-                                    ConfigRepository configRepo, Optional<S3Client> s3Client) {
-        this.duckDB            = duckDB;
-        this.configRepo        = configRepo;
-        this.properties        = properties;
-        this.s3Client          = s3Client.orElse(null);
-        this.objectStoragePath = properties.getCatalog().getObjectStoragePath();
+                                    ConfigRepository configRepo, Optional<S3Client> s3Client,
+                                    RecordingCoordinator recordingCoordinator, ObjectMapper objectMapper) {
+        this.duckDB               = duckDB;
+        this.configRepo           = configRepo;
+        this.properties           = properties;
+        this.s3Client             = s3Client.orElse(null);
+        this.objectStoragePath    = properties.getCatalog().getObjectStoragePath();
+        this.recordingCoordinator = recordingCoordinator;
+        this.objectMapper         = objectMapper;
         Path catalogPath = Path.of(properties.getCatalog().getPath());
         Path parent = catalogPath.getParent();
         this.snapshotsBase = (parent != null ? parent : Path.of(".")).resolve("snapshots");
@@ -284,19 +293,31 @@ public class CassetteLifecycleService {
             }
             // EXPORT DATABASE only covers the main catalog. Cassette tables live in the
             // attached 'lake' catalog — export each one as a separate Parquet file.
-            exportLakeTables(snapshotDir);
+            Map<String, Long> rowCounts = exportLakeTables(snapshotDir);
             long sizeBytes = directorySize(snapshotDir);
+            String rowCountsJson = serializeRowCounts(rowCounts);
             try (PreparedStatement ps = duckDB.prepareStatement("""
-                    INSERT INTO snapshots (name, created_at, size_bytes)
-                    VALUES (?, now(), ?)
-                    ON CONFLICT (name) DO UPDATE SET created_at = now(), size_bytes = excluded.size_bytes
+                    INSERT INTO snapshots (name, created_at, size_bytes, row_counts)
+                    VALUES (?, now(), ?, ?)
+                    ON CONFLICT (name) DO UPDATE SET created_at = now(), size_bytes = excluded.size_bytes,
+                        row_counts = excluded.row_counts
                     """)) {
                 ps.setString(1, name);
                 ps.setLong(2, sizeBytes);
+                ps.setString(3, rowCountsJson);
                 ps.executeUpdate();
             }
-            log.info("Snapshot '{}' created: {} bytes", name, sizeBytes);
+            log.info("Snapshot '{}' created: {} bytes, {} lake table(s)", name, sizeBytes, rowCounts.size());
             return new SnapshotInfo(name, Instant.now(), sizeBytes);
+        }
+    }
+
+    private String serializeRowCounts(Map<String, Long> rowCounts) {
+        try {
+            return objectMapper.writeValueAsString(rowCounts);
+        } catch (JsonProcessingException e) {
+            log.warn("Could not serialise snapshot row counts ({}); restore verification will be skipped", e.getMessage());
+            return null;
         }
     }
 
@@ -320,8 +341,13 @@ public class CassetteLifecycleService {
      * Restores the database from a named snapshot via {@code IMPORT DATABASE}.
      * All existing tables in the export are replaced.
      *
-     * <p><strong>Warning:</strong> stop all active recorders before calling
-     * this method to avoid concurrent writes during restore.
+     * <p>All active recorders are paused via {@link RecordingCoordinator#stopAll()}
+     * before the restore begins and resumed in a {@code finally} block regardless
+     * of outcome, so a failed or successful restore never leaves a topic stopped
+     * indefinitely. Once the restore completes, the restored row counts are
+     * verified against the counts recorded in {@code snapshots.row_counts} at
+     * snapshot-creation time; a mismatch throws {@link com.joxette.api.error.SnapshotVerificationException}
+     * rather than silently returning with corrupted or truncated data.
      */
     public void restoreSnapshot(String name) throws SQLException {
         validateSnapshotName(name);
@@ -329,17 +355,78 @@ public class CassetteLifecycleService {
         if (!Files.exists(snapshotDir)) {
             throw com.joxette.api.error.ResourceNotFoundException.snapshot(name);
         }
+        Map<String, Long> expectedRowCounts = loadStoredRowCounts(name);
         log.warn("Restoring snapshot '{}' from {} — all existing tables will be replaced", name, snapshotDir);
-        patchSchemaSqlForRestore(snapshotDir);
-        synchronized (duckDB) {
-            try (Statement st = duckDB.createStatement()) {
-                st.execute("IMPORT DATABASE '" + snapshotDir + "'");
+
+        Set<String> pausedTopics = recordingCoordinator.activeTopics();
+        log.info("Restore '{}': pausing {} active recorder(s): {}", name, pausedTopics.size(), pausedTopics);
+        recordingCoordinator.stopAll();
+        try {
+            patchSchemaSqlForRestore(snapshotDir);
+            synchronized (duckDB) {
+                try (Statement st = duckDB.createStatement()) {
+                    st.execute("IMPORT DATABASE '" + snapshotDir + "'");
+                }
+                // Restore lake (DuckLake) cassette tables from the Parquet files exported
+                // alongside the main snapshot.
+                restoreLakeTables(snapshotDir);
+                verifyRestoredRowCounts(name, expectedRowCounts);
             }
-            // Restore lake (DuckLake) cassette tables from the Parquet files exported
-            // alongside the main snapshot.
-            restoreLakeTables(snapshotDir);
+            log.info("Snapshot '{}' restored", name);
+        } finally {
+            log.info("Restore '{}': resuming {} recorder(s)", name, pausedTopics.size());
+            for (String topic : pausedTopics) {
+                recordingCoordinator.restartTopic(topic);
+            }
         }
-        log.info("Snapshot '{}' restored", name);
+    }
+
+    private Map<String, Long> loadStoredRowCounts(String name) throws SQLException {
+        synchronized (duckDB) {
+            try (PreparedStatement ps = duckDB.prepareStatement(
+                    "SELECT row_counts FROM snapshots WHERE name = ?")) {
+                ps.setString(1, name);
+                try (ResultSet rs = ps.executeQuery()) {
+                    if (!rs.next()) return Map.of();
+                    String json = rs.getString("row_counts");
+                    if (json == null || json.isBlank()) return Map.of();
+                    try {
+                        return objectMapper.readValue(json, new TypeReference<Map<String, Long>>() {});
+                    } catch (JsonProcessingException e) {
+                        log.warn("Restore '{}': could not parse stored row_counts ({}); skipping verification",
+                                name, e.getMessage());
+                        return Map.of();
+                    }
+                }
+            }
+        }
+    }
+
+    /** Must be called inside {@code synchronized(duckDB)}, after {@link #restoreLakeTables(Path)}. */
+    private void verifyRestoredRowCounts(String name, Map<String, Long> expected) throws SQLException {
+        if (expected.isEmpty()) {
+            log.debug("Restore '{}': no stored row_counts metadata to verify against (older snapshot?)", name);
+            return;
+        }
+        Map<String, Long> actual = new LinkedHashMap<>();
+        for (Map.Entry<String, Long> entry : expected.entrySet()) {
+            String table = entry.getKey();
+            long count;
+            try (Statement st = duckDB.createStatement();
+                 ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM lake.main." + table)) {
+                count = rs.next() ? rs.getLong(1) : -1L;
+            } catch (SQLException e) {
+                log.warn("Restore '{}': could not verify table {} ({})", name, table, e.getMessage());
+                count = -1L;
+            }
+            actual.put(table, count);
+        }
+        boolean mismatch = expected.entrySet().stream()
+                .anyMatch(e -> !e.getValue().equals(actual.get(e.getKey())));
+        if (mismatch) {
+            throw com.joxette.api.error.SnapshotVerificationException.rowCountMismatch(name, expected, actual);
+        }
+        log.info("Restore '{}': verified row counts for {} lake table(s)", name, expected.size());
     }
 
     /**
@@ -385,7 +472,7 @@ public class CassetteLifecycleService {
      * <p>Files are written to {@code <snapshotDir>/lake/<tableName>.parquet}.
      * Must be called inside {@code synchronized(duckDB)}.
      */
-    private void exportLakeTables(Path snapshotDir) throws SQLException {
+    private Map<String, Long> exportLakeTables(Path snapshotDir) throws SQLException {
         Path lakeDir = snapshotDir.resolve("lake");
         try {
             Files.createDirectories(lakeDir);
@@ -402,6 +489,7 @@ public class CassetteLifecycleService {
                 tableNames.add(rs.getString("table_name"));
             }
         }
+        Map<String, Long> rowCounts = new LinkedHashMap<>();
         for (String tableName : tableNames) {
             Path parquet = lakeDir.resolve(tableName + ".parquet");
             // COPY ... TO writes all rows as a single Parquet file.
@@ -409,9 +497,14 @@ public class CassetteLifecycleService {
                 st.execute("COPY lake.main." + tableName +
                            " TO '" + parquet + "' (FORMAT PARQUET)");
             }
+            try (Statement st = duckDB.createStatement();
+                 ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM lake.main." + tableName)) {
+                rowCounts.put(tableName, rs.next() ? rs.getLong(1) : 0L);
+            }
             log.debug("Snapshot: exported lake table {} → {}", tableName, parquet);
         }
         log.info("Snapshot: exported {} lake table(s) to {}", tableNames.size(), lakeDir);
+        return rowCounts;
     }
 
     /**

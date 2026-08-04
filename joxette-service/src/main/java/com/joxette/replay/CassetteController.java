@@ -1746,6 +1746,9 @@ public class CassetteController {
     @ApiResponses({
         @ApiResponse(responseCode = "200", description = "Snapshot restored successfully"),
         @ApiResponse(responseCode = "404", description = "Snapshot not found"),
+        @ApiResponse(responseCode = "409", description = "Restored row counts did not match the snapshot's stored metadata " +
+            "(ERR_SNAPSHOT_VERIFICATION_FAILED) — the backing Parquet file(s) may be corrupted or truncated",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(type = "object"))),
         @ApiResponse(responseCode = "500", description = "Database error",
             content = @Content(schema = @Schema(type = "string")))
     })

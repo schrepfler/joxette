@@ -15,6 +15,8 @@ public final class ErrorTypes {
     public static final URI INVALID_CURSOR       = URI.create("https://joxette.dev/problems/invalid-cursor");
     public static final URI INTERNAL             = URI.create("https://joxette.dev/problems/internal");
     public static final URI FORBIDDEN            = URI.create("https://joxette.dev/problems/forbidden");
+    public static final URI SNAPSHOT_VERIFICATION_FAILED =
+            URI.create("https://joxette.dev/problems/snapshot-verification-failed");
 
     private ErrorTypes() {}
 }

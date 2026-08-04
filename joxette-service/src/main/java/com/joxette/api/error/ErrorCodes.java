@@ -16,6 +16,7 @@ public final class ErrorCodes {
     public static final String TYPE_MISMATCH        = "ERR_TYPE_MISMATCH";
     public static final String INTERNAL             = "ERR_INTERNAL";
     public static final String FORBIDDEN            = "ERR_FORBIDDEN";
+    public static final String SNAPSHOT_VERIFICATION_FAILED = "ERR_SNAPSHOT_VERIFICATION_FAILED";
 
     private ErrorCodes() {}
 }

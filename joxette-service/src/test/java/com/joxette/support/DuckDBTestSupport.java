@@ -159,7 +159,8 @@ public final class DuckDBTestSupport {
                     CREATE TABLE IF NOT EXISTS snapshots (
                         name        VARCHAR     NOT NULL PRIMARY KEY,
                         created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-                        size_bytes  BIGINT
+                        size_bytes  BIGINT,
+                        row_counts  JSON
                     )""");
 
             st.execute("""

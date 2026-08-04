@@ -32,7 +32,10 @@ class GlobalExceptionHandlerTest {
                 Arguments.of(new UpstreamUnavailableException("kafka down"),
                         HttpStatus.SERVICE_UNAVAILABLE, ErrorTypes.UPSTREAM_UNAVAILABLE, ErrorCodes.UPSTREAM_UNAVAILABLE),
                 Arguments.of(new InvalidCursorException("bad cursor"),
-                        HttpStatus.BAD_REQUEST, ErrorTypes.INVALID_CURSOR, ErrorCodes.INVALID_CURSOR)
+                        HttpStatus.BAD_REQUEST, ErrorTypes.INVALID_CURSOR, ErrorCodes.INVALID_CURSOR),
+                Arguments.of(SnapshotVerificationException.rowCountMismatch(
+                                "snap1", java.util.Map.of("general_orders", 5L), java.util.Map.of("general_orders", 2L)),
+                        HttpStatus.CONFLICT, ErrorTypes.SNAPSHOT_VERIFICATION_FAILED, ErrorCodes.SNAPSHOT_VERIFICATION_FAILED)
         );
     }
 
