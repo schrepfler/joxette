@@ -210,6 +210,19 @@ public class JoxetteMetrics {
                 .register(registry);
     }
 
+    /**
+     * Counter incremented when {@link com.joxette.recording.DuckLakeWriteChannel}
+     * gives up retrying a deterministically-failing (non-retryable) batch and
+     * commits past it so the topic can keep making progress. See
+     * {@code joxette.threading.quarantine-after-attempts}.
+     */
+    public Counter batchesQuarantined(String topic) {
+        return Counter.builder("joxette.recording.batches_quarantined")
+                .description("Batches permanently skipped after exceeding the non-retryable write-failure quarantine threshold")
+                .tag("topic", topic)
+                .register(registry);
+    }
+
     // =========================================================================
     // Kafka client metric bridging
     // =========================================================================

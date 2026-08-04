@@ -17,6 +17,7 @@ import java.util.Collection;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -56,6 +57,7 @@ public class DuckLakeWriteChannel {
     private final double writeRetryMultiplier;
     private final long writeRetryMaxMs;
     private final int writeRetryMaxAttempts;
+    private final int quarantineAfterAttempts;
 
     private final AtomicReference<SinkState> sinkState = new AtomicReference<>(SinkState.HEALTHY);
     /** Callback invoked by drain VT when max retries are exhausted — signals actor to restart. */
@@ -71,6 +73,13 @@ public class DuckLakeWriteChannel {
      */
     private final Set<WriteBatch> inFlight = ConcurrentHashMap.newKeySet();
     private final AtomicBoolean stopped = new AtomicBoolean(false);
+    /**
+     * Tracks consecutive non-retryable failures per "poison batch" identity (see
+     * {@link #batchIdentity(WriteBatch)}) so a deterministically-failing batch can
+     * be quarantined instead of looping forever across actor restarts. Only ever
+     * touched by the single drain VT — no synchronization needed.
+     */
+    private final Map<String, Integer> nonTransientFailureCounts = new HashMap<>();
 
     public DuckLakeWriteChannel(Connection duckDbConnection,
                                  JoxetteProperties properties,
@@ -82,6 +91,7 @@ public class DuckLakeWriteChannel {
         this.writeRetryMultiplier = properties.getThreading().getWriteRetryMultiplier();
         this.writeRetryMaxMs = properties.getThreading().getWriteRetryMaxMs();
         this.writeRetryMaxAttempts = properties.getThreading().getWriteRetryMaxAttempts();
+        this.quarantineAfterAttempts = properties.getThreading().getQuarantineAfterAttempts();
         this.bus = bus;
         this.joxetteMetrics = joxetteMetrics;
     }
@@ -267,9 +277,22 @@ public class DuckLakeWriteChannel {
 
             } catch (Exception e) {
                 if (!DuckDbErrors.isTransient(e)) {
-                    log.error("Non-retryable write failure for topic '{}': {}", batch.topic(), e.getMessage(), e);
-                    batch.result().completeExceptionally(e);
+                    String identity = batchIdentity(batch);
+                    int failures = nonTransientFailureCounts.merge(identity, 1, Integer::sum);
                     sinkState.set(SinkState.HEALTHY); // not a storage issue — stay healthy
+                    if (failures >= quarantineAfterAttempts) {
+                        nonTransientFailureCounts.remove(identity);
+                        log.error("Quarantining permanently-failing batch for topic '{}' after {} non-retryable " +
+                                        "attempts (identity={}, {} record(s) dropped) — committing past it so the " +
+                                        "topic can make progress: {}",
+                                batch.topic(), failures, identity, batch.sourceRecords().size(), e.getMessage(), e);
+                        joxetteMetrics.batchesQuarantined(batch.topic()).increment();
+                        batch.result().complete(new WriteResult(batch.topic(), 0));
+                        return;
+                    }
+                    log.error("Non-retryable write failure for topic '{}' (attempt {}/{}, identity={}): {}",
+                            batch.topic(), failures, quarantineAfterAttempts, identity, e.getMessage(), e);
+                    batch.result().completeExceptionally(e);
                     return;
                 }
 
@@ -314,6 +337,24 @@ public class DuckLakeWriteChannel {
         Throwable cur = t;
         while (cur.getCause() != null) cur = cur.getCause();
         return cur.getMessage();
+    }
+
+    /**
+     * Stable identity for a batch's underlying Kafka records, independent of the
+     * {@link WriteBatch} object's own identity (a fresh instance is built on every
+     * poll/restart). Two batches that both start at the same offset(s) on the same
+     * partition(s) are treated as "the same poison batch" for quarantine purposes.
+     */
+    private static String batchIdentity(WriteBatch batch) {
+        var mins = new TreeMap<>(batch.minOffsetsByPartition());
+        StringBuilder sb = new StringBuilder(batch.topic()).append('#');
+        boolean first = true;
+        for (var e : mins.entrySet()) {
+            if (!first) sb.append(',');
+            first = false;
+            sb.append(e.getKey()).append(':').append(e.getValue());
+        }
+        return sb.toString();
     }
 
     // -----------------------------------------------------------------------

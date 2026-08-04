@@ -533,6 +533,13 @@ public class JoxetteProperties {
          * Set to -1 for unlimited retries (never escalate to actor restart).
          */
         private int writeRetryMaxAttempts = 10;
+        /**
+         * Number of consecutive non-retryable ("poison") write failures for the
+         * SAME batch identity (same topic + per-partition starting offsets) before
+         * the drain VT gives up retrying it, logs it at ERROR, and commits past it
+         * so the topic keeps making progress instead of restarting forever.
+         */
+        private int quarantineAfterAttempts = 5;
 
         // NOTE: defaultSourceParallelism and topicParallelism were removed.
         // Each topic already gets its own TopicRecorder (one consumer group member per topic).
@@ -558,6 +565,9 @@ public class JoxetteProperties {
 
         public int getWriteRetryMaxAttempts() { return writeRetryMaxAttempts; }
         public void setWriteRetryMaxAttempts(int v) { this.writeRetryMaxAttempts = v; }
+
+        public int getQuarantineAfterAttempts() { return quarantineAfterAttempts; }
+        public void setQuarantineAfterAttempts(int v) { this.quarantineAfterAttempts = v; }
     }
 
     // -----------------------------------------------------------------------

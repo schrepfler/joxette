@@ -6,8 +6,10 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.TopicPartition;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
@@ -61,6 +63,22 @@ public record WriteBatch(
      * proportional to actual Kafka consumption, not just written records.
      */
     public long recordCount() { return sourceRecords.size(); }
+
+    /**
+     * Minimum {@code kafka_offset} present in {@link #sourceRecords()} per
+     * partition. Used by {@link DuckLakeWriteChannel} as a stable identity for a
+     * "poison" batch: the {@code WriteBatch} object itself is a fresh instance on
+     * every poll/restart (a new {@link CompletableFuture} each time), but the
+     * earliest uncommitted offset per partition is deterministic across restarts
+     * because a non-retryable write failure never advances the committed offset.
+     */
+    public Map<Integer, Long> minOffsetsByPartition() {
+        Map<Integer, Long> mins = new HashMap<>();
+        for (ConsumerRecord<String, byte[]> r : sourceRecords) {
+            mins.merge(r.partition(), r.offset(), Math::min);
+        }
+        return mins;
+    }
 
     /**
      * Returns a new {@code WriteBatch} that merges {@code this} and {@code other},
