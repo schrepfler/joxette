@@ -40,6 +40,10 @@ public class BrokerConnectionFactory {
      *   <li>{@code auto.offset.reset = latest}</li>
      *   <li>Key deserializer: {@link StringDeserializer}</li>
      *   <li>Value deserializer: {@link ByteArrayDeserializer}</li>
+     *   <li>{@code max.poll.interval.ms} — configurable via
+     *       {@code joxette.kafka.max-poll-interval-ms} (default 15 min); see
+     *       {@link JoxetteProperties.Kafka#getMaxPollIntervalMs()} javadoc for why this
+     *       is raised above Kafka's 5-minute default.</li>
      * </ul>
      */
     public ConsumerSettings<String, byte[]> consumerSettings(String brokerId) {
@@ -82,7 +86,15 @@ public class BrokerConnectionFactory {
                 .property("fetch.min.bytes",             String.valueOf(properties.getKafka().getFetchMinBytes()))
                 .property("fetch.max.wait.ms",           String.valueOf(properties.getKafka().getFetchMaxWaitMs()))
                 .property("max.poll.records",            String.valueOf(properties.getKafka().getMaxPollRecords()))
-                .property("max.partition.fetch.bytes",   String.valueOf(properties.getKafka().getMaxPartitionFetchBytes()));
+                .property("max.partition.fetch.bytes",   String.valueOf(properties.getKafka().getMaxPartitionFetchBytes()))
+                // Safety margin above shared-connection lock contention (compaction merge /
+                // retention rewrite / snapshot restore, all of which can legitimately hold
+                // synchronized(duckDB) for minutes while KnownEntitiesRepository.upsertBatch()
+                // waits its turn on the same monitor from the consumer's own virtual thread).
+                // Kafka's 5-minute default is not a safe floor here — see
+                // docs/write-resilience.md "Kafka consumer poll interval vs. shared-connection
+                // lock contention" and JoxetteProperties.Kafka#maxPollIntervalMs javadoc.
+                .property("max.poll.interval.ms",        String.valueOf(properties.getKafka().getMaxPollIntervalMs()));
         if (!"consumer".equalsIgnoreCase(groupProtocol)) {
             // Sleep/wake resilience: keep group membership alive for 3 minutes so a
             // brief laptop sleep does not evict the consumer and trigger a full rebalance.

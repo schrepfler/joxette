@@ -451,6 +451,29 @@ public class JoxetteProperties {
          * Only raise when {@code request.timeout.ms} is increased proportionally.
          */
         private int maxPartitionFetchBytes = 1024 * 1024;
+        /**
+         * {@code max.poll.interval.ms} — how long Kafka tolerates a consumer going quiet
+         * between {@code poll()} calls before triggering a group rebalance.
+         *
+         * <p>Entity-routed batches call {@code KnownEntitiesRepository.upsertBatch()} on the
+         * consumer's own virtual thread, and that call runs under the single shared
+         * {@code synchronized(duckDB)} connection lock — the same lock
+         * {@code CompactionService} (merge), {@code RetentionService} (rewrite), and
+         * {@code CassetteLifecycleService} (snapshot/restore) hold for the duration of their
+         * own operations, which can legitimately run for minutes. If one of those operations
+         * is mid-hold when the consumer thread needs the lock, the consumer's next
+         * {@code poll()} is delayed by however long it waits for the monitor.
+         *
+         * <p>Kafka's own default (5 minutes, i.e. 300000) assumes no such contention and is
+         * not a safe floor here — see {@code docs/write-resilience.md} "Kafka consumer poll
+         * interval vs. shared-connection lock contention" for the full reasoning. Default
+         * here is {@code 900000} (15 minutes): comfortably above the realistic minutes-scale
+         * duration of a merge/rewrite/snapshot lock hold, while staying well short of
+         * {@code lock-ttl-minutes}' 240-minute worst-case ceiling — a consumer that is
+         * genuinely stuck (not just waiting on a slow-but-legitimate lock holder) should
+         * still trigger a rebalance in a reasonable time rather than being masked for hours.
+         */
+        private int maxPollIntervalMs = 900_000;
 
         public String getBootstrapServers() { return bootstrapServers; }
         public void setBootstrapServers(String bootstrapServers) { this.bootstrapServers = bootstrapServers; }
@@ -478,6 +501,9 @@ public class JoxetteProperties {
 
         public int getMaxPartitionFetchBytes() { return maxPartitionFetchBytes; }
         public void setMaxPartitionFetchBytes(int maxPartitionFetchBytes) { this.maxPartitionFetchBytes = maxPartitionFetchBytes; }
+
+        public int getMaxPollIntervalMs() { return maxPollIntervalMs; }
+        public void setMaxPollIntervalMs(int maxPollIntervalMs) { this.maxPollIntervalMs = maxPollIntervalMs; }
 
         public static class BrokerEntry {
             private String id = "default";

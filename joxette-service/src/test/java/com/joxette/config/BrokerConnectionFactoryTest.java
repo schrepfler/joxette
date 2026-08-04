@@ -68,4 +68,45 @@ class BrokerConnectionFactoryTest {
                 .containsEntry("heartbeat.interval.ms", "30000")
                 .containsEntry("group.protocol", "classic");
     }
+
+    /**
+     * {@code max.poll.interval.ms} must be configured (not left at Kafka's 5-minute
+     * default) and comfortably above the realistic lock-hold durations of
+     * compaction/retention/snapshot operations contending with
+     * {@code KnownEntitiesRepository.upsertBatch()} on the shared DuckDB connection — see
+     * {@code docs/write-resilience.md} "Kafka consumer poll interval vs. shared-connection
+     * lock contention" and {@link JoxetteProperties.Kafka#getMaxPollIntervalMs()}.
+     * The floor here (10 minutes) is deliberately looser than the 15-minute default so
+     * this test asserts the safety-margin property, not the exact tuned value.
+     */
+    @Test
+    void maxPollIntervalMsIsConfiguredWellAboveKafkaDefault() throws SQLException {
+        ConsumerSettings<String, byte[]> settings = factory("consumer").consumerSettings(BROKER_ID);
+
+        Map<String, String> otherProperties = settings.otherProperties();
+        assertThat(otherProperties).containsKey("max.poll.interval.ms");
+        int configuredMs = Integer.parseInt(otherProperties.get("max.poll.interval.ms"));
+        assertThat(configuredMs)
+                .as("max.poll.interval.ms must be raised well above Kafka's 5-minute default "
+                        + "(300000) to tolerate shared-connection lock contention")
+                .isGreaterThan(600_000);
+    }
+
+    @Test
+    void maxPollIntervalMsIsConfigurable() throws SQLException {
+        // Build a factory with an overridden value to prove the property actually flows
+        // through to the consumer settings, rather than being a hardcoded literal.
+        JoxetteProperties properties = new JoxetteProperties();
+        properties.getKafka().setGroupProtocol("consumer");
+        properties.getKafka().setConsumerGroup("joxette-recorder");
+        properties.getKafka().setMaxPollIntervalMs(1_200_000);
+        when(brokerRepository.resolveBroker(BROKER_ID)).thenReturn(new BrokerConfig(
+                BROKER_ID, "localhost:9092", "PLAINTEXT",
+                null, null, null, null, null, null, null));
+        BrokerConnectionFactory overridden = new BrokerConnectionFactory(brokerRepository, properties);
+
+        ConsumerSettings<String, byte[]> settings = overridden.consumerSettings(BROKER_ID);
+
+        assertThat(settings.otherProperties()).containsEntry("max.poll.interval.ms", "1200000");
+    }
 }

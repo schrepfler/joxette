@@ -293,6 +293,48 @@ best-effort semantics, but silent drift was invisible until it became severe.
 Counter resets to 0 on any success. `consecutiveFailures()` is exposed as a
 public method so health checks or metrics can surface it.
 
+#### Kafka consumer poll interval vs. shared-connection lock contention
+
+`upsertBatch()` deliberately runs on the same shared `synchronized(duckDB)`
+connection lock as every other write path (see "DuckDB Connection Model" in
+`CLAUDE.md`) rather than a duplicated connection — Task 5's bucket-count-change
+guard in `EntityController.updateEntityType` depends on `upsertBatch()`
+contending for that *same* monitor to close its check-then-act window. Giving
+`KnownEntitiesRepository` its own connection (the way `CassetteBatchWriter`
+does for general-cassette writes, below) would silently reopen that race.
+
+The cost of keeping it on the shared connection: `upsertBatch()` runs on the
+live Kafka consumer's own virtual thread (via `TopicRecorder.submitWriteBatch`)
+for every entity-routed batch, and it now contends for the same lock as
+`CompactionService`'s merge, `RetentionService`'s rewrite, and
+`CassetteLifecycleService`'s snapshot/restore operations — all of which can
+legitimately hold `synchronized(duckDB)` for minutes (compaction's own safety
+margin, `lock-ttl-minutes`, defaults to 240 minutes precisely because a merge
+can run that long in the worst case; see `docs/clustering-deployment.md` §4.2).
+If one of those operations is mid-hold when the consumer thread's
+`upsertBatch()` call needs the lock, the consumer's next `poll()` is delayed by
+however long it waits — and if that wait exceeds Kafka's
+`max.poll.interval.ms`, the broker evicts the consumer and triggers a group
+rebalance for an entity-routed topic that was never actually stuck, just
+waiting its turn.
+
+Kafka's own default for `max.poll.interval.ms` (5 minutes) is not a safe floor
+given that ceiling. `joxette.kafka.max-poll-interval-ms` (see
+`JoxetteProperties.Kafka#getMaxPollIntervalMs()`) is therefore raised to
+**15 minutes** by default — comfortably above the realistic minutes-scale
+duration of a single merge/rewrite/snapshot lock hold, while staying well
+short of the 240-minute worst-case TTL, so a consumer that is genuinely stuck
+(as opposed to just waiting on a slow-but-legitimate lock holder) still
+triggers a rebalance in a reasonable time rather than being masked for hours.
+Raise it further if profiling shows realistic lock-hold durations exceeding
+that margin for your data volumes.
+
+By contrast, `CassetteBatchWriter`'s general-cassette writes use a
+**duplicated** connection specifically to avoid this class of contention
+entirely — general-cassette recording has no equivalent cross-request
+invariant forcing it onto the shared connection, so it opts out of the
+contention instead of just budgeting for it.
+
 ### 5. `RetentionService` — per-entity-type progress isolation
 
 **File:** `joxette-service/.../compaction/RetentionService.java`

@@ -137,6 +137,10 @@ joxette:
     #                                 # raise to 65536 on dedicated catchup nodes
     # max-poll-records: 2000          # default — raise further if lag remains and CPU allows
     # max-partition-fetch-bytes: 4194304  # default 4 MB per partition
+    # max-poll-interval-ms: 900000    # default 15 min — safety margin above shared-connection
+    #   lock contention from compaction/retention/snapshot operations (see docs/write-resilience.md
+    #   "Kafka consumer poll interval vs. shared-connection lock contention"); Kafka's own
+    #   5-minute default is not a safe floor here
 
   recording:
     batch-size: 10000
