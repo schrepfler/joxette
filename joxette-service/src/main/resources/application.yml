@@ -148,6 +148,8 @@ joxette:
     write-retry-multiplier: 2.0      # backoff multiplier per attempt
     write-retry-max-ms: 60000        # cap on retry delay (1 minute)
     write-retry-max-attempts: 10     # escalate to actor restart after this many attempts (-1 = unlimited)
+    quarantine-after-attempts: 5     # give up on a deterministically-failing (non-retryable) batch after this
+                                      # many restarts and commit past it — CAUSES RECORD LOSS, see docs/write-resilience.md
 
   replay:
     # enabled: true   # set false to disable /cassettes/** endpoints on pure write-only nodes

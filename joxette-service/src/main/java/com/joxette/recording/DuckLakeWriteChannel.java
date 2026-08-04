@@ -310,6 +310,7 @@ public class DuckLakeWriteChannel {
                                         "topic can make progress: {}",
                                 batch.topic(), failures, identity, batch.sourceRecords().size(), e.getMessage(), e);
                         joxetteMetrics.batchesQuarantined(batch.topic()).increment();
+                        joxetteMetrics.recordsQuarantined(batch.topic()).increment(batch.sourceRecords().size());
                         batch.result().complete(new WriteResult(batch.topic(), 0, 0));
                         return;
                     }

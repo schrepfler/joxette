@@ -109,6 +109,65 @@ immediately and the sink stays `HEALTHY`.
 
 ---
 
+## Quarantine — Giving Up On a Poison Batch
+
+A non-retryable failure is not automatically fatal for the topic: `submit()`
+throws back to `TopicRecorder`, the actor restarts (Pekko backoff), and the
+same uncommitted Kafka offsets are re-read and re-written on the next
+generation. If the failure is truly deterministic (e.g. a schema mismatch, a
+`CHECK` constraint the data will never satisfy), this repeats forever —
+restart storm, zero progress, and the topic never advances past the poison
+offset.
+
+`DuckLakeWriteChannel` tracks consecutive non-retryable failures per batch
+**identity** — `(topic, per-partition starting offsets)`, stable across
+restarts because a failed write never advances the committed offset (see
+`DuckLakeWriteChannel.batchIdentity()`). Once a given identity has failed
+`quarantineAfterAttempts` times in a row, the drain VT gives up: it logs an
+ERROR with the record count being dropped, increments
+`joxette.recording.batches_quarantined` and
+`joxette.recording.records_quarantined`, and completes the batch
+*successfully* with zero records written instead of exceptionally. The
+recorder commits past the poison offset and the topic resumes making
+progress. **This is a deliberate, logged data-loss event** — the quarantined
+records are gone, not retried again.
+
+### Per-partition splitting
+
+A batch reaching the drain VT is not always single-partition — upstream
+`batchWeighted` coalescing can bundle several partitions together when the
+writer is the bottleneck. If a multi-partition batch hits a non-retryable
+failure, `DuckLakeWriteChannel` does **not** quarantine the whole thing:
+`splitAndProcessByPartition` breaks it into one sub-batch per partition and
+reprocesses each independently. This means:
+
+- A poison record on partition 0 never holds partition 1's healthy records
+  hostage — partition 1's sub-batch writes and commits normally in the same
+  `submit()` call.
+- Quarantine identity is always computed on a single-partition sub-batch, so
+  it stays stable across restarts regardless of which other partitions
+  happen to get coalesced alongside the poison one by upstream batching —
+  the whole-batch composite identity was unstable for exactly this reason
+  and is what motivated the split.
+
+### Why quarantine is a batch-level, not a record-level, decision
+
+`DuckLakeWriteChannel` gives up on the whole (post-split, single-partition)
+batch rather than trying to isolate the one poison record inside it. Kafka
+offsets are committed once per batch (the highest offset written), not once
+per record — an individual record has no independent commit point to skip
+past without also resolving every record ahead of it in the same batch. This
+mirrors the granularity note in `splitAndProcessByPartition`'s javadoc: the
+split goes down to "per partition" (because that's where an independent,
+stable commit boundary and a stable quarantine identity both exist), but not
+further to "per record" (because there is no such boundary at that level).
+
+Lower `quarantine-after-attempts` to fail fast and stop tolerating a bad
+topic sooner; raise it (or accept the restart storm) if you would rather
+investigate before any data is dropped.
+
+---
+
 ## Configuration
 
 All keys live under `joxette.threading`:
@@ -119,6 +178,7 @@ All keys live under `joxette.threading`:
 | `write-retry-multiplier` | `2.0` | Backoff multiplier per attempt |
 | `write-retry-max-ms` | `60000` | Cap on retry delay (1 minute) |
 | `write-retry-max-attempts` | `10` | Failures before escalating to actor restart; `-1` = unlimited |
+| `quarantine-after-attempts` | `5` | Non-retryable failures on the SAME batch identity before giving up and committing past it — **causes record loss**; see "Quarantine" above |
 
 Example override for a slow/flaky store:
 
@@ -142,6 +202,12 @@ joxette:
   on both `RecorderFailed` and `SinkFailed` paths.
 - **Consumer lag**: rises during the pause window and drains on resume — the
   natural observable indicator of a degraded sink.
+- **Log level ERROR**: `Quarantining permanently-failing batch ... N record(s)
+  dropped` — a poison batch was given up on; see "Quarantine" above.
+- **Micrometer metrics**: `joxette_recording_batches_quarantined_total{topic=...}`
+  (batch count) and `joxette_recording_records_quarantined_total{topic=...}`
+  (record count — alert on this one; a single batch can carry thousands of
+  records) both increment when quarantine fires.
 
 ---
 

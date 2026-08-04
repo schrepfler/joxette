@@ -224,10 +224,29 @@ public class JoxetteMetrics {
     }
 
     /**
+     * Counter incremented alongside {@link #batchesQuarantined(String)}, by the
+     * number of records actually dropped, not just batches. A single quarantined
+     * batch can carry up to {@code batchSize * 4} records (see
+     * {@code Flow.batchWeighted} coalescing in {@code TopicRecorder}), so
+     * {@code batches_quarantined} alone under-represents the blast radius of
+     * data loss — this is the counter to alert on.
+     */
+    public Counter recordsQuarantined(String topic) {
+        return Counter.builder("joxette.recording.records_quarantined")
+                .description("Records permanently dropped by quarantined batches after exceeding the non-retryable write-failure threshold")
+                .tag("topic", topic)
+                .register(registry);
+    }
+
+    /**
      * Counter incremented when {@link com.joxette.replay.EntityIdExtractor}
      * throws while extracting an entity id (malformed JSON, JsonPath evaluation
      * error) — excludes the normal "no id present" outcome, which is not an
      * error and must not inflate this counter.
+     *
+     * <p>Counts per matcher-attempt, not per message: a topic with 3 entity
+     * source matchers evaluated against one malformed message increments this
+     * counter 3 times, once per matcher that threw.
      */
     public Counter entityExtractionFailures(String topic, String entityType) {
         return Counter.builder("joxette.recording.entity_extraction_failures")
