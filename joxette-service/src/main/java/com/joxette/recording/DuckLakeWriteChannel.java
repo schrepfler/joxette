@@ -277,6 +277,10 @@ public class DuckLakeWriteChannel {
 
             } catch (Exception e) {
                 if (!DuckDbErrors.isTransient(e)) {
+                    if (batch.partitions().size() > 1) {
+                        splitAndProcessByPartition(batch, writers, e);
+                        return;
+                    }
                     String identity = batchIdentity(batch);
                     int failures = nonTransientFailureCounts.merge(identity, 1, Integer::sum);
                     sinkState.set(SinkState.HEALTHY); // not a storage issue — stay healthy
@@ -330,6 +334,42 @@ public class DuckLakeWriteChannel {
                 }
                 delayMs = Math.min((long) (delayMs * writeRetryMultiplier), writeRetryMaxMs);
             }
+        }
+    }
+
+    /**
+     * Splits a multi-partition batch into per-partition sub-batches on a
+     * non-retryable failure so a poison partition's records don't hold healthy
+     * co-batched partitions hostage — either for writing or for quarantine
+     * accounting. {@link #batchIdentity(WriteBatch)} on a whole multi-partition
+     * batch is unstable across restarts (which partitions land together varies by
+     * poll timing), so quarantine tracking only ever runs on single-partition
+     * batches; this method is what gets us there.
+     *
+     * <p>Recursion into {@link #processBatch} terminates because every sub-batch
+     * produced by {@link WriteBatch#splitByPartition()} has exactly one partition,
+     * so the {@code batch.partitions().size() > 1} check at the top of
+     * {@link #processBatch} can never be true for a sub-batch.
+     */
+    private void splitAndProcessByPartition(WriteBatch batch, WriterSet writers, Exception firstFailure) {
+        log.warn("Non-retryable write failure for multi-partition batch on topic '{}' (partitions={}) — " +
+                        "splitting into per-partition sub-batches to isolate the failure: {}",
+                batch.topic(), batch.partitions(), firstFailure.getMessage());
+        sinkState.set(SinkState.HEALTHY); // not a storage issue — same as the existing non-retryable branch
+        int totalWritten = 0;
+        Exception firstSubFailure = null;
+        for (WriteBatch sub : batch.splitByPartition()) {
+            processBatch(sub, writers); // recursive call; sub.partitions().size() == 1 so this cannot re-split
+            try {
+                totalWritten += sub.result().join().recordsWritten();
+            } catch (Exception subEx) {
+                if (firstSubFailure == null) firstSubFailure = subEx;
+            }
+        }
+        if (firstSubFailure != null) {
+            batch.result().completeExceptionally(firstSubFailure);
+        } else {
+            batch.result().complete(new WriteResult(batch.topic(), totalWritten));
         }
     }
 

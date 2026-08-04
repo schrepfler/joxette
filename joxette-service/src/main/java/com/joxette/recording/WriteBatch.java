@@ -8,6 +8,7 @@ import org.apache.kafka.common.TopicPartition;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -78,6 +79,48 @@ public record WriteBatch(
             mins.merge(r.partition(), r.offset(), Math::min);
         }
         return mins;
+    }
+
+    /**
+     * Splits this batch into one sub-batch per Kafka partition present in
+     * {@link #sourceRecords()}, preserving encounter order within each partition.
+     * Each sub-batch's {@code sourceRecords}/{@code generalRecords}/{@code entityItems}
+     * are filtered in lockstep so the parallel-indexed general lists stay aligned.
+     *
+     * <p>Every returned sub-batch has exactly one partition, so
+     * {@link #partitions()} on the result is always a singleton set — this is what
+     * lets {@link DuckLakeWriteChannel#splitAndProcessByPartition} recurse into
+     * {@code processBatch} without ever splitting again.
+     *
+     * <p>Used by {@link DuckLakeWriteChannel} to isolate a poison partition's
+     * records from healthy partitions co-batched with it by upstream coalescing.
+     */
+    public List<WriteBatch> splitByPartition() {
+        Map<Integer, List<ConsumerRecord<String, byte[]>>> byPartition = sourceRecords.stream()
+                .collect(Collectors.groupingBy(ConsumerRecord::partition, LinkedHashMap::new, Collectors.toList()));
+
+        List<WriteBatch> subBatches = new ArrayList<>(byPartition.size());
+        for (var entry : byPartition.entrySet()) {
+            int partition = entry.getKey();
+            List<ConsumerRecord<String, byte[]>> partitionSourceRecords = entry.getValue();
+
+            List<ConsumerRecord<String, byte[]>> partitionGeneralRecords = new ArrayList<>();
+            List<String> partitionGeneralMessageTypes = new ArrayList<>();
+            for (int i = 0; i < generalRecords.size(); i++) {
+                if (generalRecords.get(i).partition() == partition) {
+                    partitionGeneralRecords.add(generalRecords.get(i));
+                    partitionGeneralMessageTypes.add(generalMessageTypes.get(i));
+                }
+            }
+
+            List<EntityWriteItem> partitionEntityItems = entityItems.stream()
+                    .filter(item -> item.message().partition() == partition)
+                    .collect(Collectors.toList());
+
+            subBatches.add(WriteBatch.of(topic, partitionSourceRecords,
+                    partitionGeneralRecords, partitionGeneralMessageTypes, partitionEntityItems));
+        }
+        return subBatches;
     }
 
     /**

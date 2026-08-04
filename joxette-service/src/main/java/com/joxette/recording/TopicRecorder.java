@@ -441,12 +441,15 @@ public class TopicRecorder {
         log.info("Writing {} record(s) to topic '{}' ({} general, {} entity routes) — pipeline queue {}ms",
                 recordCount, topic, generalCount, entityCount, queueMs);
 
-        meters.writeDuration().record(() -> {
-            try { writeChannel.submit(wb); }
-            catch (InterruptedException e) { Thread.currentThread().interrupt(); throw new RuntimeException(e); }
-        });
-        messagesWritten.addAndGet(recordCount);
-        meters.messagesWritten().increment(recordCount);
+        WriteResult result;
+        try {
+            result = meters.writeDuration().recordCallable(() -> writeChannel.submit(wb));
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException(e);
+        }
+        messagesWritten.addAndGet(result.recordsWritten());
+        meters.messagesWritten().increment(result.recordsWritten());
         lastBatchAt = Instant.now();
 
         // Collect entity routes across all entity items for known_entities upsert
