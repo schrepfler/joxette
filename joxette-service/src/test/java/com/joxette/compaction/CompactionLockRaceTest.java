@@ -3,6 +3,7 @@ package com.joxette.compaction;
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
+import com.joxette.cluster.InstanceRegistry;
 import com.joxette.config.JoxetteProperties;
 import com.joxette.management.ConfigRepository;
 import com.joxette.metrics.JoxetteMetrics;
@@ -53,8 +54,16 @@ class CompactionLockRaceTest {
         JoxetteProperties props = testProperties();
         ConfigRepository configRepo = new ConfigRepository(duckDB, props);
 
-        CompactionLockManager lockA = new CompactionLockManager(duckDB, 120, "node-a:1001");
-        CompactionLockManager lockB = new CompactionLockManager(duckDB, 120, "node-b:2002");
+        // Both racing "nodes" are registered as live *before* the race starts, so that
+        // executeRun()'s opportunistic cleanLocksForDeadInstances() call (now wired in
+        // alongside cleanExpiredLocks()) never mistakes the other node's genuinely
+        // in-flight lock for one belonging to a dead instance mid-race.
+        InstanceRegistry instanceRegistry = DuckDBTestSupport.newInstanceRegistry(duckDB);
+        DuckDBTestSupport.registerLiveInstance(duckDB, "node-a:1001");
+        DuckDBTestSupport.registerLiveInstance(duckDB, "node-b:2002");
+
+        CompactionLockManager lockA = new CompactionLockManager(duckDB, 120, "node-a:1001", instanceRegistry);
+        CompactionLockManager lockB = new CompactionLockManager(duckDB, 120, "node-b:2002", instanceRegistry);
         serviceA = new CompactionService(duckDB, props, configRepo, TEST_METRICS, lockA);
         serviceB = new CompactionService(duckDB, props, configRepo, TEST_METRICS, lockB);
     }

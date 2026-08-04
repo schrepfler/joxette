@@ -196,14 +196,19 @@ public final class DuckDBTestSupport {
                     )""");
 
             // Instance registry — tracks running Joxette processes.
+            // Column layout matches SchemaManager.initSchema() production DDL exactly
+            // (recording_enabled / compaction_enabled flags, not the older 'roles' array
+            // column dropped by SchemaManager.migrateJoxetteInstances()) — InstanceRegistry's
+            // SELECT/INSERT statements query these column names directly.
             st.execute("""
                     CREATE TABLE IF NOT EXISTS joxette_instances (
-                        instance_id      VARCHAR     NOT NULL PRIMARY KEY,
-                        roles            VARCHAR[]   NOT NULL,
-                        catalog_backend  VARCHAR     NOT NULL,
-                        started_at       TIMESTAMPTZ NOT NULL,
-                        last_heartbeat   TIMESTAMPTZ NOT NULL,
-                        kafka_assignments JSON
+                        instance_id        VARCHAR     NOT NULL PRIMARY KEY,
+                        recording_enabled  BOOLEAN     NOT NULL DEFAULT true,
+                        compaction_enabled BOOLEAN     NOT NULL DEFAULT true,
+                        catalog_backend    VARCHAR     NOT NULL,
+                        started_at         TIMESTAMPTZ NOT NULL,
+                        last_heartbeat     TIMESTAMPTZ NOT NULL,
+                        kafka_assignments  JSON
                     )""");
 
             st.execute("CREATE SEQUENCE IF NOT EXISTS seq_retention_history START 1");
@@ -395,6 +400,44 @@ public final class DuckDBTestSupport {
         try (Statement st = conn.createStatement();
              ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM " + qualifiedTable)) {
             return rs.next() ? rs.getLong(1) : 0;
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // InstanceRegistry fixtures — for CompactionLockManager liveness-driven tests
+    // -------------------------------------------------------------------------
+
+    /**
+     * Builds a minimal, real {@link com.joxette.cluster.InstanceRegistry} backed by
+     * {@code conn}. Only {@link com.joxette.cluster.InstanceRegistry#listAll()} (and,
+     * transitively, {@code getInstanceId()}) are exercised by
+     * {@code CompactionLockManager} in tests — {@code initialize()} /
+     * {@code sendHeartbeat()} / {@code deregister()}, which need a real
+     * {@code DuckLakeManager} and {@code RecordingCoordinator}, are never called here,
+     * so those constructor dependencies are safely left {@code null}.
+     */
+    public static com.joxette.cluster.InstanceRegistry newInstanceRegistry(Connection conn) {
+        return new com.joxette.cluster.InstanceRegistry(
+                conn, null, null, null, new com.fasterxml.jackson.databind.ObjectMapper());
+    }
+
+    /**
+     * Inserts (or refreshes) a {@code joxette_instances} row for {@code instanceId}
+     * with a fresh {@code last_heartbeat}, so that
+     * {@link com.joxette.cluster.InstanceRegistry#listAll()} reports it with status
+     * {@code "alive"} (see {@code InstanceRegistry.ALIVE_THRESHOLD} — 90 seconds).
+     * Simulates a running, heartbeating Joxette process without needing the full
+     * registry lifecycle.
+     */
+    public static void registerLiveInstance(Connection conn, String instanceId) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement("""
+                INSERT INTO joxette_instances
+                    (instance_id, catalog_backend, started_at, last_heartbeat)
+                VALUES (?, 'EMBEDDED_DUCKDB', now(), now())
+                ON CONFLICT (instance_id) DO UPDATE SET last_heartbeat = now()
+                """)) {
+            ps.setString(1, instanceId);
+            ps.executeUpdate();
         }
     }
 

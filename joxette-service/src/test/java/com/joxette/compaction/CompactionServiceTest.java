@@ -3,6 +3,7 @@ package com.joxette.compaction;
 import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
+import com.joxette.cluster.InstanceRegistry;
 import com.joxette.config.JoxetteProperties;
 import com.joxette.management.ConfigRepository;
 import com.joxette.metrics.JoxetteMetrics;
@@ -48,8 +49,10 @@ class CompactionServiceTest {
     private static final JoxetteMetrics TEST_METRICS = new JoxetteMetrics(new SimpleMeterRegistry());
 
     private static final String ENTITY_TYPE = "order";
+    private static final String TEST_INSTANCE_ID = "test-instance";
 
     private Connection duckDB;
+    private InstanceRegistry instanceRegistry;
     private CompactionService service;
     private ConfigRepository configRepo;
 
@@ -71,8 +74,12 @@ class CompactionServiceTest {
         JoxetteProperties props = testProperties();
 
         configRepo = new ConfigRepository(duckDB, props);
-        service = new CompactionService(duckDB, props, configRepo, TEST_METRICS,
-                new CompactionLockManager(duckDB, 120, "test-instance"));
+        // Real InstanceRegistry with this instance registered as alive, so the
+        // opportunistic cleanLocksForDeadInstances() call wired into executeRun()
+        // never treats this test's own in-flight lock as belonging to a dead instance.
+        instanceRegistry = DuckDBTestSupport.newInstanceRegistry(duckDB);
+        DuckDBTestSupport.registerLiveInstance(duckDB, TEST_INSTANCE_ID);
+        service = new CompactionService(duckDB, props, configRepo, TEST_METRICS, newLockManager());
     }
 
     @AfterEach
@@ -459,7 +466,7 @@ class CompactionServiceTest {
         JoxetteProperties props = testProperties();
         props.getCompaction().getEntity().setRowGroupMemoryLimitMb(limitMb);
         CompactionService svc = new CompactionService(duckDB, props, configRepo, TEST_METRICS,
-                new CompactionLockManager(duckDB, 120, "test-instance"));
+                newLockManager());
 
         ch.qos.logback.classic.Logger logger =
                 (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(CompactionService.class);
@@ -575,6 +582,12 @@ class CompactionServiceTest {
         props.getCompaction().getGeneral().setEnabled(false);
         props.getCompaction().getGeneral().setLookbackDays(0);
         return props;
+    }
+
+    /** Builds a {@link CompactionLockManager} for {@link #TEST_INSTANCE_ID}, wired to
+     * the shared {@link #instanceRegistry} fixture (see {@link #setUp()}). */
+    private CompactionLockManager newLockManager() {
+        return new CompactionLockManager(duckDB, 120, TEST_INSTANCE_ID, instanceRegistry);
     }
 
     private void insertEntityRows(int count) throws Exception {

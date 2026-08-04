@@ -150,11 +150,11 @@ public class CompactionService {
         long start = System.nanoTime();
         try {
             // Opportunistic reclaim of locks orphaned by a crashed instance, once per
-            // run rather than once per target — cleanExpiredLocks() is a single sweep
-            // over the whole compaction_locks table, so running it once here up front
+            // run rather than once per target — both sweeps below cover the whole
+            // compaction_locks table in one pass, so running them once here up front
             // covers every target this run is about to attempt instead of re-scanning
             // the table per entity type / topic.
-            cleanExpiredLocksIfPossible();
+            reclaimOrphanedLocksIfPossible();
 
             CompactionResult entityResult = compactEntityTypes(targets);
             entityTypes    = entityResult.unitsProcessed();
@@ -256,20 +256,30 @@ public class CompactionService {
     // =========================================================================
 
     /**
-     * Sweeps {@code compaction_locks} for expired rows once at the top of a run —
-     * see {@link CompactionLockManager#cleanExpiredLocks()}.
+     * Sweeps {@code compaction_locks} once at the top of a run for two independent
+     * hazards:
+     * <ol>
+     *   <li>{@link CompactionLockManager#cleanExpiredLocks()} — a lock whose owning
+     *       instance is still alive but whose merge simply ran past
+     *       {@code lock-ttl-minutes}.</li>
+     *   <li>{@link CompactionLockManager#cleanLocksForDeadInstances()} — a lock whose
+     *       owning instance crashed mid-merge (and so never reached its
+     *       {@code finally}-block {@link CompactionLockManager#release}) and is no
+     *       longer present in the live instance registry. This does not wait for that
+     *       instance's own restart-time {@code @PostConstruct} cleanup — any live
+     *       instance's run reclaims it, bounded by the registry's heartbeat/staleness
+     *       cadence (~1-2 minutes) rather than the next restart.</li>
+     * </ol>
      *
-     * <p>Without this, a lock held by an instance that crashed mid-merge (and so
-     * never reached its {@code finally}-block {@link CompactionLockManager#release})
-     * blocks that target forever: {@link CompactionLockManager#tryAcquire} only checks
-     * whether a row exists, not whether it is expired. This is the same
-     * "log and continue" error-handling style used for {@link #doCompactEntityType}'s
-     * and {@link #doCompactGeneralTopic}'s {@code tryAcquire} calls — a cleanup failure
-     * must not abort the run; it just means expired rows persist until the next
-     * successful sweep (or that instance's own {@link CompactionLockManager#releaseOwnLocks()}
-     * on restart).
+     * <p>Without either sweep, {@link CompactionLockManager#tryAcquire} only checks
+     * whether a row exists, not whether it is expired or dead-owned, so a crashed
+     * instance's lock would block that target forever. This is the same "log and
+     * continue" error-handling style used for {@link #doCompactEntityType}'s and
+     * {@link #doCompactGeneralTopic}'s {@code tryAcquire} calls — a cleanup failure
+     * must not abort the run; it just means the stuck rows persist until the next
+     * successful sweep.
      */
-    private void cleanExpiredLocksIfPossible() {
+    private void reclaimOrphanedLocksIfPossible() {
         try {
             lockManager.cleanExpiredLocks();
         } catch (SQLException e) {
@@ -277,6 +287,7 @@ public class CompactionService {
                     + "any expired lock rows will keep blocking their target until the next "
                     + "successful cleanup", e.getMessage());
         }
+        lockManager.cleanLocksForDeadInstances();
     }
 
     /**

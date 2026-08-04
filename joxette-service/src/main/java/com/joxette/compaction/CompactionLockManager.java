@@ -1,5 +1,7 @@
 package com.joxette.compaction;
 
+import com.joxette.cluster.InstanceRecord;
+import com.joxette.cluster.InstanceRegistry;
 import com.joxette.config.JoxetteProperties;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
@@ -9,12 +11,15 @@ import org.springframework.stereotype.Component;
 
 import org.springframework.beans.factory.annotation.Autowired;
 
-import java.net.InetAddress;
 import java.sql.*;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * Manages distributed compaction locks stored in the {@code compaction_locks}
@@ -36,25 +41,35 @@ import java.util.List;
  *   <li><b>Release</b>: {@code DELETE … WHERE target = ? AND instance_id = ?} —
  *       the {@code AND instance_id} guard prevents an instance from accidentally
  *       deleting a lock it no longer owns.</li>
- *   <li><b>Startup cleanup</b>: {@link #releaseOwnLocks()} deletes all rows for this
- *       instance ID on startup, recovering any stale locks left by a previous crash.</li>
+ *   <li><b>Dead-instance cleanup</b>: {@link #cleanLocksForDeadInstances()} deletes all
+ *       rows whose {@code instance_id} has no live (heartbeating) row in
+ *       {@code joxette_instances}, recovering locks left by a crashed instance — on this
+ *       host or, in shared-catalog mode (Quack/PostgreSQL), a remote one. Called both at
+ *       startup ({@link PostConstruct}) and opportunistically from
+ *       {@link CompactionService#executeRun}.</li>
  *   <li><b>Expiry cleanup</b>: {@link #cleanExpiredLocks()} deletes rows whose
- *       {@code expires_at} is in the past, reclaiming locks from dead remote instances.
- *       Called at the start of each compaction run.</li>
+ *       {@code expires_at} is in the past, reclaiming locks whose owning instance is
+ *       still alive but whose merge has simply run past the TTL. Called at the start of
+ *       each compaction run, alongside dead-instance cleanup, not in place of it.</li>
  * </ol>
  *
  * <h2>Instance ID</h2>
- * <p>Derived once at construction as this process's hostname alone (no PID — see
- * {@link #buildInstanceId()} for why). A stale lock row bearing the current
- * hostname is therefore safe to delete on restart: it can only have been left by
- * a previous incarnation of this process on this same host.
+ * <p>Delegated to {@link InstanceRegistry#getInstanceId()} — the same
+ * {@code hostname:pid} identity {@code InstanceRegistry} already uses for its own
+ * {@code joxette_instances} rows, globally unique per process. This class does not
+ * compute its own identity: reusing {@code InstanceRegistry}'s means two processes
+ * co-located on the same host (a documented topology, see
+ * {@code docs/clustering-deployment.md} §7) never collide, and lock-ownership recovery
+ * is driven entirely by {@code InstanceRegistry}'s live-heartbeat data rather than by
+ * one process recomputing an identity string that might match another still-running
+ * process's.
  *
  * <h2>Thread safety</h2>
  * <p>All DB access is wrapped in {@code synchronized(duckDB)}, matching the convention
  * used throughout the codebase.
  */
 @Component
-@DependsOn("dbSchemaManager")
+@DependsOn({"dbSchemaManager", "instanceRegistry"})
 public class CompactionLockManager {
 
     private static final Logger log = LoggerFactory.getLogger(CompactionLockManager.class);
@@ -62,52 +77,79 @@ public class CompactionLockManager {
     /** Heartbeat fires this often to keep a long-running compaction's lock alive. */
     static final int HEARTBEAT_INTERVAL_MINUTES = 10;
 
-    private final Connection duckDB;
-    private final int        lockTtlMinutes;
-    private final String     instanceId;
+    private final Connection       duckDB;
+    private final int              lockTtlMinutes;
+    private final String           instanceId;
+    private final InstanceRegistry instanceRegistry;
 
     // -------------------------------------------------------------------------
     // Construction
     // -------------------------------------------------------------------------
 
-    /** Production constructor — Spring wires {@link Connection} and {@link JoxetteProperties}. */
-    @Autowired
-    public CompactionLockManager(Connection duckDB, JoxetteProperties props) {
-        this(duckDB, props.getCompaction().getLockTtlMinutes(), buildInstanceId());
-    }
-
     /**
-     * Test / internal constructor — allows injecting an explicit instance ID so that
-     * two lock managers can be created in the same test process without colliding.
+     * Production constructor — Spring wires {@link Connection}, {@link JoxetteProperties},
+     * and {@link InstanceRegistry}. Reuses {@link InstanceRegistry#getInstanceId()} rather
+     * than computing a separate identity (see class javadoc "Instance ID").
      */
-    CompactionLockManager(Connection duckDB, int lockTtlMinutes, String instanceId) {
-        this.duckDB         = duckDB;
-        this.lockTtlMinutes = lockTtlMinutes;
-        this.instanceId     = instanceId;
+    @Autowired
+    public CompactionLockManager(Connection duckDB, JoxetteProperties props, InstanceRegistry instanceRegistry) {
+        this(duckDB, props.getCompaction().getLockTtlMinutes(), instanceRegistry.getInstanceId(), instanceRegistry);
+    }
+
+    /**
+     * Test / internal constructor — allows injecting an explicit instance ID (so that
+     * two lock managers can be created in the same test process without colliding) and
+     * an explicit {@link InstanceRegistry} (so tests can control which instance IDs
+     * appear "alive" for {@link #cleanLocksForDeadInstances()}).
+     */
+    CompactionLockManager(Connection duckDB, int lockTtlMinutes, String instanceId, InstanceRegistry instanceRegistry) {
+        this.duckDB           = duckDB;
+        this.lockTtlMinutes   = lockTtlMinutes;
+        this.instanceId       = instanceId;
+        this.instanceRegistry = instanceRegistry;
     }
 
     // -------------------------------------------------------------------------
-    // Startup cleanup (@PostConstruct)
+    // Dead-instance cleanup (@PostConstruct + opportunistic, from CompactionService)
     // -------------------------------------------------------------------------
 
     /**
-     * Removes all {@code compaction_locks} rows that belong to this instance ID.
+     * Removes all {@code compaction_locks} rows whose {@code instance_id} is not
+     * currently "alive" in {@link InstanceRegistry#listAll()} — i.e. has no
+     * {@code joxette_instances} row with a recent heartbeat.
      *
-     * <p>Called automatically on Spring bean initialisation via {@link PostConstruct}.
-     * Recovers any stale locks that were not released before a crash.
+     * <p>Called automatically on Spring bean initialisation via {@link PostConstruct}
+     * (ordered, via {@code @DependsOn("instanceRegistry")}, after
+     * {@link InstanceRegistry#initialize()} has reaped genuinely stale rows and upserted
+     * this instance's own row — otherwise a fresh restart could see its own
+     * not-yet-reaped stale row and skip cleanup it should have done), and again from
+     * {@link CompactionService#executeRun} at the top of every run, so recovery is not
+     * gated on this specific instance restarting.
+     *
+     * <p>Unlike the identity-matching scheme this replaces, this method's outcome does
+     * not depend on which instance calls it — it reclaims <em>any</em> dead instance's
+     * locks, not just "its own". A lock owned by a live instance (present in the
+     * registry) is left untouched no matter which instance runs the sweep, which is
+     * what closes the co-location collision: two processes sharing a host now have
+     * distinct {@code hostname:pid} identities in {@code joxette_instances}, so neither
+     * can mistake the other's live lock for a dead one.
      */
     @PostConstruct
-    public void releaseOwnLocks() {
+    public void cleanLocksForDeadInstances() {
         try {
-            int deleted = deleteLocksForInstance(instanceId);
+            Set<String> liveInstanceIds = instanceRegistry.listAll().stream()
+                    .filter(r -> "alive".equals(r.status()))
+                    .map(InstanceRecord::instanceId)
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
+            int deleted = deleteLocksForDeadInstances(liveInstanceIds);
             if (deleted > 0) {
-                log.warn("Startup cleanup: removed {} stale compaction lock(s) left by "
-                        + "a previous crash (instance={})", deleted, instanceId);
+                log.warn("Reclaimed {} compaction lock(s) owned by instance(s) no longer present "
+                        + "in the live registry (crashed or rescheduled)", deleted);
             } else {
-                log.debug("Startup cleanup: no stale compaction locks for instance={}", instanceId);
+                log.debug("No compaction locks to reclaim from dead instances");
             }
         } catch (SQLException e) {
-            log.warn("Startup compaction-lock cleanup failed: {}", e.getMessage());
+            log.warn("Dead-instance compaction-lock cleanup failed: {}", e.getMessage());
         }
     }
 
@@ -262,51 +304,42 @@ public class CompactionLockManager {
         return result;
     }
 
-    /** The instance identifier used in lock rows (this process's hostname). */
+    /**
+     * The instance identifier used in lock rows — delegated to
+     * {@link InstanceRegistry#getInstanceId()} (format {@code hostname:pid}).
+     */
     public String getInstanceId() { return instanceId; }
 
     // -------------------------------------------------------------------------
     // Private helpers
     // -------------------------------------------------------------------------
 
-    private int deleteLocksForInstance(String id) throws SQLException {
+    /**
+     * Deletes every {@code compaction_locks} row whose {@code instance_id} is not in
+     * {@code liveInstanceIds}.
+     *
+     * <p>Values are never string-concatenated into the SQL: the {@code IN} clause is
+     * built with one {@code ?} placeholder per live instance ID, sized to the live set.
+     * If the live set is empty, every lock row is dead by definition and the statement
+     * degrades to an unconditional {@code DELETE FROM compaction_locks} — there is no
+     * live instance for any row's {@code instance_id} to legitimately match.
+     */
+    private int deleteLocksForDeadInstances(Set<String> liveInstanceIds) throws SQLException {
         synchronized (duckDB) {
+            if (liveInstanceIds.isEmpty()) {
+                try (Statement st = duckDB.createStatement()) {
+                    return st.executeUpdate("DELETE FROM compaction_locks");
+                }
+            }
+            String placeholders = String.join(",", Collections.nCopies(liveInstanceIds.size(), "?"));
             try (PreparedStatement ps = duckDB.prepareStatement(
-                    "DELETE FROM compaction_locks WHERE instance_id = ?")) {
-                ps.setString(1, id);
+                    "DELETE FROM compaction_locks WHERE instance_id NOT IN (" + placeholders + ")")) {
+                int i = 1;
+                for (String liveId : liveInstanceIds) {
+                    ps.setString(i++, liveId);
+                }
                 return ps.executeUpdate();
             }
-        }
-    }
-
-    /**
-     * Builds this process's compaction-lock instance identity.
-     *
-     * <h2>Why hostname only (not hostname:pid)</h2>
-     * <p>The previous scheme ({@code hostname:pid}) meant a crashed-and-restarted
-     * process could never match its own prior lock rows in {@link #releaseOwnLocks()},
-     * because the new process has a different PID — the stale lock then had to wait
-     * out the full {@code lock-ttl-minutes} (default 120) before being reclaimed.
-     *
-     * <p>Using the hostname alone fixes the common case: a container that crashes
-     * and is restarted <em>in place</em> by kubelet (the same Kubernetes Pod, hence
-     * the same {@code HOSTNAME}) gets a new PID but the same instance identity, so
-     * its stale locks are reclaimed immediately at startup instead of waiting on TTL.
-     *
-     * <h2>Residual gap — full Pod replacement</h2>
-     * <p>This does <em>not</em> cover a Pod being entirely rescheduled (node
-     * failure, rolling deploy): a {@code Deployment}-managed Pod gets a brand-new
-     * random hostname suffix on replacement, so the new process's identity will not
-     * match the old one either way. That case still relies on {@code lock-ttl-minutes}
-     * TTL expiry as the backstop, exactly as before this fix — see
-     * docs/clustering-deployment.md §6 (the compaction tier is a {@code Deployment},
-     * not a {@code StatefulSet}, so Pod names are not stable across replacement).
-     */
-    static String buildInstanceId() {
-        try {
-            return InetAddress.getLocalHost().getHostName();
-        } catch (Exception e) {
-            return "localhost";
         }
     }
 }

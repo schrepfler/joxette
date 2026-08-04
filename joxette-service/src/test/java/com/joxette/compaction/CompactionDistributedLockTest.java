@@ -1,5 +1,6 @@
 package com.joxette.compaction;
 
+import com.joxette.cluster.InstanceRegistry;
 import com.joxette.config.JoxetteProperties;
 import com.joxette.management.ConfigRepository;
 import com.joxette.support.DuckDBTestSupport;
@@ -34,6 +35,7 @@ class CompactionDistributedLockTest {
     private static final int    TTL_MINUTES = 120;
 
     private Connection            conn;
+    private InstanceRegistry      registry;
     private CompactionLockManager lockA;
     private CompactionLockManager lockB;
     private JoxetteProperties     props;
@@ -54,8 +56,13 @@ class CompactionDistributedLockTest {
 
         props      = testProperties();
         configRepo = new ConfigRepository(conn, props);
-        lockA      = new CompactionLockManager(conn, TTL_MINUTES, INSTANCE_A);
-        lockB      = new CompactionLockManager(conn, TTL_MINUTES, INSTANCE_B);
+        // Real InstanceRegistry backed by the same connection — no rows are pre-seeded
+        // in joxette_instances here, so both INSTANCE_A and INSTANCE_B start out with
+        // no live row (i.e. "dead" from cleanLocksForDeadInstances()'s point of view)
+        // unless a test explicitly calls DuckDBTestSupport.registerLiveInstance(...).
+        registry = DuckDBTestSupport.newInstanceRegistry(conn);
+        lockA    = new CompactionLockManager(conn, TTL_MINUTES, INSTANCE_A, registry);
+        lockB    = new CompactionLockManager(conn, TTL_MINUTES, INSTANCE_B, registry);
     }
 
     @AfterEach
@@ -152,30 +159,65 @@ class CompactionDistributedLockTest {
     }
 
     // -------------------------------------------------------------------------
-    // Startup cleanup
+    // Startup / opportunistic cleanup — cleanLocksForDeadInstances()
+    //
+    // Liveness-registry-driven: a lock is reclaimable once its owning instance_id is
+    // confirmed absent from the live joxette_instances rows (InstanceRegistry.listAll(),
+    // filtered to status "alive") — not because some other process recomputed a matching
+    // identity string. This replaces the old identity-matching releaseOwnLocks(), whose
+    // hostname-only instance ID let one co-located process delete another still-running
+    // co-located process's active lock (see task-2-revision-brief.md).
     // -------------------------------------------------------------------------
 
     @Test
-    void releaseOwnLocks_removesStaleLocksFromPreviousCrash() throws Exception {
-        insertExpiredLock(LOCK_TARGET, INSTANCE_A);
+    void cleanLocksForDeadInstances_reclaimsLockFromInstanceNotInLiveRegistry() throws Exception {
+        // INSTANCE_A holds the lock but has no row in joxette_instances at all —
+        // e.g. it crashed and was reaped, or never registered. Simulates a genuinely
+        // dead/crashed instance, on this host or a remote one (shared-catalog mode).
+        assertThat(lockA.tryAcquire(LOCK_TARGET)).isTrue();
 
-        // Instance A "restarts" and runs its @PostConstruct cleanup.
-        lockA.releaseOwnLocks();
+        lockB.cleanLocksForDeadInstances();
 
-        // A's stale lock is gone; B can now acquire.
-        assertThat(lockB.tryAcquire(LOCK_TARGET)).isTrue();
+        // A's lock is gone; B can now acquire.
+        assertThat(lockB.tryAcquire(LOCK_TARGET))
+                .as("Lock owned by an instance absent from the live registry must be reclaimed")
+                .isTrue();
         lockB.release(LOCK_TARGET);
     }
 
     @Test
-    void releaseOwnLocks_doesNotAffectOtherInstancesLocks() throws Exception {
-        lockA.tryAcquire(LOCK_TARGET);
+    void cleanLocksForDeadInstances_doesNotReclaimLockFromLiveInstance() throws Exception {
+        // INSTANCE_A is alive (fresh heartbeat row) and holds the lock.
+        DuckDBTestSupport.registerLiveInstance(conn, INSTANCE_A);
+        assertThat(lockA.tryAcquire(LOCK_TARGET)).isTrue();
 
-        // B restarts — must not touch A's lock.
-        lockB.releaseOwnLocks();
+        // A *different* CompactionLockManager (lockB) runs the cleanup — e.g. simulating
+        // a co-located process on the same host, or any other instance's opportunistic
+        // cleanup from CompactionService.executeRun(). Because A has a live heartbeat
+        // row, its lock must survive: this is exactly the co-location collision the
+        // hostname-only scheme introduced, closed by checking real liveness instead of
+        // a recomputed identity string.
+        lockB.cleanLocksForDeadInstances();
 
         assertThat(lockB.tryAcquire(LOCK_TARGET))
-                .as("B's startup cleanup must not remove A's active lock")
+                .as("Live instance A's lock must not be reclaimed by another instance's cleanup")
+                .isFalse();
+
+        lockA.release(LOCK_TARGET);
+    }
+
+    @Test
+    void cleanExpiredLocks_doesNotTouchLiveInstancesNonExpiredLock() throws Exception {
+        // Regression guard: TTL-based cleanExpiredLocks() is independent of the liveness
+        // registry and must keep working exactly as before — it must never delete a
+        // still-alive instance's lock just because the merge hasn't finished yet.
+        DuckDBTestSupport.registerLiveInstance(conn, INSTANCE_A);
+        assertThat(lockA.tryAcquire(LOCK_TARGET)).isTrue();   // expires_at is in the future
+
+        lockB.cleanExpiredLocks();
+
+        assertThat(lockB.tryAcquire(LOCK_TARGET))
+                .as("TTL sweep must not remove a live instance's non-expired lock")
                 .isFalse();
 
         lockA.release(LOCK_TARGET);
@@ -220,42 +262,6 @@ class CompactionDistributedLockTest {
 
         // Clean up
         lockA.cleanExpiredLocks();
-    }
-
-    // -------------------------------------------------------------------------
-    // buildInstanceId — hostname-only scheme (survives PID change across restart)
-    // -------------------------------------------------------------------------
-
-    @Test
-    void buildInstanceId_isHostnameOnly_stableAcrossCalls() {
-        String id1 = CompactionLockManager.buildInstanceId();
-        String id2 = CompactionLockManager.buildInstanceId();
-
-        // Same host, called twice in the same process — must be identical, and
-        // must not embed a PID (a real restart changes ProcessHandle.current().pid(),
-        // so encoding it would defeat same-host crash recovery).
-        assertThat(id1).isEqualTo(id2);
-        assertThat(id1).doesNotContain(":");
-    }
-
-    @Test
-    void releaseOwnLocks_reclaimsSameHostLockImmediately_notViaTtlExpiry() throws Exception {
-        // Simulate a crash: the "before" process holds the lock and never releases it.
-        String host = "worker-node-9";
-        CompactionLockManager beforeCrash = new CompactionLockManager(conn, TTL_MINUTES, host);
-        assertThat(beforeCrash.tryAcquire(LOCK_TARGET)).isTrue();
-
-        // "after" process restarts on the same host. Under the old hostname:pid
-        // scheme this would be a different instance ID (new PID) and would never
-        // match; under the new hostname-only scheme it is the same ID.
-        CompactionLockManager afterRestart = new CompactionLockManager(conn, TTL_MINUTES, host);
-        afterRestart.releaseOwnLocks();
-
-        // Reclaimed immediately — the 120-minute TTL never had a chance to elapse
-        // in this synchronous test, so this proves reclaim happened via the
-        // instance-ID match at startup, not via TTL expiry.
-        assertThat(lockB.tryAcquire(LOCK_TARGET)).isTrue();
-        lockB.release(LOCK_TARGET);
     }
 
     // -------------------------------------------------------------------------
