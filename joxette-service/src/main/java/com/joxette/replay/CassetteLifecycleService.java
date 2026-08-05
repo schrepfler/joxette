@@ -847,14 +847,29 @@ public class CassetteLifecycleService {
      *   <li><b>Primary path:</b> {@code lake.main.entity_{type}} — the DuckLake-backed
      *       catalog table.  Used whenever it contains at least one live row.</li>
      *   <li><b>Zero rows, but the catalog still remembers this table's files:</b>
-     *       {@code ducklake_list_files('lake', tableName)} lists every data/delete file
-     *       the <em>current</em> catalog associates with the table, at any snapshot.
-     *       A full-table {@code DELETE} (GDPR erase, truncate, retention) marks rows
-     *       deleted via delete-file markers but leaves the underlying data file(s)
-     *       tracked until compaction/vacuum reclaims them — so a non-empty result here
-     *       proves the zero count is a real, intentional deletion, not catalog loss.
-     *       DuckLake's live view already excludes those rows; trust it and return
-     *       {@code null} rather than ever reading the raw Parquet bytes underneath.</li>
+     *       {@code ducklake_list_files('lake', tableName)} lists every data/delete file the
+     *       <em>current DuckLake snapshot</em> associates with the table — this call passes
+     *       neither {@code snapshot_version} nor {@code snapshot_time}, so per DuckLake's
+     *       actual semantics it reflects the current snapshot only, not file history "at any
+     *       snapshot" ever taken. A full-table {@code DELETE} (GDPR erase, truncate) marks
+     *       rows deleted via delete-file markers but leaves the underlying data file(s)
+     *       tracked in the current snapshot until compaction/vacuum reclaims them — so for
+     *       those two operations, a non-empty result here reliably proves the zero count is
+     *       a real, intentional deletion, not catalog loss.
+     *       <p><b>This guarantee does not extend to retention-driven deletes.</b>
+     *       {@link com.joxette.compaction.RetentionService#rewriteDataFiles} runs
+     *       {@code ducklake_rewrite_data_files} immediately after every bulk retention
+     *       delete, which can drop a 100%-delete-marked file from the current snapshot's
+     *       file listing. A table emptied by retention can therefore also report zero
+     *       tracked files here — the exact same signal this method otherwise treats as
+     *       "safe to recover". If an operator subsequently also passes
+     *       {@code recoverOrphanedFiles=true}, and the physical Parquet file has not yet
+     *       been vacuumed off object storage, it could be resurrected. This residual risk
+     *       is a known limitation of the opt-in fallback (see below) and is intentionally
+     *       not closed here — doing so would require also inspecting snapshot history,
+     *       a larger change than this gate is meant to make.
+     *       Otherwise, DuckLake's live view already excludes deleted rows; trust it and
+     *       return {@code null} rather than ever reading the raw Parquet bytes underneath.</li>
      *   <li><b>Zero rows AND zero tracked files, with {@code recoverOrphanedFiles=true}:</b>
      *       the current catalog has never heard of this table having any data — the
      *       one state consistent with (but not proof of) the {@code .ducklake} catalog
@@ -877,7 +892,11 @@ public class CassetteLifecycleService {
      * a routine/scheduled rebuild silently guessing is not. See {@code docs/known-issues.md}
      * history and {@code RebuildKnownEntitiesIT} for the production incident this replaced
      * (an unconditional bucket-wide glob that both cross-contaminated entity types and
-     * resurrected GDPR-deleted rows).
+     * resurrected GDPR-deleted rows). A second, narrower residual risk is the retention
+     * interaction described in step 2 above: a retention-emptied table can present the same
+     * "zero tracked files" signal as a lost catalog, so under {@code recoverOrphanedFiles=true}
+     * a not-yet-vacuumed retention-deleted file is a (currently unmitigated) candidate for
+     * resurrection.
      *
      * <p>Returns {@code null} when no data is found or recovery was not requested/applicable.
      *
@@ -1010,14 +1029,17 @@ public class CassetteLifecycleService {
     }
 
     /**
-     * Returns whether the current DuckLake catalog still tracks any data or delete file
-     * for {@code tableName}, at any snapshot — i.e. whether {@code ducklake_list_files}
-     * returns at least one row.
+     * Returns whether the current DuckLake catalog snapshot still tracks any data or delete
+     * file for {@code tableName} — i.e. whether {@code ducklake_list_files('lake', tableName)}
+     * returns at least one row. This call passes neither {@code snapshot_version} nor
+     * {@code snapshot_time}, so per DuckLake's actual semantics it reflects the CURRENT
+     * snapshot only, not file history "at any snapshot" ever recorded.
      *
      * <p>Used by {@link #resolveEntityDataSource} to tell apart two very different reasons
-     * a table can have zero live rows: rows that were deleted (files still tracked) versus
-     * a table the current catalog has never associated any file with at all (see that
-     * method's javadoc for the full reasoning).
+     * a table can have zero live rows: rows that were deleted (files still tracked in the
+     * current snapshot) versus a table the current catalog has never associated any file
+     * with at all (see that method's javadoc for the full reasoning, including the residual
+     * risk this signal carries for retention-driven {@code ducklake_rewrite_data_files} runs).
      *
      * <p>If the {@code ducklake_list_files} metadata function itself is unavailable (e.g. an
      * older DuckLake build) this fails <em>closed</em> — returns {@code true} so the caller

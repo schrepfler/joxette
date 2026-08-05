@@ -1805,8 +1805,14 @@ public class CassetteController {
                       "history for — the state consistent with the local `.ducklake` catalog file " +
                       "having been lost/reset while the original Parquet files remain orphaned on " +
                       "object storage. The fallback is scoped strictly to that table's own on-disk " +
-                      "path and is never applied to a table whose zero rows are the result of an " +
-                      "ordinary deletion (GDPR erase, truncate, retention) — only pass true as a " +
+                      "path and reliably skips a table whose zero rows are the result of a GDPR " +
+                      "erase or truncate (the current catalog snapshot still lists that table's " +
+                      "underlying file for those two operations). It is NOT guaranteed to skip a " +
+                      "table emptied by the retention job: retention immediately rewrites its " +
+                      "delete-heavy files, which can drop a fully-deleted file from the current " +
+                      "snapshot's file listing, making a retention-emptied table look identical to " +
+                      "a genuinely lost/never-populated one to this check — a known, unresolved " +
+                      "residual risk under `recoverOrphanedFiles=true`. Only pass true as a " +
                       "deliberate operator action after confirming catalog loss, not routinely. " +
                       "Returns the number of entity rows upserted."
     )
