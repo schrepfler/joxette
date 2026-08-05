@@ -281,13 +281,13 @@ const CURSOR_STYLE = { stroke: 'rgba(200,205,240,0.35)', strokeWidth: 1, strokeD
 const TIP_STYLE: React.CSSProperties = {
   position: 'absolute', bottom: 'calc(100% + 8px)', left: 0,
   zIndex: 200,
-  background: '#1a1d2e',
-  border: '1px solid #3a3d52',
+  background: 'var(--surface-raised)',
+  border: '1px solid var(--rule-strong)',
   borderRadius: 6,
   padding: '8px 11px',
   width: 260,
   fontSize: '0.72rem',
-  color: '#d4d8f0',
+  color: 'var(--ink-primary)',
   lineHeight: 1.55,
   boxShadow: '0 8px 24px rgba(0,0,0,0.55)',
   pointerEvents: 'none',
@@ -703,10 +703,10 @@ function MetricsPage() {
                 <Tooltip content={() => null} cursor={CURSOR_STYLE} />
                 <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
                 {(latest?.heapMax ?? 0) > 0 && <>
-                  <ReferenceLine y={latest!.heapMax} stroke="#aaaaaa" strokeWidth={1.5} strokeDasharray="6 3"
-                    label={{ value: `max  ${fmtBytes(latest!.heapMax)}`, position: 'insideTopLeft', fontSize: 9, fill: '#aaaaaa', fontFamily: 'var(--font-mono)' }} />
-                  <ReferenceLine y={latest!.heapMax * 0.8} stroke="#e07040" strokeWidth={1.5} strokeDasharray="4 3"
-                    label={{ value: `80%  ${fmtBytes(latest!.heapMax * 0.8)}`, position: 'insideTopLeft', fontSize: 9, fill: '#e07040', fontFamily: 'var(--font-mono)' }} />
+                  <ReferenceLine y={latest!.heapMax} stroke="var(--ink-tertiary)" strokeWidth={1.5} strokeDasharray="6 3"
+                    label={{ value: `max  ${fmtBytes(latest!.heapMax)}`, position: 'insideTopLeft', fontSize: 9, fill: 'var(--ink-tertiary)', fontFamily: 'var(--font-mono)' }} />
+                  <ReferenceLine y={latest!.heapMax * 0.8} stroke="var(--signal-warn)" strokeWidth={1.5} strokeDasharray="4 3"
+                    label={{ value: `80%  ${fmtBytes(latest!.heapMax * 0.8)}`, position: 'insideTopLeft', fontSize: 9, fill: 'var(--signal-warn)', fontFamily: 'var(--font-mono)' }} />
                 </>}
                 <Area type="monotone" dataKey="heapUsed"   name="heap used"   stroke="var(--color-heapUsed)"   fill="var(--color-heapUsed)"   fillOpacity={0.12} strokeWidth={1.5} dot={false} activeDot={bytesDot} isAnimationActive={false} />
                 <Area type="monotone" dataKey="processRss" name="process RSS" stroke="var(--color-processRss)" fill="none"                     strokeWidth={1.5} strokeDasharray="4 2" dot={false} activeDot={bytesDot} isAnimationActive={false} />

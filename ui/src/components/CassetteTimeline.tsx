@@ -92,10 +92,27 @@ export const PALETTE = [
 ]
 
 const MAX_GROUPS = 12
+const CHART_CAT_COUNT = 10
 
-export function colorForKey(key: string, allKeys: string[]): string {
+export function colorForKey(key: string, allKeys: string[], palette: string[] = PALETTE): string {
   const idx = allKeys.indexOf(key)
-  return PALETTE[idx % PALETTE.length] ?? '#718096'
+  return palette[idx % palette.length] ?? '#718096'
+}
+
+/** Resolve the current theme's canvas-safe colors from the computed style
+ *  of a live DOM element (canvas 2D contexts cannot use var(...) directly,
+ *  so this is called once per draw() rather than once per marker). */
+export function resolveThemeColors(el: HTMLElement) {
+  const style = getComputedStyle(el)
+  const chartCat = Array.from({ length: CHART_CAT_COUNT }, (_, i) =>
+    style.getPropertyValue(`--chart-cat-${i + 1}`).trim() || PALETTE[i % PALETTE.length])
+  return {
+    chartCat,
+    surfaceSunken: style.getPropertyValue('--surface-sunken').trim() || '#f7fafc',
+    ruleStrong: style.getPropertyValue('--rule-strong').trim() || '#cbd5e0',
+    inkTertiary: style.getPropertyValue('--ink-tertiary').trim() || '#718096',
+    inkPrimary: style.getPropertyValue('--ink-primary').trim() || '#1a202c',
+  }
 }
 
 // ─── Group-by dimensions ─────────────────────────────────────────────────────
@@ -397,6 +414,7 @@ function TimelineCanvas({ records, selectedIdx, colorKeys, onSelect, fitKey }: T
     const ctx = canvas.getContext('2d')
     if (!ctx) return
     const vs = vsRef.current
+    const theme = resolveThemeColors(canvas)
     const w = canvas.width
     const h = canvas.height
     const dpr = window.devicePixelRatio || 1
@@ -406,11 +424,11 @@ function TimelineCanvas({ records, selectedIdx, colorKeys, onSelect, fitKey }: T
     ctx.scale(dpr, dpr)
 
     // Background
-    ctx.fillStyle = '#f7fafc'
+    ctx.fillStyle = theme.surfaceSunken
     ctx.fillRect(0, 0, w, h)
 
     // Timeline axis
-    ctx.strokeStyle = '#cbd5e0'
+    ctx.strokeStyle = theme.ruleStrong
     ctx.lineWidth = 1
     ctx.beginPath()
     ctx.moveTo(0, MARKER_Y + SELECTED_RADIUS + 8)
@@ -429,8 +447,8 @@ function TimelineCanvas({ records, selectedIdx, colorKeys, onSelect, fitKey }: T
 
       const firstTick = Math.ceil(minMs / tickInterval) * tickInterval
       const lastTickMs = minMs + visibleSpanMs + spanMs
-      ctx.strokeStyle = '#a0aec0'
-      ctx.fillStyle = '#718096'
+      ctx.strokeStyle = theme.ruleStrong
+      ctx.fillStyle = theme.inkTertiary
       ctx.font = '10px system-ui'
       ctx.textAlign = 'center'
       for (let t = firstTick; t <= lastTickMs; t += tickInterval) {
@@ -451,7 +469,7 @@ function TimelineCanvas({ records, selectedIdx, colorKeys, onSelect, fitKey }: T
       const x = vs.originPx + ms / vs.msPerPx
       if (x < -20 || x > w + 20) return
 
-      const color = colorForKey(r.colorKey, colorKeys)
+      const color = colorForKey(r.colorKey, colorKeys, theme.chartCat)
       const isSelected = i === selectedIdx
       const radius = isSelected ? SELECTED_RADIUS : MARKER_RADIUS
 
@@ -473,7 +491,7 @@ function TimelineCanvas({ records, selectedIdx, colorKeys, onSelect, fitKey }: T
 
       // Label on selected
       if (isSelected) {
-        ctx.fillStyle = '#1a202c'
+        ctx.fillStyle = theme.inkPrimary
         ctx.font = 'bold 11px system-ui'
         ctx.textAlign = 'center'
         const label = r.colorKey
@@ -499,6 +517,15 @@ function TimelineCanvas({ records, selectedIdx, colorKeys, onSelect, fitKey }: T
     })
     ro.observe(canvas)
     return () => ro.disconnect()
+  }, [draw])
+
+  // Redraw when the resolved theme changes — ThemeToggle mutates <html>'s
+  // class/data-theme directly, outside any React state this component
+  // observes, so a canvas repaint has to be driven explicitly.
+  useEffect(() => {
+    const observer = new MutationObserver(() => draw())
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-theme'] })
+    return () => observer.disconnect()
   }, [draw])
 
   // Hit-test: find nearest marker to a canvas x coordinate
@@ -680,7 +707,7 @@ function Legend({ colorKeys }: { colorKeys: string[] }) {
         }}>
           <span style={{
             display: 'inline-block', width: 10, height: 10, borderRadius: '50%',
-            background: PALETTE[i % PALETTE.length],
+            background: `var(--chart-cat-${(i % CHART_CAT_COUNT) + 1})`,
           }} />
           {k}
         </span>
@@ -881,10 +908,10 @@ export function CassetteTimeline({
 
 const btnStyle: React.CSSProperties = {
   padding: '0.3rem 0.7rem',
-  background: '#fff',
-  color: '#4a5568',
-  border: '1px solid #cbd5e0',
-  borderRadius: 4,
+  background: 'var(--surface-paper)',
+  color: 'var(--ink-secondary)',
+  border: '1px solid var(--rule-strong)',
+  borderRadius: 'var(--radius-xs)',
   cursor: 'pointer',
   fontSize: 12,
   fontWeight: 500,
@@ -892,10 +919,10 @@ const btnStyle: React.CSSProperties = {
 
 const selectStyle: React.CSSProperties = {
   padding: '0.25rem 0.5rem',
-  background: '#fff',
-  color: '#4a5568',
-  border: '1px solid #cbd5e0',
-  borderRadius: 4,
+  background: 'var(--surface-paper)',
+  color: 'var(--ink-secondary)',
+  border: '1px solid var(--rule-strong)',
+  borderRadius: 'var(--radius-xs)',
   fontSize: 12,
   cursor: 'pointer',
 }
