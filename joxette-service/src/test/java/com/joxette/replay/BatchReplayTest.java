@@ -48,7 +48,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
  * <p>Covers validation (empty ids, too many ids) and the NDJSON event-envelope
  * format for a real in-memory DuckDB with pre-seeded entity rows.
  */
-@ExtendWith(MockitoExtension.class)
+@ExtendWith({MockitoExtension.class, CursorSigningKeyTestExtension.class})
 @MockitoSettings(strictness = Strictness.LENIENT)
 class BatchReplayTest {
 

@@ -8,6 +8,7 @@ import org.jooq.impl.DSL;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 
@@ -38,6 +39,7 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  *   <li>Entity type validation guard</li>
  * </ul>
  */
+@ExtendWith(CursorSigningKeyTestExtension.class)
 class EntityReplayServiceTest {
 
     private static final String ENTITY_TYPE = "order";

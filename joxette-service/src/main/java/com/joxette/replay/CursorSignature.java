@@ -24,16 +24,22 @@ import java.util.concurrent.atomic.AtomicReference;
 final class CursorSignature {
 
     private static final String ALGORITHM = "HmacSHA256";
-    // Used only when no CursorSigningKey bean has installed a real key — e.g. a plain
-    // unit test constructing TopicCursor/EntityCursor without the Spring context.
-    private static final byte[] FALLBACK_KEY =
-            "test-only-unconfigured-cursor-key".getBytes(StandardCharsets.UTF_8);
     private static final AtomicReference<byte[]> KEY = new AtomicReference<>();
 
     private CursorSignature() {}
 
     static void install(byte[] keyBytes) {
         KEY.set(keyBytes);
+    }
+
+    /**
+     * Test-only: clears the installed key so tests can exercise the "no key installed yet"
+     * state that {@link #effectiveKey()} otherwise never sees in production, since
+     * {@link CursorSigningKey}'s constructor installs a key during Spring context refresh
+     * before any HTTP request — and therefore any cursor encode/decode — can occur.
+     */
+    static void resetForTesting() {
+        KEY.set(null);
     }
 
     /** Appends {@code .<base64url-hmac>} to {@code payload}. */
@@ -68,7 +74,12 @@ final class CursorSignature {
 
     private static byte[] effectiveKey() {
         byte[] key = KEY.get();
-        return key != null ? key : FALLBACK_KEY;
+        if (key == null) {
+            throw new IllegalStateException(
+                    "cursor signing key not installed — CursorSigningKey bean must initialize "
+                            + "before any cursor encode/decode call");
+        }
+        return key;
     }
 
     private static String hmac(byte[] key, String payload) {

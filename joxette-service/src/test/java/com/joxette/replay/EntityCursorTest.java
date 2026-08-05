@@ -2,6 +2,7 @@ package com.joxette.replay;
 
 import com.joxette.api.error.InvalidCursorException;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.Arguments;
 import org.junit.jupiter.params.provider.MethodSource;
@@ -13,6 +14,7 @@ import java.util.stream.Stream;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+@ExtendWith(CursorSigningKeyTestExtension.class)
 class EntityCursorTest {
 
     private static final EntityCursor SAMPLE = new EntityCursor(

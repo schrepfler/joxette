@@ -6,6 +6,7 @@ import org.jooq.impl.DSL;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.sql.Connection;
 import java.time.Instant;
@@ -24,6 +25,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * read path. See that class's javadoc for why this is a probabilistic (not deterministic)
  * regression test: run 5 times to observe a pre-fix failure.
  */
+@ExtendWith(CursorSigningKeyTestExtension.class)
 class TopicReplayServiceConcurrencyTest {
 
     private static final String TOPIC = "orders.events";

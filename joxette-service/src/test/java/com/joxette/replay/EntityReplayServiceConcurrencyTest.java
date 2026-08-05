@@ -6,6 +6,7 @@ import org.jooq.impl.DSL;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.extension.ExtendWith;
 
 import java.sql.Connection;
 import java.time.Instant;
@@ -32,6 +33,7 @@ import static org.assertj.core.api.Assertions.assertThat;
  * the Step 3 fix — at least one of the five runs is expected to fail. After the fix, every
  * run is deterministic (no lock contention window remains to race on).
  */
+@ExtendWith(CursorSigningKeyTestExtension.class)
 class EntityReplayServiceConcurrencyTest {
 
     private static final String ENTITY_TYPE = "order";

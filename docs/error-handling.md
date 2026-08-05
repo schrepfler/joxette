@@ -75,7 +75,7 @@ Content-Type: application/problem+json
 | `ERR_MALFORMED_REQUEST`    | `https://joxette.dev/problems/validation`                | 400   | JSON body could not be parsed at all.                              |
 | `ERR_MISSING_PARAMETER`    | `https://joxette.dev/problems/validation`                | 400   | Required query/form parameter not supplied.                        |
 | `ERR_TYPE_MISMATCH`        | `https://joxette.dev/problems/validation`                | 400   | Query or path parameter had the wrong type (e.g. non-numeric `limit`). |
-| `ERR_INVALID_CURSOR`       | `https://joxette.dev/problems/invalid-cursor`            | 400   | Cursor could not be decoded (wrong signature, expired, malformed). |
+| `ERR_INVALID_CURSOR`       | `https://joxette.dev/problems/invalid-cursor`            | 400   | Cursor could not be decoded (wrong signature or malformed). No cursor expiry/TTL mechanism exists yet — a cursor signed with a since-rotated or since-restarted key falls under "wrong signature". |
 | `ERR_CONFLICT`             | `https://joxette.dev/problems/conflict`                  | 409   | Duplicate resource, violated state transition, or capacity reached. |
 | `ERR_UNAUTHORIZED`         | `https://joxette.dev/problems/unauthorized`              | 401   | Mutating request (POST/PUT/DELETE/PATCH) missing or with an incorrect `X-API-Key` header. |
 | `ERR_UPSTREAM_UNAVAILABLE` | `https://joxette.dev/problems/upstream-unavailable`      | 503   | A downstream dependency (broker, object store, DuckDB) is unreachable. |
