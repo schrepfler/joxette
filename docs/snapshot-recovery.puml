@@ -71,34 +71,80 @@ title Joxette — Rebuild known_entities (Disaster Recovery)
 
 |REST Client|
 start
-:POST /cassettes/rebuild-known-entities;
+:POST /cassettes/entities/rebuild-known-entities\n?recoverOrphanedFiles=false (default);
+note right
+  recoverOrphanedFiles is opt-in (default false).
+  An operator sets it to true only as a deliberate
+  action after confirming catalog loss — see
+  resolveEntityDataSource() javadoc for the full
+  ambiguity/residual-risk contract.
+end note
 
 |CassetteLifecycleService|
 :listEntityTypes() from config;
+:synchronized(duckDB) {;
 :CALL ducklake_flush_inlined_data('lake');
 :CHECKPOINT;
 :DELETE FROM known_entities;
 
 repeat
   :check table lake.main.entity_{type} exists\n(duckdb_tables());
+  if (table missing?) then (yes)
+    :skip this entity type;
+  else (no)
+    :resolveEntityDataSource(catalogSrc, tableName,\n  entityType, recoverOrphanedFiles);
 
-  if (catalog table has rows?) then (yes)
-    :dataSource = lake.main.entity_{type};
-  else (catalog empty / .ducklake lost)
-    :build glob: objectStoragePath/**/*.parquet;
-    :dataSource = read_parquet(glob, union_by_name=true);
-    :INSERT INTO lake.main.entity_{type}\n  SELECT 13 fixed columns FROM parquetSrc\n  WHERE entity_id IS NOT NULL;
-    note right
-      Re-populates empty DuckLake catalog
-      table from orphaned Parquet files on
-      S3 so downstream queries work normally.
-    end note
+    if (catalog table has > 0 live rows?) then (yes)
+      :dataSource = lake.main.entity_{type}\n(catalog is deletion-aware; trust it,\nincluding when the count is 0);
+    else (0 live rows)
+      if (ducklake_list_files('lake', tableName)\nstill lists tracked files?) then (yes — e.g. GDPR erase/truncate)
+        :dataSource = null;
+        note right
+          Zero rows but the catalog still tracks
+          this table's file history: trust the
+          deletion, never scan raw storage.
+        end note
+      else (no tracked files)
+        if (recoverOrphanedFiles == true\nAND object-storage-path configured?) then (yes)
+          :build PER-TABLE-scoped glob:\nobjectStoragePath/main/{tableName}/**/*.parquet;
+          note right
+            Scoped to this table's own default
+            DuckLake on-disk path — never a
+            bucket-wide glob, so recovery for one
+            entity type can never pick up another
+            entity type's (or general cassettes')
+            files.
+          end note
+          :parquetSrc = read_parquet(glob,\n  union_by_name=true, hive_partitioning=false);
+          if (parquetSrc has matching rows?) then (yes)
+            :INSERT INTO lake.main.entity_{type}\n  SELECT 13 fixed columns FROM parquetSrc\n  WHERE entity_id IS NOT NULL;
+            note right
+              Re-populates the empty DuckLake catalog
+              table from its own orphaned Parquet
+              files on object storage so downstream
+              queries (replay, stats, compaction)
+              work normally.
+            end note
+            :dataSource = lake.main.entity_{type}\n(freshly re-populated);
+          else (no)
+            :dataSource = null;
+          endif
+        else (not requested / not configured)
+          :dataSource = null;
+        endif
+      endif
+    endif
+
+    if (dataSource != null?) then (yes)
+      :INSERT INTO known_entities\n  SELECT entity_type, entity_id,\n         MIN(recorded_at), MAX(recorded_at)\n  FROM dataSource GROUP BY entity_id\n  ON CONFLICT DO UPDATE;
+      :count rows upserted for this type;
+    else (no)
+      :0 rows for this type;
+    endif
   endif
-
-  :INSERT INTO known_entities\n  SELECT entity_type, entity_id,\n         MIN(recorded_at), MAX(recorded_at)\n  FROM dataSource GROUP BY entity_id\n  ON CONFLICT DO UPDATE;
-  :count rows upserted;
 repeat while (more entity types?)
 
+:} end synchronized(duckDB);
 :return total rows upserted;
 stop
 
