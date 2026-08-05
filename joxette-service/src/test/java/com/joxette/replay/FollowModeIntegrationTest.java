@@ -330,7 +330,7 @@ class FollowModeIntegrationTest {
 
     @Test
     void followAndUpperBound_returns400() throws Exception {
-        int status = rawGetStatus("/cassettes/topics/" + TOPIC
+        int status = rawGetStatus("/v1/cassettes/topics/" + TOPIC
                 + "?follow=true&to=2030-01-01T00:00:00Z",
                 "text/event-stream");
         assertThat(status).isEqualTo(400);
@@ -338,7 +338,7 @@ class FollowModeIntegrationTest {
 
     @Test
     void followAndOffsetUpperBound_returns400() throws Exception {
-        int status = rawGetStatus("/cassettes/topics/" + TOPIC
+        int status = rawGetStatus("/v1/cassettes/topics/" + TOPIC
                 + "?follow=true&offset_to=1000",
                 "text/event-stream");
         assertThat(status).isEqualTo(400);
@@ -359,7 +359,7 @@ class FollowModeIntegrationTest {
 
         try {
             int status = rawGetStatus(
-                    "/cassettes/topics/" + TOPIC + "?follow=true",
+                    "/v1/cassettes/topics/" + TOPIC + "?follow=true",
                     "text/event-stream");
             assertThat(status).isEqualTo(409);
         } finally {
@@ -399,7 +399,7 @@ class FollowModeIntegrationTest {
                     base.plusSeconds(i), Instant.now(), "k" + i, b("v" + i));
         }
 
-        String url = baseUrl + "/cassettes/topics/" + TOPIC;
+        String url = baseUrl + "/v1/cassettes/topics/" + TOPIC;
         @SuppressWarnings("rawtypes")
         var resp = restTemplate.getForEntity(url, Map.class);
         assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.OK);
