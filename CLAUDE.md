@@ -315,7 +315,7 @@ Kafka VT 2 ──┼──▶  Channel<WriteBatch> (bounded, capacity N)  ──
 Kafka VT N ──┘
 ```
 
-Reads (replay API) bypass the channel entirely: each request opens a separate `Statement` on the shared `Connection`. DuckDB permits concurrent reads.
+Reads (replay API) bypass the *write channel* (they never enqueue onto `Channel<WriteBatch>`), but each request's `Statement` execution on the shared `Connection` is still wrapped in `synchronized(duckDB)`, exactly like the write path. DuckDB's native `duckdb_connection` handle does not permit concurrent `Statement` execution regardless of read/write.
 
 ### Thread and Scope Responsibilities
 
@@ -323,7 +323,7 @@ Reads (replay API) bypass the channel entirely: each request opens a separate `S
 |---|---|---|---|
 | Kafka consumers | One `TopicLifecycleActor` + VT per topic | Dynamic (one VT per source by default) | Supervised by `RecordingCoordinatorActor`; exponential-backoff restart |
 | DuckDB writes | Single VT draining `Channel<WriteBatch>` | 1 always | Serializes all INSERTs; natural backpressure via channel capacity |
-| DuckDB reads (replay) | Virtual thread per HTTP request | Unbounded (VT) | Separate `Statement` per request; concurrent reads safe |
+| DuckDB reads (replay) | Virtual thread per HTTP request | Unbounded (VT) | Separate `Statement` per request; serialized via `synchronized(duckDB)` alongside writes — concurrent reads are NOT safe on DuckDB's shared native handle |
 | Replay-to-topic (SSE) | One `ReplayActor` + VT per request | Unbounded (one per active replay) | Supervised by `ReplayCoordinatorActor`; `FlowReplayEngine` runs in Jox supervised scope; cancelled on client disconnect |
 | Compaction | Dedicated Jox scope, cron-triggered | 1 (isolated lifecycle) | Reads and writes; holds write channel slot during merge |
 | REST API | Spring Boot 4 virtual thread executor | Unbounded (VT) | Default; no configuration needed |

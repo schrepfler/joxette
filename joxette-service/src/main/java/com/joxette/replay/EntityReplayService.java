@@ -16,6 +16,7 @@ import com.joxette.replay.transform.TransformPipeline;
 import com.joxette.replay.transform.steps.SqlPushdownAnalyzer;
 
 import java.nio.charset.StandardCharsets;
+import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
@@ -106,9 +107,11 @@ public class EntityReplayService implements EntityCassetteSource {
     private static final Condition QUALIFY_DEDUP = QUALIFY_DEDUP_OFFSET;
 
     private final DSLContext dsl;
+    private final Connection duckDB;
 
-    public EntityReplayService(DSLContext dsl) {
+    public EntityReplayService(DSLContext dsl, Connection duckDB) {
         this.dsl = dsl;
+        this.duckDB = duckDB;
     }
 
     // -------------------------------------------------------------------------
@@ -231,17 +234,20 @@ public class EntityReplayService implements EntityCassetteSource {
 
         // last_n: tail-window query — ignore from/to/cursor, query DESC, reverse result
         if (lastN != null) {
-            var tailBase = dsl
-                    .select(F_ENTITY_ID, F_MESSAGE_TYPE, F_TOPIC, F_PARTITION, F_OFFSET,
-                            F_TIMESTAMP, F_RECORDED_AT, F_KEY, F_VALUE, F_HEADERS)
-                    .from(entityTable)
-                    .where(cond);
-            var qualified = qualifyClause != null ? tailBase.qualify(qualifyClause) : tailBase;
-            List<EntityRecord> tail = qualified
-                    .orderBy(F_TIMESTAMP.desc(), F_RECORDED_AT.desc(),
-                             F_TOPIC.desc(), F_PARTITION.desc(), F_OFFSET.desc())
-                    .limit(lastN)
-                    .fetch(EntityReplayService::mapEntityRecord);
+            List<EntityRecord> tail;
+            synchronized (duckDB) {
+                var tailBase = dsl
+                        .select(F_ENTITY_ID, F_MESSAGE_TYPE, F_TOPIC, F_PARTITION, F_OFFSET,
+                                F_TIMESTAMP, F_RECORDED_AT, F_KEY, F_VALUE, F_HEADERS)
+                        .from(entityTable)
+                        .where(cond);
+                var qualified = qualifyClause != null ? tailBase.qualify(qualifyClause) : tailBase;
+                tail = qualified
+                        .orderBy(F_TIMESTAMP.desc(), F_RECORDED_AT.desc(),
+                                 F_TOPIC.desc(), F_PARTITION.desc(), F_OFFSET.desc())
+                        .limit(lastN)
+                        .fetch(EntityReplayService::mapEntityRecord);
+            }
             // Reverse to chronological order
             java.util.Collections.reverse(tail);
 
@@ -268,42 +274,44 @@ public class EntityReplayService implements EntityCassetteSource {
         // events originate from multiple topics / services. recorded_at is the tiebreaker
         // and provides a consistent single-clock view, but it is not the primary sort key.
         // See docs/entity-ordering.md for guidance on when to prefer recorded_at ordering.
-        var baseSelect = dsl
-                .select(F_ENTITY_ID, F_MESSAGE_TYPE, F_TOPIC, F_PARTITION, F_OFFSET,
-                        F_TIMESTAMP, F_RECORDED_AT, F_KEY, F_VALUE, F_HEADERS)
-                .from(entityTable)
-                .where(cond);
-        var selectBase = qualifyClause != null
-                ? baseSelect.qualify(qualifyClause)
-                        .orderBy(desc ? F_TIMESTAMP.desc()   : F_TIMESTAMP.asc(),
-                                 desc ? F_RECORDED_AT.desc() : F_RECORDED_AT.asc(),
-                                 desc ? F_TOPIC.desc()       : F_TOPIC.asc(),
-                                 desc ? F_PARTITION.desc()   : F_PARTITION.asc(),
-                                 desc ? F_OFFSET.desc()      : F_OFFSET.asc())
-                : baseSelect
-                        .orderBy(desc ? F_TIMESTAMP.desc()   : F_TIMESTAMP.asc(),
-                                 desc ? F_RECORDED_AT.desc() : F_RECORDED_AT.asc(),
-                                 desc ? F_TOPIC.desc()       : F_TOPIC.asc(),
-                                 desc ? F_PARTITION.desc()   : F_PARTITION.asc(),
-                                 desc ? F_OFFSET.desc()      : F_OFFSET.asc());
-
         List<EntityRecord> records;
-        if (decoded != null) {
+        synchronized (duckDB) {
+            var baseSelect = dsl
+                    .select(F_ENTITY_ID, F_MESSAGE_TYPE, F_TOPIC, F_PARTITION, F_OFFSET,
+                            F_TIMESTAMP, F_RECORDED_AT, F_KEY, F_VALUE, F_HEADERS)
+                    .from(entityTable)
+                    .where(cond);
+            var selectBase = qualifyClause != null
+                    ? baseSelect.qualify(qualifyClause)
+                            .orderBy(desc ? F_TIMESTAMP.desc()   : F_TIMESTAMP.asc(),
+                                     desc ? F_RECORDED_AT.desc() : F_RECORDED_AT.asc(),
+                                     desc ? F_TOPIC.desc()       : F_TOPIC.asc(),
+                                     desc ? F_PARTITION.desc()   : F_PARTITION.asc(),
+                                     desc ? F_OFFSET.desc()      : F_OFFSET.asc())
+                    : baseSelect
+                            .orderBy(desc ? F_TIMESTAMP.desc()   : F_TIMESTAMP.asc(),
+                                     desc ? F_RECORDED_AT.desc() : F_RECORDED_AT.asc(),
+                                     desc ? F_TOPIC.desc()       : F_TOPIC.asc(),
+                                     desc ? F_PARTITION.desc()   : F_PARTITION.asc(),
+                                     desc ? F_OFFSET.desc()      : F_OFFSET.asc());
+
             // seekAfter is direction-aware in jOOQ: it inspects the ORDER BY
             // and emits the correct comparison for ASC / DESC. The cursor is
             // the same tuple; only the query direction changes.
-            records = selectBase
-                    .seekAfter(decoded.timestamp().atOffset(ZoneOffset.UTC),
-                               decoded.recordedAt().atOffset(ZoneOffset.UTC),
-                               decoded.sourceTopic(),
-                               decoded.sourcePartition(),
-                               decoded.sourceOffset())
-                    .limit(limit + 1)
-                    .fetch(EntityReplayService::mapEntityRecord);
-        } else {
-            records = selectBase
-                    .limit(limit + 1)
-                    .fetch(EntityReplayService::mapEntityRecord);
+            if (decoded != null) {
+                records = selectBase
+                        .seekAfter(decoded.timestamp().atOffset(ZoneOffset.UTC),
+                                   decoded.recordedAt().atOffset(ZoneOffset.UTC),
+                                   decoded.sourceTopic(),
+                                   decoded.sourcePartition(),
+                                   decoded.sourceOffset())
+                        .limit(limit + 1)
+                        .fetch(EntityReplayService::mapEntityRecord);
+            } else {
+                records = selectBase
+                        .limit(limit + 1)
+                        .fetch(EntityReplayService::mapEntityRecord);
+            }
         }
 
         if (!prunedPipeline.isIdentity()) {
@@ -532,13 +540,15 @@ public class EntityReplayService implements EntityCassetteSource {
     private PagedResponse<EntityInfo> fetchEntityPage(
             Condition where, int limit, String cursor, EntitySortBy sortBy
     ) {
+        List<EntityInfo> entities;
+        synchronized (duckDB) {
         var select = dsl
                 .select(F_ENTITY_TYPE, F_ENTITY_ID, F_FIRST_SEEN, F_LAST_SEEN,
                         F_MESSAGE_COUNT, F_SOURCE_TOPICS, F_LAST_MESSAGE_TYPE)
                 .from(KNOWN_ENTITIES)
                 .where(where);
 
-        List<EntityInfo> entities = switch (sortBy) {
+        entities = switch (sortBy) {
             case id -> {
                 String afterId = cursor != null ? decodePlainCursor(cursor) : null;
                 var sorted = select.orderBy(F_ENTITY_ID.asc());
@@ -568,6 +578,7 @@ public class EntityReplayService implements EntityCassetteSource {
                 yield rows;
             }
         };
+        }
 
         return TopicReplayService.buildPage(entities, limit, e -> switch (sortBy) {
             case id           -> encodePlainCursor(e.entityId());
@@ -603,39 +614,41 @@ public class EntityReplayService implements EntityCassetteSource {
         Instant firstMsg = null;
         Instant lastMsg  = null;
 
-        var aggRecord = dsl.fetchOne(
-                DSL.resultQuery(dedupCte
-                        + "SELECT COUNT(*) AS cnt, MIN(ts) AS first_msg, MAX(ts) AS last_msg"
-                        + " FROM deduped",
-                        idParam));
-        if (aggRecord != null) {
-            count = ((Number) aggRecord.get("cnt")).longValue();
-            var f = aggRecord.get("first_msg", java.time.OffsetDateTime.class);
-            var l = aggRecord.get("last_msg",  java.time.OffsetDateTime.class);
-            if (f != null) firstMsg = f.toInstant();
-            if (l != null) lastMsg  = l.toInstant();
-        }
-
         Map<String, Long> countByTopic = new LinkedHashMap<>();
-        dsl.fetch(
-                DSL.resultQuery(dedupCte
-                        + "SELECT topic, COUNT(*) AS cnt FROM deduped"
-                        + " GROUP BY topic ORDER BY topic",
-                        idParam))
-           .forEach(r -> countByTopic.put(
-                   r.get("topic", String.class),
-                   ((Number) r.get("cnt")).longValue()));
-
         Instant firstSeen = null;
         Instant lastSeen  = null;
-        var regRecord = dsl
-                .select(F_FIRST_SEEN, F_LAST_SEEN)
-                .from(KNOWN_ENTITIES)
-                .where(F_ENTITY_TYPE.eq(entityType).and(F_ENTITY_ID.eq(entityId)))
-                .fetchOne();
-        if (regRecord != null) {
-            firstSeen = regRecord.get(F_FIRST_SEEN).toInstant();
-            lastSeen  = regRecord.get(F_LAST_SEEN).toInstant();
+        synchronized (duckDB) {
+            var aggRecord = dsl.fetchOne(
+                    DSL.resultQuery(dedupCte
+                            + "SELECT COUNT(*) AS cnt, MIN(ts) AS first_msg, MAX(ts) AS last_msg"
+                            + " FROM deduped",
+                            idParam));
+            if (aggRecord != null) {
+                count = ((Number) aggRecord.get("cnt")).longValue();
+                var f = aggRecord.get("first_msg", java.time.OffsetDateTime.class);
+                var l = aggRecord.get("last_msg",  java.time.OffsetDateTime.class);
+                if (f != null) firstMsg = f.toInstant();
+                if (l != null) lastMsg  = l.toInstant();
+            }
+
+            dsl.fetch(
+                    DSL.resultQuery(dedupCte
+                            + "SELECT topic, COUNT(*) AS cnt FROM deduped"
+                            + " GROUP BY topic ORDER BY topic",
+                            idParam))
+               .forEach(r -> countByTopic.put(
+                       r.get("topic", String.class),
+                       ((Number) r.get("cnt")).longValue()));
+
+            var regRecord = dsl
+                    .select(F_FIRST_SEEN, F_LAST_SEEN)
+                    .from(KNOWN_ENTITIES)
+                    .where(F_ENTITY_TYPE.eq(entityType).and(F_ENTITY_ID.eq(entityId)))
+                    .fetchOne();
+            if (regRecord != null) {
+                firstSeen = regRecord.get(F_FIRST_SEEN).toInstant();
+                lastSeen  = regRecord.get(F_LAST_SEEN).toInstant();
+            }
         }
 
         return new EntityStats(entityType, entityId, count, firstMsg, lastMsg,

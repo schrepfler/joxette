@@ -45,8 +45,11 @@ import java.sql.SQLException;
  *       catalog path is used.</dd>
  * </dl>
  *
- * <p>DuckDB serialises writes internally; no external locking is required.
- * Multiple concurrent reads are safe via separate {@code Statement} objects.
+ * <p>DuckDB serialises writes internally, and reads must be serialised too: the JDBC
+ * driver wraps a single native {@code duckdb_connection} handle that is not safe for
+ * concurrent {@code Statement} execution regardless of whether the statements are reads
+ * or writes. Every DB-touching class (read and write paths alike) wraps its statement
+ * execution in {@code synchronized(duckDB)} against this same bean.
  */
 @Configuration
 public class DuckDBConfig {

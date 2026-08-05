@@ -42,8 +42,11 @@ import java.util.function.Consumer;
  * {@link TopicRecorder} before batches reach this channel, so the drain VT
  * already receives pre-merged batches when the writer is the bottleneck.
  *
- * <p>Reads (replay queries) are NOT routed here — they use separate
- * {@code Statement} objects on the shared connection and proceed concurrently.
+ * <p>Reads (replay queries) are NOT routed through this write channel — they never
+ * enqueue onto {@code Channel<WriteBatch>}. They still execute a separate
+ * {@code Statement} on the shared connection, but that execution is wrapped in
+ * {@code synchronized(duckDB)} exactly like the drain loop here, so reads and writes
+ * (and reads and other reads) never run concurrently against the native handle.
  */
 @Component
 public class DuckLakeWriteChannel {

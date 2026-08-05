@@ -64,7 +64,7 @@ class TopicReplayServiceTransformTest {
         duckDB  = DuckDBTestSupport.newConnection();
         DuckDBTestSupport.createGeneralCassetteTable(duckDB, TOPIC);
         DSLContext dsl = DSL.using(duckDB, SQLDialect.DUCKDB);
-        service = new TopicReplayService(dsl);
+        service = new TopicReplayService(dsl, duckDB);
     }
 
     @AfterEach

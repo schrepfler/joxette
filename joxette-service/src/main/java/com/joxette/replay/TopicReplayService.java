@@ -13,6 +13,7 @@ import org.springframework.stereotype.Service;
 import org.duckdb.DuckDBStruct;
 
 import java.sql.Array;
+import java.sql.Connection;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
@@ -88,9 +89,11 @@ public class TopicReplayService implements CassetteSource {
     ).eq(1);
 
     private final DSLContext dsl;
+    private final Connection duckDB;
 
-    public TopicReplayService(DSLContext dsl) {
+    public TopicReplayService(DSLContext dsl, Connection duckDB) {
         this.dsl = dsl;
+        this.duckDB = duckDB;
     }
 
     /**
@@ -173,33 +176,35 @@ public class TopicReplayService implements CassetteSource {
         if (offsetTo != null)   cond = cond.and(F_OFFSET.le(offsetTo));
 
         boolean desc = order == Order.DESC;
-        var selectBase = dsl
-                .select(F_PARTITION, F_OFFSET, F_TIMESTAMP, F_RECORDED_AT, F_KEY, F_VALUE, F_HEADERS, F_MESSAGE_TYPE)
-                .from(table)
-                .where(cond)
-                .qualify(QUALIFY_DEDUP)
-                .orderBy(desc ? F_TIMESTAMP.desc() : F_TIMESTAMP.asc(),
-                         desc ? F_PARTITION.desc() : F_PARTITION.asc(),
-                         desc ? F_OFFSET.desc()    : F_OFFSET.asc());
-
         final String topicFinal = topic;
         List<CassetteRecord> records;
-        if (decoded != null) {
+        synchronized (duckDB) {
+            var selectBase = dsl
+                    .select(F_PARTITION, F_OFFSET, F_TIMESTAMP, F_RECORDED_AT, F_KEY, F_VALUE, F_HEADERS, F_MESSAGE_TYPE)
+                    .from(table)
+                    .where(cond)
+                    .qualify(QUALIFY_DEDUP)
+                    .orderBy(desc ? F_TIMESTAMP.desc() : F_TIMESTAMP.asc(),
+                             desc ? F_PARTITION.desc() : F_PARTITION.asc(),
+                             desc ? F_OFFSET.desc()    : F_OFFSET.asc());
+
             // jOOQ's seekAfter is direction-aware: it inspects the ORDER BY
             // clause and generates `WHERE (cols) > (vals)` for ASC or
             // `WHERE (cols) < (vals)` for DESC.  So a single code path
             // serves both directions correctly as long as the ORDER BY
             // matches.
-            records = selectBase
-                    .seekAfter(decoded.timestamp().atOffset(ZoneOffset.UTC),
-                               decoded.partition(),
-                               decoded.offset())
-                    .limit(limit + 1)
-                    .fetch(r -> mapRecord(topicFinal, r));
-        } else {
-            records = selectBase
-                    .limit(limit + 1)
-                    .fetch(r -> mapRecord(topicFinal, r));
+            if (decoded != null) {
+                records = selectBase
+                        .seekAfter(decoded.timestamp().atOffset(ZoneOffset.UTC),
+                                   decoded.partition(),
+                                   decoded.offset())
+                        .limit(limit + 1)
+                        .fetch(r -> mapRecord(topicFinal, r));
+            } else {
+                records = selectBase
+                        .limit(limit + 1)
+                        .fetch(r -> mapRecord(topicFinal, r));
+            }
         }
 
         if (!prunedPipeline.isIdentity()) {
