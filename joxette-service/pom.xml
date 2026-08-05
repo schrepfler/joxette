@@ -252,7 +252,7 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-failsafe-plugin</artifactId>
-                <!-- 10 individual @Test methods across 5 IT classes fail on this
+                <!-- 8 individual @Test methods across 3 IT classes fail on this
                      repo's pre-existing main branch (verified: identical failures
                      reproduced at commit e86b356, before any /v1-hardening work
                      touched this module) — failsafe itself was never bound before,
@@ -264,7 +264,11 @@
                      class's tests, including the /v1-prefix coverage this branch
                      added to these same files, still run as real signal. Each is
                      a tracked follow-up, not swept under the rug — see
-                     docs/known-issues.md. -->
+                     docs/known-issues.md.
+                     (RecordReplayRoundTripIT.kafkaRecording_messagesAppearInPerTopicCassetteTable
+                     and EntityReplayRoundTripIT.entityRecording_fullRoundTrip_recordsAppearInAllReplayEndpoints
+                     were re-enabled after fixing the missing dynamic general-cassette-table
+                     creation in TopicController/SchemaManager — see git history.) -->
             </plugin>
             <plugin>
                 <groupId>org.springframework.boot</groupId>

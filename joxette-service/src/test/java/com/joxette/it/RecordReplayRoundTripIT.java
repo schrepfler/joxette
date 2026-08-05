@@ -12,7 +12,6 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -208,12 +207,16 @@ class RecordReplayRoundTripIT {
     // -------------------------------------------------------------------------
 
     @Test
-    @Disabled("Pre-existing failure, unrelated to /v1-hardening work — see docs/known-issues.md")
     void kafkaRecording_messagesAppearInPerTopicCassetteTable() throws Exception {
         // Create a Kafka topic and register it via the management REST API.
+        // startFrom=earliest avoids a race against the asynchronous recorder startup:
+        // with the default "latest", the recorder's Kafka subscription (~1-2s to join
+        // the consumer group) can resolve after the messages below are already
+        // produced, silently skipping them forever. See EntityIdExtractionRoundTripIT
+        // for the same pattern.
         String recordingTopic = "recording.live.test";
         createKafkaTopic(recordingTopic, 1);
-        registerTopicViaApi(recordingTopic, "general");
+        registerTopicViaApi(recordingTopic, "general", "earliest");
 
         // Publish messages to Kafka.
         int msgCount = 3;
@@ -258,11 +261,14 @@ class RecordReplayRoundTripIT {
     // Helpers
     // -------------------------------------------------------------------------
 
-    private void registerTopicViaApi(String topic, String mode) {
+    private void registerTopicViaApi(String topic, String mode, String startFrom) {
         // TopicController is mapped to POST /topics
         Map<String, Object> body = new HashMap<>();
         body.put("topic", topic);
         body.put("mode", mode);
+        if (startFrom != null) {
+            body.put("startFrom", startFrom);
+        }
         restTemplate.postForEntity(baseUrl + "/v1/topics", body, Object.class);
     }
 

@@ -1,6 +1,7 @@
 package com.joxette.api.error;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.joxette.db.SchemaManager;
 import com.joxette.management.ConfigRepository;
 import com.joxette.management.TopicMode;
 import com.joxette.config.events.ConfigEventBus;
@@ -46,13 +47,14 @@ class TopicControllerProblemDetailTest {
     @Mock RecordingCoordinator coordinator;
     @Mock KafkaTopicAdmin kafkaTopicAdmin;
     @Mock ConfigEventBus eventBus;
+    @Mock SchemaManager schemaManager;
 
     private MockMvc mvc;
     private final ObjectMapper mapper = new ObjectMapper();
 
     @BeforeEach
     void setUp() {
-        TopicController controller = new TopicController(config, coordinator, kafkaTopicAdmin, eventBus);
+        TopicController controller = new TopicController(config, coordinator, kafkaTopicAdmin, eventBus, schemaManager);
         mvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();

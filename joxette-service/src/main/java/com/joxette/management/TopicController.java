@@ -4,6 +4,7 @@ import com.joxette.api.error.ConflictException;
 import com.joxette.api.error.ResourceNotFoundException;
 import com.joxette.config.events.ConfigEventBus;
 import com.joxette.config.events.TopicConfigChanged;
+import com.joxette.db.SchemaManager;
 import com.joxette.recording.RecorderStatus;
 import com.joxette.recording.RecordingCoordinator;
 import jakarta.validation.Valid;
@@ -48,6 +49,7 @@ public class TopicController {
     private final RecordingCoordinator coordinator;
     private final KafkaTopicAdmin kafkaTopicAdmin;
     private final ConfigEventBus eventBus;
+    private final SchemaManager schemaManager;
 
     public record CreateTopicRequest(
             @NotBlank String topic,
@@ -65,11 +67,13 @@ public class TopicController {
     public TopicController(ConfigRepository config,
                            @Lazy RecordingCoordinator coordinator,
                            KafkaTopicAdmin kafkaTopicAdmin,
-                           ConfigEventBus eventBus) {
+                           ConfigEventBus eventBus,
+                           SchemaManager schemaManager) {
         this.config          = config;
         this.coordinator     = coordinator;
         this.kafkaTopicAdmin = kafkaTopicAdmin;
         this.eventBus        = eventBus;
+        this.schemaManager   = schemaManager;
     }
 
     private void publish(String topic, String changeType) {
@@ -104,6 +108,12 @@ public class TopicController {
         }
         String mode = body.mode() != null ? body.mode() : "general";
         String startFrom = body.startFrom() != null ? body.startFrom() : "latest";
+        // "entity_only" topics never write to the general cassette table, so skip
+        // creating it — mirrors the mode check in SchemaManager.createLakeTables()'s
+        // bootstrap-time bulk creation for topics present in joxette.bootstrap.topics.
+        if ("general".equals(mode) || "both".equals(mode)) {
+            schemaManager.createGeneralTable(body.topic());
+        }
         TopicConfig tc = config.upsertTopic(body.topic(), mode, false, startFrom, body.brokerId());
         publish(tc.topic(), "created");
         // Report active=false initially — watcher will start recorders asynchronously
@@ -127,6 +137,13 @@ public class TopicController {
         config.findTopic(topic).orElseThrow(() -> ResourceNotFoundException.topic(topic));
         TopicConfig existing = config.findTopic(topic)
                 .orElseThrow(() -> ResourceNotFoundException.topic(topic));
+        // Mode may be changing from "entity_only" (no general table) to "general"/"both",
+        // which needs the general cassette table just as much as createTopic() does.
+        // createGeneralTable() is idempotent (CREATE TABLE IF NOT EXISTS), so it is safe
+        // to call unconditionally on every mode transition into "general"/"both".
+        if (body.mode() != null && ("general".equals(body.mode()) || "both".equals(body.mode()))) {
+            schemaManager.createGeneralTable(topic);
+        }
         TopicConfig tc = config.upsertTopic(topic, body.mode(), existing.paused(), "latest", body.brokerId());
         publish(topic, "updated");
         return ResponseEntity.ok(tc);

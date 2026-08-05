@@ -607,6 +607,29 @@ public class SchemaManager {
     }
 
     // -------------------------------------------------------------------------
+    // Dynamic general cassette table management (called at runtime from TopicController)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Creates the {@code <catalog>.main.general_{normalized_topic}} cassette table for
+     * a single topic if it does not yet exist. Idempotent – safe to call when the table
+     * already exists.
+     *
+     * <p>Mirrors the per-table creation logic {@link #createLakeTables(Connection, String)}
+     * runs in bulk for {@code joxette.bootstrap.topics} at startup, but for a topic
+     * registered dynamically after startup (e.g. via {@code POST /topics}), which
+     * {@code createLakeTables()} never sees.
+     */
+    public void createGeneralTable(String topic) throws SQLException {
+        Connection conn    = duckLakeManager.getConnection();
+        String    catalog  = duckLakeManager.getCatalogName();
+        String    flexType = variantSupported ? "VARIANT" : "JSON";
+        String    tableName = "general_" + normalize(topic);
+        createGeneralCassetteTable(conn, catalog, tableName, flexType);
+        log.info("General cassette table created/verified: {}.main.{}", catalog, tableName);
+    }
+
+    // -------------------------------------------------------------------------
     // Dynamic entity table management (called at runtime from EntityController)
     // -------------------------------------------------------------------------
 

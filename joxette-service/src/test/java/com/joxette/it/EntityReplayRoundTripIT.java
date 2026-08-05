@@ -14,7 +14,6 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -132,10 +131,16 @@ class EntityReplayRoundTripIT {
         } catch (HttpClientErrorException ignored) { /* 409 Conflict — mapping already exists */ }
 
         // Register the test topic for 'both' general + entity recording.
+        // startFrom=earliest avoids a race against the asynchronous recorder startup:
+        // with the default "latest", the recorder's Kafka subscription (~1-2s to join
+        // the consumer group) can resolve after the test method's messages are already
+        // produced, silently skipping them forever. See EntityIdExtractionRoundTripIT
+        // for the same pattern.
         try {
             Map<String, Object> topicBody = new HashMap<>();
             topicBody.put("topic", TEST_TOPIC);
             topicBody.put("mode", "both");
+            topicBody.put("startFrom", "earliest");
             restTemplate.postForEntity(baseUrl + "/topics", topicBody, Object.class);
         } catch (HttpClientErrorException ignored) { /* 409 Conflict — topic already registered */ }
 
@@ -151,7 +156,6 @@ class EntityReplayRoundTripIT {
     // -------------------------------------------------------------------------
 
     @Test
-    @Disabled("Pre-existing failure, unrelated to /v1-hardening work — see docs/known-issues.md")
     void entityRecording_fullRoundTrip_recordsAppearInAllReplayEndpoints() throws Exception {
         int msgCount = 3;
 

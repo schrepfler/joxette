@@ -3,6 +3,7 @@ package com.joxette.management;
 import com.joxette.api.error.ResourceNotFoundException;
 import com.joxette.config.events.ConfigEventBus;
 import com.joxette.config.events.TopicConfigChanged;
+import com.joxette.db.SchemaManager;
 import com.joxette.management.TopicMode;
 import com.joxette.recording.RecordingCoordinator;
 import org.junit.jupiter.api.Test;
@@ -31,6 +32,7 @@ class TopicControllerTest {
     @Mock RecordingCoordinator coordinator;
     @Mock KafkaTopicAdmin kafkaTopicAdmin;
     @Mock ConfigEventBus eventBus;
+    @Mock SchemaManager schemaManager;
 
     @InjectMocks TopicController controller;
 

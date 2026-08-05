@@ -16,16 +16,6 @@ that no longer exists on `joxette_instances` — it was migrated away to
 `SchemaManager.migrateJoxetteInstances`). The test predates that migration
 and was never updated. Fix: rewrite both tests against the current schema.
 
-## `RecordReplayRoundTripIT.kafkaRecording_messagesAppearInPerTopicCassetteTable`
-
-Times out waiting for a dynamically-registered topic's cassette table to
-receive rows. Root cause: `SchemaManager.createLakeTables()` only creates
-`lake.main.general_{topic}` tables for topics present in
-`joxette.bootstrap.topics` at startup — a topic registered later via
-`POST /topics` never gets its table created, so recording crash-loops for
-it. Confirmed and logged during the compaction/storage-safety hardening
-pass; this is the same bug, now also breaking the IT that exercises it.
-
 ## `RebuildKnownEntitiesIT` — 2 failures, not yet root-caused
 
 `rebuildKnownEntities_emptyEntityTables_returns0AndLeavesRegistryEmpty` and
@@ -41,10 +31,3 @@ but this needs confirming.
 All four header round-trip scenarios (binary non-UTF8, duplicate keys,
 empty header list, UTF8 values) fail at the same `writeRecord` call site.
 Confirmed pre-existing, not yet root-caused.
-
-## `EntityReplayRoundTripIT.entityRecording_fullRoundTrip_recordsAppearInAllReplayEndpoints`
-
-Times out waiting for entity-routed records to appear via replay. Confirmed
-pre-existing, not yet root-caused — may share a root cause with one of the
-above (dynamic topic registration, or the same test-isolation class as
-`RebuildKnownEntitiesIT`).
