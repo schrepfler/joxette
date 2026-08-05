@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.joxette.api.error.ErrorCodes;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.http.HttpEntity;
@@ -106,5 +108,68 @@ class ApiKeyAuthenticationIT {
     void getWithoutApiKey_succeedsUnauthenticated() {
         ResponseEntity<String> response = nonThrowingRestTemplate().getForEntity(url("/entities"), String.class);
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+    }
+
+    /**
+     * Covers PUT/DELETE/PATCH — {@code postWithoutApiKey_returns401ProblemJson} and
+     * {@code postWithCorrectApiKey_reachesController} above only ever exercised POST.
+     * Each invocation proves, for one verb, all three cases: missing key rejected,
+     * wrong key rejected, and correct key let through to routing.
+     *
+     * <p>PUT and DELETE target the real {@code /entities/{type}} handlers (pre-created
+     * via a fixture POST) so the "correct key" case asserts a genuine 200/204 from the
+     * controller, not just "not 401". No endpoint in this API maps PATCH, so for PATCH
+     * the "correct key" case asserts 405 Method Not Allowed — proof the request cleared
+     * the security filter and reached Spring MVC's handler-method matching, since a
+     * request rejected by the filter would never get that far to be method-matched.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {"PUT", "DELETE", "PATCH"})
+    void mutatingVerb_apiKeyEnforcement(String verb) throws Exception {
+        String type = "verbtest_" + verb.toLowerCase(java.util.Locale.ROOT);
+        String path = "/entities/" + type;
+        HttpMethod method = HttpMethod.valueOf(verb);
+        String body = "PUT".equals(verb) ? "{\"buckets\":256}" : null;
+
+        if ("PUT".equals(verb) || "DELETE".equals(verb)) {
+            createEntityType(type);
+        }
+
+        assertRejected(mutate(method, path, null, body), path);
+        assertRejected(mutate(method, path, "definitely-the-wrong-key", body), path);
+
+        ResponseEntity<String> accepted = mutate(method, path, API_KEY, body);
+        assertThat(accepted.getStatusCode()).isNotEqualTo(HttpStatus.UNAUTHORIZED);
+        switch (verb) {
+            case "PUT" -> assertThat(accepted.getStatusCode()).isEqualTo(HttpStatus.OK);
+            case "DELETE" -> assertThat(accepted.getStatusCode()).isEqualTo(HttpStatus.NO_CONTENT);
+            case "PATCH" -> assertThat(accepted.getStatusCode()).isEqualTo(HttpStatus.METHOD_NOT_ALLOWED);
+            default -> throw new AssertionError("unexpected verb: " + verb);
+        }
+    }
+
+    private void createEntityType(String type) {
+        String body = "{\"type\":\"" + type + "\",\"buckets\":256}";
+        ResponseEntity<String> response = mutate(HttpMethod.POST, "/entities", API_KEY, body);
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+    }
+
+    private ResponseEntity<String> mutate(HttpMethod method, String path, String apiKey, String jsonBody) {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        if (apiKey != null) {
+            headers.set("X-API-Key", apiKey);
+        }
+        HttpEntity<String> entity = new HttpEntity<>(jsonBody, headers);
+        return nonThrowingRestTemplate().exchange(url(path), method, entity, String.class);
+    }
+
+    private void assertRejected(ResponseEntity<String> response, String expectedPath) throws Exception {
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
+        assertThat(response.getHeaders().getContentType().toString()).contains("application/problem+json");
+        JsonNode node = mapper.readTree(response.getBody());
+        assertThat(node.get("errorCode").asText()).isEqualTo(ErrorCodes.UNAUTHORIZED);
+        assertThat(node.get("status").asInt()).isEqualTo(401);
+        assertThat(node.get("path").asText()).isEqualTo(expectedPath);
     }
 }

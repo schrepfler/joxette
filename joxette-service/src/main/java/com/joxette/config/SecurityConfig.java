@@ -1,6 +1,7 @@
 package com.joxette.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.joxette.api.error.ProblemDetailSupport;
 import com.joxette.api.error.UnauthorizedException;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
@@ -11,6 +12,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpMethod;
+import org.springframework.http.ProblemDetail;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
@@ -24,8 +26,6 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
 import org.springframework.web.filter.OncePerRequestFilter;
 
 import java.io.IOException;
-import java.time.Instant;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -108,15 +108,18 @@ public class SecurityConfig {
      * {@link com.joxette.api.error.GlobalExceptionHandler} for requests rejected before
      * reaching the DispatcherServlet. Spring Security's filter chain runs upstream of
      * {@code @RestControllerAdvice}, so {@link UnauthorizedException} cannot be thrown and
-     * caught there — this entry point duplicates the same field construction instead.
+     * caught there — this entry point builds the {@link ProblemDetail} itself and shares
+     * {@link ProblemDetailSupport} with {@code GlobalExceptionHandler} for the extension
+     * fields, so the two can't silently drift apart on the field set.
      *
-     * <p>Deliberately serializes a flat {@link Map} rather than a {@link org.springframework.http.ProblemDetail}:
-     * {@code ProblemDetail}'s extension properties are only flattened to the top level by
-     * {@code ProblemDetailJacksonMixin}, which Spring MVC applies inside its
-     * {@code MappingJackson2HttpMessageConverter} — not on the shared {@link ObjectMapper} bean.
-     * Serializing a {@code ProblemDetail} directly through the raw bean (as this filter must,
-     * since it runs before the DispatcherServlet) nests those fields under a {@code "properties"}
-     * object instead of matching {@code GlobalExceptionHandler}'s flattened contract.
+     * <p>Deliberately serializes a flat {@link Map} (via {@link ProblemDetailSupport#toFlatMap})
+     * rather than the {@link ProblemDetail} directly: {@code ProblemDetail}'s extension
+     * properties are only flattened to the top level by {@code ProblemDetailJacksonMixin}, which
+     * Spring MVC applies inside its {@code MappingJackson2HttpMessageConverter} — not on the
+     * shared {@link ObjectMapper} bean. Serializing a {@code ProblemDetail} directly through the
+     * raw bean (as this filter must, since it runs before the DispatcherServlet) nests those
+     * fields under a {@code "properties"} object instead of matching
+     * {@code GlobalExceptionHandler}'s flattened contract.
      */
     static final class ApiKeyAuthenticationEntryPoint implements AuthenticationEntryPoint {
 
@@ -130,15 +133,11 @@ public class SecurityConfig {
         public void commence(HttpServletRequest request, HttpServletResponse response,
                               AuthenticationException authException) throws IOException {
             UnauthorizedException ex = UnauthorizedException.missingOrInvalidApiKey();
-            Map<String, Object> body = new LinkedHashMap<>();
-            body.put("type", ex.type().toString());
-            body.put("title", ex.title());
-            body.put("status", ex.status().value());
-            body.put("detail", ex.detail());
-            body.put("instance", null);
-            body.put("timestamp", Instant.now().toString());
-            body.put("path", request.getRequestURI());
-            body.put("errorCode", ex.errorCode());
+            ProblemDetail problem = ProblemDetail.forStatusAndDetail(ex.status(), ex.detail());
+            problem.setType(ex.type());
+            problem.setTitle(ex.title());
+            ProblemDetailSupport.decorate(problem, ex.errorCode(), request.getRequestURI());
+            Map<String, Object> body = ProblemDetailSupport.toFlatMap(problem);
             response.setStatus(ex.status().value());
             response.setHeader("WWW-Authenticate", "ApiKey realm=\"joxette\"");
             response.setContentType("application/problem+json");

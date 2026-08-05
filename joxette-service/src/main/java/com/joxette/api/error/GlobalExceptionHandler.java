@@ -5,7 +5,6 @@ import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.web.context.request.ServletWebRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.slf4j.MDC;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
@@ -23,7 +22,6 @@ import org.springframework.web.servlet.resource.NoResourceFoundException;
 import org.springframework.web.servlet.mvc.method.annotation.ResponseEntityExceptionHandler;
 
 import java.sql.SQLException;
-import java.time.Instant;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -39,8 +37,6 @@ import java.util.stream.Collectors;
 public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
-
-    private static final String MDC_TRACE_ID = "traceId";
 
     @ExceptionHandler(JoxetteException.class)
     public ResponseEntity<ProblemDetail> handleJoxette(JoxetteException ex, HttpServletRequest request) {
@@ -185,15 +181,7 @@ public class GlobalExceptionHandler extends ResponseEntityExceptionHandler {
     }
 
     private static void decorate(ProblemDetail body, String errorCode, String path) {
-        body.setProperty("timestamp", Instant.now().toString());
-        if (path != null) {
-            body.setProperty("path", path);
-        }
-        body.setProperty("errorCode", errorCode);
-        String traceId = MDC.get(MDC_TRACE_ID);
-        if (traceId != null && !traceId.isBlank()) {
-            body.setProperty("traceId", traceId);
-        }
+        ProblemDetailSupport.decorate(body, errorCode, path);
     }
 
     private static String pathOf(WebRequest request) {

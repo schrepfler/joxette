@@ -77,6 +77,7 @@ Content-Type: application/problem+json
 | `ERR_TYPE_MISMATCH`        | `https://joxette.dev/problems/validation`                | 400   | Query or path parameter had the wrong type (e.g. non-numeric `limit`). |
 | `ERR_INVALID_CURSOR`       | `https://joxette.dev/problems/invalid-cursor`            | 400   | Cursor could not be decoded (wrong signature, expired, malformed). |
 | `ERR_CONFLICT`             | `https://joxette.dev/problems/conflict`                  | 409   | Duplicate resource, violated state transition, or capacity reached. |
+| `ERR_UNAUTHORIZED`         | `https://joxette.dev/problems/unauthorized`              | 401   | Mutating request (POST/PUT/DELETE/PATCH) missing or with an incorrect `X-API-Key` header. |
 | `ERR_UPSTREAM_UNAVAILABLE` | `https://joxette.dev/problems/upstream-unavailable`      | 503   | A downstream dependency (broker, object store, DuckDB) is unreachable. |
 | `ERR_SNAPSHOT_VERIFICATION_FAILED` | `https://joxette.dev/problems/snapshot-verification-failed` | 409 | Snapshot restore completed but restored row counts did not match `snapshots.row_counts`; the catalog was already overwritten (no rollback) — backing Parquet file(s) may be corrupted or truncated. |
 | `ERR_INTERNAL`             | `https://joxette.dev/problems/internal`                  | 500   | Uncaught exception; the cause is logged, not returned.             |
