@@ -29,6 +29,7 @@ tiers:
     replayEnabled: false
     resources:
       requests: { cpu: "1", memory: 2Gi }
+      limits: { memory: 2Gi }
   replay:
     enabled: true
     replicas: 2
@@ -36,13 +37,16 @@ tiers:
     replayEnabled: true
     resources:
       requests: { cpu: 500m, memory: 1Gi }
-    # Autoscale the stateless replay tier (needs metrics-server). When enabled,
+      limits: { memory: 1Gi }
+    # Autoscale the stateless replay tier (needs metrics-server for cpu, and
+    # prometheus-adapter for targetActiveReplaysPerPod). When enabled,
     # `replicas` above is ignored — the HPA owns the replica count.
     hpa:
       enabled: true
       minReplicas: 2
       maxReplicas: 10
       targetCPUUtilizationPercentage: 70
+      targetActiveReplaysPerPod: 10
   compaction:
     enabled: true
     roles: [compaction]

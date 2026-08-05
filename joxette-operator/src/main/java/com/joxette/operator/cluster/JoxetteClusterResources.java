@@ -7,8 +7,13 @@ import io.fabric8.kubernetes.api.model.ContainerPortBuilder;
 import io.fabric8.kubernetes.api.model.EnvVar;
 import io.fabric8.kubernetes.api.model.EnvVarBuilder;
 import io.fabric8.kubernetes.api.model.HasMetadata;
+import io.fabric8.kubernetes.api.model.IntOrString;
 import io.fabric8.kubernetes.api.model.PersistentVolumeClaimBuilder;
+import io.fabric8.kubernetes.api.model.Probe;
+import io.fabric8.kubernetes.api.model.ProbeBuilder;
 import io.fabric8.kubernetes.api.model.Quantity;
+import io.fabric8.kubernetes.api.model.ResourceRequirements;
+import io.fabric8.kubernetes.api.model.ResourceRequirementsBuilder;
 import io.fabric8.kubernetes.api.model.Service;
 import io.fabric8.kubernetes.api.model.ServiceAccount;
 import io.fabric8.kubernetes.api.model.ServiceAccountBuilder;
@@ -65,17 +70,20 @@ public final class JoxetteClusterResources {
             if (spec.getTiers().getRecorder().isEnabled()) {
                 out.add(tierDeployment(name, spec, "recorder",
                         List.of("recorder", "entity-router"), false,
-                        spec.getTiers().getRecorder().getReplicas()));
+                        spec.getTiers().getRecorder().getReplicas(),
+                        spec.getTiers().getRecorder().getResources()));
             }
             if (spec.getTiers().getReplay().isEnabled()) {
                 out.add(tierDeployment(name, spec, "replay",
                         List.of("replay"), true,
-                        spec.getTiers().getReplay().getReplicas()));
+                        spec.getTiers().getReplay().getReplicas(),
+                        spec.getTiers().getReplay().getResources()));
             }
             if (spec.getTiers().getCompaction().isEnabled()) {
                 // Compaction is pinned to a single active node regardless of spec.
                 out.add(tierDeployment(name, spec, "compaction",
-                        List.of("compaction"), false, 1));
+                        List.of("compaction"), false, 1,
+                        spec.getTiers().getCompaction().getResources()));
             }
         }
         return out;
@@ -114,6 +122,10 @@ public final class JoxetteClusterResources {
                 .withImage(spec.getImage())
                 .withPorts(containerPorts(spec))
                 .withEnv(env(name, spec, List.of("all"), true))
+                .withStartupProbe(startupProbe())
+                .withLivenessProbe(livenessProbe())
+                .withReadinessProbe(readinessProbe())
+                .withResources(resources(spec.getTiers().getRecorder().getResources()))
                 .addNewVolumeMount().withName("catalog").withMountPath(dir).endVolumeMount()
                 .endContainer()
                 .endSpec()
@@ -125,7 +137,8 @@ public final class JoxetteClusterResources {
 
     private static Deployment tierDeployment(String name, JoxetteClusterSpec spec,
                                              String tier, List<String> roles,
-                                             boolean replayEnabled, int replicas) {
+                                             boolean replayEnabled, int replicas,
+                                             JoxetteClusterSpec.Resources tierResources) {
         Map<String, String> tierLabels = labels(name);
         tierLabels.put("app.kubernetes.io/component", tier);
         Map<String, String> tierSelector = selector(name);
@@ -148,10 +161,47 @@ public final class JoxetteClusterResources {
                 .withImage(spec.getImage())
                 .withPorts(containerPorts(spec))
                 .withEnv(env(name, spec, roles, replayEnabled))
+                .withStartupProbe(startupProbe())
+                .withLivenessProbe(livenessProbe())
+                .withReadinessProbe(readinessProbe())
+                .withResources(resources(tierResources))
                 .endContainer()
                 .endSpec()
                 .endTemplate()
                 .endSpec()
+                .build();
+    }
+
+    // ---- probes + resources ---------------------------------------------------
+
+    /** Mirrors deploy/helm/joxette/templates/_helpers.tpl `joxette.probes` (default probe paths/timings). */
+    private static Probe startupProbe() {
+        return new ProbeBuilder()
+                .withNewHttpGet().withPath("/actuator/health").withPort(new IntOrString("http")).endHttpGet()
+                .withFailureThreshold(30)
+                .withPeriodSeconds(5)
+                .build();
+    }
+
+    private static Probe livenessProbe() {
+        return new ProbeBuilder()
+                .withNewHttpGet().withPath("/actuator/health/liveness").withPort(new IntOrString("http")).endHttpGet()
+                .withPeriodSeconds(15)
+                .build();
+    }
+
+    private static Probe readinessProbe() {
+        return new ProbeBuilder()
+                .withNewHttpGet().withPath("/actuator/health/readiness").withPort(new IntOrString("http")).endHttpGet()
+                .withPeriodSeconds(10)
+                .build();
+    }
+
+    private static ResourceRequirements resources(JoxetteClusterSpec.Resources r) {
+        return new ResourceRequirementsBuilder()
+                .addToRequests("cpu", new Quantity(r.getRequestCpu()))
+                .addToRequests("memory", new Quantity(r.getRequestMemory()))
+                .addToLimits("memory", new Quantity(r.getLimitMemory()))
                 .build();
     }
 

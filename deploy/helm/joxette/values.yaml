@@ -74,8 +74,13 @@ tiers:
     roles: [recorder, entity-router]
     # Pure write node: turn off the replay API to avoid serving reads here.
     replayEnabled: false
+    # limits.memory == requests.memory (no cpu limit) — same convention already
+    # used for the operator's own Deployment (deploy/operator/deployment.yaml):
+    # bound memory hard (JVM + DuckDB native allocations must not spill onto the
+    # node) but leave cpu unbounded so a burst never gets throttled.
     resources:
       requests: { cpu: "1", memory: 2Gi }
+      limits: { memory: 2Gi }
   replay:
     enabled: true
     replicas: 1
@@ -83,15 +88,24 @@ tiers:
     replayEnabled: true
     resources:
       requests: { cpu: 500m, memory: 1Gi }
+      limits: { memory: 1Gi }
     # Horizontal autoscaling for the (stateless) replay tier. Shared-catalog
     # backends only — rejected with an embedded catalog (single pod). Requires
-    # metrics-server in the cluster. When enabled the Deployment omits a static
-    # replica count so the HPA owns it (avoids replica fighting on each reconcile).
+    # metrics-server in the cluster (CPU metric) AND, for targetActiveReplaysPerPod,
+    # prometheus-adapter exposing joxette_replay_active via the custom metrics API
+    # (custom.metrics.k8s.io) — the chart does not install or configure the adapter.
+    # When enabled the Deployment omits a static replica count so the HPA owns it
+    # (avoids replica fighting on each reconcile).
     hpa:
       enabled: false
       minReplicas: 2
       maxReplicas: 10
       targetCPUUtilizationPercentage: 70
+      # Average of joxette_replay_active (active replay-to-topic ops) per pod.
+      # Replay is I/O-bound (SSE/NDJSON fan-out) — many slow concurrent streams
+      # can saturate a pod at low CPU, so this metric scales out cases CPU alone
+      # misses. HPA takes the max recommended replicas across all metrics.
+      targetActiveReplaysPerPod: 10
   compaction:
     enabled: true
     # replicas always 1 — the chart pins it regardless of this value.
@@ -99,6 +113,7 @@ tiers:
     replayEnabled: false
     resources:
       requests: { cpu: 500m, memory: 1Gi }
+      limits: { memory: 1Gi }
 
 # ----------------------------------------------------------------------------
 # Kafka

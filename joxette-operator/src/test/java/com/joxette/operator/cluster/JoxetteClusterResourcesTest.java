@@ -2,8 +2,10 @@ package com.joxette.operator.cluster;
 
 import com.joxette.operator.cluster.JoxetteClusterSpec.CatalogBackend;
 import com.joxette.operator.cluster.JoxetteClusterSpec.ClusteringMode;
+import io.fabric8.kubernetes.api.model.Container;
 import io.fabric8.kubernetes.api.model.HasMetadata;
 import io.fabric8.kubernetes.api.model.ObjectMeta;
+import io.fabric8.kubernetes.api.model.Quantity;
 import io.fabric8.kubernetes.api.model.Service;
 import io.fabric8.kubernetes.api.model.ServiceAccount;
 import io.fabric8.kubernetes.api.model.apps.Deployment;
@@ -175,5 +177,55 @@ class JoxetteClusterResourcesTest {
         assertThat(JoxetteClusterResources.build(cluster(spec)))
                 .filteredOn(Service.class::isInstance).map(Service.class::cast)
                 .noneMatch(s -> s.getMetadata().getName().endsWith("-headless"));
+    }
+
+    @Test
+    void embeddedStatefulSetHasProbesAndResourceLimits() {
+        JoxetteClusterSpec spec = new JoxetteClusterSpec();
+        spec.setImage("joxette-service:test");
+        spec.getCatalog().setBackend(CatalogBackend.embedded);
+
+        StatefulSet ss = JoxetteClusterResources.build(cluster(spec)).stream()
+                .filter(StatefulSet.class::isInstance).map(StatefulSet.class::cast)
+                .findFirst().orElseThrow();
+        Container container = ss.getSpec().getTemplate().getSpec().getContainers().get(0);
+
+        assertThat(container.getStartupProbe()).isNotNull();
+        assertThat(container.getStartupProbe().getHttpGet().getPath()).isEqualTo("/actuator/health");
+        assertThat(container.getLivenessProbe()).isNotNull();
+        assertThat(container.getLivenessProbe().getHttpGet().getPath()).isEqualTo("/actuator/health/liveness");
+        assertThat(container.getReadinessProbe()).isNotNull();
+        assertThat(container.getReadinessProbe().getHttpGet().getPath()).isEqualTo("/actuator/health/readiness");
+
+        assertThat(container.getResources()).isNotNull();
+        assertThat(container.getResources().getRequests())
+                .containsEntry("cpu", new Quantity("1"))
+                .containsEntry("memory", new Quantity("2Gi"));
+        assertThat(container.getResources().getLimits())
+                .containsEntry("memory", new Quantity("2Gi"));
+    }
+
+    @Test
+    void tierDeploymentsHaveProbesAndResourceLimits() {
+        JoxetteClusterSpec spec = new JoxetteClusterSpec();
+        spec.setImage("joxette-service:test");
+        spec.getCatalog().setBackend(CatalogBackend.postgresql);
+        spec.getCatalog().setUri("postgresql://pg/joxette");
+
+        List<Deployment> deps = JoxetteClusterResources.build(cluster(spec)).stream()
+                .filter(Deployment.class::isInstance).map(Deployment.class::cast).toList();
+
+        Deployment replay = deps.stream()
+                .filter(d -> d.getMetadata().getName().equals("prod-replay")).findFirst().orElseThrow();
+        Container container = replay.getSpec().getTemplate().getSpec().getContainers().get(0);
+
+        assertThat(container.getStartupProbe()).isNotNull();
+        assertThat(container.getLivenessProbe()).isNotNull();
+        assertThat(container.getReadinessProbe()).isNotNull();
+        assertThat(container.getResources().getRequests())
+                .containsEntry("cpu", new Quantity("500m"))
+                .containsEntry("memory", new Quantity("1Gi"));
+        assertThat(container.getResources().getLimits())
+                .containsEntry("memory", new Quantity("1Gi"));
     }
 }

@@ -97,9 +97,9 @@ public class JoxetteClusterSpec {
 
     /** Role tiers (shared-catalog backends only; ignored for embedded). */
     public static class Tiers {
-        private Tier recorder = Tier.of(2, true);
-        private Tier replay = Tier.of(2, true);
-        private Tier compaction = Tier.of(1, true);
+        private Tier recorder = Tier.of(2, true, "1", "2Gi");
+        private Tier replay = Tier.of(2, true, "500m", "1Gi");
+        private Tier compaction = Tier.of(1, true, "500m", "1Gi");
         public Tier getRecorder() { return recorder; }
         public void setRecorder(Tier recorder) { this.recorder = recorder; }
         public Tier getReplay() { return replay; }
@@ -111,16 +111,43 @@ public class JoxetteClusterSpec {
     public static class Tier {
         private boolean enabled = true;
         private int replicas = 1;
-        static Tier of(int replicas, boolean enabled) {
+        private Resources resources = new Resources();
+
+        static Tier of(int replicas, boolean enabled, String requestCpu, String requestMemory) {
             Tier t = new Tier();
             t.replicas = replicas;
             t.enabled = enabled;
+            t.resources.requestCpu = requestCpu;
+            t.resources.requestMemory = requestMemory;
+            t.resources.limitMemory = requestMemory;
             return t;
         }
         public boolean isEnabled() { return enabled; }
         public void setEnabled(boolean enabled) { this.enabled = enabled; }
         public int getReplicas() { return replicas; }
         public void setReplicas(int replicas) { this.replicas = replicas; }
+        public Resources getResources() { return resources; }
+        public void setResources(Resources resources) { this.resources = resources; }
+    }
+
+    /**
+     * Container resources for a tier. {@code limitMemory} defaults to
+     * {@code requestMemory} and there is deliberately no cpu limit — the same
+     * convention already used for the operator's own Deployment
+     * (deploy/operator/deployment.yaml): bound memory hard (JVM heap + DuckDB
+     * native allocations must not spill onto the node) but leave cpu unbounded
+     * so a burst never gets throttled.
+     */
+    public static class Resources {
+        private String requestCpu = "500m";
+        private String requestMemory = "1Gi";
+        private String limitMemory = "1Gi";
+        public String getRequestCpu() { return requestCpu; }
+        public void setRequestCpu(String requestCpu) { this.requestCpu = requestCpu; }
+        public String getRequestMemory() { return requestMemory; }
+        public void setRequestMemory(String requestMemory) { this.requestMemory = requestMemory; }
+        public String getLimitMemory() { return limitMemory; }
+        public void setLimitMemory(String limitMemory) { this.limitMemory = limitMemory; }
     }
 
     // ---- accessors ----------------------------------------------------------
