@@ -30,6 +30,7 @@ import com.joxette.replay.ActiveReplayTracker;
 import com.joxette.recording.CassetteRecordingBus;
 import com.joxette.replay.sink.RecordSink;
 import com.joxette.replay.sink.kafka.KafkaRecordSinkFactory;
+import com.joxette.replay.transform.GuardedStep;
 import com.joxette.replay.transform.ReplayMetadataInjector;
 import com.joxette.replay.transform.TransformPipeline;
 import com.joxette.replay.transform.TransformPreset;
@@ -2823,7 +2824,15 @@ public class CassetteController {
     }
 
     private void validateStep(TransformStep step) {
-        if (step instanceof FilterDropStep fds) {
+        if (step instanceof GuardedStep gs) {
+            // TransformStepDeserializer transparently wraps ANY step whose JSON carries a
+            // "when" field in a GuardedStep — including steps nested inside a
+            // ConditionalStep's then_steps/else_steps. Unwrap and validate both the guard
+            // predicate itself and the delegate step's own real execution path, recursively,
+            // so a guarded step can't sail through unvalidated.
+            validatePredicateJsonPaths(gs.when());
+            validateStep(gs.delegate());
+        } else if (step instanceof FilterDropStep fds) {
             validatePredicateJsonPaths(fds.predicate());
         } else if (step instanceof ConditionalStep cs) {
             validatePredicateJsonPaths(cs.condition());
