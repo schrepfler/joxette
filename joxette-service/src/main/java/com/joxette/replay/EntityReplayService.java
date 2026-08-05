@@ -540,54 +540,74 @@ public class EntityReplayService implements EntityCassetteSource {
     private PagedResponse<EntityInfo> fetchEntityPage(
             Condition where, int limit, String cursor, EntitySortBy sortBy
     ) {
-        List<EntityInfo> entities;
-        synchronized (duckDB) {
-        var select = dsl
-                .select(F_ENTITY_TYPE, F_ENTITY_ID, F_FIRST_SEEN, F_LAST_SEEN,
-                        F_MESSAGE_COUNT, F_SOURCE_TOPICS, F_LAST_MESSAGE_TYPE)
-                .from(KNOWN_ENTITIES)
-                .where(where);
-
+        // Decode and fully parse the cursor *before* touching the database. Keeping
+        // decode/parse isolated from the query-execution below means an unrelated
+        // IllegalArgumentException thrown while fetching or mapping rows can never be
+        // mislabeled as a cursor error.
+        String afterId = null;
+        OffsetDateTime afterLastSeen = null;
+        String afterLastSeenEntityId = null;
+        long afterMessageCount = 0;
+        String afterMessageCountEntityId = null;
         try {
-            entities = switch (sortBy) {
-                case id -> {
-                    String afterId = cursor != null ? decodePlainCursor(cursor) : null;
-                    var sorted = select.orderBy(F_ENTITY_ID.asc());
-                    List<EntityInfo> rows = afterId != null
-                            ? sorted.seekAfter(afterId).limit(limit + 1).fetch(EntityReplayService::mapEntityInfo)
-                            : sorted.limit(limit + 1).fetch(EntityReplayService::mapEntityInfo);
-                    yield rows;
+            if (cursor != null) {
+                switch (sortBy) {
+                    case id -> afterId = decodePlainCursor(cursor);
+                    case lastActive -> {
+                        String[] parts = decodeTupleCursor(cursor);
+                        afterLastSeen = OffsetDateTime.ofInstant(
+                                Instant.ofEpochMilli(Long.parseLong(parts[0])), ZoneOffset.UTC);
+                        afterLastSeenEntityId = parts[1];
+                    }
+                    case mostMessages -> {
+                        String[] parts = decodeTupleCursor(cursor);
+                        afterMessageCount = Long.parseLong(parts[0]);
+                        afterMessageCountEntityId = parts[1];
+                    }
                 }
-                case lastActive -> {
-                    String[] parts = cursor != null ? decodeTupleCursor(cursor) : null;
-                    var sorted = select.orderBy(F_LAST_SEEN.desc(), F_ENTITY_ID.asc());
-                    List<EntityInfo> rows = parts != null
-                            ? sorted.seekAfter(
-                                    OffsetDateTime.ofInstant(Instant.ofEpochMilli(Long.parseLong(parts[0])), ZoneOffset.UTC),
-                                    parts[1])
-                              .limit(limit + 1).fetch(EntityReplayService::mapEntityInfo)
-                            : sorted.limit(limit + 1).fetch(EntityReplayService::mapEntityInfo);
-                    yield rows;
-                }
-                case mostMessages -> {
-                    String[] parts = cursor != null ? decodeTupleCursor(cursor) : null;
-                    var sorted = select.orderBy(F_MESSAGE_COUNT.desc(), F_ENTITY_ID.asc());
-                    List<EntityInfo> rows = parts != null
-                            ? sorted.seekAfter(Long.parseLong(parts[0]), parts[1])
-                              .limit(limit + 1).fetch(EntityReplayService::mapEntityInfo)
-                            : sorted.limit(limit + 1).fetch(EntityReplayService::mapEntityInfo);
-                    yield rows;
-                }
-            };
+            }
         } catch (IllegalArgumentException e) {
             // Base64.decode() throws IllegalArgumentException on malformed input, and
             // Long.parseLong() (a subclass, NumberFormatException) on a non-numeric tuple
             // component — both mean "cursor could not be decoded", exactly what
             // TopicCursor/EntityCursor (Task D) already map to InvalidCursorException so
             // GlobalExceptionHandler renders 400 ERR_INVALID_CURSOR instead of falling
-            // through to a generic 500 ERR_INTERNAL.
+            // through to a generic 500 ERR_INTERNAL. decodeTupleCursor throws
+            // InvalidCursorException directly for a missing separator, which is not an
+            // IllegalArgumentException and so passes through this catch untouched.
             throw com.joxette.api.error.InvalidCursorException.malformed(e);
         }
+
+        List<EntityInfo> entities;
+        synchronized (duckDB) {
+            var select = dsl
+                    .select(F_ENTITY_TYPE, F_ENTITY_ID, F_FIRST_SEEN, F_LAST_SEEN,
+                            F_MESSAGE_COUNT, F_SOURCE_TOPICS, F_LAST_MESSAGE_TYPE)
+                    .from(KNOWN_ENTITIES)
+                    .where(where);
+
+            entities = switch (sortBy) {
+                case id -> {
+                    var sorted = select.orderBy(F_ENTITY_ID.asc());
+                    yield afterId != null
+                            ? sorted.seekAfter(afterId).limit(limit + 1).fetch(EntityReplayService::mapEntityInfo)
+                            : sorted.limit(limit + 1).fetch(EntityReplayService::mapEntityInfo);
+                }
+                case lastActive -> {
+                    var sorted = select.orderBy(F_LAST_SEEN.desc(), F_ENTITY_ID.asc());
+                    yield afterLastSeenEntityId != null
+                            ? sorted.seekAfter(afterLastSeen, afterLastSeenEntityId)
+                              .limit(limit + 1).fetch(EntityReplayService::mapEntityInfo)
+                            : sorted.limit(limit + 1).fetch(EntityReplayService::mapEntityInfo);
+                }
+                case mostMessages -> {
+                    var sorted = select.orderBy(F_MESSAGE_COUNT.desc(), F_ENTITY_ID.asc());
+                    yield afterMessageCountEntityId != null
+                            ? sorted.seekAfter(afterMessageCount, afterMessageCountEntityId)
+                              .limit(limit + 1).fetch(EntityReplayService::mapEntityInfo)
+                            : sorted.limit(limit + 1).fetch(EntityReplayService::mapEntityInfo);
+                }
+            };
         }
 
         return TopicReplayService.buildPage(entities, limit, e -> switch (sortBy) {
@@ -727,11 +747,21 @@ public class EntityReplayService implements EntityCassetteSource {
                 .encodeToString(joined.getBytes(StandardCharsets.UTF_8));
     }
 
-    /** Decodes a tuple cursor; returns [first, second] or null if blank. */
+    /**
+     * Decodes a tuple cursor into {@code [first, second]}.
+     *
+     * @throws com.joxette.api.error.InvalidCursorException if the decoded value has no
+     *         {@code \0} separator — a garbage-but-base64-decodable cursor must be
+     *         rejected with 400 ERR_INVALID_CURSOR, not silently treated as absent
+     *         (which would return page 1 with 200 instead of erroring).
+     */
     private static String[] decodeTupleCursor(String encoded) {
         String joined = new String(Base64.getUrlDecoder().decode(encoded), StandardCharsets.UTF_8);
         int sep = joined.indexOf('\0');
-        if (sep < 0) return null;
+        if (sep < 0) {
+            throw com.joxette.api.error.InvalidCursorException.malformed(
+                    new IllegalArgumentException("cursor missing tuple separator"));
+        }
         return new String[]{ joined.substring(0, sep), joined.substring(sep + 1) };
     }
 

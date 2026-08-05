@@ -11,17 +11,21 @@ import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.ResponseEntity;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.web.client.HttpClientErrorException;
 import org.springframework.web.client.RestTemplate;
 
+import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.Statement;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * Integration tests for entity listing sort orders and compound-cursor pagination.
@@ -142,6 +146,54 @@ class EntitySortCursorIT {
     void idSort_returnsAlphabeticalOrder() {
         List<String> all = fetchAll("id");
         assertThat(all).containsExactly("E1", "E2", "E3", "E4", "E5");
+    }
+
+    // -------------------------------------------------------------------------
+    // Finding I7 / round-3 findings 2+3: malformed cursors must 400, end-to-end.
+    // -------------------------------------------------------------------------
+
+    @Test
+    void lastActive_garbageCursor_returns400InvalidCursor() {
+        assertThatThrownBy(() -> fetch("lastActive", 2, "not-valid-base64!!!"))
+                .isInstanceOf(HttpClientErrorException.class)
+                .satisfies(ex -> {
+                    HttpClientErrorException hce = (HttpClientErrorException) ex;
+                    assertThat(hce.getStatusCode().value()).isEqualTo(400);
+                    assertThat(hce.getResponseBodyAsString()).contains("ERR_INVALID_CURSOR");
+                });
+    }
+
+    @Test
+    void lastActive_tupleCursorMissingSeparator_returns400InvalidCursor() {
+        // Valid base64 that decodes to a plain string with no NUL separator between
+        // the two tuple components. Before the round-3 fix, this silently fell back
+        // to "no cursor" and returned page 1 with 200 instead of erroring.
+        String noSeparator = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString("just-some-text-no-separator".getBytes(StandardCharsets.UTF_8));
+
+        assertThatThrownBy(() -> fetch("lastActive", 2, noSeparator))
+                .isInstanceOf(HttpClientErrorException.class)
+                .satisfies(ex -> {
+                    HttpClientErrorException hce = (HttpClientErrorException) ex;
+                    assertThat(hce.getStatusCode().value()).isEqualTo(400);
+                    assertThat(hce.getResponseBodyAsString()).contains("ERR_INVALID_CURSOR");
+                });
+    }
+
+    @Test
+    void search_garbageCursor_returns400InvalidCursor() {
+        String url = "http://localhost:" + port
+                + "/v1/cassettes/entities/" + ENTITY_TYPE + "/search"
+                + "?q=E&limit=2&cursor=not-valid-base64!!!";
+
+        assertThatThrownBy(() -> rest.exchange(
+                url, HttpMethod.GET, null, new ParameterizedTypeReference<PagedResponse<EntityInfo>>() {}))
+                .isInstanceOf(HttpClientErrorException.class)
+                .satisfies(ex -> {
+                    HttpClientErrorException hce = (HttpClientErrorException) ex;
+                    assertThat(hce.getStatusCode().value()).isEqualTo(400);
+                    assertThat(hce.getResponseBodyAsString()).contains("ERR_INVALID_CURSOR");
+                });
     }
 
     // -------------------------------------------------------------------------

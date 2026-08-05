@@ -256,6 +256,22 @@ class EntityReplayServiceTest {
                 .isInstanceOf(com.joxette.api.error.InvalidCursorException.class);
     }
 
+    @ParameterizedTest(name = "sortBy={0}")
+    @EnumSource(value = EntityReplayService.EntitySortBy.class, names = {"lastActive", "mostMessages"})
+    void listEntities_tupleCursorMissingSeparator_throwsInvalidCursorException(EntityReplayService.EntitySortBy sortBy) throws Exception {
+        insertKnownEntity("order", "ORD-1", 1, "2024-01-01T00:00:00Z");
+
+        // Valid base64 that decodes to a plain string with no NUL separator. Before
+        // the fix, decodeTupleCursor returned null for this shape, which the caller
+        // treated the same as "no cursor given" -- silently returning page 1 with
+        // 200 instead of erroring. It must now throw InvalidCursorException.
+        String noSeparator = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString("just-some-text-no-separator".getBytes(StandardCharsets.UTF_8));
+
+        assertThatThrownBy(() -> service.listEntities("order", 50, noSeparator, sortBy))
+                .isInstanceOf(com.joxette.api.error.InvalidCursorException.class);
+    }
+
     @Test
     void searchEntities_garbageCursor_throwsInvalidCursorException() throws Exception {
         insertKnownEntity("order", "ORD-1", 1, "2024-01-01T00:00:00Z");
