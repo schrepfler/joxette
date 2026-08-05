@@ -261,19 +261,29 @@ class CompactionDistributedLockTest {
      * threshold-based check must instead treat 5 minutes as comfortably alive, and only
      * reclaim once the heartbeat is older than the 30-minute dead-instance threshold.
      *
-     * <p>The lock's own {@code acquired_at} is backdated by the same {@code heartbeatAge}
-     * (instance registered and grabbed the lock at roughly the same time), so this test
-     * also satisfies the additional {@code acquired_at < deadBefore} predicate
-     * {@code cleanLocksForDeadInstances()} now requires — see
-     * {@code cleanLocksForDeadInstances_survivesWhenOwnerAbsentButLockIsYoung} for the test
-     * that isolates that predicate from the heartbeat-age one.
+     * <p>The lock's own {@code acquired_at} is pinned at a FIXED 35-minute age —
+     * comfortably past {@code deadInstanceThresholdMinutes} (30) — for every case here,
+     * independently of {@code heartbeatAge}. This is deliberate: only {@code heartbeatAge}
+     * varies across cases, so the reclaim/no-reclaim outcome can only be explained by the
+     * heartbeat-vs-threshold check this test targets, not by the separate
+     * {@code acquired_at < deadBefore} predicate (which stays satisfied throughout). If
+     * {@code acquired_at}'s age tracked {@code heartbeatAge} instead (as it once did), the
+     * 5-minute case's "not reclaimed" outcome would be equally explained by the lock simply
+     * being too young — the age predicate alone — even if the code regressed to using
+     * {@code status()}/the 90-second {@code ALIVE_THRESHOLD} instead of this dedicated
+     * check; that regression would then slip through undetected. See
+     * {@code cleanLocksForDeadInstances_survivesWhenOwnerAbsentButLockIsYoung} for the
+     * separate test that isolates the {@code acquired_at} age predicate on its own (fixed,
+     * young lock; owner absent from the registry entirely rather than merely stale).
      */
     @ParameterizedTest(name = "heartbeatAge={0} -> reclaimedAsDead={1}")
     @MethodSource("heartbeatAgeCases")
     void cleanLocksForDeadInstances_usesDeadInstanceThresholdNotRegistryStatus(
             Duration heartbeatAge, boolean expectReclaimed) throws Exception {
         DuckDBTestSupport.registerInstanceWithHeartbeatAge(conn, INSTANCE_A, heartbeatAge);
-        insertLockWithAcquiredAtAge(LOCK_TARGET, INSTANCE_A, heartbeatAge);
+        // acquired_at is pinned at a fixed 35 min (>> 30 min threshold) for every case —
+        // see the method javadoc for why this must NOT vary with heartbeatAge.
+        insertLockWithAcquiredAtAge(LOCK_TARGET, INSTANCE_A, Duration.ofMinutes(35));
 
         lockB.cleanLocksForDeadInstances();
 

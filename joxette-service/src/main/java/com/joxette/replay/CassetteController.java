@@ -1751,7 +1751,7 @@ public class CassetteController {
             "By the time this is detected, IMPORT DATABASE has already replaced the current catalog contents " +
             "with the (unverified) snapshot data; there is no automatic rollback to the pre-restore state.",
             content = @Content(mediaType = "application/problem+json", schema = @Schema(type = "object"))),
-        @ApiResponse(responseCode = "500", description = "Database error",
+        @ApiResponse(responseCode = "503", description = "Database error",
             content = @Content(schema = @Schema(type = "string")))
     })
     @PostMapping(value = "/snapshots/{name}/restore")

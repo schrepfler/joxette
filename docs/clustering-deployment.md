@@ -222,6 +222,23 @@ row in the `compaction_locks` table (plain DuckDB, not DuckLake):
   comfortably shorter than `lock-ttl-minutes` so a genuinely dead instance's lock
   is usually reclaimed by this check well before the TTL would have expired it
   anyway.
+- **The age check narrows the exposure window, it does not eliminate it.** The
+  DELETE also requires the lock row's own `acquired_at` to be older than
+  `dead-instance-threshold-minutes` — not just the owner being absent from the
+  live registry — closing two premature-reclaim failure modes:
+  `InstanceRegistry.reapStaleInstances()` deleting a `joxette_instances` row
+  after only 2 minutes of heartbeat silence (run at *every* instance's
+  startup, not just the affected one), and `listAll()` swallowing a transient
+  `SQLException` and returning an empty live set. Both are closed **only for
+  locks younger than `dead-instance-threshold-minutes`**: a merge that
+  legitimately runs longer than that threshold — routine, given the 240-minute
+  `lock-ttl-minutes` default — will have both `lastHeartbeat` and `acquired_at`
+  age past it regardless of instance health, so a coincident premature reap or
+  transient `listAll()` failure in that window can still steal (and corrupt) a
+  live, actively-merging instance's lock. Deployments whose merges routinely
+  run longer than the default 30-minute `dead-instance-threshold-minutes`
+  should raise it toward `lock-ttl-minutes` to keep this window comfortably
+  shorter than a typical merge, or accept the residual risk.
 
 Because the lock lives in the shared catalog, it works across processes **when the
 catalog is shared (Stage 2/3)**. This is what makes it safe even if more than one
@@ -507,3 +524,12 @@ capabilities that aren't wired yet:
    neither manifests nor the operator are built yet.
 3. **Embedded catalog is single-instance.** Multi-instance requires the Stage 2
    (Quack, beta) or Stage 3 (PostgreSQL) catalog backend first.
+4. **Dead-instance lock reclamation has a residual theft window for unusually
+   slow merges.** §4.2's `acquired_at`-age check closes the reaper-bypass and
+   `listAll()` fail-open bugs only for locks younger than
+   `dead-instance-threshold-minutes` (default 30). A merge that legitimately
+   runs longer than that — expected, since `lock-ttl-minutes` defaults to 240
+   minutes — can still have its lock stolen by a coincident premature reap or
+   transient registry-read failure once both `lastHeartbeat` and `acquired_at`
+   age past the threshold. Deployments with routinely slow merges should raise
+   `dead-instance-threshold-minutes` toward `lock-ttl-minutes`.

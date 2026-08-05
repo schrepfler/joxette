@@ -189,6 +189,22 @@ public class CompactionLockManager {
      *       registry-read failure no matter what the (empty) live set says.</li>
      * </ul>
      *
+     * <p><b>Caveat: this only closes the two failure modes above for locks younger than
+     * {@code deadInstanceThresholdMinutes}.</b> A merge that legitimately runs longer than
+     * that threshold — routine, since {@code lock-ttl-minutes} defaults to 240 minutes and
+     * is expected to comfortably exceed worst-case merge duration (see the TTL discussion
+     * above) — will eventually have both {@code lastHeartbeat} <em>and</em>
+     * {@code acquired_at} age past {@code deadInstanceThresholdMinutes} regardless of how
+     * healthy the instance is. In that window, a coincident premature reap (2-minute
+     * {@code reapStaleInstances()}) or a transient {@code listAll()} read failure can still
+     * cause this method to steal — and corrupt — a still-alive, still-merging instance's
+     * lock, exactly as before the age predicate was added; the age predicate narrows the
+     * exposure window, it does not eliminate it. Deployments whose merges routinely run
+     * longer than the default {@code dead-instance-threshold-minutes} (30) should raise it
+     * toward {@code lock-ttl-minutes} to keep this window comfortably shorter than a typical
+     * merge — the two settings are coupled, and widening the gap between them (or accepting
+     * the residual risk) is an explicit operator choice for unusually slow merges.
+     *
      * <h3>Atomicity</h3>
      * <p>The read of {@link InstanceRegistry#listAll()} and the DELETE both execute inside
      * one {@code synchronized(duckDB)} block (this class and {@link InstanceRegistry} share
