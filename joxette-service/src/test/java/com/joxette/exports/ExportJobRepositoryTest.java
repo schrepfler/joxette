@@ -11,6 +11,11 @@ import org.junit.jupiter.api.Test;
 import java.sql.Connection;
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -23,7 +28,7 @@ class ExportJobRepositoryTest {
     @BeforeEach
     void setUp() throws Exception {
         conn = DuckDBTestSupport.newConnection();
-        repo = new ExportJobRepository(DSL.using(conn, SQLDialect.DUCKDB));
+        repo = new ExportJobRepository(DSL.using(conn, SQLDialect.DUCKDB), conn);
     }
 
     @AfterEach
@@ -159,5 +164,38 @@ class ExportJobRepositoryTest {
     @Test
     void delete_missingJob_returnsFalse() {
         assertThat(repo.delete("ghost-id")).isFalse();
+    }
+
+    // -------------------------------------------------------------------------
+    // Concurrency (finding I4): statement execution on the shared DuckDB
+    // connection must be serialised via synchronized(duckDB), read paths included.
+    // Without it, concurrent Statement execution on the single native handle can
+    // throw or corrupt results.
+    // -------------------------------------------------------------------------
+
+    @Test
+    void concurrentCreatesAndReads_doNotThrowOrCorrupt() throws Exception {
+        int threads = 8;
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        try {
+            List<Future<ExportJob>> creates = IntStream.range(0, threads)
+                    .<Future<ExportJob>>mapToObj(i -> pool.submit(() ->
+                            repo.create("order", List.of("ORD-" + i), null, null, null, ExportOutputFormat.NDJSON)))
+                    .toList();
+            for (Future<ExportJob> f : creates) {
+                assertThat(f.get(10, TimeUnit.SECONDS)).isNotNull();
+            }
+
+            List<Future<List<ExportJob>>> reads = IntStream.range(0, threads)
+                    .<Future<List<ExportJob>>>mapToObj(i -> pool.submit(repo::listAll))
+                    .toList();
+            for (Future<List<ExportJob>> f : reads) {
+                assertThat(f.get(10, TimeUnit.SECONDS)).hasSize(threads);
+            }
+        } finally {
+            pool.shutdown();
+            assertThat(pool.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+        }
+        assertThat(repo.listAll()).hasSize(threads);
     }
 }

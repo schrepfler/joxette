@@ -13,6 +13,7 @@ import org.jooq.Table;
 import org.jooq.impl.DSL;
 import org.springframework.stereotype.Repository;
 
+import java.sql.Connection;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -25,6 +26,12 @@ import java.util.Optional;
  *
  * <p>Steps are stored as a JSON array string and deserialised via Jackson on read.
  * On any deserialisation error the preset is returned with an empty step list.
+ *
+ * <p>All statement execution is serialised via {@code synchronized(duckDB)} — the
+ * shared connection's native handle is not safe for concurrent use (see
+ * {@code DuckDBConfig}). {@link #create} and {@link #update} hold the lock across
+ * their whole check-then-write sequence so a concurrent caller can't observe (or
+ * race) a stale uniqueness check.
  */
 @Repository
 public class TransformPresetRepository {
@@ -39,28 +46,34 @@ public class TransformPresetRepository {
 
     private final DSLContext   dsl;
     private final ObjectMapper objectMapper;
+    private final Connection   duckDB;
 
-    public TransformPresetRepository(DSLContext dsl, ObjectMapper objectMapper) {
+    public TransformPresetRepository(DSLContext dsl, ObjectMapper objectMapper, Connection duckDB) {
         this.dsl          = dsl;
         this.objectMapper = objectMapper;
+        this.duckDB       = duckDB;
     }
 
     /** Returns all presets ordered by name ascending. */
     public List<TransformPreset> listAll() {
-        return dsl
-                .select(F_NAME, F_DESC, F_STEPS, F_FRAGMENTS, F_CREATED, F_UPDATED)
-                .from(TBL)
-                .orderBy(F_NAME.asc())
-                .fetch(this::map);
+        synchronized (duckDB) {
+            return dsl
+                    .select(F_NAME, F_DESC, F_STEPS, F_FRAGMENTS, F_CREATED, F_UPDATED)
+                    .from(TBL)
+                    .orderBy(F_NAME.asc())
+                    .fetch(this::map);
+        }
     }
 
     /** Returns the preset with the given name, or empty if none found. */
     public Optional<TransformPreset> findByName(String name) {
-        return dsl
-                .select(F_NAME, F_DESC, F_STEPS, F_FRAGMENTS, F_CREATED, F_UPDATED)
-                .from(TBL)
-                .where(F_NAME.eq(name))
-                .fetchOptional(this::map);
+        synchronized (duckDB) {
+            return dsl
+                    .select(F_NAME, F_DESC, F_STEPS, F_FRAGMENTS, F_CREATED, F_UPDATED)
+                    .from(TBL)
+                    .where(F_NAME.eq(name))
+                    .fetchOptional(this::map);
+        }
     }
 
     /**
@@ -70,15 +83,17 @@ public class TransformPresetRepository {
      * @throws ValidationException if {@code steps} cannot be serialised
      */
     public TransformPreset create(String name, String description, List<TransformStep> steps) {
-        if (findByName(name).isPresent()) {
-            throw new ConflictException("Transform preset already exists: " + name);
-        }
         String stepsJson = serializeSteps(steps);
         OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
-        dsl.insertInto(TBL)
-                .columns(F_NAME, F_DESC, F_STEPS, F_CREATED, F_UPDATED)
-                .values(name, description, stepsJson, now, now)
-                .execute();
+        synchronized (duckDB) {
+            if (findByName(name).isPresent()) {
+                throw new ConflictException("Transform preset already exists: " + name);
+            }
+            dsl.insertInto(TBL)
+                    .columns(F_NAME, F_DESC, F_STEPS, F_CREATED, F_UPDATED)
+                    .values(name, description, stepsJson, now, now)
+                    .execute();
+        }
         return findByName(name).orElseThrow();
     }
 
@@ -89,17 +104,19 @@ public class TransformPresetRepository {
      * @throws ValidationException       if {@code steps} cannot be serialised
      */
     public TransformPreset update(String name, String description, List<TransformStep> steps) {
-        if (findByName(name).isEmpty()) {
-            throw ResourceNotFoundException.transformPreset(name);
-        }
         String stepsJson = serializeSteps(steps);
         OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
-        dsl.update(TBL)
-                .set(F_DESC,    description)
-                .set(F_STEPS,   stepsJson)
-                .set(F_UPDATED, now)
-                .where(F_NAME.eq(name))
-                .execute();
+        synchronized (duckDB) {
+            if (findByName(name).isEmpty()) {
+                throw ResourceNotFoundException.transformPreset(name);
+            }
+            dsl.update(TBL)
+                    .set(F_DESC,    description)
+                    .set(F_STEPS,   stepsJson)
+                    .set(F_UPDATED, now)
+                    .where(F_NAME.eq(name))
+                    .execute();
+        }
         return findByName(name).orElseThrow();
     }
 
@@ -117,9 +134,11 @@ public class TransformPresetRepository {
      * @return {@code true} if a row was deleted, {@code false} if not found
      */
     public boolean delete(String name) {
-        return dsl.deleteFrom(TBL)
-                .where(F_NAME.eq(name))
-                .execute() > 0;
+        synchronized (duckDB) {
+            return dsl.deleteFrom(TBL)
+                    .where(F_NAME.eq(name))
+                    .execute() > 0;
+        }
     }
 
     // -------------------------------------------------------------------------

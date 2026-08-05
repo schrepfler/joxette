@@ -17,6 +17,7 @@ import org.jooq.Table;
 import org.jooq.impl.DSL;
 import org.springframework.stereotype.Repository;
 
+import java.sql.Connection;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -29,6 +30,12 @@ import java.util.Optional;
  *
  * <p>The full definition is stored as a JSON blob under the {@code definition}
  * column so the schema stays stable as new fields are added to the domain model.
+ *
+ * <p>All statement execution is serialised via {@code synchronized(duckDB)} — the
+ * shared connection's native handle is not safe for concurrent use (see
+ * {@code DuckDBConfig}). {@link #create} and {@link #update} hold the lock across
+ * their whole check-then-write sequence so a concurrent caller can't observe (or
+ * race) a stale uniqueness/existence check.
  */
 @Repository
 public class StreamDefinitionRepository {
@@ -44,38 +51,46 @@ public class StreamDefinitionRepository {
 
     private final DSLContext   dsl;
     private final ObjectMapper objectMapper;
+    private final Connection   duckDB;
 
-    public StreamDefinitionRepository(DSLContext dsl, ObjectMapper objectMapper) {
+    public StreamDefinitionRepository(DSLContext dsl, ObjectMapper objectMapper, Connection duckDB) {
         this.dsl          = dsl;
         this.objectMapper = objectMapper;
+        this.duckDB       = duckDB;
     }
 
     /** Returns all stream definitions ordered by id ascending. */
     public List<StreamDefinition> listAll() {
-        return dsl
-                .select(F_ID, F_NAME, F_ENTITY_TYPE, F_ENTITY_ID, F_DEFINITION, F_CREATED_AT, F_UPDATED_AT)
-                .from(TBL)
-                .orderBy(F_ID.asc())
-                .fetch(this::map);
+        synchronized (duckDB) {
+            return dsl
+                    .select(F_ID, F_NAME, F_ENTITY_TYPE, F_ENTITY_ID, F_DEFINITION, F_CREATED_AT, F_UPDATED_AT)
+                    .from(TBL)
+                    .orderBy(F_ID.asc())
+                    .fetch(this::map);
+        }
     }
 
     /** Returns all stream definitions for the given entity type, ordered by id. */
     public List<StreamDefinition> listByEntityType(String entityType) {
-        return dsl
-                .select(F_ID, F_NAME, F_ENTITY_TYPE, F_ENTITY_ID, F_DEFINITION, F_CREATED_AT, F_UPDATED_AT)
-                .from(TBL)
-                .where(F_ENTITY_TYPE.eq(entityType))
-                .orderBy(F_ID.asc())
-                .fetch(this::map);
+        synchronized (duckDB) {
+            return dsl
+                    .select(F_ID, F_NAME, F_ENTITY_TYPE, F_ENTITY_ID, F_DEFINITION, F_CREATED_AT, F_UPDATED_AT)
+                    .from(TBL)
+                    .where(F_ENTITY_TYPE.eq(entityType))
+                    .orderBy(F_ID.asc())
+                    .fetch(this::map);
+        }
     }
 
     /** Returns the stream definition with the given id, or empty if none found. */
     public Optional<StreamDefinition> findById(String id) {
-        return dsl
-                .select(F_ID, F_NAME, F_ENTITY_TYPE, F_ENTITY_ID, F_DEFINITION, F_CREATED_AT, F_UPDATED_AT)
-                .from(TBL)
-                .where(F_ID.eq(id))
-                .fetchOptional(this::map);
+        synchronized (duckDB) {
+            return dsl
+                    .select(F_ID, F_NAME, F_ENTITY_TYPE, F_ENTITY_ID, F_DEFINITION, F_CREATED_AT, F_UPDATED_AT)
+                    .from(TBL)
+                    .where(F_ID.eq(id))
+                    .fetchOptional(this::map);
+        }
     }
 
     /**
@@ -88,9 +103,6 @@ public class StreamDefinitionRepository {
                                    StreamDefinition.SourceOptions source, String sol,
                                    SolOutput solOutput, List<TransformStep> transform,
                                    ReplayOutputMode output, StateFoldStrategy stateFold) {
-        if (findById(id).isPresent()) {
-            throw new ConflictException("Stream definition already exists: " + id);
-        }
         OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
         StreamDefinition definition = new StreamDefinition(
                 id, name, entityType, entityId, source, sol,
@@ -100,10 +112,15 @@ public class StreamDefinitionRepository {
                 stateFold,
                 now.toInstant(), now.toInstant());
         String definitionJson = serialize(definition);
-        dsl.insertInto(TBL)
-                .columns(F_ID, F_NAME, F_ENTITY_TYPE, F_ENTITY_ID, F_DEFINITION, F_CREATED_AT, F_UPDATED_AT)
-                .values(id, name, entityType, entityId, definitionJson, now, now)
-                .execute();
+        synchronized (duckDB) {
+            if (findById(id).isPresent()) {
+                throw new ConflictException("Stream definition already exists: " + id);
+            }
+            dsl.insertInto(TBL)
+                    .columns(F_ID, F_NAME, F_ENTITY_TYPE, F_ENTITY_ID, F_DEFINITION, F_CREATED_AT, F_UPDATED_AT)
+                    .values(id, name, entityType, entityId, definitionJson, now, now)
+                    .execute();
+        }
         return findById(id).orElseThrow();
     }
 
@@ -117,25 +134,27 @@ public class StreamDefinitionRepository {
                                    StreamDefinition.SourceOptions source, String sol,
                                    SolOutput solOutput, List<TransformStep> transform,
                                    ReplayOutputMode output, StateFoldStrategy stateFold) {
-        StreamDefinition existing = findById(id)
-                .orElseThrow(() -> ResourceNotFoundException.stream(id));
         OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
-        StreamDefinition updated = new StreamDefinition(
-                id, name, entityType, entityId, source, sol,
-                solOutput != null ? solOutput : SolOutput.EVENTS,
-                transform,
-                output != null ? output : ReplayOutputMode.EVENTS,
-                stateFold,
-                existing.createdAt(), now.toInstant());
-        String definitionJson = serialize(updated);
-        dsl.update(TBL)
-                .set(F_NAME,        name)
-                .set(F_ENTITY_TYPE, entityType)
-                .set(F_ENTITY_ID,   entityId)
-                .set(F_DEFINITION,  definitionJson)
-                .set(F_UPDATED_AT,  now)
-                .where(F_ID.eq(id))
-                .execute();
+        synchronized (duckDB) {
+            StreamDefinition existing = findById(id)
+                    .orElseThrow(() -> ResourceNotFoundException.stream(id));
+            StreamDefinition updated = new StreamDefinition(
+                    id, name, entityType, entityId, source, sol,
+                    solOutput != null ? solOutput : SolOutput.EVENTS,
+                    transform,
+                    output != null ? output : ReplayOutputMode.EVENTS,
+                    stateFold,
+                    existing.createdAt(), now.toInstant());
+            String definitionJson = serialize(updated);
+            dsl.update(TBL)
+                    .set(F_NAME,        name)
+                    .set(F_ENTITY_TYPE, entityType)
+                    .set(F_ENTITY_ID,   entityId)
+                    .set(F_DEFINITION,  definitionJson)
+                    .set(F_UPDATED_AT,  now)
+                    .where(F_ID.eq(id))
+                    .execute();
+        }
         return findById(id).orElseThrow();
     }
 
@@ -145,9 +164,11 @@ public class StreamDefinitionRepository {
      * @return {@code true} if a row was deleted, {@code false} if not found
      */
     public boolean delete(String id) {
-        return dsl.deleteFrom(TBL)
-                .where(F_ID.eq(id))
-                .execute() > 0;
+        synchronized (duckDB) {
+            return dsl.deleteFrom(TBL)
+                    .where(F_ID.eq(id))
+                    .execute() > 0;
+        }
     }
 
     // -------------------------------------------------------------------------

@@ -20,6 +20,11 @@ import org.junit.jupiter.api.Test;
 import java.sql.Connection;
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -38,7 +43,7 @@ class StreamDefinitionRepositoryTest {
         ObjectMapper mapper = new ObjectMapper()
                 .registerModule(new JavaTimeModule())
                 .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
-        repo = new StreamDefinitionRepository(DSL.using(conn, SQLDialect.DUCKDB), mapper);
+        repo = new StreamDefinitionRepository(DSL.using(conn, SQLDialect.DUCKDB), mapper, conn);
     }
 
     @AfterEach
@@ -190,5 +195,39 @@ class StreamDefinitionRepositoryTest {
     @Test
     void delete_notFound_returnsFalse() {
         assertThat(repo.delete("nonexistent")).isFalse();
+    }
+
+    // -------------------------------------------------------------------------
+    // Concurrency (finding I4): statement execution on the shared DuckDB
+    // connection must be serialised via synchronized(duckDB), read paths included.
+    // Without it, concurrent Statement execution on the single native handle can
+    // throw or corrupt results.
+    // -------------------------------------------------------------------------
+
+    @Test
+    void concurrentCreatesAndReads_doNotThrowOrCorrupt() throws Exception {
+        int threads = 8;
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        try {
+            List<Future<StreamDefinition>> creates = IntStream.range(0, threads)
+                    .<Future<StreamDefinition>>mapToObj(i -> pool.submit(() ->
+                            repo.create("stream-" + i, "Stream " + i, "order", null,
+                                    null, null, null, List.of(), null, null)))
+                    .toList();
+            for (Future<StreamDefinition> f : creates) {
+                assertThat(f.get(10, TimeUnit.SECONDS)).isNotNull();
+            }
+
+            List<Future<List<StreamDefinition>>> reads = IntStream.range(0, threads)
+                    .<Future<List<StreamDefinition>>>mapToObj(i -> pool.submit(repo::listAll))
+                    .toList();
+            for (Future<List<StreamDefinition>> f : reads) {
+                assertThat(f.get(10, TimeUnit.SECONDS)).hasSize(threads);
+            }
+        } finally {
+            pool.shutdown();
+            assertThat(pool.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+        }
+        assertThat(repo.listAll()).hasSize(threads);
     }
 }

@@ -8,6 +8,7 @@ import org.jooq.Table;
 import org.jooq.impl.DSL;
 import org.springframework.stereotype.Repository;
 
+import java.sql.Connection;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
@@ -16,6 +17,11 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+/**
+ * All statement execution is serialised via {@code synchronized(duckDB)} — the
+ * shared connection's native handle is not safe for concurrent use (see
+ * {@code DuckDBConfig}).
+ */
 @Repository
 public class ExportJobRepository {
 
@@ -36,9 +42,11 @@ public class ExportJobRepository {
     private static final Field<OffsetDateTime> F_COMPLETED_AT    = DSL.field(DSL.name("completed_at"),  OffsetDateTime.class);
 
     private final DSLContext dsl;
+    private final Connection duckDB;
 
-    public ExportJobRepository(DSLContext dsl) {
+    public ExportJobRepository(DSLContext dsl, Connection duckDB) {
         this.dsl = dsl;
+        this.duckDB = duckDB;
     }
 
     /** Creates a new job in PENDING status and returns it. */
@@ -50,71 +58,87 @@ public class ExportJobRepository {
         String[] idsArr     = entityIds != null ? entityIds.toArray(new String[0]) : new String[0];
         String[] typesArr   = messageTypes != null ? messageTypes.toArray(new String[0]) : null;
 
-        dsl.insertInto(TBL)
-                .columns(F_ID, F_ENTITY_TYPE, F_ENTITY_IDS, F_FROM_TS, F_TO_TS,
-                         F_MESSAGE_TYPES, F_OUTPUT_FORMAT, F_STATUS, F_CREATED_AT)
-                .values(id, entityType, idsArr,
-                        from != null ? OffsetDateTime.ofInstant(from, ZoneOffset.UTC) : null,
-                        to   != null ? OffsetDateTime.ofInstant(to,   ZoneOffset.UTC) : null,
-                        typesArr,
-                        outputFormat.getValue(), ExportStatus.PENDING.getValue(), now)
-                .execute();
+        synchronized (duckDB) {
+            dsl.insertInto(TBL)
+                    .columns(F_ID, F_ENTITY_TYPE, F_ENTITY_IDS, F_FROM_TS, F_TO_TS,
+                             F_MESSAGE_TYPES, F_OUTPUT_FORMAT, F_STATUS, F_CREATED_AT)
+                    .values(id, entityType, idsArr,
+                            from != null ? OffsetDateTime.ofInstant(from, ZoneOffset.UTC) : null,
+                            to   != null ? OffsetDateTime.ofInstant(to,   ZoneOffset.UTC) : null,
+                            typesArr,
+                            outputFormat.getValue(), ExportStatus.PENDING.getValue(), now)
+                    .execute();
+        }
         return findById(id).orElseThrow();
     }
 
     /** Returns all jobs ordered newest first. */
     public List<ExportJob> listAll() {
-        return dsl.select().from(TBL).orderBy(F_CREATED_AT.desc()).fetch(this::map);
+        synchronized (duckDB) {
+            return dsl.select().from(TBL).orderBy(F_CREATED_AT.desc()).fetch(this::map);
+        }
     }
 
     /** Returns all jobs for the given entity type, newest first. */
     public List<ExportJob> listByEntityType(String entityType) {
-        return dsl.select().from(TBL)
-                .where(F_ENTITY_TYPE.eq(entityType))
-                .orderBy(F_CREATED_AT.desc())
-                .fetch(this::map);
+        synchronized (duckDB) {
+            return dsl.select().from(TBL)
+                    .where(F_ENTITY_TYPE.eq(entityType))
+                    .orderBy(F_CREATED_AT.desc())
+                    .fetch(this::map);
+        }
     }
 
     public Optional<ExportJob> findById(String id) {
-        return dsl.select().from(TBL).where(F_ID.eq(id)).fetchOptional(this::map);
+        synchronized (duckDB) {
+            return dsl.select().from(TBL).where(F_ID.eq(id)).fetchOptional(this::map);
+        }
     }
 
     /** Transitions a job to RUNNING and sets started_at. */
     public void markRunning(String id) {
         OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
-        dsl.update(TBL)
-                .set(F_STATUS,     ExportStatus.RUNNING.getValue())
-                .set(F_STARTED_AT, now)
-                .where(F_ID.eq(id))
-                .execute();
+        synchronized (duckDB) {
+            dsl.update(TBL)
+                    .set(F_STATUS,     ExportStatus.RUNNING.getValue())
+                    .set(F_STARTED_AT, now)
+                    .where(F_ID.eq(id))
+                    .execute();
+        }
     }
 
     /** Transitions a job to COMPLETED with an output path and row count. */
     public void markCompleted(String id, String outputPath, long rowCount) {
         OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
-        dsl.update(TBL)
-                .set(F_STATUS,       ExportStatus.COMPLETED.getValue())
-                .set(F_OUTPUT_PATH,  outputPath)
-                .set(F_ROW_COUNT,    rowCount)
-                .set(F_COMPLETED_AT, now)
-                .where(F_ID.eq(id))
-                .execute();
+        synchronized (duckDB) {
+            dsl.update(TBL)
+                    .set(F_STATUS,       ExportStatus.COMPLETED.getValue())
+                    .set(F_OUTPUT_PATH,  outputPath)
+                    .set(F_ROW_COUNT,    rowCount)
+                    .set(F_COMPLETED_AT, now)
+                    .where(F_ID.eq(id))
+                    .execute();
+        }
     }
 
     /** Transitions a job to FAILED with an error message. */
     public void markFailed(String id, String errorMessage) {
         OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
-        dsl.update(TBL)
-                .set(F_STATUS,       ExportStatus.FAILED.getValue())
-                .set(F_ERROR_MESSAGE, errorMessage)
-                .set(F_COMPLETED_AT, now)
-                .where(F_ID.eq(id))
-                .execute();
+        synchronized (duckDB) {
+            dsl.update(TBL)
+                    .set(F_STATUS,       ExportStatus.FAILED.getValue())
+                    .set(F_ERROR_MESSAGE, errorMessage)
+                    .set(F_COMPLETED_AT, now)
+                    .where(F_ID.eq(id))
+                    .execute();
+        }
     }
 
     /** Deletes the job row. Returns true if a row was removed. */
     public boolean delete(String id) {
-        return dsl.deleteFrom(TBL).where(F_ID.eq(id)).execute() > 0;
+        synchronized (duckDB) {
+            return dsl.deleteFrom(TBL).where(F_ID.eq(id)).execute() > 0;
+        }
     }
 
     // -------------------------------------------------------------------------

@@ -2,10 +2,13 @@ package com.joxette.replay;
 
 import com.joxette.db.SchemaManager;
 import org.jooq.DSLContext;
+import org.jooq.Record;
+import org.jooq.Result;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.sql.Connection;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.TreeSet;
@@ -37,9 +40,11 @@ public class FieldSuggestionsService {
     private static final int MAX_DEPTH = 4;
 
     private final DSLContext dsl;
+    private final Connection duckDB;
 
-    public FieldSuggestionsService(DSLContext dsl) {
+    public FieldSuggestionsService(DSLContext dsl, Connection duckDB) {
         this.dsl = dsl;
+        this.duckDB = duckDB;
     }
 
     // -------------------------------------------------------------------------
@@ -125,7 +130,10 @@ public class FieldSuggestionsService {
                     ORDER BY field_key
                     """, column, qualifiedTable, column, limit, MAX_DEPTH);
 
-            var rows = dsl.fetch(sql);
+            Result<Record> rows;
+            synchronized (duckDB) {
+                rows = dsl.fetch(sql);
+            }
             for (var row : rows) {
                 String key = row.get("field_key", String.class);
                 if (key != null && !key.isBlank()) {
@@ -142,7 +150,7 @@ public class FieldSuggestionsService {
     private List<String> extractFieldsShallow(String qualifiedTable, String column, int limit) {
         var valueFields = new TreeSet<String>();
         try {
-            var rows = dsl.fetch(String.format("""
+            String sql = String.format("""
                     WITH sample AS (
                       SELECT %s::VARCHAR AS v
                       FROM %s
@@ -156,7 +164,11 @@ public class FieldSuggestionsService {
                       AND v <> 'null'
                       AND json_type(v) = 'OBJECT'
                     ORDER BY field_key
-                    """, column, qualifiedTable, column, limit));
+                    """, column, qualifiedTable, column, limit);
+            Result<Record> rows;
+            synchronized (duckDB) {
+                rows = dsl.fetch(sql);
+            }
             for (var row : rows) {
                 String key = row.get("field_key", String.class);
                 if (key != null && !key.isBlank()) {
@@ -172,13 +184,17 @@ public class FieldSuggestionsService {
     private List<String> extractMessageTypes(String qualifiedTable, int limit) {
         var types = new TreeSet<String>();
         try {
-            var rows = dsl.fetch(String.format("""
+            String sql = String.format("""
                     SELECT DISTINCT message_type
                     FROM %s
                     WHERE message_type IS NOT NULL
                     ORDER BY message_type
                     LIMIT %d
-                    """, qualifiedTable, limit));
+                    """, qualifiedTable, limit);
+            Result<Record> rows;
+            synchronized (duckDB) {
+                rows = dsl.fetch(sql);
+            }
             for (var row : rows) {
                 String t = row.get("message_type", String.class);
                 if (t != null && !t.isBlank()) types.add(t);
