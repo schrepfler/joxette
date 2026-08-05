@@ -8,6 +8,8 @@ import {
 } from '@tanstack/react-table'
 import { useForm } from '@tanstack/react-form'
 import { useState, useRef, useEffect, type CSSProperties } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
+import { pushCapped, composeDescLiveView } from '../../lib/streamBuffer'
 import { ValueCell } from '../../components/ValueCell'
 import {
   topicsApi,
@@ -176,6 +178,7 @@ function TopicDetailPage() {
   const [streamError, setStreamError] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const streamBufferRef = useRef<CassetteRecord[]>([])
+  const liveBufferRef = useRef<CassetteRecord[]>([]) // order=desc + follow live-tail prepend segment only
   const flushIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const followActiveRef = useRef(false)
   const terminalRef = useRef(false)
@@ -258,13 +261,17 @@ function TopicDetailPage() {
     onSubmit: async ({ value }) => retentionMutation.mutate(value.retentionDays),
   })
 
+  function composeStreamedRecords(): CassetteRecord[] {
+    return composeDescLiveView(streamBufferRef.current, liveBufferRef.current)
+  }
+
   function stopStream() {
     abortRef.current?.abort()
     abortRef.current = null
     if (flushIntervalRef.current) { clearInterval(flushIntervalRef.current); flushIntervalRef.current = null }
     followActiveRef.current = false
     terminalRef.current = true
-    setStreamedRecords([...streamBufferRef.current])
+    setStreamedRecords(composeStreamedRecords())
     setStreamStatus(s => isStreamActive(s) ? 'stopped' : s)
   }
 
@@ -275,6 +282,7 @@ function TopicDetailPage() {
     followActiveRef.current = false
     terminalRef.current = false
     streamBufferRef.current = []
+    liveBufferRef.current = []
     setStreamedRecords([])
     setStreamError(null)
     setStreamStatus('idle')
@@ -286,7 +294,7 @@ function TopicDetailPage() {
     const isFollowing = followLive
     setStreamStatus(isFollowing ? 'draining' : 'streaming')
     flushIntervalRef.current = setInterval(() => {
-      setStreamedRecords([...streamBufferRef.current])
+      setStreamedRecords(composeStreamedRecords())
     }, 250)
     const params: TopicStreamParams & { follow?: boolean } = {
       from: from || undefined,
@@ -297,18 +305,29 @@ function TopicDetailPage() {
       follow: isFollowing || undefined,
       order,
     }
-    // When order=desc + follow is on, post-preamble live records must land at
-    // the top of the list (latest-first) rather than the tail. During the
-    // historical drain records still arrive newest→oldest from the backend
-    // and are appended in arrival order, which is already the correct visual
-    // order. So: push-append during drain; prepend once the `follow` preamble
-    // flips `followActiveRef`.
+    // When order=desc + follow is on, post-preamble live records must land
+    // at the top of the list (latest-first) rather than the tail. During
+    // the historical drain records still arrive newest→oldest from the
+    // backend and are appended in arrival order, which is already the
+    // correct visual order. So: push-append during drain; once the
+    // `follow` preamble flips followActiveRef, live records go into a
+    // *separate* liveBufferRef (also push-append, O(1) amortized via
+    // pushCapped) and composeStreamedRecords() reverses just that
+    // (bounded, capped) segment in front of the drained history — no
+    // per-record unshift, and no unbounded growth over a long tailing
+    // session.
     const shouldPrependLive = isFollowing && order === 'desc'
     abortRef.current = streamTopicRecords(topic, streamMode, params, {
       onRecord: (r) => {
-        if (shouldPrependLive && followActiveRef.current) {
-          streamBufferRef.current.unshift(r)
+        if (followActiveRef.current) {
+          if (shouldPrependLive) {
+            pushCapped(liveBufferRef.current, r)
+          } else {
+            pushCapped(streamBufferRef.current, r)
+          }
         } else {
+          // Historical drain: bounded by the request's own from/to/limit,
+          // not capped here.
           streamBufferRef.current.push(r)
         }
       },
@@ -323,14 +342,14 @@ function TopicDetailPage() {
       },
       onDone: () => {
         if (flushIntervalRef.current) { clearInterval(flushIntervalRef.current); flushIntervalRef.current = null }
-        setStreamedRecords([...streamBufferRef.current])
+        setStreamedRecords(composeStreamedRecords())
         if (terminalRef.current) return
         if (isFollowing) setStreamStatus('disconnected')
         else setStreamStatus('done')
       },
       onError: (e) => {
         if (flushIntervalRef.current) { clearInterval(flushIntervalRef.current); flushIntervalRef.current = null }
-        setStreamedRecords([...streamBufferRef.current])
+        setStreamedRecords(composeStreamedRecords())
         setStreamError(e.message)
         setStreamStatus('error')
       },
@@ -1019,8 +1038,25 @@ function SegmentedControl<T extends string>({
 /* eslint-disable @typescript-eslint/no-explicit-any */
 function RuledTable({ table, density = 'regular', ariaLabel }: { table: any; density?: 'regular' | 'dense'; ariaLabel?: string }) {
   const pad = density === 'dense' ? '10px 12px' : '14px 14px'
+  const rowHeight = density === 'dense' ? 40 : 48
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const rows = table.getRowModel().rows
+  const columnCount = table.getHeaderGroups()[0]?.headers.length ?? 1
+
+  const rowVirtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => rowHeight,
+    overscan: 12,
+  })
+
+  const virtualRows = rowVirtualizer.getVirtualItems()
+  const totalSize = rowVirtualizer.getTotalSize()
+  const paddingTop = virtualRows.length > 0 ? virtualRows[0].start : 0
+  const paddingBottom = virtualRows.length > 0 ? totalSize - virtualRows[virtualRows.length - 1].end : 0
+
   return (
-    <div style={{ overflowX: 'auto' }}>
+    <div ref={scrollRef} style={{ overflow: 'auto', maxHeight: 600 }}>
       <table
         aria-label={ariaLabel}
         style={{
@@ -1055,26 +1091,35 @@ function RuledTable({ table, density = 'regular', ariaLabel }: { table: any; den
           ))}
         </thead>
         <tbody>
-          {table.getRowModel().rows.map((row: any) => (
-            <tr
-              key={row.id}
-              style={{
-                borderBottom: '1px solid var(--rule)',
-              }}
-            >
-              {row.getVisibleCells().map((cell: any) => (
-                <td
-                  key={cell.id}
-                  style={{
-                    padding: pad,
-                    verticalAlign: 'top',
-                  }}
-                >
-                  {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                </td>
-              ))}
-            </tr>
-          ))}
+          {paddingTop > 0 && (
+            <tr aria-hidden="true"><td colSpan={columnCount} style={{ height: paddingTop, padding: 0, border: 0 }} /></tr>
+          )}
+          {virtualRows.map(vRow => {
+            const row = rows[vRow.index]
+            return (
+              <tr
+                key={row.id}
+                data-index={vRow.index}
+                ref={rowVirtualizer.measureElement}
+                style={{ borderBottom: '1px solid var(--rule)' }}
+              >
+                {row.getVisibleCells().map((cell: any) => (
+                  <td
+                    key={cell.id}
+                    style={{
+                      padding: pad,
+                      verticalAlign: 'top',
+                    }}
+                  >
+                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                  </td>
+                ))}
+              </tr>
+            )
+          })}
+          {paddingBottom > 0 && (
+            <tr aria-hidden="true"><td colSpan={columnCount} style={{ height: paddingBottom, padding: 0, border: 0 }} /></tr>
+          )}
         </tbody>
       </table>
     </div>
