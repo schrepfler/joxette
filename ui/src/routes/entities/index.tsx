@@ -160,7 +160,7 @@ function EntitiesPage() {
 
       {!isLoading && !error && (
         <div style={tableStyle}>
-          <table aria-label="Entity types" style={{ width: '100%', borderCollapse: 'collapse' }}>
+          <table aria-label="Entity types" className="jx-table" style={{ width: '100%', borderCollapse: 'collapse' }}>
             <thead>
               {table.getHeaderGroups().map(hg => (
                 <tr key={hg.id}>
@@ -172,10 +172,16 @@ function EntitiesPage() {
               {table.getRowModel().rows.map(row => (
                 <tr
                   key={row.id}
-                  style={{ cursor: 'pointer' }}
+                  role="button"
+                  tabIndex={0}
+                  className="jx-clickable"
                   onClick={() => void navigate({ to: '/entities/$entityType', params: { entityType: row.original.entityType } })}
-                  onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface-raised)')}
-                  onMouseLeave={e => (e.currentTarget.style.background = '')}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault()
+                      void navigate({ to: '/entities/$entityType', params: { entityType: row.original.entityType } })
+                    }
+                  }}
                 >
                   {row.getVisibleCells().map(cell => <td key={cell.id} style={tdStyle}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}
                 </tr>

@@ -170,6 +170,10 @@ pre code {
   background: var(--surface-raised);
 }
 
+.jx-table tbody tr.jx-clickable:focus-visible {
+  background: var(--surface-raised);
+}
+
 .jx-table tbody tr.jx-clickable {
   cursor: pointer;
 }

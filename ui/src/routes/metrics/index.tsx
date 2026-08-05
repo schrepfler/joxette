@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { memo, useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useId, useMemo, useState } from 'react'
 import {
   AreaChart, Area, LineChart, Line,
   XAxis, YAxis, CartesianGrid, Legend, ReferenceLine, Tooltip,
@@ -301,18 +301,23 @@ const TIP_STYLE: React.CSSProperties = {
 
 function Stat({ label, value, sub, title }: { label: string; value: string; sub?: string; title?: string }) {
   const [tip, setTip] = useState(false)
+  const tipId = useId()
   return (
     <div
       style={{ display: 'flex', flexDirection: 'column', minWidth: 110, position: 'relative', cursor: title ? 'default' : undefined }}
+      tabIndex={title ? 0 : undefined}
+      aria-describedby={title ? tipId : undefined}
       onMouseEnter={() => title && setTip(true)}
       onMouseLeave={() => setTip(false)}
+      onFocus={() => title && setTip(true)}
+      onBlur={() => setTip(false)}
     >
       <span style={{ fontSize: '0.5625rem', color: 'var(--ink-tertiary)', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 600 }}>
         {label}
       </span>
       <span style={{ fontFamily: 'var(--font-mono)', fontSize: '1.125rem', fontWeight: 700, color: 'var(--ink-primary)', lineHeight: 1.3 }}>{value}</span>
       {sub && <span style={{ fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)' }}>{sub}</span>}
-      {tip && title && <div style={TIP_STYLE}>{title}</div>}
+      {tip && title && <div id={tipId} role="tooltip" style={TIP_STYLE}>{title}</div>}
     </div>
   )
 }
@@ -323,16 +328,21 @@ function Stat({ label, value, sub, title }: { label: string; value: string; sub?
 
 function Card({ title, subtitle, description, children }: { title: string; subtitle?: string; description?: string; children: React.ReactNode }) {
   const [tip, setTip] = useState(false)
+  const tipId = useId()
   return (
     <div style={{ ...cardStyle, padding: '16px 20px' }}>
       <div style={{ marginBottom: 10, display: 'flex', alignItems: 'baseline', gap: 0, position: 'relative' }}>
-        <span
-          style={{ fontWeight: 600, fontSize: 'var(--type-body-sm-size)', color: 'var(--ink-primary)', cursor: description ? 'default' : undefined, borderBottom: description ? '1px dotted var(--rule-strong)' : undefined }}
+        <h3
+          style={{ margin: 0, fontWeight: 600, fontSize: 'var(--type-body-sm-size)', color: 'var(--ink-primary)', cursor: description ? 'default' : undefined, borderBottom: description ? '1px dotted var(--rule-strong)' : undefined }}
+          tabIndex={description ? 0 : undefined}
+          aria-describedby={description ? tipId : undefined}
           onMouseEnter={() => description && setTip(true)}
           onMouseLeave={() => setTip(false)}
-        >{title}</span>
+          onFocus={() => description && setTip(true)}
+          onBlur={() => setTip(false)}
+        >{title}</h3>
         {subtitle && <span style={{ marginLeft: 8, fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)' }}>{subtitle}</span>}
-        {tip && description && <div style={TIP_STYLE}>{description}</div>}
+        {tip && description && <div id={tipId} role="tooltip" style={TIP_STYLE}>{description}</div>}
       </div>
       {children}
     </div>

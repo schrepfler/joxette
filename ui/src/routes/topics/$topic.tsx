@@ -26,6 +26,7 @@ import {
 import { Layout } from '../../components/Layout'
 import { LoadingSpinner } from '../../components/LoadingSpinner'
 import { ErrorMessage } from '../../components/ErrorMessage'
+import { ModalDialog } from '../../components/ModalDialog'
 import { TruncateDialog } from '../../components/TruncateDialog'
 import { ConfirmDialog } from '../../components/ConfirmDialog'
 import { ReplayToTopicPanel } from '../../components/ReplayToTopicPanel'
@@ -56,7 +57,7 @@ export const Route = createFileRoute('/topics/$topic')({
 const colHelper = createColumnHelper<CassetteRecord>()
 const matcherColHelper = createColumnHelper<TopicMatcherConfig>()
 
-function AddMatcherModal({ topic, onClose }: { topic: string; onClose: () => void }) {
+export function AddMatcherModal({ topic, onClose }: { topic: string; onClose: () => void }) {
   const qc = useQueryClient()
   const { addToast } = useToast()
   const mutation = useMutation({
@@ -73,57 +74,54 @@ function AddMatcherModal({ topic, onClose }: { topic: string; onClose: () => voi
     onSubmit: async ({ value }) => mutation.mutate(value),
   })
   return (
-    <div style={overlayStyle} onClick={onClose}>
-      <div style={modalStyle} onClick={e => e.stopPropagation()}>
-        <h2 className="type-h2" style={{ margin: '0 0 8px' }}>Add matcher</h2>
-        <p style={{ margin: '0 0 24px', color: 'var(--ink-secondary)', fontSize: 'var(--type-caption-size)' }}>
-          Tag incoming messages so they can be grouped by an extracted identifier.
-        </p>
-        <form onSubmit={e => { e.preventDefault(); void form.handleSubmit() }} style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-          <form.Field name="messageType">
-            {(f) => (
-              <Input
-                label="Message type *"
-                value={f.state.value}
-                onChange={e => f.handleChange(e.target.value)}
-                required
-              />
-            )}
-          </form.Field>
-          <form.Field name="idSource">
-            {(f) => (
-              <Select
-                label="ID source"
-                value={f.state.value}
-                onChange={e => f.handleChange(e.target.value)}
-              >
-                <option value="value">value</option>
-                <option value="key">key</option>
-                <option value="header">header</option>
-              </Select>
-            )}
-          </form.Field>
-          <form.Field name="idExpression">
-            {(f) => (
-              <Input
-                label="ID expression *"
-                mono
-                placeholder="$.order_id"
-                value={f.state.value}
-                onChange={e => f.handleChange(e.target.value)}
-                required
-              />
-            )}
-          </form.Field>
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 8 }}>
-            <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
-            <Button type="submit" variant="primary" disabled={mutation.isPending}>
-              {mutation.isPending ? 'Adding…' : 'Add matcher'}
-            </Button>
-          </div>
-        </form>
-      </div>
-    </div>
+    <ModalDialog title="Add matcher" onClose={onClose} style={{ minWidth: 420, maxWidth: 520 }}>
+      <p style={{ margin: '0 0 24px', color: 'var(--ink-secondary)', fontSize: 'var(--type-caption-size)' }}>
+        Tag incoming messages so they can be grouped by an extracted identifier.
+      </p>
+      <form onSubmit={e => { e.preventDefault(); void form.handleSubmit() }} style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+        <form.Field name="messageType">
+          {(f) => (
+            <Input
+              label="Message type *"
+              value={f.state.value}
+              onChange={e => f.handleChange(e.target.value)}
+              required
+            />
+          )}
+        </form.Field>
+        <form.Field name="idSource">
+          {(f) => (
+            <Select
+              label="ID source"
+              value={f.state.value}
+              onChange={e => f.handleChange(e.target.value)}
+            >
+              <option value="value">value</option>
+              <option value="key">key</option>
+              <option value="header">header</option>
+            </Select>
+          )}
+        </form.Field>
+        <form.Field name="idExpression">
+          {(f) => (
+            <Input
+              label="ID expression *"
+              mono
+              placeholder="$.order_id"
+              value={f.state.value}
+              onChange={e => f.handleChange(e.target.value)}
+              required
+            />
+          )}
+        </form.Field>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 8 }}>
+          <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button type="submit" variant="primary" disabled={mutation.isPending}>
+            {mutation.isPending ? 'Adding…' : 'Add matcher'}
+          </Button>
+        </div>
+      </form>
+    </ModalDialog>
   )
 }
 
@@ -1132,37 +1130,6 @@ function RuledTable({ table, density = 'regular', ariaLabel }: { table: any; den
   )
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
-
-// ── Modal styles ────────────────────────────────────────────────────────────
-
-const overlayStyle: CSSProperties = {
-  position: 'fixed',
-  inset: 0,
-  background: 'color-mix(in oklab, var(--surface-sunken) 40%, rgba(10, 8, 6, 0.5))',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  zIndex: 1000,
-  backdropFilter: 'blur(2px)',
-  animation: 'jx-overlay-in var(--duration-quick) var(--ease-out-soft)',
-}
-
-const modalStyle: CSSProperties = {
-  background: 'var(--surface-raised)',
-  border: '1px solid var(--rule-strong)',
-  borderRadius: 'var(--radius-md)',
-  padding: '32px 32px 28px',
-  minWidth: 420,
-  maxWidth: 520,
-  boxShadow: '0 30px 80px rgba(10, 8, 6, 0.22)',
-}
-
-if (typeof document !== 'undefined' && !document.getElementById('jx-overlay-anim')) {
-  const el = document.createElement('style')
-  el.id = 'jx-overlay-anim'
-  el.textContent = `@keyframes jx-overlay-in { from { opacity: 0 } to { opacity: 1 } }`
-  document.head.appendChild(el)
-}
 
 // ── Unused imports suppression ──────────────────────────────────────────────
 // Keep StatusDot exported from primitives barrel in case future inline usage
