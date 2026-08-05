@@ -223,6 +223,18 @@ public class CassetteController {
         }
     }
 
+    private void validateLastNExclusivity(Integer lastN, Instant from, Instant to, String cursor) {
+        if (lastN == null) return;
+        if (from != null || to != null || cursor != null) {
+            throw new ValidationException(
+                    "last_n is mutually exclusive with from, to, and cursor");
+        }
+    }
+
+    private void validateLastNExclusivity(Integer lastN, Instant from, Instant to) {
+        validateLastNExclusivity(lastN, from, to, null);
+    }
+
     /**
      * Builds a {@link ReplayEngine} bound to the sink for the given broker id
      * ({@code null} → default broker). Engines are cheap; the sink itself is
@@ -807,6 +819,7 @@ public class CassetteController {
                        name = "timeline_bucket")
             @RequestParam(name = "timeline_bucket", required = false) TimelineBucket timelineBucket
     ) throws SQLException {
+        validateLastNExclusivity(lastN, from, to, cursor);
         Instant scheduledAt = resolveScheduledAt(startAt, startDelayMs);
         if (scheduledAt != null) {
             String id = scheduledReplayService.registerEntityReplay(
@@ -921,6 +934,7 @@ public class CassetteController {
                        name = "state_fold")
             @RequestParam(name = "state_fold", required = false) StateFoldStrategy stateFold
     ) throws SQLException {
+        validateLastNExclusivity(lastN, from, to);
         rejectFollowWithUpperBound(follow, to, null);
         if (sol != null && follow) {
             throw new com.joxette.api.error.ValidationException("sol and follow are mutually exclusive");
@@ -1053,6 +1067,7 @@ public class CassetteController {
                        name = "state_fold")
             @RequestParam(name = "state_fold", required = false) StateFoldStrategy stateFold
     ) throws SQLException {
+        validateLastNExclusivity(lastN, from, to);
         rejectFollowWithUpperBound(follow, to, null);
         if (sol != null && follow) {
             throw new com.joxette.api.error.ValidationException("sol and follow are mutually exclusive");
