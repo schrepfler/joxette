@@ -31,8 +31,10 @@ import java.util.concurrent.Executors;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
@@ -180,5 +182,108 @@ class CassetteControllerLastNExclusivityTest {
                 .accept(MediaType.parseMediaType("application/x-ndjson"))
                 .param("last_n", "5"))
            .andExpect(request().asyncStarted());
+    }
+
+    // =========================================================================
+    // Finding I6: the same last_n exclusivity check must also apply to the
+    // POST/batch replay handlers — previously they accepted from/to/lastN (and,
+    // for the JSON variant, cursor) unchecked and silently ignored the filters
+    // instead of 400ing like the GET handlers.
+    // =========================================================================
+
+    @Test
+    void postJson_lastNWithFrom_returns400() throws Exception {
+        mvc.perform(post("/cassettes/entities/order/cust-1/replay")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"lastN\":5,\"from\":\"2025-01-01T00:00:00Z\"}"))
+           .andExpect(status().isBadRequest())
+           .andExpect(content().contentTypeCompatibleWith("application/problem+json"))
+           .andExpect(jsonPath("$.errorCode").value("ERR_VALIDATION"));
+
+        verifyNoInteractions(entityService);
+    }
+
+    @Test
+    void postJson_lastNWithCursor_returns400() throws Exception {
+        mvc.perform(post("/cassettes/entities/order/cust-1/replay")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"lastN\":5,\"cursor\":\"some-cursor\"}"))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.errorCode").value("ERR_VALIDATION"));
+
+        verifyNoInteractions(entityService);
+    }
+
+    @Test
+    void postJson_lastNAlone_succeeds() throws Exception {
+        when(entityService.queryEntityEvents(anyString(), anyString(), any(), any(), anyInt(), any(),
+                any(), anyString(), any(), any(), any(), any()))
+                .thenReturn(new PagedResponse<>(List.of(), null, false, null, null));
+
+        mvc.perform(post("/cassettes/entities/order/cust-1/replay")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"lastN\":5}"))
+           .andExpect(status().isOk());
+    }
+
+    @Test
+    void postSse_lastNWithTo_returns400() throws Exception {
+        mvc.perform(post("/cassettes/entities/order/cust-1/replay")
+                .contentType(MediaType.APPLICATION_JSON)
+                .accept(MediaType.TEXT_EVENT_STREAM)
+                .content("{\"lastN\":5,\"to\":\"2025-01-01T00:00:00Z\"}"))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.errorCode").value("ERR_VALIDATION"));
+
+        verifyNoInteractions(entityService);
+        verifyNoInteractions(sseHandler);
+    }
+
+    @Test
+    void postNdjson_lastNWithFromAndTo_returns400() throws Exception {
+        mvc.perform(post("/cassettes/entities/order/cust-1/replay")
+                .contentType(MediaType.APPLICATION_JSON)
+                .accept(MediaType.parseMediaType("application/x-ndjson"))
+                .content("{\"lastN\":5,\"from\":\"2025-01-01T00:00:00Z\",\"to\":\"2025-01-02T00:00:00Z\"}"))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.errorCode").value("ERR_VALIDATION"));
+
+        verifyNoInteractions(entityService);
+        verifyNoInteractions(sseHandler);
+    }
+
+    @Test
+    void batch_lastNWithFrom_returns400() throws Exception {
+        mvc.perform(post("/cassettes/entities/order/batch")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"ids\":[\"cust-1\"],\"lastN\":5,\"from\":\"2025-01-01T00:00:00Z\"}"))
+           .andExpect(status().isBadRequest())
+           .andExpect(content().contentTypeCompatibleWith("application/problem+json"))
+           .andExpect(jsonPath("$.errorCode").value("ERR_VALIDATION"));
+
+        verifyNoInteractions(entityService);
+    }
+
+    @Test
+    void batch_lastNWithTo_returns400() throws Exception {
+        mvc.perform(post("/cassettes/entities/order/batch")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"ids\":[\"cust-1\"],\"lastN\":5,\"to\":\"2025-01-01T00:00:00Z\"}"))
+           .andExpect(status().isBadRequest())
+           .andExpect(jsonPath("$.errorCode").value("ERR_VALIDATION"));
+
+        verifyNoInteractions(entityService);
+    }
+
+    @Test
+    void batch_lastNAlone_doesNotThrow() throws Exception {
+        // sseHandler is an unstubbed mock here (streamNdjson() -> null body), so unlike
+        // the real-sseHandler tests in BatchReplayTest this completes synchronously with
+        // an empty 200 rather than entering async dispatch — the point of this test is
+        // only that a valid last_n-alone request passes validation, not the stream content.
+        mvc.perform(post("/cassettes/entities/order/batch")
+                .contentType(MediaType.APPLICATION_JSON)
+                .content("{\"ids\":[\"cust-1\"],\"lastN\":5}"))
+           .andExpect(status().isOk());
     }
 }

@@ -1218,6 +1218,7 @@ public class CassetteController {
             @PathVariable String entityType,
             @Valid @RequestBody BatchReplayRequest req
     ) {
+        validateLastNExclusivity(req.lastN(), req.from(), req.to());
         if (req.ids() == null || req.ids().isEmpty()) {
             throw new ValidationException("ids must be a non-empty list");
         }
@@ -2178,6 +2179,7 @@ public class CassetteController {
                 content = @Content(schema = @Schema(implementation = EntityReplayBody.class)))
             @Valid @RequestBody EntityReplayBody body
     ) throws SQLException {
+        validateLastNExclusivity(body.lastN(), body.from(), body.to(), body.cursor());
         Instant scheduledAt = resolveScheduledAt(body.startAt(), body.startDelayMs());
         if (scheduledAt != null) {
             String id = scheduledReplayService.registerEntityReplay(
@@ -2248,6 +2250,7 @@ public class CassetteController {
                 content = @Content(schema = @Schema(implementation = EntityReplayBody.class)))
             @Valid @RequestBody EntityReplayBody body
     ) throws SQLException {
+        validateLastNExclusivity(body.lastN(), body.from(), body.to());
         if (body.sol() != null) {
             SolProcessed processed = applySol(entityType, entityId, body.sol(), body.solOutput(),
                     body.from(), body.to());
@@ -2310,6 +2313,7 @@ public class CassetteController {
                 content = @Content(schema = @Schema(implementation = EntityReplayBody.class)))
             @Valid @RequestBody EntityReplayBody body
     ) throws SQLException {
+        validateLastNExclusivity(body.lastN(), body.from(), body.to());
         if (body.sol() != null) {
             SolProcessed processed = applySol(entityType, entityId, body.sol(), body.solOutput(),
                     body.from(), body.to());
