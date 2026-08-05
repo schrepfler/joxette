@@ -74,8 +74,13 @@ tiers:
     roles: [recorder, entity-router]
     # Pure write node: turn off the replay API to avoid serving reads here.
     replayEnabled: false
+    # limits.memory == requests.memory (no cpu limit) — same convention already
+    # used for the operator's own Deployment (deploy/operator/deployment.yaml):
+    # bound memory hard (JVM + DuckDB native allocations must not spill onto the
+    # node) but leave cpu unbounded so a burst never gets throttled.
     resources:
       requests: { cpu: "1", memory: 2Gi }
+      limits: { memory: 2Gi }
   replay:
     enabled: true
     replicas: 1
@@ -83,15 +88,34 @@ tiers:
     replayEnabled: true
     resources:
       requests: { cpu: 500m, memory: 1Gi }
+      limits: { memory: 1Gi }
     # Horizontal autoscaling for the (stateless) replay tier. Shared-catalog
     # backends only — rejected with an embedded catalog (single pod). Requires
-    # metrics-server in the cluster. When enabled the Deployment omits a static
-    # replica count so the HPA owns it (avoids replica fighting on each reconcile).
+    # metrics-server in the cluster (CPU metric) AND, for targetActiveReplaysPerPod,
+    # prometheus-adapter exposing joxette_replay_active via the custom metrics API
+    # (custom.metrics.k8s.io) — the chart does not install or configure the adapter.
+    # When enabled the Deployment omits a static replica count so the HPA owns it
+    # (avoids replica fighting on each reconcile).
     hpa:
       enabled: false
       minReplicas: 2
       maxReplicas: 10
       targetCPUUtilizationPercentage: 70
+      # Average of joxette_replay_active (active replay-to-topic ops) per pod.
+      # Replay is I/O-bound (SSE/NDJSON fan-out) — many slow concurrent streams
+      # can saturate a pod at low CPU, so this metric scales out cases CPU alone
+      # misses. HPA takes the max recommended replicas across all metrics.
+      targetActiveReplaysPerPod: 10
+      activeReplaysMetric:
+        # Off by default: this Pods metric only resolves via a custom-metrics
+        # adapter (typically prometheus-adapter) exposing joxette_replay_active
+        # — a real deployment prerequisite this chart does not install. HPA v2
+        # semantics: if ANY configured metric fails to resolve, scale-UP still
+        # proceeds on the healthy metrics, but scale-DOWN is blocked outright.
+        # So enabling this without the adapter installed silently ratchets the
+        # replay tier up to maxReplicas and it never scales back down. Only
+        # opt in once the adapter is confirmed serving this metric.
+        enabled: false
   compaction:
     enabled: true
     # replicas always 1 — the chart pins it regardless of this value.
@@ -99,6 +123,7 @@ tiers:
     replayEnabled: false
     resources:
       requests: { cpu: 500m, memory: 1Gi }
+      limits: { memory: 1Gi }
 
 # ----------------------------------------------------------------------------
 # Kafka
@@ -169,3 +194,22 @@ serviceMonitor:
   enabled: false
   interval: 30s
   labels: {}
+
+# Prometheus Operator alerting rules (PrometheusRule CR). Metric names must
+# match JoxetteMetrics.java exactly (Micrometer dots become Prometheus
+# underscores on scrape, e.g. joxette.consumer.lag -> joxette_consumer_lag).
+# Defaults to false, same as serviceMonitor above and for the same reason: the
+# PrometheusRule CRD isn't installed on a plain cluster, and `helm install`
+# fails hard ("resource mapping not found... ensure CRDs are installed first")
+# if this is on by default. The template also guards on .Capabilities so
+# enabling this without the CRD degrades to a no-op instead of erroring.
+monitoring:
+  prometheusRule:
+    enabled: false
+    labels: {}
+    # Sustained (5m) joxette_consumer_lag above this fires a warning.
+    consumerLagThreshold: 10000
+    # Sustained (5m) joxette_write_channel_depth above this fires a warning.
+    # Default assumes the default joxette.threading.write-channel-capacity (128)
+    # in application.yml — set to ~90% of your configured capacity if overridden.
+    writeChannelDepthThreshold: 115

@@ -1,0 +1,45 @@
+{{- if and .Values.monitoring.prometheusRule.enabled (.Capabilities.APIVersions.Has "monitoring.coreos.com/v1") }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "joxette.fullname" . }}
+  labels:
+    {{- include "joxette.labels" . | nindent 4 }}
+    {{- with .Values.monitoring.prometheusRule.labels }}{{ toYaml . | nindent 4 }}{{- end }}
+spec:
+  groups:
+    - name: joxette.rules
+      rules:
+        - alert: JoxetteConsumerLagHigh
+          expr: joxette_consumer_lag > {{ .Values.monitoring.prometheusRule.consumerLagThreshold }}
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Joxette consumer lag is high on topic {{`{{ $labels.topic }}`}}"
+            description: "joxette_consumer_lag has been above {{ .Values.monitoring.prometheusRule.consumerLagThreshold }} for 5 minutes on topic {{`{{ $labels.topic }}`}} (current value: {{`{{ $value }}`}})."
+        - alert: JoxetteWriteChannelNearCapacity
+          expr: joxette_write_channel_depth > {{ .Values.monitoring.prometheusRule.writeChannelDepthThreshold }}
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Joxette DuckDB write-channel buffer is near capacity"
+            description: "joxette_write_channel_depth has been above {{ .Values.monitoring.prometheusRule.writeChannelDepthThreshold }} for 5 minutes (current value: {{`{{ $value }}`}}) — the write-channel backpressure valve (joxette.threading.write-channel-capacity) is close to full. Kafka consumer lag will keep rising until DuckDB writes catch up."
+        - alert: JoxetteSinkNotHealthy
+          expr: joxette_sink_state != 0
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Joxette DuckLakeWriteChannel sink is not HEALTHY"
+            description: "joxette_sink_state has been non-zero (0=HEALTHY, 1=DEGRADED, 2=FAILED) for 2 minutes (current value: {{`{{ $value }}`}}). Consumers may be paused pending object-store recovery — see docs/write-resilience.md."
+        - alert: JoxetteSinkFailed
+          expr: joxette_sink_state == 2
+          for: 0m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Joxette DuckLakeWriteChannel sink is FAILED"
+            description: "joxette_sink_state == 2 (FAILED): max write retries against the object store were exhausted. The recorder actor should be restarting the sink per docs/write-resilience.md; if this persists, investigate object storage connectivity immediately."
+{{- end }}

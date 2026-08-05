@@ -124,6 +124,7 @@ public class DuckLakeWriteChannel {
     void start() throws SQLException {
         channel = Channel.newBufferedChannel(capacity);
         joxetteMetrics.registerWriteChannelDepthGauge(() -> inFlight.size());
+        joxetteMetrics.registerSinkStateGauge(() -> sinkStateOrdinal(sinkState.get()));
         WriterSet writers = new WriterSet(duckDbConnection);
         drainThread = Thread.ofVirtual()
                 .name("joxette-write-drain")
@@ -447,6 +448,15 @@ public class DuckLakeWriteChannel {
             sb.append(e.getKey()).append(':').append(e.getValue());
         }
         return sb.toString();
+    }
+
+    /** Numeric encoding for {@code joxette.sink.state} — see {@link JoxetteMetrics#registerSinkStateGauge}. */
+    private static int sinkStateOrdinal(SinkState state) {
+        return switch (state) {
+            case HEALTHY -> 0;
+            case DEGRADED -> 1;
+            case FAILED -> 2;
+        };
     }
 
     // -----------------------------------------------------------------------
