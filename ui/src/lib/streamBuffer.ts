@@ -34,3 +34,22 @@ export function composeDescLiveView<T>(historyBuffer: T[], liveBuffer: T[]): T[]
   if (liveBuffer.length === 0) return historyBuffer
   return [...liveBuffer].reverse().concat(historyBuffer)
 }
+
+/** Compose the buffer to render for the current flush tick, guaranteeing a
+ *  fresh top-level array reference on every call.
+ *
+ *  composeDescLiveView returns `historyBuffer` BY REFERENCE whenever
+ *  `liveBuffer` is empty — true for the entire duration of any order=asc
+ *  stream, any follow=false replay, and the historical-drain portion of an
+ *  order=desc && follow=true stream. `historyBuffer` (streamBufferRef.current
+ *  in the caller) is a long-lived array mutated in place via
+ *  push()/pushCapped(), so its identity never changes on its own. Callers
+ *  that feed composeDescLiveView's result straight into a React setState
+ *  would have every call after the first silently dropped by React 19's
+ *  Object.is setState bailout, since the "new" value is reference-equal to
+ *  current state. This wrapper closes that gap once so every caller gets a
+ *  fresh reference automatically, regardless of which branch
+ *  composeDescLiveView took internally. */
+export function composeStreamView<T>(historyBuffer: T[], liveBuffer: T[]): T[] {
+  return [...composeDescLiveView(historyBuffer, liveBuffer)]
+}

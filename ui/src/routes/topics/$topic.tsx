@@ -9,7 +9,7 @@ import {
 import { useForm } from '@tanstack/react-form'
 import { useState, useRef, useEffect, type CSSProperties } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { pushCapped, composeDescLiveView } from '../../lib/streamBuffer'
+import { pushCapped, composeStreamView } from '../../lib/streamBuffer'
 import { ValueCell } from '../../components/ValueCell'
 import {
   topicsApi,
@@ -262,7 +262,13 @@ function TopicDetailPage() {
   })
 
   function composeStreamedRecords(): CassetteRecord[] {
-    return composeDescLiveView(streamBufferRef.current, liveBufferRef.current)
+    // composeStreamView guarantees a fresh top-level array reference on
+    // every call (see its doc comment in streamBuffer.ts) — required
+    // because every call site below feeds the result straight into
+    // setStreamedRecords(), and React 19's Object.is setState bailout would
+    // otherwise silently drop updates whenever the underlying
+    // streamBufferRef.current array happens to be reused unchanged.
+    return composeStreamView(streamBufferRef.current, liveBufferRef.current)
   }
 
   function stopStream() {
