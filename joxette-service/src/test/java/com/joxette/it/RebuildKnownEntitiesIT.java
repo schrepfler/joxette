@@ -31,8 +31,10 @@ import java.net.URI;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
@@ -129,8 +131,32 @@ class RebuildKnownEntitiesIT {
 
     @BeforeEach
     void setUp() throws Exception {
-        // Register entity types so that rebuildKnownEntities() discovers them via
-        // configRepo.listEntityTypes() which queries entity_type_configs.
+        // Wipe all state left by a previous test method FIRST, before re-seeding the
+        // baseline fixtures below — order matters here: re-seeding first and wiping
+        // second would immediately delete the rows we just inserted.
+        //
+        // known_entities is in the primary DB's main schema — no lake. prefix.
+        // entity_type_configs and every lake.main.entity_* table are wiped generically
+        // (not just entity_order/entity_customer, not just the two known types) so that
+        // any test method's leftover rows/registrations — regardless of which entity
+        // type it used or what order JUnit happens to run methods in — can never leak
+        // into another test's assertions. Enumerating via duckdb_tables() instead of a
+        // hardcoded list is what makes this order-independent: adding, removing, or
+        // renaming a test method (and the entity type it uses) can never silently
+        // reintroduce the test-ordering trap this class exists to avoid.
+        try (Statement st = duckDB.createStatement()) {
+            st.execute("DELETE FROM known_entities");
+            st.execute("DELETE FROM entity_type_configs");
+        }
+        for (String entityTable : listLakeEntityTables()) {
+            try (Statement st = duckDB.createStatement()) {
+                st.execute("DELETE FROM lake.main." + entityTable);
+            }
+        }
+
+        // Register the two baseline entity types every test in this class may rely on,
+        // so that rebuildKnownEntities() discovers them via configRepo.listEntityTypes()
+        // which queries entity_type_configs.
         try (Statement st = duckDB.createStatement()) {
             st.execute("""
                     INSERT INTO entity_type_configs (entity_type, bucket_count, created_at)
@@ -147,14 +173,26 @@ class RebuildKnownEntitiesIT {
         // Create DuckLake entity-cassette tables if they do not yet exist (idempotent).
         DuckDBTestSupport.createEntityTable(duckDB, "order");
         DuckDBTestSupport.createEntityTable(duckDB, "customer");
+    }
 
-        // Wipe all state left by a previous test method.
-        // known_entities is in the primary DB's main schema — no lake. prefix.
-        try (Statement st = duckDB.createStatement()) {
-            st.execute("DELETE FROM known_entities");
-            st.execute("DELETE FROM lake.main.entity_order");
-            st.execute("DELETE FROM lake.main.entity_customer");
+    /**
+     * Lists every {@code lake.main.entity_*} table currently registered in the DuckLake
+     * catalog, via {@code duckdb_tables()} — used by {@link #setUp()} to wipe leftover
+     * rows generically instead of naming each known entity type by hand.
+     */
+    private List<String> listLakeEntityTables() throws SQLException {
+        List<String> tables = new ArrayList<>();
+        try (Statement st = duckDB.createStatement();
+             ResultSet rs = st.executeQuery("""
+                     SELECT table_name FROM duckdb_tables()
+                     WHERE database_name = 'lake' AND schema_name = 'main'
+                       AND table_name LIKE 'entity\\_%' ESCAPE '\\'
+                     """)) {
+            while (rs.next()) {
+                tables.add(rs.getString(1));
+            }
         }
+        return tables;
     }
 
     // -------------------------------------------------------------------------
