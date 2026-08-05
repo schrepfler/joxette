@@ -38,7 +38,8 @@ public record TopicCursor(Instant timestamp, int partition, long offset)
                     .put("p", partition)
                     .put("o", offset)
                     .toString().getBytes();
-            return Base64.getUrlEncoder().withoutPadding().encodeToString(json);
+            String payload = Base64.getUrlEncoder().withoutPadding().encodeToString(json);
+            return CursorSignature.sign(payload);
         } catch (Exception e) {
             throw new IllegalStateException("Failed to encode TopicCursor", e);
         }
@@ -46,13 +47,16 @@ public record TopicCursor(Instant timestamp, int partition, long offset)
 
     public static TopicCursor decode(String encoded) {
         try {
-            byte[] bytes = Base64.getUrlDecoder().decode(encoded);
+            String payload = CursorSignature.verify(encoded);
+            byte[] bytes = Base64.getUrlDecoder().decode(payload);
             var node = MAPPER.readTree(bytes);
             return new TopicCursor(
                     Instant.parse(node.get("ts").asText()),
                     node.get("p").asInt(),
                     node.get("o").asLong()
             );
+        } catch (com.joxette.api.error.InvalidCursorException e) {
+            throw e;
         } catch (Exception e) {
             throw new com.joxette.api.error.InvalidCursorException(
                     "Invalid topic cursor: " + encoded, e);

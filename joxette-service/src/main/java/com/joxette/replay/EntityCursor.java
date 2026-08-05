@@ -48,7 +48,8 @@ public record EntityCursor(
                     .put("p", sourcePartition)
                     .put("o", sourceOffset)
                     .toString().getBytes();
-            return Base64.getUrlEncoder().withoutPadding().encodeToString(json);
+            String payload = Base64.getUrlEncoder().withoutPadding().encodeToString(json);
+            return CursorSignature.sign(payload);
         } catch (Exception e) {
             throw new IllegalStateException("Failed to encode EntityCursor", e);
         }
@@ -56,7 +57,8 @@ public record EntityCursor(
 
     public static EntityCursor decode(String encoded) {
         try {
-            byte[] bytes = Base64.getUrlDecoder().decode(encoded);
+            String payload = CursorSignature.verify(encoded);
+            byte[] bytes = Base64.getUrlDecoder().decode(payload);
             var node = MAPPER.readTree(bytes);
             return new EntityCursor(
                     Instant.parse(node.get("ts").asText()),
@@ -65,6 +67,8 @@ public record EntityCursor(
                     node.get("p").asInt(),
                     node.get("o").asLong()
             );
+        } catch (com.joxette.api.error.InvalidCursorException e) {
+            throw e;
         } catch (Exception e) {
             throw new com.joxette.api.error.InvalidCursorException(
                     "Invalid entity cursor: " + encoded, e);

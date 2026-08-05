@@ -935,8 +935,20 @@ public class JoxetteProperties {
          */
         private String apiKey = "";
 
+        /**
+         * HMAC-SHA256 secret used to sign replay cursors ({@code nextCursor} values).
+         * Leave blank to generate a random per-process key at startup (default) — cursors
+         * will not survive a restart in that case, and a WARN is logged. Set explicitly for
+         * any deployment where cursors must survive a restart or where multiple instances
+         * must accept each other's cursors.
+         */
+        private String cursorSigningKey = "";
+
         public String getApiKey() { return apiKey; }
         public void setApiKey(String apiKey) { this.apiKey = apiKey; }
+
+        public String getCursorSigningKey() { return cursorSigningKey; }
+        public void setCursorSigningKey(String cursorSigningKey) { this.cursorSigningKey = cursorSigningKey; }
     }
 
     // -----------------------------------------------------------------------
