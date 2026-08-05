@@ -433,7 +433,8 @@ public class HealthController {
 
     /**
      * Returns the sum of DuckDB's estimated table sizes across the {@code lake}
-     * schema.  This approximates the amount of data stored inline in the DuckDB
+     * catalog's {@code main} schema (i.e. {@code lake.main.*} cassette tables).
+     * This approximates the amount of data stored inline in the DuckDB
      * catalog file (i.e. not yet flushed to object storage as Parquet files).
      *
      * <p>{@code duckdb_tables()} is a catalog introspection function that reads
@@ -448,7 +449,8 @@ public class HealthController {
             try (Statement st = duckDB.createStatement();
                  ResultSet rs = st.executeQuery(
                          "SELECT COALESCE(SUM(estimated_size), 0) AS total " +
-                         "FROM duckdb_tables() WHERE schema_name = 'lake'")) {
+                         "FROM duckdb_tables() WHERE database_name = '" + com.joxette.db.DuckLakeManager.CATALOG_NAME + "' " +
+                         "AND schema_name = 'main'")) {
                 return rs.next() ? rs.getLong("total") : 0;
             }
         } catch (SQLException e) {
