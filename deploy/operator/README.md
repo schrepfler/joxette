@@ -45,3 +45,15 @@ running cluster's REST API.
   `joxette-operator-api-key` Secret with an `api-key` key in `joxette-system`
   (see `deployment.yaml`) — it is optional, so the operator runs fine
   unauthenticated against clusters that don't require the header.
+- **⚠️ API-key exposure risk under the all-namespace watch**: `ClusterRefResolver`
+  builds the request URL from `spec.clusterRef.name` on the `RecordedTopic` /
+  `EntityType` CR — user-controlled input — and calls it over plain HTTP
+  (`http://<name>.<namespace>.svc:8080`, no TLS). Combined with the
+  all-namespaces watch above, anyone who can create one of these CRs in *any*
+  namespace the operator watches can point `clusterRef.name` at a Service they
+  control and receive the operator's API key in cleartext. This is a real
+  exposure introduced by API-key auth (the operator previously carried no
+  secret). Until a namespace-restriction or TLS fix lands, either scope the
+  operator's namespace watch (see above) to only namespaces you trust, or make
+  sure CR-creation rights (`RecordedTopic`/`EntityType`) are not granted to
+  untrusted users in any namespace the operator watches.

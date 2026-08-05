@@ -21,3 +21,14 @@ Cluster (pekko-management): pods discover each other via kubernetes-api using th
 label "app.kubernetes.io/name={{ include "joxette.name" . }}". Check formation:
   kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/name={{ include "joxette.name" . }} | grep -i bootstrap
 {{- end }}
+
+{{- if .Values.security.existingSecret }}
+
+WARNING: security.existingSecret is set ("{{ .Values.security.existingSecret }}"),
+so this service requires the X-API-Key header (key: api-key) on mutating calls.
+If you also run the joxette-operator against this cluster, its own
+joxette-operator-api-key Secret (see deploy/operator/README.md and
+deploy/operator/deployment.yaml) must contain the SAME api-key value. There is
+no automatic validation that the two Secrets match — a mismatch fails silently
+as 401s from the operator with no clear signal pointing at the cause.
+{{- end }}
