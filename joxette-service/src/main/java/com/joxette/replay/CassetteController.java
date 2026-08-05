@@ -42,10 +42,14 @@ import com.joxette.replay.transform.gap.MessagePattern;
 import com.joxette.replay.transform.steps.AddComputedFieldStep;
 import com.joxette.replay.transform.steps.ConditionalStep;
 import com.joxette.replay.transform.steps.CopyToHeaderStep;
+import com.joxette.replay.transform.steps.DeleteFieldStep;
 import com.joxette.replay.transform.steps.FilterDropStep;
+import com.joxette.replay.transform.steps.FlattenFieldStep;
 import com.joxette.replay.transform.steps.GapTransformStep;
+import com.joxette.replay.transform.steps.KeyFromValueStep;
 import com.joxette.replay.transform.steps.MergePatchStep;
 import com.joxette.replay.transform.steps.RedirectTopicStep;
+import com.joxette.replay.transform.steps.RemapKeyStep;
 import com.joxette.replay.transform.steps.RenameFieldStep;
 
 import com.joxette.sol.EntityRecordAdapter;
@@ -2869,6 +2873,14 @@ public class CassetteController {
             validateTemplatePlaceholders("redirect_topic.topic", rts.topic());
         } else if (step instanceof GapTransformStep gts) {
             validateGapSelector(gts.select());
+        } else if (step instanceof DeleteFieldStep dfs) {
+            validateJsonStepHelperPath("delete_field.target", dfs.target());
+        } else if (step instanceof FlattenFieldStep ffs) {
+            validateJsonStepHelperPath("flatten_field.source", ffs.source());
+        } else if (step instanceof KeyFromValueStep kfvs) {
+            validateJsonStepHelperPath("key_from_value.expression", kfvs.expression());
+        } else if (step instanceof RemapKeyStep rks) {
+            validateTemplatePlaceholders("remap_key.value", rks.value());
         }
     }
 

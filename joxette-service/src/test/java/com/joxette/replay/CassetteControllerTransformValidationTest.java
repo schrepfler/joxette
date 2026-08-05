@@ -159,7 +159,18 @@ class CassetteControllerTransformValidationTest {
             Arguments.of("conditional: condition field has invalid JSONPath syntax",
                 "[{\"type\":\"conditional\",\"condition\":{\"field\":\"$.value.[[[\",\"operator\":\"EQ\",\"value\":\"x\"},\"then_steps\":[]}]"),
             Arguments.of("gap_transform: nested predicate has invalid JSONPath syntax",
-                "[{\"type\":\"gap_transform\",\"select\":{\"after\":{\"predicate\":{\"field\":\"$.value.[[[\",\"operator\":\"EQ\",\"value\":\"x\"},\"quantifier\":\"first\"},\"min_duration_ms\":3000},\"operation\":{\"op\":\"cut\"}}]")
+                "[{\"type\":\"gap_transform\",\"select\":{\"after\":{\"predicate\":{\"field\":\"$.value.[[[\",\"operator\":\"EQ\",\"value\":\"x\"},\"quantifier\":\"first\"},\"min_duration_ms\":3000},\"operation\":{\"op\":\"cut\"}}]"),
+            // Finding I5: 4 more step types that call JsonStepHelper#parentAndLeaf internally
+            // and silently no-op on IllegalArgumentException at runtime — same bug class as
+            // the 7 steps above, missed by the original eager-validation pass.
+            Arguments.of("delete_field: target missing '$.' prefix",
+                "[{\"type\":\"delete_field\",\"target\":\"value.internal_debug_info\"}]"),
+            Arguments.of("flatten_field: source missing '$.' prefix",
+                "[{\"type\":\"flatten_field\",\"source\":\"value.metadata\"}]"),
+            Arguments.of("key_from_value: expression missing '$.' prefix",
+                "[{\"type\":\"key_from_value\",\"expression\":\"value.order_id\"}]"),
+            Arguments.of("remap_key: template placeholder has invalid JSONPath syntax",
+                "[{\"type\":\"remap_key\",\"value\":\"prefix-${$.value.[[[}\"}]")
         );
     }
 
