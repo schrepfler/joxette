@@ -5,7 +5,7 @@ deployment shape; the **clustering mode** decides how pods form a Pekko cluster.
 
 | `catalog.backend` | Workload | `clustering.mode` allowed | Scaling |
 |---|---|---|---|
-| `embedded` (default) | single all-in-one `StatefulSet` (1 replica, PVC) | `catalog` only | none — single writer |
+| `embedded` (default) | single all-in-one `StatefulSet` (1 replica, PVC, PodDisruptionBudget `maxUnavailable: 0`) | `catalog` only | none — single writer |
 | `quack` / `postgresql` | per-tier `Deployment`s (recorder / replay / compaction) | `catalog` or `pekko-management` | recorder/replay horizontal; compaction pinned to 1 |
 
 The chart **enforces the single-writer guardrail**: an embedded catalog with
@@ -65,10 +65,13 @@ only connects to them.
 | `tiers.replay.hpa.enabled` | `false` | autoscale the replay tier (shared backend only; needs metrics-server) |
 | `tiers.replay.hpa.{min,max}Replicas` | `2` / `10` | HPA bounds |
 | `tiers.replay.hpa.targetCPUUtilizationPercentage` | `70` | HPA CPU target |
+| `tiers.replay.hpa.targetActiveReplaysPerPod` | `10` | target avg `joxette_replay_active` per pod, used only when `activeReplaysMetric.enabled` |
+| `tiers.replay.hpa.activeReplaysMetric.enabled` | `false` | add the `joxette_replay_active` Pods metric to the HPA; **requires prometheus-adapter** — see "Replay autoscaling" below |
 | `kafka.bootstrapServers` | `kafka:9092` | |
 | `objectStore.existingSecret` | `""` | Secret with `access-key` / `secret-key`; omit for IRSA |
 | `serviceAccount.annotations` | `{}` | e.g. `eks.amazonaws.com/role-arn` |
-| `serviceMonitor.enabled` | `false` | Prometheus Operator scrape of `/actuator/prometheus` |
+| `serviceMonitor.enabled` | `false` | Prometheus Operator scrape of `/actuator/prometheus`; **requires the ServiceMonitor CRD** installed |
+| `monitoring.prometheusRule.enabled` | `false` | Prometheus Operator alerting rules (consumer lag, write-channel depth, sink state); **requires the PrometheusRule CRD** installed — the template also self-guards via `.Capabilities` so enabling this on a cluster without the CRD renders nothing instead of erroring |
 
 All `joxette.*` properties can be overridden via `extraEnv` (Spring relaxed
 binding, e.g. `JOXETTE_RECORDING_BATCH-SIZE: "20000"`).
@@ -80,7 +83,41 @@ bounded by the Kafka partition count (extra pods would idle) and compaction is
 pinned to one node, so neither is autoscaled. Enabling `tiers.replay.hpa` with an
 embedded catalog is rejected (single all-in-one pod, no replay tier). When the HPA
 is enabled the replay Deployment omits a static `replicas` so the HPA owns it.
-Requires `metrics-server` in the cluster.
+Requires `metrics-server` in the cluster (CPU metric).
+
+A second, optional signal — average `joxette_replay_active` per pod — is gated
+behind `tiers.replay.hpa.activeReplaysMetric.enabled` (default `false`, both here
+and in `values.yaml`). Replay is I/O-bound (SSE/NDJSON fan-out to slow clients),
+so many concurrent streams can saturate a pod at low CPU; this metric catches
+what CPU alone misses. **Do not enable it without `prometheus-adapter`** exposing
+`joxette_replay_active` via the custom metrics API (`custom.metrics.k8s.io`) —
+this chart does not install or configure the adapter. HPA v2 semantics: if a
+configured metric fails to resolve, scale-up still proceeds on the other
+metrics, but scale-down is rejected outright. So turning this on without the
+adapter installed silently ratchets the replay tier up to `maxReplicas` and it
+never scales back down.
+
+### Monitoring: ServiceMonitor and PrometheusRule
+
+Both `serviceMonitor.enabled` and `monitoring.prometheusRule.enabled` default to
+`false` because they render CRDs (`ServiceMonitor` / `PrometheusRule`) that the
+Prometheus Operator provides — on a plain cluster without those CRDs installed,
+`helm install` fails outright ("resource mapping not found... ensure CRDs are
+installed first"). `values-cluster.yaml` turns both on explicitly as a
+production-cluster assumption. `templates/prometheusrule.yaml` additionally
+guards on `.Capabilities.APIVersions.Has "monitoring.coreos.com/v1"`, so even an
+explicit `enabled: true` degrades to a no-op instead of erroring on a cluster
+where the CRD isn't present yet.
+
+### PodDisruptionBudget and node drains
+
+The embedded topology's PDB pins `maxUnavailable: 0` (see the table above) —
+intentional, since a second writer against the same DuckDB file corrupts it. One
+side effect: `kubectl drain` on the node hosting the embedded pod will block
+waiting for eviction to succeed, since the PDB refuses it. If you need to drain
+that node anyway, either delete the PDB first (`kubectl delete pdb <release>`) or
+run `kubectl drain --disable-eviction` (bypasses PDBs — you accept the pod may be
+force-deleted rather than gracefully evicted).
 
 See also: [`docs/clustering-deployment.md`](../../../docs/clustering-deployment.md),
 [`docs/operator-design.md`](../../../docs/operator-design.md),
