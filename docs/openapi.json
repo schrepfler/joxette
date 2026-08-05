@@ -6,7 +6,7 @@
     "version" : "0.1.0"
   },
   "servers" : [ {
-    "url" : "http://localhost:59649",
+    "url" : "http://localhost:59344",
     "description" : "Generated server url"
   } ],
   "tags" : [ {
@@ -35,7 +35,7 @@
     "description" : "Manage DuckLake compaction runs that merge small Parquet files to reduce read amplification."
   } ],
   "paths" : {
-    "/transforms/{name}" : {
+    "/v1/transforms/{name}" : {
       "get" : {
         "tags" : [ "Transform Presets" ],
         "summary" : "Get a transform preset by name",
@@ -196,7 +196,7 @@
         }
       }
     },
-    "/topics/{topic}" : {
+    "/v1/topics/{topic}" : {
       "get" : {
         "tags" : [ "topic-controller" ],
         "operationId" : "getTopic",
@@ -273,7 +273,7 @@
         }
       }
     },
-    "/topics/{topic}/retention" : {
+    "/v1/topics/{topic}/retention" : {
       "put" : {
         "tags" : [ "topic-controller" ],
         "operationId" : "setRetention",
@@ -309,7 +309,7 @@
         }
       }
     },
-    "/streams/{id}" : {
+    "/v1/streams/{id}" : {
       "get" : {
         "tags" : [ "Streams" ],
         "summary" : "Get a stream definition by id",
@@ -465,7 +465,7 @@
         }
       }
     },
-    "/entities/{type}" : {
+    "/v1/entities/{type}" : {
       "get" : {
         "tags" : [ "entity-controller" ],
         "operationId" : "getEntityType",
@@ -542,7 +542,7 @@
         }
       }
     },
-    "/entities/{type}/retention" : {
+    "/v1/entities/{type}/retention" : {
       "put" : {
         "tags" : [ "entity-controller" ],
         "operationId" : "setRetention_1",
@@ -578,7 +578,7 @@
         }
       }
     },
-    "/brokers/{brokerId}" : {
+    "/v1/brokers/{brokerId}" : {
       "get" : {
         "tags" : [ "broker-controller" ],
         "operationId" : "getBroker",
@@ -655,7 +655,7 @@
         }
       }
     },
-    "/transforms" : {
+    "/v1/transforms" : {
       "get" : {
         "tags" : [ "Transform Presets" ],
         "summary" : "List all transform presets",
@@ -769,7 +769,7 @@
         }
       }
     },
-    "/topics" : {
+    "/v1/topics" : {
       "get" : {
         "tags" : [ "topic-controller" ],
         "operationId" : "listTopics",
@@ -816,7 +816,7 @@
         }
       }
     },
-    "/topics/{topic}/resume" : {
+    "/v1/topics/{topic}/resume" : {
       "post" : {
         "tags" : [ "topic-controller" ],
         "operationId" : "resumeTopic",
@@ -842,7 +842,7 @@
         }
       }
     },
-    "/topics/{topic}/restart" : {
+    "/v1/topics/{topic}/restart" : {
       "post" : {
         "tags" : [ "topic-controller" ],
         "operationId" : "restartTopic",
@@ -868,7 +868,7 @@
         }
       }
     },
-    "/topics/{topic}/pause" : {
+    "/v1/topics/{topic}/pause" : {
       "post" : {
         "tags" : [ "topic-controller" ],
         "operationId" : "pauseTopic",
@@ -894,7 +894,7 @@
         }
       }
     },
-    "/topics/{topic}/matchers" : {
+    "/v1/topics/{topic}/matchers" : {
       "get" : {
         "tags" : [ "topic-controller" ],
         "operationId" : "listMatchers",
@@ -957,7 +957,7 @@
         }
       }
     },
-    "/streams" : {
+    "/v1/streams" : {
       "get" : {
         "tags" : [ "Streams" ],
         "summary" : "List all stream definitions",
@@ -1048,7 +1048,7 @@
         }
       }
     },
-    "/matchers/preview" : {
+    "/v1/matchers/preview" : {
       "post" : {
         "tags" : [ "matcher-preview-controller" ],
         "operationId" : "preview",
@@ -1076,7 +1076,7 @@
         }
       }
     },
-    "/exports" : {
+    "/v1/exports" : {
       "get" : {
         "tags" : [ "Exports" ],
         "summary" : "List export jobs",
@@ -1137,7 +1137,7 @@
         }
       }
     },
-    "/entities" : {
+    "/v1/entities" : {
       "get" : {
         "tags" : [ "entity-controller" ],
         "operationId" : "listEntityTypes",
@@ -1184,7 +1184,7 @@
         }
       }
     },
-    "/entities/{type}/sources" : {
+    "/v1/entities/{type}/sources" : {
       "get" : {
         "tags" : [ "entity-controller" ],
         "operationId" : "listSources",
@@ -1247,7 +1247,7 @@
         }
       }
     },
-    "/entities/{type}/sources/{topic}/matchers" : {
+    "/v1/entities/{type}/sources/{topic}/matchers" : {
       "post" : {
         "tags" : [ "entity-controller" ],
         "operationId" : "addMatcher_1",
@@ -1290,7 +1290,7 @@
         }
       }
     },
-    "/compaction/trigger" : {
+    "/v1/compaction/trigger" : {
       "post" : {
         "tags" : [ "Compaction" ],
         "summary" : "Trigger a manual compaction run",
@@ -1382,7 +1382,7 @@
         }
       }
     },
-    "/compaction/trigger-retention" : {
+    "/v1/compaction/trigger-retention" : {
       "post" : {
         "tags" : [ "Compaction" ],
         "summary" : "Trigger a retention enforcement run",
@@ -1420,7 +1420,7 @@
         }
       }
     },
-    "/catalog/query" : {
+    "/v1/catalog/query" : {
       "post" : {
         "tags" : [ "Catalog" ],
         "summary" : "Execute an ad-hoc SQL query against the catalog",
@@ -1488,7 +1488,7 @@
         }
       }
     },
-    "/cassettes/topics/{topic}/truncate" : {
+    "/v1/cassettes/topics/{topic}/truncate" : {
       "post" : {
         "tags" : [ "Cassette Replay" ],
         "summary" : "Truncate topic cassette",
@@ -1545,7 +1545,7 @@
         }
       }
     },
-    "/cassettes/topics/{topic}/sol-match" : {
+    "/v1/cassettes/topics/{topic}/sol-match" : {
       "post" : {
         "tags" : [ "Cassette Replay" ],
         "summary" : "Run a SOL query against a topic cassette",
@@ -1606,7 +1606,7 @@
         }
       }
     },
-    "/cassettes/topics/{topic}/replay" : {
+    "/v1/cassettes/topics/{topic}/replay" : {
       "post" : {
         "tags" : [ "Cassette Replay" ],
         "summary" : "Replay topic records via POST (JSON)",
@@ -1720,7 +1720,7 @@
         }
       }
     },
-    "/cassettes/topics/{topic}/replay-to-topic" : {
+    "/v1/cassettes/topics/{topic}/replay-to-topic" : {
       "post" : {
         "tags" : [ "Cassette Replay" ],
         "summary" : "Replay general cassette back to a Kafka topic (JSON)",
@@ -1832,7 +1832,7 @@
         }
       }
     },
-    "/cassettes/topics/{topic}/match-sequences" : {
+    "/v1/cassettes/topics/{topic}/match-sequences" : {
       "post" : {
         "tags" : [ "Cassette Replay" ],
         "summary" : "Match message sequences in a topic cassette",
@@ -1905,7 +1905,7 @@
         }
       }
     },
-    "/cassettes/topics/{topic}/compact" : {
+    "/v1/cassettes/topics/{topic}/compact" : {
       "post" : {
         "tags" : [ "Cassette Replay" ],
         "summary" : "Compact topic cassette (CHECKPOINT)",
@@ -1943,7 +1943,7 @@
         }
       }
     },
-    "/cassettes/snapshots" : {
+    "/v1/cassettes/snapshots" : {
       "get" : {
         "tags" : [ "Cassette Replay" ],
         "summary" : "List database snapshots",
@@ -2051,7 +2051,7 @@
         }
       }
     },
-    "/cassettes/snapshots/{name}/restore" : {
+    "/v1/cassettes/snapshots/{name}/restore" : {
       "post" : {
         "tags" : [ "Cassette Replay" ],
         "summary" : "Restore database snapshot",
@@ -2075,7 +2075,21 @@
           "404" : {
             "description" : "Snapshot not found"
           },
-          "500" : {
+          "409" : {
+            "description" : "Restored row counts did not match the snapshot's stored metadata (ERR_SNAPSHOT_VERIFICATION_FAILED) — the backing Parquet file(s) may be corrupted or truncated. By the time this is detected, IMPORT DATABASE has already replaced the current catalog contents with the (unverified) snapshot data; there is no automatic rollback to the pre-restore state.",
+            "content" : {
+              "application/problem+json" : {
+                "schema" : {
+                  "type" : "object",
+                  "additionalProperties" : {
+                    "default" : ""
+                  },
+                  "default" : ""
+                }
+              }
+            }
+          },
+          "503" : {
             "description" : "Database error",
             "content" : {
               "*/*" : {
@@ -2092,7 +2106,7 @@
         }
       }
     },
-    "/cassettes/snapshots/export-to-object-store" : {
+    "/v1/cassettes/snapshots/export-to-object-store" : {
       "post" : {
         "tags" : [ "Cassette Replay" ],
         "summary" : "Export snapshot to object store",
@@ -2159,7 +2173,7 @@
         }
       }
     },
-    "/cassettes/entities/{entityType}/{entityId}/sol-match" : {
+    "/v1/cassettes/entities/{entityType}/{entityId}/sol-match" : {
       "post" : {
         "tags" : [ "Cassette Replay" ],
         "summary" : "Run a SOL query against an entity cassette",
@@ -2240,7 +2254,7 @@
         }
       }
     },
-    "/cassettes/entities/{entityType}/{entityId}/replay" : {
+    "/v1/cassettes/entities/{entityType}/{entityId}/replay" : {
       "post" : {
         "tags" : [ "Cassette Replay" ],
         "summary" : "Replay entity events via POST (JSON)",
@@ -2364,7 +2378,7 @@
         }
       }
     },
-    "/cassettes/entities/{entityType}/{entityId}/replay-to-topic" : {
+    "/v1/cassettes/entities/{entityType}/{entityId}/replay-to-topic" : {
       "post" : {
         "tags" : [ "Cassette Replay" ],
         "summary" : "Replay entity cassette back to a Kafka topic (JSON)",
@@ -2486,7 +2500,7 @@
         }
       }
     },
-    "/cassettes/entities/{entityType}/truncate" : {
+    "/v1/cassettes/entities/{entityType}/truncate" : {
       "post" : {
         "tags" : [ "Cassette Replay" ],
         "summary" : "Truncate entity cassette",
@@ -2557,7 +2571,7 @@
         }
       }
     },
-    "/cassettes/entities/{entityType}/sunburst" : {
+    "/v1/cassettes/entities/{entityType}/sunburst" : {
       "post" : {
         "tags" : [ "Cassette Replay" ],
         "summary" : "Build sunburst hierarchy for an entity type",
@@ -2617,7 +2631,78 @@
         }
       }
     },
-    "/cassettes/entities/{entityType}/match-sequences" : {
+    "/v1/cassettes/entities/{entityType}/sol-examples" : {
+      "post" : {
+        "tags" : [ "Cassette Replay" ],
+        "summary" : "Run a SOL query across many entity sequences",
+        "description" : "Scans up to `maxSequences` entities of the given type (one ordered event sequence per entity), executes the SOL query against each, and returns aggregate match statistics — total/matched counts and a pattern-ordered sequence model with per-tag hit counts (including implicit Prefix/Suffix and the unnamed gap regions) — plus up to `exampleLimit` example rows. Each example carries the post-pipeline event names and tag spans indexing into them, ready for the examples-pane visualisation.",
+        "operationId" : "solExamples",
+        "parameters" : [ {
+          "name" : "entityType",
+          "in" : "path",
+          "description" : "Entity type name (must match `[a-z][a-z0-9_]*`)",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "default" : ""
+          },
+          "example" : "order"
+        } ],
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "$ref" : "#/components/schemas/SolExamplesRequest"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "200" : {
+            "description" : "Aggregate SOL match result",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/SolBatchResult"
+                }
+              }
+            }
+          },
+          "400" : {
+            "description" : "SOL parse error or invalid entity type",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/SolBatchResult"
+                }
+              }
+            }
+          },
+          "404" : {
+            "description" : "Entity type not found",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/SolBatchResult"
+                }
+              }
+            }
+          },
+          "500" : {
+            "description" : "Database error",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/SolBatchResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cassettes/entities/{entityType}/match-sequences" : {
       "post" : {
         "tags" : [ "Cassette Replay" ],
         "summary" : "Match message sequences in an entity cassette",
@@ -2700,7 +2785,7 @@
         }
       }
     },
-    "/cassettes/entities/{entityType}/batch" : {
+    "/v1/cassettes/entities/{entityType}/batch" : {
       "post" : {
         "tags" : [ "Cassette Replay" ],
         "summary" : "Batch-replay multiple entity histories (NDJSON)",
@@ -2774,7 +2859,7 @@
         }
       }
     },
-    "/cassettes/entities/rebuild-known-entities" : {
+    "/v1/cassettes/entities/rebuild-known-entities" : {
       "post" : {
         "tags" : [ "Cassette Replay" ],
         "summary" : "Rebuild known_entities registry from cassette data",
@@ -2815,7 +2900,7 @@
         }
       }
     },
-    "/brokers" : {
+    "/v1/brokers" : {
       "get" : {
         "tags" : [ "broker-controller" ],
         "operationId" : "listBrokers",
@@ -2862,7 +2947,7 @@
         }
       }
     },
-    "/topics/status" : {
+    "/v1/topics/status" : {
       "get" : {
         "tags" : [ "topic-controller" ],
         "operationId" : "recorderStatus",
@@ -2883,7 +2968,7 @@
         }
       }
     },
-    "/metrics" : {
+    "/v1/metrics" : {
       "get" : {
         "tags" : [ "Observability" ],
         "operationId" : "metrics",
@@ -2901,7 +2986,7 @@
         }
       }
     },
-    "/instances" : {
+    "/v1/instances" : {
       "get" : {
         "tags" : [ "Observability" ],
         "summary" : "List running Joxette instances (DB-table view)",
@@ -2925,7 +3010,7 @@
         }
       }
     },
-    "/instances/topology" : {
+    "/v1/instances/topology" : {
       "get" : {
         "tags" : [ "Observability" ],
         "summary" : "List cluster members (Pekko real-time view)",
@@ -2949,7 +3034,7 @@
         }
       }
     },
-    "/instances/live-metrics" : {
+    "/v1/instances/live-metrics" : {
       "get" : {
         "tags" : [ "Observability" ],
         "summary" : "Live recorder metrics stream (SSE)",
@@ -2969,7 +3054,7 @@
         }
       }
     },
-    "/instances/cluster-state" : {
+    "/v1/instances/cluster-state" : {
       "get" : {
         "tags" : [ "Observability" ],
         "summary" : "Unified cluster state (self + all instances + Pekko topology)",
@@ -2993,7 +3078,7 @@
         }
       }
     },
-    "/health" : {
+    "/v1/health" : {
       "get" : {
         "tags" : [ "Observability" ],
         "summary" : "Liveness probe",
@@ -3043,7 +3128,7 @@
         }
       }
     },
-    "/exports/{id}" : {
+    "/v1/exports/{id}" : {
       "get" : {
         "tags" : [ "Exports" ],
         "summary" : "Get export job status",
@@ -3093,7 +3178,7 @@
         }
       }
     },
-    "/config/runtime" : {
+    "/v1/config/runtime" : {
       "get" : {
         "tags" : [ "Configuration" ],
         "summary" : "Effective runtime configuration",
@@ -3117,7 +3202,7 @@
         }
       }
     },
-    "/compaction/status" : {
+    "/v1/compaction/status" : {
       "get" : {
         "tags" : [ "Compaction" ],
         "summary" : "Get compaction status",
@@ -3155,7 +3240,7 @@
         }
       }
     },
-    "/compaction/retention-status" : {
+    "/v1/compaction/retention-status" : {
       "get" : {
         "tags" : [ "Compaction" ],
         "summary" : "Get retention enforcement status",
@@ -3193,7 +3278,7 @@
         }
       }
     },
-    "/compaction/retention-history" : {
+    "/v1/compaction/retention-history" : {
       "get" : {
         "tags" : [ "Compaction" ],
         "summary" : "Get retention run history",
@@ -3241,15 +3326,15 @@
         }
       }
     },
-    "/compaction/locks" : {
+    "/v1/compaction/locks" : {
       "get" : {
         "tags" : [ "Compaction" ],
-        "summary" : "List active compaction distributed locks (deprecated)",
-        "description" : "Always returns an empty list. Distributed compaction locking via the compaction_locks table has been superseded by the Pekko ClusterSingleton guarantee — exactly one CompactionSingletonActor runs cluster-wide at any time, making explicit DB-level locking unnecessary.",
+        "summary" : "List active compaction distributed locks",
+        "description" : "Returns every row currently held in the compaction_locks table — the cross-node mutual-exclusion mechanism CompactionService uses before running ducklake_merge_adjacent_files. Populated regardless of joxette.clustering.mode, since the lock is a catalog row, not a Pekko cluster mechanism.",
         "operationId" : "getCompactionLocks",
         "responses" : {
           "200" : {
-            "description" : "Empty list (locking is now handled by ClusterSingleton)",
+            "description" : "Active (and any not-yet-swept stale) compaction locks",
             "content" : {
               "application/json" : {
                 "schema" : {
@@ -3257,11 +3342,25 @@
                 }
               }
             }
+          },
+          "503" : {
+            "description" : "Database error",
+            "content" : {
+              "application/json" : {
+                "schema" : {
+                  "type" : "string",
+                  "additionalProperties" : {
+                    "default" : ""
+                  },
+                  "default" : ""
+                }
+              }
+            }
           }
         }
       }
     },
-    "/compaction/history" : {
+    "/v1/compaction/history" : {
       "get" : {
         "tags" : [ "Compaction" ],
         "summary" : "Get compaction run history",
@@ -3306,7 +3405,7 @@
         }
       }
     },
-    "/compaction/config" : {
+    "/v1/compaction/config" : {
       "get" : {
         "tags" : [ "Compaction" ],
         "summary" : "Get effective compaction configuration",
@@ -3330,7 +3429,7 @@
         }
       }
     },
-    "/cassettes/topics/{topic}" : {
+    "/v1/cassettes/topics/{topic}" : {
       "get" : {
         "tags" : [ "Cassette Replay" ],
         "summary" : "Replay topic records (JSON)",
@@ -3610,7 +3709,7 @@
         }
       }
     },
-    "/cassettes/topics/{topic}/stats" : {
+    "/v1/cassettes/topics/{topic}/stats" : {
       "get" : {
         "tags" : [ "Cassette Replay" ],
         "summary" : "Topic cassette statistics",
@@ -3670,7 +3769,7 @@
         }
       }
     },
-    "/cassettes/topics/{topic}/message-types" : {
+    "/v1/cassettes/topics/{topic}/message-types" : {
       "get" : {
         "tags" : [ "Cassette Replay" ],
         "summary" : "Distinct message_type values for a topic cassette",
@@ -3721,7 +3820,7 @@
         }
       }
     },
-    "/cassettes/topics/{topic}/fields" : {
+    "/v1/cassettes/topics/{topic}/fields" : {
       "get" : {
         "tags" : [ "Cassette Replay" ],
         "summary" : "JSONPath field suggestions for a topic cassette",
@@ -3772,7 +3871,7 @@
         }
       }
     },
-    "/cassettes/scheduled" : {
+    "/v1/cassettes/scheduled" : {
       "get" : {
         "tags" : [ "Cassette Replay" ],
         "summary" : "List pending scheduled replays",
@@ -3805,7 +3904,7 @@
         }
       }
     },
-    "/cassettes/entities/{entityType}" : {
+    "/v1/cassettes/entities/{entityType}" : {
       "get" : {
         "tags" : [ "Cassette Replay" ],
         "summary" : "List known entities",
@@ -3898,7 +3997,7 @@
         }
       }
     },
-    "/cassettes/entities/{entityType}/{entityId}" : {
+    "/v1/cassettes/entities/{entityType}/{entityId}" : {
       "get" : {
         "tags" : [ "Cassette Replay" ],
         "summary" : "Replay entity events (JSON)",
@@ -4321,7 +4420,7 @@
         }
       }
     },
-    "/cassettes/entities/{entityType}/{entityId}/stats" : {
+    "/v1/cassettes/entities/{entityType}/{entityId}/stats" : {
       "get" : {
         "tags" : [ "Cassette Replay" ],
         "summary" : "Entity event statistics",
@@ -4412,7 +4511,7 @@
         }
       }
     },
-    "/cassettes/entities/{entityType}/storage" : {
+    "/v1/cassettes/entities/{entityType}/storage" : {
       "get" : {
         "tags" : [ "Cassette Replay" ],
         "summary" : "Entity cassette storage statistics",
@@ -4495,7 +4594,7 @@
         }
       }
     },
-    "/cassettes/entities/{entityType}/search" : {
+    "/v1/cassettes/entities/{entityType}/search" : {
       "get" : {
         "tags" : [ "Cassette Replay" ],
         "summary" : "Search entities by ID",
@@ -4597,7 +4696,7 @@
         }
       }
     },
-    "/cassettes/entities/{entityType}/message-types" : {
+    "/v1/cassettes/entities/{entityType}/message-types" : {
       "get" : {
         "tags" : [ "Cassette Replay" ],
         "summary" : "Distinct message_type values for an entity cassette",
@@ -4648,7 +4747,7 @@
         }
       }
     },
-    "/cassettes/entities/{entityType}/fields" : {
+    "/v1/cassettes/entities/{entityType}/fields" : {
       "get" : {
         "tags" : [ "Cassette Replay" ],
         "summary" : "JSONPath field suggestions for an entity cassette",
@@ -4699,7 +4798,7 @@
         }
       }
     },
-    "/brokers/{brokerId}/topics" : {
+    "/v1/brokers/{brokerId}/topics" : {
       "get" : {
         "tags" : [ "broker-controller" ],
         "operationId" : "listBrokerTopics",
@@ -4743,7 +4842,7 @@
         }
       }
     },
-    "/brokers/{brokerId}/topics/{topic}/peek" : {
+    "/v1/brokers/{brokerId}/topics/{topic}/peek" : {
       "get" : {
         "tags" : [ "broker-controller" ],
         "operationId" : "peekTopic",
@@ -4788,7 +4887,7 @@
         }
       }
     },
-    "/topics/{topic}/matchers/{messageType}" : {
+    "/v1/topics/{topic}/matchers/{messageType}" : {
       "delete" : {
         "tags" : [ "topic-controller" ],
         "operationId" : "deleteMatcher",
@@ -4814,7 +4913,7 @@
         }
       }
     },
-    "/entities/{type}/sources/{topic}" : {
+    "/v1/entities/{type}/sources/{topic}" : {
       "delete" : {
         "tags" : [ "entity-controller" ],
         "operationId" : "deleteSource",
@@ -4840,7 +4939,7 @@
         }
       }
     },
-    "/entities/{type}/sources/{topic}/matchers/{messageType}" : {
+    "/v1/entities/{type}/sources/{topic}/matchers/{messageType}" : {
       "delete" : {
         "tags" : [ "entity-controller" ],
         "operationId" : "deleteMatcher_1",
@@ -4873,7 +4972,7 @@
         }
       }
     },
-    "/cassettes/scheduled/{id}" : {
+    "/v1/cassettes/scheduled/{id}" : {
       "delete" : {
         "tags" : [ "Cassette Replay" ],
         "summary" : "Cancel a pending scheduled replay",
@@ -8131,6 +8230,103 @@
           "totalSequences" : {
             "type" : "integer",
             "format" : "int32"
+          }
+        }
+      },
+      "SolExamplesRequest" : {
+        "type" : "object",
+        "properties" : {
+          "query" : {
+            "type" : "string",
+            "default" : "",
+            "description" : "SOL query string",
+            "example" : "match home_page >> * >> search_page"
+          },
+          "from" : {
+            "type" : "string",
+            "format" : "date-time"
+          },
+          "to" : {
+            "type" : "string",
+            "format" : "date-time"
+          },
+          "maxSequences" : {
+            "type" : "integer",
+            "format" : "int32",
+            "default" : "",
+            "description" : "Maximum number of entity sequences to scan (default 500, cap 5000)"
+          },
+          "exampleLimit" : {
+            "type" : "integer",
+            "format" : "int32",
+            "default" : "",
+            "description" : "Maximum example rows to return (default 25, cap 200)"
+          }
+        }
+      },
+      "ModelRow" : {
+        "type" : "object",
+        "properties" : {
+          "label" : {
+            "type" : "string"
+          },
+          "gap" : {
+            "type" : "boolean"
+          },
+          "count" : {
+            "type" : "integer",
+            "format" : "int32"
+          }
+        }
+      },
+      "SolBatchResult" : {
+        "type" : "object",
+        "properties" : {
+          "totalSequences" : {
+            "type" : "integer",
+            "format" : "int32"
+          },
+          "matchedSequences" : {
+            "type" : "integer",
+            "format" : "int32"
+          },
+          "model" : {
+            "type" : "array",
+            "items" : {
+              "$ref" : "#/components/schemas/ModelRow"
+            }
+          },
+          "examples" : {
+            "type" : "array",
+            "items" : {
+              "$ref" : "#/components/schemas/SolSequenceExample"
+            }
+          }
+        }
+      },
+      "SolSequenceExample" : {
+        "type" : "object",
+        "properties" : {
+          "entityId" : {
+            "type" : "string"
+          },
+          "events" : {
+            "type" : "array",
+            "items" : {
+              "type" : "string"
+            }
+          },
+          "tags" : {
+            "type" : "object",
+            "additionalProperties" : {
+              "$ref" : "#/components/schemas/TagSpan"
+            }
+          },
+          "matched" : {
+            "type" : "boolean"
+          },
+          "truncated" : {
+            "type" : "boolean"
           }
         }
       },

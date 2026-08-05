@@ -80,8 +80,8 @@ class RecordedTopicReconcilerTest {
         server.createContext("/actuator/health/readiness", ex -> {
             ex.sendResponseHeaders(200, -1); ex.close();
         });
-        server.createContext("/topics", ex -> {
-            // GET /topics/orders.events -> 404 (absent); POST /topics -> 201
+        server.createContext("/v1/topics", ex -> {
+            // GET /v1/topics/orders.events -> 404 (absent); POST /v1/topics -> 201
             if (ex.getRequestMethod().equals("GET")) {
                 ex.sendResponseHeaders(404, -1);
             } else {

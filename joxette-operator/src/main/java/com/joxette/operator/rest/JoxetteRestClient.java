@@ -109,9 +109,21 @@ public class JoxetteRestClient {
 
     // ---- helpers ------------------------------------------------------------
 
+    /** Prefix applied to every joxette-service REST endpoint under {@code com.joxette}. */
+    private static final String API_PREFIX = "/v1";
+
     private HttpRequest.Builder request(String path) {
         // path always starts with '/'; baseUri has no trailing slash.
-        return HttpRequest.newBuilder(URI.create(baseUri + path)).timeout(timeout);
+        return HttpRequest.newBuilder(URI.create(baseUri + apiPath(path))).timeout(timeout);
+    }
+
+    /**
+     * Prepends the {@code /v1} API prefix to every {@code com.joxette} controller
+     * path. Spring Boot Actuator endpoints (e.g. {@code /actuator/health/readiness})
+     * are unprefixed and exempt.
+     */
+    private static String apiPath(String path) {
+        return path.startsWith("/actuator") ? path : API_PREFIX + path;
     }
 
     private HttpResponse<String> send(HttpRequest req) {

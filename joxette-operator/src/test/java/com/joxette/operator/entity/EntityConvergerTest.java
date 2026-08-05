@@ -21,7 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Exercises {@link EntityConverger} + {@link JoxetteRestClient} against a real
- * in-process HTTP server emulating the {@code /entities} API.
+ * in-process HTTP server emulating the {@code /v1/entities} API.
  */
 class EntityConvergerTest {
 
@@ -39,7 +39,7 @@ class EntityConvergerTest {
         sourcePosts.clear();
         calls.clear();
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        server.createContext("/entities", this::handle);
+        server.createContext("/v1/entities", this::handle);
         server.start();
         client = new JoxetteRestClient("http://127.0.0.1:" + server.getAddress().getPort());
     }
@@ -53,27 +53,27 @@ class EntityConvergerTest {
         String method = ex.getRequestMethod();
         String path = ex.getRequestURI().getPath();
         calls.add(method + " " + path);
-        String[] parts = path.split("/");   // ["","entities","{type}","sources"?]
+        String[] parts = path.split("/");   // ["","v1","entities","{type}","sources"?]
         try {
-            if (method.equals("GET") && parts.length == 3) {
-                String t = parts[2];
+            if (method.equals("GET") && parts.length == 4) {
+                String t = parts[3];
                 if (types.containsKey(t)) respond(ex, 200, types.get(t)); else respond(ex, 404, "{}");
-            } else if (method.equals("POST") && parts.length == 2) {
+            } else if (method.equals("POST") && parts.length == 3) {
                 var body = json.readTree(new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
                 types.put(body.get("type").asText(), body.toString());
                 respond(ex, 201, body.toString());
-            } else if (method.equals("PUT") && parts.length == 3) {
+            } else if (method.equals("PUT") && parts.length == 4) {
                 var body = json.readTree(new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
                 var merged = json.createObjectNode();
-                merged.put("type", parts[2]);
+                merged.put("type", parts[3]);
                 merged.set("buckets", body.get("buckets"));
-                types.put(parts[2], merged.toString());
+                types.put(parts[3], merged.toString());
                 respond(ex, 200, merged.toString());
-            } else if (method.equals("POST") && parts.length == 4 && parts[3].equals("sources")) {
+            } else if (method.equals("POST") && parts.length == 5 && parts[4].equals("sources")) {
                 sourcePosts.add(new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
                 respond(ex, 201, "{}");
-            } else if (method.equals("DELETE") && parts.length == 3) {
-                respond(ex, types.remove(parts[2]) != null ? 204 : 404, "");
+            } else if (method.equals("DELETE") && parts.length == 4) {
+                respond(ex, types.remove(parts[3]) != null ? 204 : 404, "");
             } else {
                 respond(ex, 400, "");
             }
@@ -114,7 +114,7 @@ class EntityConvergerTest {
         int sources = new EntityConverger(client).converge(orderSpec());
         assertThat(sources).isEqualTo(1);
         assertThat(types).containsKey("order");
-        assertThat(calls).contains("GET /entities/order", "POST /entities", "POST /entities/order/sources");
+        assertThat(calls).contains("GET /v1/entities/order", "POST /v1/entities", "POST /v1/entities/order/sources");
         assertThat(sourcePosts).hasSize(1);
         assertThat(sourcePosts.get(0)).contains("orders.events", "OrderCreated", "$.order_id");
     }
@@ -123,7 +123,7 @@ class EntityConvergerTest {
     void updatesBucketsOnDriftAndStillUpsertsSources() {
         types.put("order", "{\"type\":\"order\",\"buckets\":128}");
         new EntityConverger(client).converge(orderSpec()); // spec wants 256
-        assertThat(calls).contains("PUT /entities/order");
+        assertThat(calls).contains("PUT /v1/entities/order");
         assertThat(types.get("order")).contains("256");
         assertThat(sourcePosts).hasSize(1);
     }
@@ -132,7 +132,7 @@ class EntityConvergerTest {
     void noTypeWriteWhenBucketsMatchButSourcesStillUpserted() {
         types.put("order", "{\"type\":\"order\",\"buckets\":256}");
         new EntityConverger(client).converge(orderSpec());
-        assertThat(calls).noneMatch(c -> c.equals("POST /entities") || c.equals("PUT /entities/order"));
+        assertThat(calls).noneMatch(c -> c.equals("POST /v1/entities") || c.equals("PUT /v1/entities/order"));
         assertThat(sourcePosts).hasSize(1); // sources are always upserted (idempotent)
     }
 

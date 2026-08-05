@@ -21,7 +21,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * Exercises {@link TopicConverger} together with {@link JoxetteRestClient} against
- * a real in-process HTTP server that emulates the {@code /topics} API — the full
+ * a real in-process HTTP server that emulates the {@code /v1/topics} API — the full
  * GET/POST/PUT/DELETE path, not a mock of the client.
  */
 class TopicConvergerTest {
@@ -39,7 +39,7 @@ class TopicConvergerTest {
         store.clear();
         calls.clear();
         server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
-        server.createContext("/topics", this::handle);
+        server.createContext("/v1/topics", this::handle);
         server.start();
         client = new JoxetteRestClient("http://127.0.0.1:" + server.getAddress().getPort());
     }
@@ -51,24 +51,24 @@ class TopicConvergerTest {
 
     private void handle(HttpExchange ex) throws IOException {
         String method = ex.getRequestMethod();
-        String path = ex.getRequestURI().getPath();   // /topics or /topics/{t} or /topics/{t}/pause
+        String path = ex.getRequestURI().getPath();   // /v1/topics or /v1/topics/{t} or /v1/topics/{t}/pause
         calls.add(method + " " + path);
-        String[] parts = path.split("/");              // ["", "topics", "{t}", "pause"?]
+        String[] parts = path.split("/");              // ["", "v1", "topics", "{t}", "pause"?]
         try {
-            if (method.equals("GET") && parts.length == 3) {
-                String t = parts[2];
+            if (method.equals("GET") && parts.length == 4) {
+                String t = parts[3];
                 if (store.containsKey(t)) {
                     respond(ex, 200, store.get(t));
                 } else {
                     respond(ex, 404, "{}");
                 }
-            } else if (method.equals("POST") && parts.length == 2) {
+            } else if (method.equals("POST") && parts.length == 3) {
                 var body = json.readTree(new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
                 String t = body.get("topic").asText();
                 store.put(t, body.toString());
                 respond(ex, 201, body.toString());
-            } else if (method.equals("PUT") && parts.length == 3) {
-                String t = parts[2];
+            } else if (method.equals("PUT") && parts.length == 4) {
+                String t = parts[3];
                 var body = json.readTree(new String(ex.getRequestBody().readAllBytes(), StandardCharsets.UTF_8));
                 // merge mode/brokerId onto stored, keep topic field
                 var merged = json.createObjectNode();
@@ -77,11 +77,11 @@ class TopicConvergerTest {
                 if (body.has("brokerId")) merged.set("brokerId", body.get("brokerId"));
                 store.put(t, merged.toString());
                 respond(ex, 200, merged.toString());
-            } else if (method.equals("POST") && parts.length == 4 && parts[3].equals("pause")) {
-                String t = parts[2];
+            } else if (method.equals("POST") && parts.length == 5 && parts[4].equals("pause")) {
+                String t = parts[3];
                 respond(ex, store.containsKey(t) ? 200 : 404, "{}");
-            } else if (method.equals("DELETE") && parts.length == 3) {
-                String t = parts[2];
+            } else if (method.equals("DELETE") && parts.length == 4) {
+                String t = parts[3];
                 respond(ex, store.remove(t) != null ? 204 : 404, "");
             } else {
                 respond(ex, 400, "");
@@ -115,7 +115,7 @@ class TopicConvergerTest {
         var result = new TopicConverger(client).converge(spec("orders.events", "both", null));
         assertThat(result).isEqualTo(JoxetteRestClient.ChangeResult.CREATED);
         assertThat(store).containsKey("orders.events");
-        assertThat(calls).contains("GET /topics/orders.events", "POST /topics");
+        assertThat(calls).contains("GET /v1/topics/orders.events", "POST /v1/topics");
     }
 
     @Test
@@ -151,7 +151,7 @@ class TopicConvergerTest {
         s.setDeletionPolicy(RecordedTopicSpec.DeletionPolicy.Pause);
         var result = new TopicConverger(client).onDelete(s);
         assertThat(result).isEqualTo(JoxetteRestClient.ChangeResult.UPDATED);
-        assertThat(calls).contains("POST /topics/orders.events/pause");
+        assertThat(calls).contains("POST /v1/topics/orders.events/pause");
         assertThat(store).containsKey("orders.events"); // pause leaves data
     }
 

@@ -25,14 +25,19 @@ import static org.assertj.core.api.Assertions.assertThat;
  */
 class OpenApiContractTest {
 
-    /** Endpoints used by TopicConverger / EntityConverger / JoxetteRestClient (templated form). */
+    /**
+     * Endpoints used by TopicConverger / EntityConverger / JoxetteRestClient (templated
+     * form). {@code com.joxette} controller paths carry the {@code /v1} prefix that
+     * {@link JoxetteRestClient} applies to every non-actuator request;
+     * {@code /actuator/**} is a Spring Boot management endpoint and stays unprefixed.
+     */
     private static final List<String> REQUIRED_PATHS = List.of(
-            "/topics",
-            "/topics/{topic}",
-            "/topics/{topic}/pause",
-            "/entities",
-            "/entities/{type}",
-            "/entities/{type}/sources",
+            "/v1/topics",
+            "/v1/topics/{topic}",
+            "/v1/topics/{topic}/pause",
+            "/v1/entities",
+            "/v1/entities/{type}",
+            "/v1/entities/{type}/sources",
             "/actuator/health/readiness"
     );
 
