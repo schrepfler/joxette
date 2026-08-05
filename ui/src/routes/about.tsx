@@ -25,7 +25,7 @@ const TECH_STACK = [
 
 const QUICK_LINKS = [
   { label: 'Swagger UI', desc: 'Explore and test the REST API interactively.', href: `${API_BASE}/swagger-ui.html` },
-  { label: 'Health', desc: 'Liveness, consumer lag, catalog size, and inlined data.', href: `${API_BASE}/health` },
+  { label: 'Health', desc: 'Liveness, consumer lag, catalog size, and inlined data.', href: `${API_BASE}/v1/health` },
   { label: 'Prometheus metrics', desc: 'Micrometer metrics in Prometheus exposition format.', href: `${API_BASE}/actuator/prometheus` },
 ]
 

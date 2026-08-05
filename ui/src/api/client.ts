@@ -1,5 +1,13 @@
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080'
 
+/**
+ * Base URL for every `com.joxette` REST controller, which are all mounted under
+ * the `/v1` path prefix. Use this (not {@link API_BASE} directly) for any request
+ * to a joxette-service endpoint. Non-`com.joxette` paths — Spring Boot Actuator
+ * (`/actuator/**`), Swagger UI — are NOT prefixed and must use {@link API_BASE}.
+ */
+const API_V1_BASE = `${API_BASE}/v1`
+
 // ---- Types ----
 
 export interface TopicConfig {
@@ -380,7 +388,7 @@ export interface ReplayProgress {
 // ---- HTTP helpers ----
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await fetch(`${API_V1_BASE}${path}`, {
     headers: { 'Content-Type': 'application/json', ...init?.headers },
     ...init,
   })
@@ -865,7 +873,7 @@ export function streamTopicRecords(
 ): AbortController {
   const { follow, ...rest } = params
   const query = buildQuery(follow ? { ...rest, follow: 'true' } : rest)
-  const url = `${API_BASE}/cassettes/topics/${encodeURIComponent(topic)}${query}`
+  const url = `${API_V1_BASE}/cassettes/topics/${encodeURIComponent(topic)}${query}`
   const accept = mode === 'sse' ? 'text/event-stream' : 'application/x-ndjson'
   const ctrl = new AbortController()
   const onLine = mode === 'sse'
@@ -889,7 +897,7 @@ export function streamEntityRecords(
 ): AbortController {
   const { follow, ...rest } = params
   const query = buildQuery(follow ? { ...rest, follow: 'true' } : rest)
-  const url = `${API_BASE}/cassettes/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}${query}`
+  const url = `${API_V1_BASE}/cassettes/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}${query}`
   const accept = mode === 'sse' ? 'text/event-stream' : 'application/x-ndjson'
   const ctrl = new AbortController()
   const onLine = mode === 'sse'
@@ -914,7 +922,7 @@ export function streamTopicRecordsWithTransform(
   params: TopicStreamParams,
   callbacks: { onRecord: (r: CassetteRecord) => void; onDone: () => void; onError: (e: Error) => void },
 ): AbortController {
-  const url = `${API_BASE}/cassettes/topics/${encodeURIComponent(topic)}/replay`
+  const url = `${API_V1_BASE}/cassettes/topics/${encodeURIComponent(topic)}/replay`
   const body = JSON.stringify({ ...params, transform: steps })
   const ctrl = new AbortController()
   void streamLines(url, 'text/event-stream', (line) => {
@@ -939,7 +947,7 @@ export function streamEntityRecordsWithTransform(
   params: EntityStreamParams,
   callbacks: { onRecord: (r: EntityRecord) => void; onDone: () => void; onError: (e: Error) => void },
 ): AbortController {
-  const url = `${API_BASE}/cassettes/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}/replay`
+  const url = `${API_V1_BASE}/cassettes/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}/replay`
   const body = JSON.stringify({ ...params, transform: steps })
   const ctrl = new AbortController()
   void streamLines(url, 'text/event-stream', (line) => {
@@ -964,7 +972,7 @@ export function streamTopicReplay(
 ): AbortController {
   const qs = new URLSearchParams({ speed: String(speed) })
   if (startDelayMs != null) qs.set('start_delay_ms', String(startDelayMs))
-  const url = `${API_BASE}/cassettes/topics/${encodeURIComponent(topic)}/replay-to-topic?${qs}`
+  const url = `${API_V1_BASE}/cassettes/topics/${encodeURIComponent(topic)}/replay-to-topic?${qs}`
   const ctrl = new AbortController()
   void streamLines(url, 'text/event-stream', (line) => {
     const data = extractData(line, true)
@@ -984,7 +992,7 @@ export function streamEntityReplay(
 ): AbortController {
   const qs = new URLSearchParams({ speed: String(speed) })
   if (startDelayMs != null) qs.set('start_delay_ms', String(startDelayMs))
-  const url = `${API_BASE}/cassettes/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}/replay-to-topic?${qs}`
+  const url = `${API_V1_BASE}/cassettes/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}/replay-to-topic?${qs}`
   const ctrl = new AbortController()
   void streamLines(url, 'text/event-stream', (line) => {
     const data = extractData(line, true)
@@ -1051,7 +1059,7 @@ export const retentionApi = {
 export const healthApi = {
   get: () => request<HealthStatus>('/health'),
   getMetricsText: (): Promise<string> =>
-    fetch(`${API_BASE}/metrics`, { headers: { Accept: 'text/plain' } }).then(r => r.text()),
+    fetch(`${API_V1_BASE}/metrics`, { headers: { Accept: 'text/plain' } }).then(r => r.text()),
 }
 
 // ---- Runtime config ----
@@ -1154,7 +1162,7 @@ export interface ClusterStateView {
 
 export const instancesApi = {
   clusterState: () => request<ClusterStateView>('/instances/cluster-state'),
-  liveMetricsUrl: () => `${API_BASE}/instances/live-metrics`,
+  liveMetricsUrl: () => `${API_V1_BASE}/instances/live-metrics`,
 }
 
 // ---- Brokers ----
