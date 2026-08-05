@@ -97,6 +97,10 @@ public class EntityController {
             throw ConflictException.entityTypeAlreadyExists(body.type());
         }
         int buckets = body.buckets() > 0 ? body.buckets() : 256;
+        // createEntityTable() wraps its CREATE TABLE DDL in synchronized(conn) against
+        // duckLakeManager.getConnection() — the identical Connection instance injected
+        // here as duckDB (see DuckDBConfig) — so this DDL can never run concurrently
+        // with, e.g., CassetteLifecycleService.rebuildKnownEntities()'s long-held lock.
         schemaManager.createEntityTable(body.type());
         EntityTypeConfig etc = config.upsertEntityType(body.type(), buckets);
         publish(body.type(), "created");
@@ -155,6 +159,9 @@ public class EntityController {
         if (!deleted) {
             throw ResourceNotFoundException.entityType(type);
         }
+        // dropEntityTable() likewise wraps its DROP TABLE DDL in synchronized(conn)
+        // against the same shared duckDB connection instance — see the comment on
+        // schemaManager.createEntityTable() above.
         schemaManager.dropEntityTable(type);
         publish(type, "deleted");
         return ResponseEntity.noContent().build();

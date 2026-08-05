@@ -619,13 +619,25 @@ public class SchemaManager {
      * runs in bulk for {@code joxette.bootstrap.topics} at startup, but for a topic
      * registered dynamically after startup (e.g. via {@code POST /topics}), which
      * {@code createLakeTables()} never sees.
+     *
+     * <p>{@code duckLakeManager.getConnection()} returns the same singleton
+     * {@link Connection} bean shared by every other DB-touching class (see
+     * {@code DuckDBConfig}) — e.g. the {@code duckDB} field
+     * {@link com.joxette.replay.CassetteLifecycleService} holds its long-lived
+     * {@code rebuildKnownEntities()} lock on. DDL execution here is wrapped in
+     * {@code synchronized(conn)} against that identical object so a
+     * {@code POST /topics}/{@code PUT /topics/{t}} request racing a rebuild-in-progress
+     * (or any other synchronized DB access) can never issue a concurrent
+     * {@code Statement} against the shared native {@code duckdb_connection} handle.
      */
     public void createGeneralTable(String topic) throws SQLException {
         Connection conn    = duckLakeManager.getConnection();
         String    catalog  = duckLakeManager.getCatalogName();
         String    flexType = variantSupported ? "VARIANT" : "JSON";
         String    tableName = "general_" + normalize(topic);
-        createGeneralCassetteTable(conn, catalog, tableName, flexType);
+        synchronized (conn) {
+            createGeneralCassetteTable(conn, catalog, tableName, flexType);
+        }
         log.info("General cassette table created/verified: {}.main.{}", catalog, tableName);
     }
 
@@ -636,25 +648,37 @@ public class SchemaManager {
     /**
      * Creates the {@code <catalog>.main.entity_{type}} cassette table if it does not
      * yet exist. Idempotent – safe to call when the table already exists.
+     *
+     * <p>DDL execution is wrapped in {@code synchronized(conn)} against the same shared
+     * connection instance other classes synchronize on as {@code duckDB} — see
+     * {@link #createGeneralTable(String)} for why.
      */
     public void createEntityTable(String type) throws SQLException {
         validateEntityType(type);
         Connection conn    = duckLakeManager.getConnection();
         String    catalog  = duckLakeManager.getCatalogName();
         String    flexType = variantSupported ? "VARIANT" : "JSON";
-        createEntityCassetteTable(conn, catalog, "entity_" + type, flexType);
+        synchronized (conn) {
+            createEntityCassetteTable(conn, catalog, "entity_" + type, flexType);
+        }
         log.info("Entity cassette table created/verified: {}.main.entity_{}", catalog, type);
     }
 
     /**
      * Drops the {@code <catalog>.main.entity_{type}} cassette table.
      * Destructive and irreversible – callers must confirm intent before invoking.
+     *
+     * <p>DDL execution is wrapped in {@code synchronized(conn)} against the same shared
+     * connection instance other classes synchronize on as {@code duckDB} — see
+     * {@link #createGeneralTable(String)} for why.
      */
     public void dropEntityTable(String type) throws SQLException {
         validateEntityType(type);
         Connection conn   = duckLakeManager.getConnection();
         String    catalog = duckLakeManager.getCatalogName();
-        exec(conn, "DROP TABLE IF EXISTS " + catalog + ".main.entity_" + type);
+        synchronized (conn) {
+            exec(conn, "DROP TABLE IF EXISTS " + catalog + ".main.entity_" + type);
+        }
         log.info("Entity cassette table dropped: {}.main.entity_{}", catalog, type);
     }
 
