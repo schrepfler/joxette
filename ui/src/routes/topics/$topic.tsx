@@ -8,6 +8,8 @@ import {
 } from '@tanstack/react-table'
 import { useForm } from '@tanstack/react-form'
 import { useState, useRef, useEffect, type CSSProperties } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
+import { pushCapped, composeStreamView } from '../../lib/streamBuffer'
 import { ValueCell } from '../../components/ValueCell'
 import {
   topicsApi,
@@ -24,6 +26,7 @@ import {
 import { Layout } from '../../components/Layout'
 import { LoadingSpinner } from '../../components/LoadingSpinner'
 import { ErrorMessage } from '../../components/ErrorMessage'
+import { ModalDialog } from '../../components/ModalDialog'
 import { TruncateDialog } from '../../components/TruncateDialog'
 import { ConfirmDialog } from '../../components/ConfirmDialog'
 import { ReplayToTopicPanel } from '../../components/ReplayToTopicPanel'
@@ -54,7 +57,7 @@ export const Route = createFileRoute('/topics/$topic')({
 const colHelper = createColumnHelper<CassetteRecord>()
 const matcherColHelper = createColumnHelper<TopicMatcherConfig>()
 
-function AddMatcherModal({ topic, onClose }: { topic: string; onClose: () => void }) {
+export function AddMatcherModal({ topic, onClose }: { topic: string; onClose: () => void }) {
   const qc = useQueryClient()
   const { addToast } = useToast()
   const mutation = useMutation({
@@ -71,57 +74,54 @@ function AddMatcherModal({ topic, onClose }: { topic: string; onClose: () => voi
     onSubmit: async ({ value }) => mutation.mutate(value),
   })
   return (
-    <div style={overlayStyle} onClick={onClose}>
-      <div style={modalStyle} onClick={e => e.stopPropagation()}>
-        <h2 className="type-h2" style={{ margin: '0 0 8px' }}>Add matcher</h2>
-        <p style={{ margin: '0 0 24px', color: 'var(--ink-secondary)', fontSize: 'var(--type-caption-size)' }}>
-          Tag incoming messages so they can be grouped by an extracted identifier.
-        </p>
-        <form onSubmit={e => { e.preventDefault(); void form.handleSubmit() }} style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
-          <form.Field name="messageType">
-            {(f) => (
-              <Input
-                label="Message type *"
-                value={f.state.value}
-                onChange={e => f.handleChange(e.target.value)}
-                required
-              />
-            )}
-          </form.Field>
-          <form.Field name="idSource">
-            {(f) => (
-              <Select
-                label="ID source"
-                value={f.state.value}
-                onChange={e => f.handleChange(e.target.value)}
-              >
-                <option value="value">value</option>
-                <option value="key">key</option>
-                <option value="header">header</option>
-              </Select>
-            )}
-          </form.Field>
-          <form.Field name="idExpression">
-            {(f) => (
-              <Input
-                label="ID expression *"
-                mono
-                placeholder="$.order_id"
-                value={f.state.value}
-                onChange={e => f.handleChange(e.target.value)}
-                required
-              />
-            )}
-          </form.Field>
-          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 8 }}>
-            <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
-            <Button type="submit" variant="primary" disabled={mutation.isPending}>
-              {mutation.isPending ? 'Adding…' : 'Add matcher'}
-            </Button>
-          </div>
-        </form>
-      </div>
-    </div>
+    <ModalDialog title="Add matcher" onClose={onClose} style={{ minWidth: 420, maxWidth: 520 }}>
+      <p style={{ margin: '0 0 24px', color: 'var(--ink-secondary)', fontSize: 'var(--type-caption-size)' }}>
+        Tag incoming messages so they can be grouped by an extracted identifier.
+      </p>
+      <form onSubmit={e => { e.preventDefault(); void form.handleSubmit() }} style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+        <form.Field name="messageType">
+          {(f) => (
+            <Input
+              label="Message type *"
+              value={f.state.value}
+              onChange={e => f.handleChange(e.target.value)}
+              required
+            />
+          )}
+        </form.Field>
+        <form.Field name="idSource">
+          {(f) => (
+            <Select
+              label="ID source"
+              value={f.state.value}
+              onChange={e => f.handleChange(e.target.value)}
+            >
+              <option value="value">value</option>
+              <option value="key">key</option>
+              <option value="header">header</option>
+            </Select>
+          )}
+        </form.Field>
+        <form.Field name="idExpression">
+          {(f) => (
+            <Input
+              label="ID expression *"
+              mono
+              placeholder="$.order_id"
+              value={f.state.value}
+              onChange={e => f.handleChange(e.target.value)}
+              required
+            />
+          )}
+        </form.Field>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 8 }}>
+          <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
+          <Button type="submit" variant="primary" disabled={mutation.isPending}>
+            {mutation.isPending ? 'Adding…' : 'Add matcher'}
+          </Button>
+        </div>
+      </form>
+    </ModalDialog>
   )
 }
 
@@ -176,6 +176,7 @@ function TopicDetailPage() {
   const [streamError, setStreamError] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const streamBufferRef = useRef<CassetteRecord[]>([])
+  const liveBufferRef = useRef<CassetteRecord[]>([]) // order=desc + follow live-tail prepend segment only
   const flushIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const followActiveRef = useRef(false)
   const terminalRef = useRef(false)
@@ -258,13 +259,23 @@ function TopicDetailPage() {
     onSubmit: async ({ value }) => retentionMutation.mutate(value.retentionDays),
   })
 
+  function composeStreamedRecords(): CassetteRecord[] {
+    // composeStreamView guarantees a fresh top-level array reference on
+    // every call (see its doc comment in streamBuffer.ts) — required
+    // because every call site below feeds the result straight into
+    // setStreamedRecords(), and React 19's Object.is setState bailout would
+    // otherwise silently drop updates whenever the underlying
+    // streamBufferRef.current array happens to be reused unchanged.
+    return composeStreamView(streamBufferRef.current, liveBufferRef.current)
+  }
+
   function stopStream() {
     abortRef.current?.abort()
     abortRef.current = null
     if (flushIntervalRef.current) { clearInterval(flushIntervalRef.current); flushIntervalRef.current = null }
     followActiveRef.current = false
     terminalRef.current = true
-    setStreamedRecords([...streamBufferRef.current])
+    setStreamedRecords(composeStreamedRecords())
     setStreamStatus(s => isStreamActive(s) ? 'stopped' : s)
   }
 
@@ -275,6 +286,7 @@ function TopicDetailPage() {
     followActiveRef.current = false
     terminalRef.current = false
     streamBufferRef.current = []
+    liveBufferRef.current = []
     setStreamedRecords([])
     setStreamError(null)
     setStreamStatus('idle')
@@ -286,7 +298,7 @@ function TopicDetailPage() {
     const isFollowing = followLive
     setStreamStatus(isFollowing ? 'draining' : 'streaming')
     flushIntervalRef.current = setInterval(() => {
-      setStreamedRecords([...streamBufferRef.current])
+      setStreamedRecords(composeStreamedRecords())
     }, 250)
     const params: TopicStreamParams & { follow?: boolean } = {
       from: from || undefined,
@@ -297,18 +309,29 @@ function TopicDetailPage() {
       follow: isFollowing || undefined,
       order,
     }
-    // When order=desc + follow is on, post-preamble live records must land at
-    // the top of the list (latest-first) rather than the tail. During the
-    // historical drain records still arrive newest→oldest from the backend
-    // and are appended in arrival order, which is already the correct visual
-    // order. So: push-append during drain; prepend once the `follow` preamble
-    // flips `followActiveRef`.
+    // When order=desc + follow is on, post-preamble live records must land
+    // at the top of the list (latest-first) rather than the tail. During
+    // the historical drain records still arrive newest→oldest from the
+    // backend and are appended in arrival order, which is already the
+    // correct visual order. So: push-append during drain; once the
+    // `follow` preamble flips followActiveRef, live records go into a
+    // *separate* liveBufferRef (also push-append, O(1) amortized via
+    // pushCapped) and composeStreamedRecords() reverses just that
+    // (bounded, capped) segment in front of the drained history — no
+    // per-record unshift, and no unbounded growth over a long tailing
+    // session.
     const shouldPrependLive = isFollowing && order === 'desc'
     abortRef.current = streamTopicRecords(topic, streamMode, params, {
       onRecord: (r) => {
-        if (shouldPrependLive && followActiveRef.current) {
-          streamBufferRef.current.unshift(r)
+        if (followActiveRef.current) {
+          if (shouldPrependLive) {
+            pushCapped(liveBufferRef.current, r)
+          } else {
+            pushCapped(streamBufferRef.current, r)
+          }
         } else {
+          // Historical drain: bounded by the request's own from/to/limit,
+          // not capped here.
           streamBufferRef.current.push(r)
         }
       },
@@ -323,14 +346,14 @@ function TopicDetailPage() {
       },
       onDone: () => {
         if (flushIntervalRef.current) { clearInterval(flushIntervalRef.current); flushIntervalRef.current = null }
-        setStreamedRecords([...streamBufferRef.current])
+        setStreamedRecords(composeStreamedRecords())
         if (terminalRef.current) return
         if (isFollowing) setStreamStatus('disconnected')
         else setStreamStatus('done')
       },
       onError: (e) => {
         if (flushIntervalRef.current) { clearInterval(flushIntervalRef.current); flushIntervalRef.current = null }
-        setStreamedRecords([...streamBufferRef.current])
+        setStreamedRecords(composeStreamedRecords())
         setStreamError(e.message)
         setStreamStatus('error')
       },
@@ -1019,8 +1042,25 @@ function SegmentedControl<T extends string>({
 /* eslint-disable @typescript-eslint/no-explicit-any */
 function RuledTable({ table, density = 'regular', ariaLabel }: { table: any; density?: 'regular' | 'dense'; ariaLabel?: string }) {
   const pad = density === 'dense' ? '10px 12px' : '14px 14px'
+  const rowHeight = density === 'dense' ? 40 : 48
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const rows = table.getRowModel().rows
+  const columnCount = table.getHeaderGroups()[0]?.headers.length ?? 1
+
+  const rowVirtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => rowHeight,
+    overscan: 12,
+  })
+
+  const virtualRows = rowVirtualizer.getVirtualItems()
+  const totalSize = rowVirtualizer.getTotalSize()
+  const paddingTop = virtualRows.length > 0 ? virtualRows[0].start : 0
+  const paddingBottom = virtualRows.length > 0 ? totalSize - virtualRows[virtualRows.length - 1].end : 0
+
   return (
-    <div style={{ overflowX: 'auto' }}>
+    <div ref={scrollRef} style={{ overflow: 'auto', maxHeight: 600 }}>
       <table
         aria-label={ariaLabel}
         style={{
@@ -1046,6 +1086,17 @@ function RuledTable({ table, density = 'regular', ariaLabel }: { table: any; den
                     textTransform: 'uppercase',
                     fontWeight: 'var(--type-micro-weight)',
                     color: 'var(--ink-tertiary)',
+                    // Virtualization (Task 3) made the scroll container
+                    // `overflow: auto` with a fixed maxHeight, so headers
+                    // would otherwise scroll away after ~a dozen rows — a
+                    // real usability regression for a table whose whole
+                    // point is holding thousands of rows. Sticky + an
+                    // opaque background keep the header visible while the
+                    // body scrolls underneath it.
+                    position: 'sticky',
+                    top: 0,
+                    zIndex: 1,
+                    background: 'var(--surface-paper)',
                   }}
                 >
                   {flexRender(h.column.columnDef.header, h.getContext())}
@@ -1055,63 +1106,41 @@ function RuledTable({ table, density = 'regular', ariaLabel }: { table: any; den
           ))}
         </thead>
         <tbody>
-          {table.getRowModel().rows.map((row: any) => (
-            <tr
-              key={row.id}
-              style={{
-                borderBottom: '1px solid var(--rule)',
-              }}
-            >
-              {row.getVisibleCells().map((cell: any) => (
-                <td
-                  key={cell.id}
-                  style={{
-                    padding: pad,
-                    verticalAlign: 'top',
-                  }}
-                >
-                  {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                </td>
-              ))}
-            </tr>
-          ))}
+          {paddingTop > 0 && (
+            <tr aria-hidden="true"><td colSpan={columnCount} style={{ height: paddingTop, padding: 0, border: 0 }} /></tr>
+          )}
+          {virtualRows.map(vRow => {
+            const row = rows[vRow.index]
+            return (
+              <tr
+                key={row.id}
+                data-index={vRow.index}
+                ref={rowVirtualizer.measureElement}
+                style={{ borderBottom: '1px solid var(--rule)' }}
+              >
+                {row.getVisibleCells().map((cell: any) => (
+                  <td
+                    key={cell.id}
+                    style={{
+                      padding: pad,
+                      verticalAlign: 'top',
+                    }}
+                  >
+                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                  </td>
+                ))}
+              </tr>
+            )
+          })}
+          {paddingBottom > 0 && (
+            <tr aria-hidden="true"><td colSpan={columnCount} style={{ height: paddingBottom, padding: 0, border: 0 }} /></tr>
+          )}
         </tbody>
       </table>
     </div>
   )
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
-
-// ── Modal styles ────────────────────────────────────────────────────────────
-
-const overlayStyle: CSSProperties = {
-  position: 'fixed',
-  inset: 0,
-  background: 'color-mix(in oklab, var(--surface-sunken) 40%, rgba(10, 8, 6, 0.5))',
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'center',
-  zIndex: 1000,
-  backdropFilter: 'blur(2px)',
-  animation: 'jx-overlay-in var(--duration-quick) var(--ease-out-soft)',
-}
-
-const modalStyle: CSSProperties = {
-  background: 'var(--surface-raised)',
-  border: '1px solid var(--rule-strong)',
-  borderRadius: 'var(--radius-md)',
-  padding: '32px 32px 28px',
-  minWidth: 420,
-  maxWidth: 520,
-  boxShadow: '0 30px 80px rgba(10, 8, 6, 0.22)',
-}
-
-if (typeof document !== 'undefined' && !document.getElementById('jx-overlay-anim')) {
-  const el = document.createElement('style')
-  el.id = 'jx-overlay-anim'
-  el.textContent = `@keyframes jx-overlay-in { from { opacity: 0 } to { opacity: 1 } }`
-  document.head.appendChild(el)
-}
 
 // ── Unused imports suppression ──────────────────────────────────────────────
 // Keep StatusDot exported from primitives barrel in case future inline usage

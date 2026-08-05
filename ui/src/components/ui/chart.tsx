@@ -194,7 +194,7 @@ function ChartTooltipContent({
         "grid min-w-32 items-start gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs shadow-xl",
         className
       )}
-      style={{ background: '#1a1d2e', borderColor: '#3a3d52', color: '#d4d8f0' }}
+      style={{ background: 'var(--surface-raised)', borderColor: 'var(--rule-strong)', color: 'var(--ink-primary)' }}
     >
       {!nestLabel ? tooltipLabel : null}
       <div className="grid gap-1.5">

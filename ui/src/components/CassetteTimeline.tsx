@@ -92,10 +92,34 @@ export const PALETTE = [
 ]
 
 const MAX_GROUPS = 12
+const CHART_CAT_COUNT = 10
 
-export function colorForKey(key: string, allKeys: string[]): string {
+export function colorForKey(key: string, allKeys: string[], palette: string[] = PALETTE): string {
   const idx = allKeys.indexOf(key)
-  return PALETTE[idx % PALETTE.length] ?? '#718096'
+  return palette[idx % palette.length] ?? '#718096'
+}
+
+/** Resolve the current theme's canvas-safe colors from the computed style
+ *  of a live DOM element (canvas 2D contexts cannot use var(...) directly,
+ *  so this is called once per draw() rather than once per marker). */
+export function resolveThemeColors(el: HTMLElement) {
+  const style = getComputedStyle(el)
+  const chartCat = Array.from({ length: CHART_CAT_COUNT }, (_, i) =>
+    style.getPropertyValue(`--chart-cat-${i + 1}`).trim() || PALETTE[i % PALETTE.length])
+  return {
+    chartCat,
+    // The `||` fallbacks below are jsdom/defensive-only: tokens.css always
+    // defines these custom properties in the real app, so getComputedStyle
+    // never actually returns '' for them in production. They only matter in
+    // environments without tokens.css loaded (e.g. a unit test rendering
+    // this component without the app's global stylesheet) — this is the
+    // one documented hardcoded-hex exception called out in the plan's
+    // Global Constraints (canvas-only, theme-independent safety net).
+    surfaceSunken: style.getPropertyValue('--surface-sunken').trim() || '#f7fafc',
+    ruleStrong: style.getPropertyValue('--rule-strong').trim() || '#cbd5e0',
+    inkTertiary: style.getPropertyValue('--ink-tertiary').trim() || '#718096',
+    inkPrimary: style.getPropertyValue('--ink-primary').trim() || '#1a202c',
+  }
 }
 
 // ─── Group-by dimensions ─────────────────────────────────────────────────────
@@ -185,7 +209,7 @@ function GroupBySelector({ mode, availableHeaderKeys, supportsMessageType, onCha
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-      <span style={{ fontSize: 11, color: '#718096', fontWeight: 600 }}>Group by</span>
+      <span style={{ fontSize: 11, color: 'var(--ink-secondary)', fontWeight: 600 }}>Group by</span>
       <select
         value={dimensionValue}
         onChange={handleDimensionChange}
@@ -276,7 +300,7 @@ function AndBySelector({ mode, availableHeaderKeys, excludeKind, supportsMessage
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-      <span style={{ fontSize: 11, color: '#718096', fontWeight: 600 }}>And by</span>
+      <span style={{ fontSize: 11, color: 'var(--ink-secondary)', fontWeight: 600 }}>And by</span>
       <select
         value={dimensionValue}
         onChange={handleDimensionChange}
@@ -397,6 +421,7 @@ function TimelineCanvas({ records, selectedIdx, colorKeys, onSelect, fitKey }: T
     const ctx = canvas.getContext('2d')
     if (!ctx) return
     const vs = vsRef.current
+    const theme = resolveThemeColors(canvas)
     const w = canvas.width
     const h = canvas.height
     const dpr = window.devicePixelRatio || 1
@@ -406,11 +431,11 @@ function TimelineCanvas({ records, selectedIdx, colorKeys, onSelect, fitKey }: T
     ctx.scale(dpr, dpr)
 
     // Background
-    ctx.fillStyle = '#f7fafc'
+    ctx.fillStyle = theme.surfaceSunken
     ctx.fillRect(0, 0, w, h)
 
     // Timeline axis
-    ctx.strokeStyle = '#cbd5e0'
+    ctx.strokeStyle = theme.ruleStrong
     ctx.lineWidth = 1
     ctx.beginPath()
     ctx.moveTo(0, MARKER_Y + SELECTED_RADIUS + 8)
@@ -429,8 +454,8 @@ function TimelineCanvas({ records, selectedIdx, colorKeys, onSelect, fitKey }: T
 
       const firstTick = Math.ceil(minMs / tickInterval) * tickInterval
       const lastTickMs = minMs + visibleSpanMs + spanMs
-      ctx.strokeStyle = '#a0aec0'
-      ctx.fillStyle = '#718096'
+      ctx.strokeStyle = theme.ruleStrong
+      ctx.fillStyle = theme.inkTertiary
       ctx.font = '10px system-ui'
       ctx.textAlign = 'center'
       for (let t = firstTick; t <= lastTickMs; t += tickInterval) {
@@ -451,7 +476,7 @@ function TimelineCanvas({ records, selectedIdx, colorKeys, onSelect, fitKey }: T
       const x = vs.originPx + ms / vs.msPerPx
       if (x < -20 || x > w + 20) return
 
-      const color = colorForKey(r.colorKey, colorKeys)
+      const color = colorForKey(r.colorKey, colorKeys, theme.chartCat)
       const isSelected = i === selectedIdx
       const radius = isSelected ? SELECTED_RADIUS : MARKER_RADIUS
 
@@ -465,7 +490,10 @@ function TimelineCanvas({ records, selectedIdx, colorKeys, onSelect, fitKey }: T
       ctx.arc(x, MARKER_Y, radius, 0, Math.PI * 2)
       ctx.fillStyle = isSelected ? color : color + '99'
       ctx.fill()
-      ctx.strokeStyle = isSelected ? color : '#fff'
+      // Unselected markers get a subtle ring in the theme's rule color
+      // (rather than a hardcoded white ring, which read wrong against the
+      // dark --surface-sunken canvas background).
+      ctx.strokeStyle = isSelected ? color : theme.ruleStrong
       ctx.lineWidth = isSelected ? 2.5 : 1.5
       ctx.stroke()
 
@@ -473,7 +501,7 @@ function TimelineCanvas({ records, selectedIdx, colorKeys, onSelect, fitKey }: T
 
       // Label on selected
       if (isSelected) {
-        ctx.fillStyle = '#1a202c'
+        ctx.fillStyle = theme.inkPrimary
         ctx.font = 'bold 11px system-ui'
         ctx.textAlign = 'center'
         const label = r.colorKey
@@ -499,6 +527,15 @@ function TimelineCanvas({ records, selectedIdx, colorKeys, onSelect, fitKey }: T
     })
     ro.observe(canvas)
     return () => ro.disconnect()
+  }, [draw])
+
+  // Redraw when the resolved theme changes — ThemeToggle mutates <html>'s
+  // class/data-theme directly, outside any React state this component
+  // observes, so a canvas repaint has to be driven explicitly.
+  useEffect(() => {
+    const observer = new MutationObserver(() => draw())
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-theme'] })
+    return () => observer.disconnect()
   }, [draw])
 
   // Hit-test: find nearest marker to a canvas x coordinate
@@ -616,7 +653,7 @@ function TimelineCanvas({ records, selectedIdx, colorKeys, onSelect, fitKey }: T
 function DetailPanel({ record }: { record: TimelineRecord | null }) {
   if (!record) {
     return (
-      <div style={{ padding: '2rem', textAlign: 'center', color: '#a0aec0', fontSize: 14 }}>
+      <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--ink-tertiary)', fontSize: 14 }}>
         Select a message on the timeline below
       </div>
     )
@@ -628,7 +665,7 @@ function DetailPanel({ record }: { record: TimelineRecord | null }) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '1rem' }}>
       {/* Meta chips */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-        <span style={{ fontSize: 12, fontWeight: 700, color: '#718096', marginRight: 4 }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-secondary)', marginRight: 4 }}>
           {msToFullLabel(isoToMs(record.timestamp))}
         </span>
         {Object.entries(record.meta).map(([k, v]) => (
@@ -640,6 +677,12 @@ function DetailPanel({ record }: { record: TimelineRecord | null }) {
       {parsed ? (
         <JsonView src={parsed.parsed as object} collapsed={false} />
       ) : record.value ? (
+        // Intentionally kept as a fixed dark code block (not theme-tokenized):
+        // this mirrors JsonView's own theme-independence immediately above
+        // (JsonView is a separate, pre-existing, explicitly non-tokenized
+        // component out of this task's scope) — a raw-text fallback matching
+        // a conventional "code block stays dark regardless of page theme"
+        // treatment, same as many syntax-highlighted code viewers.
         <pre style={{
           margin: 0, padding: '0.75rem',
           background: '#1a202c', color: '#e2e8f0',
@@ -649,7 +692,7 @@ function DetailPanel({ record }: { record: TimelineRecord | null }) {
           {record.value}
         </pre>
       ) : (
-        <span style={{ color: '#a0aec0', fontSize: 13 }}>No value</span>
+        <span style={{ color: 'var(--ink-tertiary)', fontSize: 13 }}>No value</span>
       )}
     </div>
   )
@@ -658,11 +701,11 @@ function DetailPanel({ record }: { record: TimelineRecord | null }) {
 function MetaChip({ label, value }: { label: string; value: string }) {
   return (
     <div style={{
-      background: '#edf2f7', border: '1px solid #e2e8f0', borderRadius: 4,
+      background: 'var(--surface-raised)', border: '1px solid var(--rule)', borderRadius: 4,
       padding: '2px 8px', display: 'inline-flex', gap: 5, alignItems: 'baseline',
     }}>
-      <span style={{ fontSize: 10, color: '#718096', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</span>
-      <span style={{ fontSize: 12, color: '#2d3748', fontFamily: 'monospace' }}>{value}</span>
+      <span style={{ fontSize: 10, color: 'var(--ink-secondary)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</span>
+      <span style={{ fontSize: 12, color: 'var(--ink-primary)', fontFamily: 'monospace' }}>{value}</span>
     </div>
   )
 }
@@ -676,11 +719,11 @@ function Legend({ colorKeys }: { colorKeys: string[] }) {
       {colorKeys.map((k, i) => (
         <span key={k} style={{
           display: 'inline-flex', alignItems: 'center', gap: 5,
-          fontSize: 12, color: '#4a5568',
+          fontSize: 12, color: 'var(--ink-secondary)',
         }}>
           <span style={{
             display: 'inline-block', width: 10, height: 10, borderRadius: '50%',
-            background: PALETTE[i % PALETTE.length],
+            background: `var(--chart-cat-${(i % CHART_CAT_COUNT) + 1})`,
           }} />
           {k}
         </span>
@@ -785,9 +828,9 @@ export function CassetteTimeline({
       {/* Toolbar */}
       <div style={{
         display: 'flex', alignItems: 'center', gap: 10, padding: '0.5rem 0.75rem',
-        borderBottom: '1px solid #e2e8f0', flexWrap: 'wrap', background: '#fff',
+        borderBottom: '1px solid var(--rule)', flexWrap: 'wrap', background: 'var(--surface-paper)',
       }}>
-        {title && <span style={{ fontSize: 14, fontWeight: 600, color: '#2d3748' }}>{title}</span>}
+        {title && <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink-primary)' }}>{title}</span>}
         <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           <button
             style={btnStyle}
@@ -795,7 +838,7 @@ export function CassetteTimeline({
             onClick={() => handleSelect(Math.max(0, selectedIdx - 1))}
             title="Previous message (←)"
           >‹ Prev</button>
-          <span style={{ fontSize: 12, color: '#718096', minWidth: 80, textAlign: 'center' }}>
+          <span style={{ fontSize: 12, color: 'var(--ink-secondary)', minWidth: 80, textAlign: 'center' }}>
             {records.length > 0 ? `${selectedIdx + 1} / ${records.length}` : '—'}
           </span>
           <button
@@ -827,22 +870,22 @@ export function CassetteTimeline({
         />
         {tooManyGroups && (
           <span style={{
-            fontSize: 11, color: '#c05621', background: '#fffaf0',
-            border: '1px solid #fed7aa', borderRadius: 4, padding: '2px 8px',
+            fontSize: 11, color: 'var(--signal-warn-ink)', background: 'color-mix(in oklab, var(--signal-warn) 15%, var(--surface-paper))',
+            border: '1px solid color-mix(in oklab, var(--signal-warn) 45%, transparent)', borderRadius: 4, padding: '2px 8px',
           }}>
             Too many groups — narrow your filter
           </span>
         )}
         {loading && (
-          <span style={{ fontSize: 12, color: '#718096' }}>Loading…</span>
+          <span style={{ fontSize: 12, color: 'var(--ink-secondary)' }}>Loading…</span>
         )}
         {hasMore && !loading && (
-          <span style={{ fontSize: 12, color: '#718096', fontStyle: 'italic' }}>
+          <span style={{ fontSize: 12, color: 'var(--ink-secondary)', fontStyle: 'italic' }}>
             More pages available — scrub to edges to load
           </span>
         )}
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
-          <span style={{ fontSize: 11, color: '#a0aec0' }}>← → arrow keys • scroll to zoom • drag to pan</span>
+          <span style={{ fontSize: 11, color: 'var(--ink-tertiary)' }}>← → arrow keys • scroll to zoom • drag to pan</span>
           {extraControls}
         </div>
       </div>
@@ -850,19 +893,19 @@ export function CassetteTimeline({
       {/* Upper panel: detail */}
       <div style={{
         flex: '1 1 0', minHeight: 0, overflow: 'auto',
-        borderBottom: '1px solid #e2e8f0',
-        background: '#fff',
+        borderBottom: '1px solid var(--rule)',
+        background: 'var(--surface-paper)',
       }}>
         <DetailPanel record={selectedRecord} />
       </div>
 
       {/* Lower panel: timeline */}
-      <div style={{ flexShrink: 0, background: '#f7fafc', borderTop: '1px solid #e2e8f0' }}>
+      <div style={{ flexShrink: 0, background: 'var(--surface-sunken)', borderTop: '1px solid var(--rule)' }}>
         {/* Legend */}
         <div style={{ padding: '0.5rem 0.75rem 0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <Legend colorKeys={colorKeys} />
           {records.length === 0 && (
-            <span style={{ fontSize: 13, color: '#a0aec0', padding: '0.5rem 0' }}>No messages to display</span>
+            <span style={{ fontSize: 13, color: 'var(--ink-tertiary)', padding: '0.5rem 0' }}>No messages to display</span>
           )}
         </div>
         <TimelineCanvas
@@ -881,10 +924,10 @@ export function CassetteTimeline({
 
 const btnStyle: React.CSSProperties = {
   padding: '0.3rem 0.7rem',
-  background: '#fff',
-  color: '#4a5568',
-  border: '1px solid #cbd5e0',
-  borderRadius: 4,
+  background: 'var(--surface-paper)',
+  color: 'var(--ink-secondary)',
+  border: '1px solid var(--rule-strong)',
+  borderRadius: 'var(--radius-xs)',
   cursor: 'pointer',
   fontSize: 12,
   fontWeight: 500,
@@ -892,10 +935,10 @@ const btnStyle: React.CSSProperties = {
 
 const selectStyle: React.CSSProperties = {
   padding: '0.25rem 0.5rem',
-  background: '#fff',
-  color: '#4a5568',
-  border: '1px solid #cbd5e0',
-  borderRadius: 4,
+  background: 'var(--surface-paper)',
+  color: 'var(--ink-secondary)',
+  border: '1px solid var(--rule-strong)',
+  borderRadius: 'var(--radius-xs)',
   fontSize: 12,
   cursor: 'pointer',
 }

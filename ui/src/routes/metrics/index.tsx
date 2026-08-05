@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useId, useMemo, useState } from 'react'
 import {
   AreaChart, Area, LineChart, Line,
   XAxis, YAxis, CartesianGrid, Legend, ReferenceLine, Tooltip,
@@ -8,15 +8,17 @@ import { ChartContainer, type ChartConfig } from '@/components/ui/chart'
 import { healthApi } from '../../api/client'
 import { Layout } from '../../components/Layout'
 import { pageTitle, cardStyle } from '../../styles/shared'
+import { useVisibilityAwareInterval } from '../../hooks/useVisibilityAwareInterval'
+import {
+  computeLagSeries, computeRateSeries, computeNetPts,
+  type DataPoint, type PtRecord, type MetricFamily,
+} from '../../lib/metricsDerive'
 
 export const Route = createFileRoute('/metrics/')({ component: MetricsPage })
 
 // ---------------------------------------------------------------------------
 // Prometheus text-format parser
 // ---------------------------------------------------------------------------
-
-type MetricSample = { labels: Record<string, string>; value: number }
-type MetricFamily = { help: string; type: string; samples: MetricSample[] }
 
 function parsePrometheus(text: string): Record<string, MetricFamily> {
   const result: Record<string, MetricFamily> = {}
@@ -113,38 +115,6 @@ function getSamplesByTopicAndPartition(family: Record<string, MetricFamily>, nam
 
 const MAX_POINTS = 60
 const POLL_MS    = 3_000
-
-interface DataPoint {
-  ts: number
-  topicKeys: string[]
-  topicLabels: Record<string, string>
-  lag:          Record<string, number>
-  committedLag: Record<string, number>
-  consumed:     Record<string, number>
-  written:      Record<string, number>
-  consumedRate: Record<string, number>
-  bytesRate:    Record<string, number>
-  fetchLatency: Record<string, number>
-  partitionLag:          Record<string, Record<string, number>>
-  partitionConsumedRate: Record<string, Record<string, number>>
-  pollDurationP50:    Record<string, number>
-  pollDurationP99:    Record<string, number>
-  fetchLatencyMax:    Record<string, number>
-  fetchThrottle:      Record<string, number>
-  networkIoRate:      Record<string, number>
-  writeDepth:    number
-  writeDuration: number
-  compactionFiles: number
-  retentionRows:   number
-  catalogBytes:    number
-  inlinedBytes:    number
-  duckdbMemoryTotal: number
-  duckdbMemoryByTag: Record<string, number>
-  activeReplays:   number
-  heapUsed:        number
-  heapMax:         number
-  processRss:      number
-}
 
 const topicKeyMap = new Map<string, string>()
 function safeKey(topic: string): string {
@@ -311,13 +281,13 @@ const CURSOR_STYLE = { stroke: 'rgba(200,205,240,0.35)', strokeWidth: 1, strokeD
 const TIP_STYLE: React.CSSProperties = {
   position: 'absolute', bottom: 'calc(100% + 8px)', left: 0,
   zIndex: 200,
-  background: '#1a1d2e',
-  border: '1px solid #3a3d52',
+  background: 'var(--surface-raised)',
+  border: '1px solid var(--rule-strong)',
   borderRadius: 6,
   padding: '8px 11px',
   width: 260,
   fontSize: '0.72rem',
-  color: '#d4d8f0',
+  color: 'var(--ink-primary)',
   lineHeight: 1.55,
   boxShadow: '0 8px 24px rgba(0,0,0,0.55)',
   pointerEvents: 'none',
@@ -331,18 +301,23 @@ const TIP_STYLE: React.CSSProperties = {
 
 function Stat({ label, value, sub, title }: { label: string; value: string; sub?: string; title?: string }) {
   const [tip, setTip] = useState(false)
+  const tipId = useId()
   return (
     <div
       style={{ display: 'flex', flexDirection: 'column', minWidth: 110, position: 'relative', cursor: title ? 'default' : undefined }}
+      tabIndex={title ? 0 : undefined}
+      aria-describedby={title ? tipId : undefined}
       onMouseEnter={() => title && setTip(true)}
       onMouseLeave={() => setTip(false)}
+      onFocus={() => title && setTip(true)}
+      onBlur={() => setTip(false)}
     >
       <span style={{ fontSize: '0.5625rem', color: 'var(--ink-tertiary)', textTransform: 'uppercase', letterSpacing: '0.08em', fontWeight: 600 }}>
         {label}
       </span>
       <span style={{ fontFamily: 'var(--font-mono)', fontSize: '1.125rem', fontWeight: 700, color: 'var(--ink-primary)', lineHeight: 1.3 }}>{value}</span>
       {sub && <span style={{ fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)' }}>{sub}</span>}
-      {tip && title && <div style={TIP_STYLE}>{title}</div>}
+      {tip && title && <div id={tipId} role="tooltip" style={TIP_STYLE}>{title}</div>}
     </div>
   )
 }
@@ -353,16 +328,21 @@ function Stat({ label, value, sub, title }: { label: string; value: string; sub?
 
 function Card({ title, subtitle, description, children }: { title: string; subtitle?: string; description?: string; children: React.ReactNode }) {
   const [tip, setTip] = useState(false)
+  const tipId = useId()
   return (
     <div style={{ ...cardStyle, padding: '16px 20px' }}>
       <div style={{ marginBottom: 10, display: 'flex', alignItems: 'baseline', gap: 0, position: 'relative' }}>
-        <span
-          style={{ fontWeight: 600, fontSize: 'var(--type-body-sm-size)', color: 'var(--ink-primary)', cursor: description ? 'default' : undefined, borderBottom: description ? '1px dotted var(--rule-strong)' : undefined }}
+        <h3
+          style={{ margin: 0, fontWeight: 600, fontSize: 'var(--type-body-sm-size)', color: 'var(--ink-primary)', cursor: description ? 'default' : undefined, borderBottom: description ? '1px dotted var(--rule-strong)' : undefined }}
+          tabIndex={description ? 0 : undefined}
+          aria-describedby={description ? tipId : undefined}
           onMouseEnter={() => description && setTip(true)}
           onMouseLeave={() => setTip(false)}
-        >{title}</span>
+          onFocus={() => description && setTip(true)}
+          onBlur={() => setTip(false)}
+        >{title}</h3>
         {subtitle && <span style={{ marginLeft: 8, fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)' }}>{subtitle}</span>}
-        {tip && description && <div style={TIP_STYLE}>{description}</div>}
+        {tip && description && <div id={tipId} role="tooltip" style={TIP_STYLE}>{description}</div>}
       </div>
       {children}
     </div>
@@ -373,32 +353,21 @@ function Card({ title, subtitle, description, children }: { title: string; subti
 // Per-topic chart row
 // ---------------------------------------------------------------------------
 
-type PtRecord = Omit<DataPoint, 'ts'> & { ts: string }
-
-function TopicRow({ tk, label, latest, pts, axisProps }: {
+const TopicRow = memo(function TopicRow({ tk, label, latest, pts, axisProps }: {
   tk: string
   label: string
   latest: DataPoint | undefined
   pts: PtRecord[]
   axisProps: { tick: { fontSize: number; fill: string }; axisLine: boolean; tickLine: boolean }
 }) {
-  const partitions = Object.keys(latest?.partitionLag?.[label] ?? {})
-    .sort((a, b) => Number(a) - Number(b))
+  const partitions = useMemo(
+    () => Object.keys(latest?.partitionLag?.[label] ?? {}).sort((a, b) => Number(a) - Number(b)),
+    [latest, label],
+  )
 
-  const lagSeries = pts.map(pt => {
-    const row: Record<string, string | number> = { ts: pt.ts }
-    for (const p of partitions) row[`p${p}`] = pt.partitionLag?.[label]?.[p] ?? 0
-    return row
-  })
-
-  const rateSeries = pts.map(pt => {
-    const row: Record<string, string | number> = { ts: pt.ts }
-    for (const p of partitions) {
-      row[`p${p}`] = Math.max(0, pt.partitionConsumedRate?.[label]?.[p] ?? 0)
-    }
-    row['total'] = pt.consumedRate[tk] ?? 0
-    return row
-  })
+  const lagSeries = useMemo(() => computeLagSeries(pts, partitions, label), [pts, partitions, label])
+  const rateSeries = useMemo(() => computeRateSeries(pts, partitions, label, tk), [pts, partitions, label, tk])
+  const netPts = useMemo(() => computeNetPts(pts, tk), [pts, tk])
 
   const pConfig: ChartConfig = {}
   partitions.forEach((p, i) => {
@@ -414,12 +383,6 @@ function TopicRow({ tk, label, latest, pts, axisProps }: {
     p99:  { label: 'poll p99',  color: PALETTE[1] },
     flmax: { label: 'fetch max', color: PALETTE[2] },
   }
-  const netPts = pts.map(pt => ({
-    ts: pt.ts,
-    p50:  pt.pollDurationP50[tk] ?? 0,
-    p99:  pt.pollDurationP99[tk] ?? 0,
-    flmax: pt.fetchLatencyMax[tk] ?? 0,
-  }))
 
   const currentLag  = latest ? Object.values(latest.partitionLag?.[label] ?? {}).reduce((a, b) => a + b, 0) : 0
   const currentRate = latest?.consumedRate[tk] ?? 0
@@ -537,17 +500,27 @@ function TopicRow({ tk, label, latest, pts, axisProps }: {
       </div>
     </div>
   )
-}
+})
 
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 
+// Hoisted to module scope: this object is fixed and never varies per render
+// or per MetricsPage instance. Recreating it inline in MetricsPage's render
+// body defeated React.memo on TopicRow (a fresh object literal every render
+// fails memo's shallow prop comparison, forcing TopicRow — and its whole
+// Recharts subtree — to re-render unconditionally, even on failed-poll
+// re-renders that otherwise touch nothing this chart cares about).
+const AXIS_PROPS = {
+  tick: { fontSize: 10, fill: 'var(--ink-tertiary)' },
+  axisLine: false, tickLine: false,
+} as const
+
 function MetricsPage() {
   const [history, setHistory] = useState<DataPoint[]>([])
   const [error, setError]     = useState<string | null>(null)
   const [lastTs, setLastTs]   = useState<number | null>(null)
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   async function poll() {
     try {
@@ -559,17 +532,14 @@ function MetricsPage() {
     } catch (e) { setError(`Failed to fetch metrics: ${(e as Error).message}`) }
   }
 
-  useEffect(() => {
-    void poll()
-    timerRef.current = setInterval(() => { void poll() }, POLL_MS)
-    return () => { if (timerRef.current) clearInterval(timerRef.current) }
-  }, [])
+  useEffect(() => { void poll() }, [])
+  useVisibilityAwareInterval(() => { void poll() }, POLL_MS)
 
   const latest   = history[history.length - 1]
   const topicKeys   = latest?.topicKeys ?? []
   const topicLabels = latest?.topicLabels ?? {}
 
-  const pts = history.map(p => ({ ...p, ts: String(p.ts) }))
+  const pts = useMemo(() => history.map(p => ({ ...p, ts: String(p.ts) })), [history])
 
   const catalogConfig: ChartConfig = {
     catalogBytes: { label: 'catalog file', color: '#6674cc' },
@@ -591,11 +561,6 @@ function MetricsPage() {
   }
   const replaysConfig: ChartConfig = {
     activeReplays: { label: 'active replays', color: '#6B46A0' },
-  }
-
-  const axisProps = {
-    tick: { fontSize: 10, fill: 'var(--ink-tertiary)' },
-    axisLine: false, tickLine: false,
   }
 
   const bytesDot   = makeActiveDot(fmtBytes)
@@ -669,7 +634,7 @@ function MetricsPage() {
           label={topicLabels[tk] ?? tk}
           latest={latest}
           pts={pts}
-          axisProps={axisProps}
+          axisProps={AXIS_PROPS}
         />
       ))}
 
@@ -688,9 +653,9 @@ function MetricsPage() {
             <ChartContainer config={writeConfig} className="h-[180px] w-full">
               <LineChart syncId="metrics" data={pts} margin={{ right: 8 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
-                <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
-                <YAxis yAxisId="depth" {...axisProps} width={28} />
-                <YAxis yAxisId="ms" orientation="right" tickFormatter={v => v + 'ms'} {...axisProps} width={48} />
+                <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...AXIS_PROPS} minTickGap={40} />
+                <YAxis yAxisId="depth" {...AXIS_PROPS} width={28} />
+                <YAxis yAxisId="ms" orientation="right" tickFormatter={v => v + 'ms'} {...AXIS_PROPS} width={48} />
                 <Tooltip content={() => null} cursor={CURSOR_STYLE} />
                 <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
                 <Line yAxisId="depth" type="monotone" dataKey="writeDepth"    name="depth"    stroke="var(--color-writeDepth)"    strokeWidth={1.5} dot={false} activeDot={countDot} isAnimationActive={false} />
@@ -705,8 +670,8 @@ function MetricsPage() {
             <ChartContainer config={catalogConfig} className="h-[180px] w-full">
               <AreaChart syncId="metrics" data={pts} margin={{ right: 8 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
-                <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
-                <YAxis tickFormatter={fmtBytes} {...axisProps} width={68} />
+                <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...AXIS_PROPS} minTickGap={40} />
+                <YAxis tickFormatter={fmtBytes} {...AXIS_PROPS} width={68} />
                 <Tooltip content={() => null} cursor={CURSOR_STYLE} />
                 <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
                 <Area type="monotone" dataKey="catalogBytes" name="catalog file" stroke="var(--color-catalogBytes)" fill="var(--color-catalogBytes)" fillOpacity={0.15} strokeWidth={1.5} dot={false} activeDot={bytesDot} isAnimationActive={false} />
@@ -725,8 +690,8 @@ function MetricsPage() {
                 ...Object.fromEntries(duckdbMemTags.map(t => [t, pt.duckdbMemoryByTag[t] ?? 0])),
               }))} margin={{ right: 8 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
-                <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
-                <YAxis tickFormatter={fmtBytes} {...axisProps} width={68} />
+                <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...AXIS_PROPS} minTickGap={40} />
+                <YAxis tickFormatter={fmtBytes} {...AXIS_PROPS} width={68} />
                 <Tooltip content={() => null} cursor={CURSOR_STYLE} />
                 <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
                 <Area type="monotone" dataKey="total" name="total"
@@ -748,16 +713,16 @@ function MetricsPage() {
             <ChartContainer config={heapConfig} className="h-[180px] w-full">
               <AreaChart syncId="metrics" data={pts} margin={{ right: 8 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
-                <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
-                <YAxis tickFormatter={fmtBytes} {...axisProps} width={68}
+                <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...AXIS_PROPS} minTickGap={40} />
+                <YAxis tickFormatter={fmtBytes} {...AXIS_PROPS} width={68}
                   domain={[0, (latest?.heapMax ?? 0) > 0 ? latest!.heapMax * 1.05 : 'auto']} />
                 <Tooltip content={() => null} cursor={CURSOR_STYLE} />
                 <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
                 {(latest?.heapMax ?? 0) > 0 && <>
-                  <ReferenceLine y={latest!.heapMax} stroke="#aaaaaa" strokeWidth={1.5} strokeDasharray="6 3"
-                    label={{ value: `max  ${fmtBytes(latest!.heapMax)}`, position: 'insideTopLeft', fontSize: 9, fill: '#aaaaaa', fontFamily: 'var(--font-mono)' }} />
-                  <ReferenceLine y={latest!.heapMax * 0.8} stroke="#e07040" strokeWidth={1.5} strokeDasharray="4 3"
-                    label={{ value: `80%  ${fmtBytes(latest!.heapMax * 0.8)}`, position: 'insideTopLeft', fontSize: 9, fill: '#e07040', fontFamily: 'var(--font-mono)' }} />
+                  <ReferenceLine y={latest!.heapMax} stroke="var(--ink-tertiary)" strokeWidth={1.5} strokeDasharray="6 3"
+                    label={{ value: `max  ${fmtBytes(latest!.heapMax)}`, position: 'insideTopLeft', fontSize: 9, fill: 'var(--ink-tertiary)', fontFamily: 'var(--font-mono)' }} />
+                  <ReferenceLine y={latest!.heapMax * 0.8} stroke="var(--signal-warn)" strokeWidth={1.5} strokeDasharray="4 3"
+                    label={{ value: `80%  ${fmtBytes(latest!.heapMax * 0.8)}`, position: 'insideTopLeft', fontSize: 9, fill: 'var(--signal-warn)', fontFamily: 'var(--font-mono)' }} />
                 </>}
                 <Area type="monotone" dataKey="heapUsed"   name="heap used"   stroke="var(--color-heapUsed)"   fill="var(--color-heapUsed)"   fillOpacity={0.12} strokeWidth={1.5} dot={false} activeDot={bytesDot} isAnimationActive={false} />
                 <Area type="monotone" dataKey="processRss" name="process RSS" stroke="var(--color-processRss)" fill="none"                     strokeWidth={1.5} strokeDasharray="4 2" dot={false} activeDot={bytesDot} isAnimationActive={false} />
@@ -771,8 +736,8 @@ function MetricsPage() {
             <ChartContainer config={replaysConfig} className="h-[180px] w-full">
               <AreaChart syncId="metrics" data={pts} margin={{ right: 8 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
-                <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
-                <YAxis {...axisProps} allowDecimals={false} width={28} />
+                <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...AXIS_PROPS} minTickGap={40} />
+                <YAxis {...AXIS_PROPS} allowDecimals={false} width={28} />
                 <Tooltip content={() => null} cursor={CURSOR_STYLE} />
                 <Area type="stepAfter" dataKey="activeReplays" name="active replays"
                   stroke="var(--color-activeReplays)" fill="var(--color-activeReplays)/20"

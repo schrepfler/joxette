@@ -1,4 +1,5 @@
-import { useEffect, useId, useRef, useState } from 'react'
+import { useId, useState } from 'react'
+import { ModalPortal } from './ModalDialog'
 
 interface TruncateDialogProps {
   label: string
@@ -9,14 +10,6 @@ interface TruncateDialogProps {
 export function TruncateDialog({ label, onConfirm, onCancel }: TruncateDialogProps) {
   const [before, setBefore] = useState('')
   const titleId = useId()
-  const inputRef = useRef<HTMLInputElement>(null)
-
-  useEffect(() => {
-    inputRef.current?.focus()
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancel() }
-    document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
-  }, [onCancel])
 
   function handleConfirm() {
     if (!before) return
@@ -24,86 +17,76 @@ export function TruncateDialog({ label, onConfirm, onCancel }: TruncateDialogPro
   }
 
   return (
-    <div
-      aria-hidden="true"
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: 'rgba(0,0,0,0.4)',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        zIndex: 1000,
-      }}
-      onClick={onCancel}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        style={{
-          background: '#fff',
-          borderRadius: 8,
-          padding: '1.5rem 2rem',
-          minWidth: 360,
-          maxWidth: 480,
-          boxShadow: '0 10px 30px rgba(0,0,0,0.2)',
-        }}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h2 id={titleId} style={{ margin: '0 0 0.5rem', fontSize: 17, fontWeight: 700 }}>Truncate {label}</h2>
-        <p style={{ margin: '0 0 1.25rem', fontSize: 14, color: '#718096' }}>
-          Delete all records <strong>before</strong> the selected date. This cannot be undone.
-        </p>
-        <div style={{ marginBottom: '1.5rem' }}>
-          <label htmlFor={`${titleId}-before`} style={{ display: 'block', marginBottom: 4, fontSize: 13, fontWeight: 600, color: '#4a5568' }}>
-            Before
-          </label>
-          <input
-            ref={inputRef}
-            id={`${titleId}-before`}
-            type="datetime-local"
-            style={{
-              padding: '0.4rem 0.6rem',
-              border: '1px solid #cbd5e0',
-              borderRadius: 4,
-              fontSize: 14,
-              width: '100%',
-              boxSizing: 'border-box',
-            }}
-            value={before}
-            onChange={(e) => setBefore(e.target.value)}
-          />
-        </div>
-        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-          <button
-            onClick={onCancel}
-            style={{
-              padding: '0.4rem 1rem',
-              border: '1px solid #cbd5e0',
-              borderRadius: 4,
-              cursor: 'pointer',
-              background: '#fff',
-            }}
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleConfirm}
-            disabled={!before}
-            style={{
-              padding: '0.4rem 1rem',
-              border: 'none',
-              borderRadius: 4,
-              cursor: before ? 'pointer' : 'not-allowed',
-              background: before ? '#e53e3e' : '#fed7d7',
-              color: '#fff',
-            }}
-          >
-            Truncate
-          </button>
+    <ModalPortal onClose={onCancel}>
+      <div className="jx-overlay" onClick={onCancel}>
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby={titleId}
+          className="jx-modal"
+          style={{ minWidth: 360, maxWidth: 480 }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <h2 id={titleId} style={{ margin: '0 0 0.5rem', fontSize: 17, fontWeight: 700, color: 'var(--ink-primary)' }}>
+            Truncate {label}
+          </h2>
+          <p style={{ margin: '0 0 1.25rem', fontSize: 'var(--type-caption-size)', color: 'var(--ink-secondary)' }}>
+            Delete all records <strong>before</strong> the selected date. This cannot be undone.
+          </p>
+          <div style={{ marginBottom: '1.5rem' }}>
+            <label htmlFor={`${titleId}-before`} style={{ display: 'block', marginBottom: 4, fontSize: 'var(--type-caption-size)', fontWeight: 600, color: 'var(--ink-secondary)' }}>
+              Before
+            </label>
+            <input
+              id={`${titleId}-before`}
+              type="datetime-local"
+              className="jx-input-box"
+              style={{ width: '100%', boxSizing: 'border-box' }}
+              value={before}
+              onChange={(e) => setBefore(e.target.value)}
+            />
+          </div>
+          <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+            <button onClick={onCancel} style={cancelBtn}>Cancel</button>
+            <button
+              onClick={handleConfirm}
+              disabled={!before}
+              style={before ? confirmBtnActive : confirmBtnDisabled}
+            >
+              Truncate
+            </button>
+          </div>
         </div>
       </div>
-    </div>
+    </ModalPortal>
   )
+}
+
+const cancelBtn: React.CSSProperties = {
+  padding: '0.4rem 1rem',
+  border: '1px solid var(--rule-strong)',
+  borderRadius: 'var(--radius-sm)',
+  cursor: 'pointer',
+  background: 'transparent',
+  color: 'var(--ink-secondary)',
+  fontFamily: 'var(--font-body)',
+  fontSize: 'var(--type-body-sm-size)',
+}
+
+const confirmBtnActive: React.CSSProperties = {
+  padding: '0.4rem 1rem',
+  border: '1px solid var(--signal-error)',
+  borderRadius: 'var(--radius-sm)',
+  cursor: 'pointer',
+  background: 'var(--signal-error)',
+  color: '#fff',
+  fontFamily: 'var(--font-body)',
+  fontSize: 'var(--type-body-sm-size)',
+}
+
+const confirmBtnDisabled: React.CSSProperties = {
+  ...confirmBtnActive,
+  cursor: 'not-allowed',
+  background: 'color-mix(in oklab, var(--signal-error) 35%, var(--surface-sunken))',
+  borderColor: 'color-mix(in oklab, var(--signal-error) 35%, var(--surface-sunken))',
 }

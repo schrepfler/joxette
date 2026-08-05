@@ -152,6 +152,18 @@
   --shadow-md: 0 4px 6px rgba(0, 0, 0, 0.08);
   --shadow-lg: 0 10px 15px rgba(0, 0, 0, 0.08);
   --shadow-xl: 0 20px 25px rgba(0, 0, 0, 0.08);
+
+  /* ── chart categorical palette — CassetteTimeline canvas + legend ──── */
+  --chart-cat-1:  #3182ce;
+  --chart-cat-2:  #38a169;
+  --chart-cat-3:  #d69e2e;
+  --chart-cat-4:  #e53e3e;
+  --chart-cat-5:  #805ad5;
+  --chart-cat-6:  #dd6b20;
+  --chart-cat-7:  #00b5d8;
+  --chart-cat-8:  #e91e8c;
+  --chart-cat-9:  #00897b;
+  --chart-cat-10: #f44336;
 }
 
 /* ── colour — DARK ───────────────────────────────────────────────────────── */
@@ -182,6 +194,18 @@
   --focus-ring:      color-mix(in oklab, var(--accent) 60%, transparent);
   --accent-wash:     color-mix(in oklab, var(--accent) 12%, var(--surface-paper));
   --ink-wash:        color-mix(in oklab, var(--ink-primary) 6%, var(--surface-paper));
+
+  /* ── chart categorical palette (dark) — same hues, "300"-step lightness ── */
+  --chart-cat-1:  #63b3ed;
+  --chart-cat-2:  #68d391;
+  --chart-cat-3:  #f6e05e;
+  --chart-cat-4:  #fc8181;
+  --chart-cat-5:  #b794f4;
+  --chart-cat-6:  #f6ad55;
+  --chart-cat-7:  #76e4f7;
+  --chart-cat-8:  #f687b3;
+  --chart-cat-9:  #4fd1c5;
+  --chart-cat-10: #ff8a80;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -211,6 +235,18 @@
     --focus-ring:      color-mix(in oklab, var(--accent) 60%, transparent);
     --accent-wash:     color-mix(in oklab, var(--accent) 12%, var(--surface-paper));
     --ink-wash:        color-mix(in oklab, var(--ink-primary) 6%, var(--surface-paper));
+
+    /* ── chart categorical palette (dark) — same hues, "300"-step lightness ── */
+    --chart-cat-1:  #63b3ed;
+    --chart-cat-2:  #68d391;
+    --chart-cat-3:  #f6e05e;
+    --chart-cat-4:  #fc8181;
+    --chart-cat-5:  #b794f4;
+    --chart-cat-6:  #f6ad55;
+    --chart-cat-7:  #76e4f7;
+    --chart-cat-8:  #f687b3;
+    --chart-cat-9:  #4fd1c5;
+    --chart-cat-10: #ff8a80;
   }
 }
 
