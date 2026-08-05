@@ -21,7 +21,11 @@ import java.util.List;
  * Global CORS configuration.
  *
  * <p>By default allows requests from the Vite dev-server ({@code http://localhost:5173})
- * and the bundled UI served from the same origin as the backend.
+ * and the bundled UI served from the same origin as the backend. Same-origin only
+ * avoids CORS — every {@code com.joxette} controller is still mounted under the
+ * {@code /v1} prefix added by {@link #configurePathMatch}, so callers (including the
+ * bundled UI) must still address endpoints as {@code /v1/...}; only unprefixed
+ * Spring Boot Actuator endpoints (e.g. {@code /actuator/health}) are exempt.
  * Override {@code joxette.cors.allowed-origins} in your profile-specific
  * {@code application-{profile}.yml} or via the environment variable
  * {@code JOXETTE_CORS_ALLOWED-ORIGINS} for production deployments.</p>

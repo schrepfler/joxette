@@ -13,7 +13,7 @@ Topology        : role tiers —
 
 Reach the REST API:
   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "joxette.fullname" . }} {{ .Values.service.port }}:{{ .Values.service.port }}
-  curl http://localhost:{{ .Values.service.port }}/health
+  curl http://localhost:{{ .Values.service.port }}/v1/health
 
 {{- if eq .Values.clustering.mode "pekko-management" }}
 

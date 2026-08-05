@@ -24,7 +24,7 @@ kind load docker-image joxette-service:dev
 
 helm install joxette deploy/helm/joxette -f deploy/helm/joxette/values-kind.yaml
 kubectl port-forward svc/joxette 8080:8080
-curl http://localhost:8080/health
+curl http://localhost:8080/v1/health
 ```
 
 ### Scaled-out (shared PostgreSQL catalog + real Pekko cluster)
