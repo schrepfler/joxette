@@ -224,6 +224,47 @@ class EntityReplayServiceTest {
         assertThat(page2.data().get(0).entityId()).isEqualTo("ORD-3");
     }
 
+    // -------------------------------------------------------------------------
+    // Finding I7: listing cursors (id/lastActive/mostMessages) are plain base64,
+    // not HMAC-signed like TopicCursor/EntityCursor — a garbage/tampered cursor
+    // must map to InvalidCursorException (400 ERR_INVALID_CURSOR via
+    // GlobalExceptionHandler), not propagate the raw IllegalArgumentException /
+    // NumberFormatException that used to fall through to a generic 500.
+    // -------------------------------------------------------------------------
+
+    @ParameterizedTest(name = "sortBy={0}")
+    @EnumSource(EntityReplayService.EntitySortBy.class)
+    void listEntities_garbageCursor_throwsInvalidCursorException(EntityReplayService.EntitySortBy sortBy) throws Exception {
+        insertKnownEntity("order", "ORD-1", 1, "2024-01-01T00:00:00Z");
+
+        assertThatThrownBy(() -> service.listEntities("order", 50, "not-valid-base64!!!", sortBy))
+                .isInstanceOf(com.joxette.api.error.InvalidCursorException.class);
+    }
+
+    @Test
+    void listEntities_sortByLastActive_tupleCursorWithNonNumericFirstPart_throwsInvalidCursorException() throws Exception {
+        insertKnownEntity("order", "ORD-1", 1, "2024-01-01T00:00:00Z");
+
+        // Valid base64, valid NUL-separated tuple shape, but the first component
+        // (expected to be an epoch-millis long) isn't numeric -> NumberFormatException
+        // at Long.parseLong(), which must also map to InvalidCursorException.
+        String bogusTuple = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString("not-a-number\0ORD-1".getBytes(StandardCharsets.UTF_8));
+
+        assertThatThrownBy(() -> service.listEntities(
+                "order", 50, bogusTuple, EntityReplayService.EntitySortBy.lastActive))
+                .isInstanceOf(com.joxette.api.error.InvalidCursorException.class);
+    }
+
+    @Test
+    void searchEntities_garbageCursor_throwsInvalidCursorException() throws Exception {
+        insertKnownEntity("order", "ORD-1", 1, "2024-01-01T00:00:00Z");
+
+        assertThatThrownBy(() -> service.searchEntities(
+                "order", "ORD", 50, "%%%not-base64%%%", EntityReplayService.EntitySortBy.id))
+                .isInstanceOf(com.joxette.api.error.InvalidCursorException.class);
+    }
+
     @Test
     void searchEntities_matchesSubstring_caseInsensitive() throws Exception {
         insertKnownEntity("order", "ORD-ALPHA", 1, "2024-01-01T00:00:00Z");

@@ -548,36 +548,46 @@ public class EntityReplayService implements EntityCassetteSource {
                 .from(KNOWN_ENTITIES)
                 .where(where);
 
-        entities = switch (sortBy) {
-            case id -> {
-                String afterId = cursor != null ? decodePlainCursor(cursor) : null;
-                var sorted = select.orderBy(F_ENTITY_ID.asc());
-                List<EntityInfo> rows = afterId != null
-                        ? sorted.seekAfter(afterId).limit(limit + 1).fetch(EntityReplayService::mapEntityInfo)
-                        : sorted.limit(limit + 1).fetch(EntityReplayService::mapEntityInfo);
-                yield rows;
-            }
-            case lastActive -> {
-                String[] parts = cursor != null ? decodeTupleCursor(cursor) : null;
-                var sorted = select.orderBy(F_LAST_SEEN.desc(), F_ENTITY_ID.asc());
-                List<EntityInfo> rows = parts != null
-                        ? sorted.seekAfter(
-                                OffsetDateTime.ofInstant(Instant.ofEpochMilli(Long.parseLong(parts[0])), ZoneOffset.UTC),
-                                parts[1])
-                          .limit(limit + 1).fetch(EntityReplayService::mapEntityInfo)
-                        : sorted.limit(limit + 1).fetch(EntityReplayService::mapEntityInfo);
-                yield rows;
-            }
-            case mostMessages -> {
-                String[] parts = cursor != null ? decodeTupleCursor(cursor) : null;
-                var sorted = select.orderBy(F_MESSAGE_COUNT.desc(), F_ENTITY_ID.asc());
-                List<EntityInfo> rows = parts != null
-                        ? sorted.seekAfter(Long.parseLong(parts[0]), parts[1])
-                          .limit(limit + 1).fetch(EntityReplayService::mapEntityInfo)
-                        : sorted.limit(limit + 1).fetch(EntityReplayService::mapEntityInfo);
-                yield rows;
-            }
-        };
+        try {
+            entities = switch (sortBy) {
+                case id -> {
+                    String afterId = cursor != null ? decodePlainCursor(cursor) : null;
+                    var sorted = select.orderBy(F_ENTITY_ID.asc());
+                    List<EntityInfo> rows = afterId != null
+                            ? sorted.seekAfter(afterId).limit(limit + 1).fetch(EntityReplayService::mapEntityInfo)
+                            : sorted.limit(limit + 1).fetch(EntityReplayService::mapEntityInfo);
+                    yield rows;
+                }
+                case lastActive -> {
+                    String[] parts = cursor != null ? decodeTupleCursor(cursor) : null;
+                    var sorted = select.orderBy(F_LAST_SEEN.desc(), F_ENTITY_ID.asc());
+                    List<EntityInfo> rows = parts != null
+                            ? sorted.seekAfter(
+                                    OffsetDateTime.ofInstant(Instant.ofEpochMilli(Long.parseLong(parts[0])), ZoneOffset.UTC),
+                                    parts[1])
+                              .limit(limit + 1).fetch(EntityReplayService::mapEntityInfo)
+                            : sorted.limit(limit + 1).fetch(EntityReplayService::mapEntityInfo);
+                    yield rows;
+                }
+                case mostMessages -> {
+                    String[] parts = cursor != null ? decodeTupleCursor(cursor) : null;
+                    var sorted = select.orderBy(F_MESSAGE_COUNT.desc(), F_ENTITY_ID.asc());
+                    List<EntityInfo> rows = parts != null
+                            ? sorted.seekAfter(Long.parseLong(parts[0]), parts[1])
+                              .limit(limit + 1).fetch(EntityReplayService::mapEntityInfo)
+                            : sorted.limit(limit + 1).fetch(EntityReplayService::mapEntityInfo);
+                    yield rows;
+                }
+            };
+        } catch (IllegalArgumentException e) {
+            // Base64.decode() throws IllegalArgumentException on malformed input, and
+            // Long.parseLong() (a subclass, NumberFormatException) on a non-numeric tuple
+            // component — both mean "cursor could not be decoded", exactly what
+            // TopicCursor/EntityCursor (Task D) already map to InvalidCursorException so
+            // GlobalExceptionHandler renders 400 ERR_INVALID_CURSOR instead of falling
+            // through to a generic 500 ERR_INTERNAL.
+            throw com.joxette.api.error.InvalidCursorException.malformed(e);
+        }
         }
 
         return TopicReplayService.buildPage(entities, limit, e -> switch (sortBy) {
