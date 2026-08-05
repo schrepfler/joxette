@@ -172,3 +172,17 @@ serviceMonitor:
   enabled: false
   interval: 30s
   labels: {}
+
+# Prometheus Operator alerting rules (PrometheusRule CR). Metric names must
+# match JoxetteMetrics.java exactly (Micrometer dots become Prometheus
+# underscores on scrape, e.g. joxette.consumer.lag -> joxette_consumer_lag).
+monitoring:
+  prometheusRule:
+    enabled: true
+    labels: {}
+    # Sustained (5m) joxette_consumer_lag above this fires a warning.
+    consumerLagThreshold: 10000
+    # Sustained (5m) joxette_write_channel_depth above this fires a warning.
+    # Default assumes the default joxette.threading.write-channel-capacity (128)
+    # in application.yml — set to ~90% of your configured capacity if overridden.
+    writeChannelDepthThreshold: 115
