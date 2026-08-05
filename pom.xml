@@ -37,6 +37,8 @@
         <maven-enforcer-plugin.version>3.6.3</maven-enforcer-plugin.version>
         <maven-compiler-plugin.version>3.15.0</maven-compiler-plugin.version>
         <maven-surefire-plugin.version>3.5.6</maven-surefire-plugin.version>
+        <!-- Released in lockstep with maven-surefire-plugin; keep the versions equal. -->
+        <maven-failsafe-plugin.version>3.5.6</maven-failsafe-plugin.version>
         <maven-jar-plugin.version>3.5.0</maven-jar-plugin.version>
         <maven-clean-plugin.version>3.5.0</maven-clean-plugin.version>
         <maven-install-plugin.version>3.1.4</maven-install-plugin.version>
@@ -190,6 +192,28 @@
                         <jvm>${java.home}/bin/java</jvm>
                         <argLine>--enable-preview --add-opens java.base/jdk.internal.misc=ALL-UNNAMED</argLine>
                     </configuration>
+                </plugin>
+                <!-- Surefire's default includes exclude *IT.java, so the ~20 IT integration
+                     tests (Testcontainers Kafka + DuckDB, full Spring context) never ran under
+                     `mvn test`. Failsafe picks up *IT.java by default and binds to
+                     integration-test/verify, so `mvn verify` runs them as a separate, slower
+                     gated suite without blurring the fast-test/slow-IT naming convention. -->
+                <plugin>
+                    <groupId>org.apache.maven.plugins</groupId>
+                    <artifactId>maven-failsafe-plugin</artifactId>
+                    <version>${maven-failsafe-plugin.version}</version>
+                    <configuration>
+                        <jvm>${java.home}/bin/java</jvm>
+                        <argLine>--enable-preview --add-opens java.base/jdk.internal.misc=ALL-UNNAMED</argLine>
+                    </configuration>
+                    <executions>
+                        <execution>
+                            <goals>
+                                <goal>integration-test</goal>
+                                <goal>verify</goal>
+                            </goals>
+                        </execution>
+                    </executions>
                 </plugin>
                 <plugin>
                     <groupId>org.springframework.boot</groupId>
