@@ -111,7 +111,10 @@ public class TopicController {
         // "entity_only" topics never write to the general cassette table, so skip
         // creating it — mirrors the mode check in SchemaManager.createLakeTables()'s
         // bootstrap-time bulk creation for topics present in joxette.bootstrap.topics.
-        if ("general".equals(mode) || "both".equals(mode)) {
+        // Resolve via TopicMode (case-insensitive, same as ConfigRepository.upsertTopic())
+        // rather than raw-string comparison, so mixed-case input like "General" or "BOTH"
+        // still gets its general table created.
+        if (TopicMode.fromValue(mode).writesGeneral()) {
             schemaManager.createGeneralTable(body.topic());
         }
         TopicConfig tc = config.upsertTopic(body.topic(), mode, false, startFrom, body.brokerId());
@@ -134,17 +137,23 @@ public class TopicController {
     public ResponseEntity<TopicConfig> updateTopic(
             @PathVariable String topic,
             @Valid @RequestBody UpdateTopicRequest body) throws SQLException {
-        config.findTopic(topic).orElseThrow(() -> ResourceNotFoundException.topic(topic));
         TopicConfig existing = config.findTopic(topic)
                 .orElseThrow(() -> ResourceNotFoundException.topic(topic));
         // Mode may be changing from "entity_only" (no general table) to "general"/"both",
         // which needs the general cassette table just as much as createTopic() does.
         // createGeneralTable() is idempotent (CREATE TABLE IF NOT EXISTS), so it is safe
         // to call unconditionally on every mode transition into "general"/"both".
-        if (body.mode() != null && ("general".equals(body.mode()) || "both".equals(body.mode()))) {
+        //
+        // When body.mode() is omitted (a partial update, e.g. brokerId-only), resolve
+        // against the topic's EXISTING persisted mode rather than defaulting to null —
+        // ConfigRepository.upsertTopic()'s TopicMode.fromValue(null) resolves to GENERAL
+        // and unconditionally overwrites the stored mode, so leaving this unresolved would
+        // silently downgrade an entity_only/both topic to "general" with no table created.
+        String mode = body.mode() != null ? body.mode() : existing.mode().getValue();
+        if (TopicMode.fromValue(mode).writesGeneral()) {
             schemaManager.createGeneralTable(topic);
         }
-        TopicConfig tc = config.upsertTopic(topic, body.mode(), existing.paused(), "latest", body.brokerId());
+        TopicConfig tc = config.upsertTopic(topic, mode, existing.paused(), "latest", body.brokerId());
         publish(topic, "updated");
         return ResponseEntity.ok(tc);
     }
