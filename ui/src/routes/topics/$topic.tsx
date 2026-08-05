@@ -1086,6 +1086,17 @@ function RuledTable({ table, density = 'regular', ariaLabel }: { table: any; den
                     textTransform: 'uppercase',
                     fontWeight: 'var(--type-micro-weight)',
                     color: 'var(--ink-tertiary)',
+                    // Virtualization (Task 3) made the scroll container
+                    // `overflow: auto` with a fixed maxHeight, so headers
+                    // would otherwise scroll away after ~a dozen rows — a
+                    // real usability regression for a table whose whole
+                    // point is holding thousands of rows. Sticky + an
+                    // opaque background keep the header visible while the
+                    // body scrolls underneath it.
+                    position: 'sticky',
+                    top: 0,
+                    zIndex: 1,
+                    background: 'var(--surface-paper)',
                   }}
                 >
                   {flexRender(h.column.columnDef.header, h.getContext())}
