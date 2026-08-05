@@ -27,4 +27,23 @@ spec:
         target:
           type: Utilization
           averageUtilization: {{ .Values.tiers.replay.hpa.targetCPUUtilizationPercentage }}
+    {{- /*
+    Pods metric: average joxette_replay_active (active replay-to-topic ops) per
+    pod. Replay is I/O-bound (SSE/NDJSON fan-out to slow clients) — many
+    concurrent streams can saturate a pod at low CPU, which the Resource metric
+    above misses entirely. HPA computes a desired replica count per metric and
+    scales to the MAX of them, so this only ever scales *out* further than CPU
+    alone would, never in place of it.
+    Prerequisite: a metrics adapter (e.g. prometheus-adapter) must be installed
+    and configured to expose joxette_replay_active via the custom metrics API
+    (custom.metrics.k8s.io) for a `type: Pods` metric to resolve. This chart
+    does not install or configure the adapter.
+    */}}
+    - type: Pods
+      pods:
+        metric:
+          name: joxette_replay_active
+        target:
+          type: AverageValue
+          averageValue: {{ .Values.tiers.replay.hpa.targetActiveReplaysPerPod | quote }}
 {{- end }}
