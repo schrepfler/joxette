@@ -506,6 +506,17 @@ const TopicRow = memo(function TopicRow({ tk, label, latest, pts, axisProps }: {
 // Page
 // ---------------------------------------------------------------------------
 
+// Hoisted to module scope: this object is fixed and never varies per render
+// or per MetricsPage instance. Recreating it inline in MetricsPage's render
+// body defeated React.memo on TopicRow (a fresh object literal every render
+// fails memo's shallow prop comparison, forcing TopicRow — and its whole
+// Recharts subtree — to re-render unconditionally, even on failed-poll
+// re-renders that otherwise touch nothing this chart cares about).
+const AXIS_PROPS = {
+  tick: { fontSize: 10, fill: 'var(--ink-tertiary)' },
+  axisLine: false, tickLine: false,
+} as const
+
 function MetricsPage() {
   const [history, setHistory] = useState<DataPoint[]>([])
   const [error, setError]     = useState<string | null>(null)
@@ -550,11 +561,6 @@ function MetricsPage() {
   }
   const replaysConfig: ChartConfig = {
     activeReplays: { label: 'active replays', color: '#6B46A0' },
-  }
-
-  const axisProps = {
-    tick: { fontSize: 10, fill: 'var(--ink-tertiary)' },
-    axisLine: false, tickLine: false,
   }
 
   const bytesDot   = makeActiveDot(fmtBytes)
@@ -628,7 +634,7 @@ function MetricsPage() {
           label={topicLabels[tk] ?? tk}
           latest={latest}
           pts={pts}
-          axisProps={axisProps}
+          axisProps={AXIS_PROPS}
         />
       ))}
 
@@ -647,9 +653,9 @@ function MetricsPage() {
             <ChartContainer config={writeConfig} className="h-[180px] w-full">
               <LineChart syncId="metrics" data={pts} margin={{ right: 8 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
-                <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
-                <YAxis yAxisId="depth" {...axisProps} width={28} />
-                <YAxis yAxisId="ms" orientation="right" tickFormatter={v => v + 'ms'} {...axisProps} width={48} />
+                <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...AXIS_PROPS} minTickGap={40} />
+                <YAxis yAxisId="depth" {...AXIS_PROPS} width={28} />
+                <YAxis yAxisId="ms" orientation="right" tickFormatter={v => v + 'ms'} {...AXIS_PROPS} width={48} />
                 <Tooltip content={() => null} cursor={CURSOR_STYLE} />
                 <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
                 <Line yAxisId="depth" type="monotone" dataKey="writeDepth"    name="depth"    stroke="var(--color-writeDepth)"    strokeWidth={1.5} dot={false} activeDot={countDot} isAnimationActive={false} />
@@ -664,8 +670,8 @@ function MetricsPage() {
             <ChartContainer config={catalogConfig} className="h-[180px] w-full">
               <AreaChart syncId="metrics" data={pts} margin={{ right: 8 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
-                <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
-                <YAxis tickFormatter={fmtBytes} {...axisProps} width={68} />
+                <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...AXIS_PROPS} minTickGap={40} />
+                <YAxis tickFormatter={fmtBytes} {...AXIS_PROPS} width={68} />
                 <Tooltip content={() => null} cursor={CURSOR_STYLE} />
                 <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
                 <Area type="monotone" dataKey="catalogBytes" name="catalog file" stroke="var(--color-catalogBytes)" fill="var(--color-catalogBytes)" fillOpacity={0.15} strokeWidth={1.5} dot={false} activeDot={bytesDot} isAnimationActive={false} />
@@ -684,8 +690,8 @@ function MetricsPage() {
                 ...Object.fromEntries(duckdbMemTags.map(t => [t, pt.duckdbMemoryByTag[t] ?? 0])),
               }))} margin={{ right: 8 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
-                <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
-                <YAxis tickFormatter={fmtBytes} {...axisProps} width={68} />
+                <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...AXIS_PROPS} minTickGap={40} />
+                <YAxis tickFormatter={fmtBytes} {...AXIS_PROPS} width={68} />
                 <Tooltip content={() => null} cursor={CURSOR_STYLE} />
                 <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
                 <Area type="monotone" dataKey="total" name="total"
@@ -707,8 +713,8 @@ function MetricsPage() {
             <ChartContainer config={heapConfig} className="h-[180px] w-full">
               <AreaChart syncId="metrics" data={pts} margin={{ right: 8 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
-                <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
-                <YAxis tickFormatter={fmtBytes} {...axisProps} width={68}
+                <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...AXIS_PROPS} minTickGap={40} />
+                <YAxis tickFormatter={fmtBytes} {...AXIS_PROPS} width={68}
                   domain={[0, (latest?.heapMax ?? 0) > 0 ? latest!.heapMax * 1.05 : 'auto']} />
                 <Tooltip content={() => null} cursor={CURSOR_STYLE} />
                 <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
@@ -730,8 +736,8 @@ function MetricsPage() {
             <ChartContainer config={replaysConfig} className="h-[180px] w-full">
               <AreaChart syncId="metrics" data={pts} margin={{ right: 8 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
-                <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
-                <YAxis {...axisProps} allowDecimals={false} width={28} />
+                <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...AXIS_PROPS} minTickGap={40} />
+                <YAxis {...AXIS_PROPS} allowDecimals={false} width={28} />
                 <Tooltip content={() => null} cursor={CURSOR_STYLE} />
                 <Area type="stepAfter" dataKey="activeReplays" name="active replays"
                   stroke="var(--color-activeReplays)" fill="var(--color-activeReplays)/20"
