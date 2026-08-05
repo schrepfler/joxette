@@ -1797,9 +1797,17 @@ public class CassetteController {
     @Operation(
         operationId = "rebuildKnownEntities",
         summary = "Rebuild known_entities registry from cassette data",
-        description = "Scans all entity cassette tables (`lake.main.entity_*`) on object storage and " +
-                      "rebuilds the `known_entities` registry from scratch. " +
-                      "Use this to recover after the local `.ducklake` catalog file was lost. " +
+        description = "Scans all entity cassette tables (`lake.main.entity_*`) and rebuilds the " +
+                      "`known_entities` registry from scratch, treating each table's live row " +
+                      "count (including zero) as authoritative. " +
+                      "Set `recoverOrphanedFiles=true` to additionally opt into a disaster-recovery " +
+                      "fallback for tables the catalog has zero live rows AND zero tracked file " +
+                      "history for — the state consistent with the local `.ducklake` catalog file " +
+                      "having been lost/reset while the original Parquet files remain orphaned on " +
+                      "object storage. The fallback is scoped strictly to that table's own on-disk " +
+                      "path and is never applied to a table whose zero rows are the result of an " +
+                      "ordinary deletion (GDPR erase, truncate, retention) — only pass true as a " +
+                      "deliberate operator action after confirming catalog loss, not routinely. " +
                       "Returns the number of entity rows upserted."
     )
     @ApiResponses({
@@ -1812,8 +1820,10 @@ public class CassetteController {
     })
     @PostMapping(value = "/entities/rebuild-known-entities",
                  produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<Map<String, Long>> rebuildKnownEntities() throws SQLException {
-        long rebuilt = lifecycle.rebuildKnownEntities();
+    public ResponseEntity<Map<String, Long>> rebuildKnownEntities(
+            @RequestParam(name = "recoverOrphanedFiles", defaultValue = "false") boolean recoverOrphanedFiles
+    ) throws SQLException {
+        long rebuilt = lifecycle.rebuildKnownEntities(recoverOrphanedFiles);
         return ResponseEntity.ok(Map.of("rebuilt", rebuilt));
     }
 

@@ -697,14 +697,50 @@ public class CassetteLifecycleService {
      * still have cassette data are updated; orphan rows for entity IDs that no
      * longer exist in the cassette are removed.
      *
-     * <p>This is a recovery operation — use it after losing the local
-     * {@code .ducklake} catalog file while the cassette Parquet data remains
-     * intact on object storage.
+     * <p>Equivalent to {@code rebuildKnownEntities(false)} — see the overload for
+     * the {@code recoverOrphanedFiles} contract.
      *
      * @return number of entity rows upserted
      * @throws SQLException if any DB operation fails
      */
     public long rebuildKnownEntities() throws SQLException {
+        return rebuildKnownEntities(false);
+    }
+
+    /**
+     * Rebuilds the {@code known_entities} registry from scratch by scanning all
+     * configured entity-cassette tables ({@code lake.main.entity_*}).
+     *
+     * <p>For each entity type, computes the earliest and most-recent
+     * {@code recorded_at} timestamps per {@code (entity_type, entity_id)} pair and
+     * upserts them into {@code known_entities}.  Existing rows for entity IDs that
+     * still have cassette data are updated; orphan rows for entity IDs that no
+     * longer exist in the cassette are removed.
+     *
+     * <p>The normal (catalog-intact) path treats each table's live row count as
+     * authoritative — including {@code 0} — because DuckLake's live view already
+     * unions inlined and Parquet data and already excludes logically-deleted rows.
+     * A zero count from a genuinely truncated or GDPR-erased entity type must stay
+     * zero, never be "recovered" from the still-present-but-superseded Parquet files.
+     *
+     * <p><b>{@code recoverOrphanedFiles}</b> opts into a disaster-recovery fallback for
+     * the one case where a zero count is <em>not</em> authoritative: the local
+     * {@code .ducklake} catalog file was lost/reset, {@code SchemaManager} silently
+     * recreated the (now catalog-amnesiac) entity tables at startup, and the original
+     * Parquet files are still sitting on object storage, orphaned from any catalog.
+     * See {@link #resolveEntityDataSource} for exactly how that fallback is scoped and
+     * gated — it is deliberately opt-in because "zero known files" is structurally
+     * indistinguishable from "this entity type has simply never had data yet", which
+     * is the common case on every fresh install. Pass {@code true} only as a deliberate
+     * operator action after confirming catalog loss, not as a routine default.
+     *
+     * @param recoverOrphanedFiles whether to fall back to a per-table-scoped raw Parquet
+     *                             scan when a table has zero live rows AND zero files
+     *                             tracked by the current catalog (see {@link #resolveEntityDataSource})
+     * @return number of entity rows upserted
+     * @throws SQLException if any DB operation fails
+     */
+    public long rebuildKnownEntities(boolean recoverOrphanedFiles) throws SQLException {
         List<String> entityTypes = configRepo.listEntityTypes().stream()
                 .map(etc -> etc.entityType())
                 .toList();
@@ -732,13 +768,14 @@ public class CassetteLifecycleService {
 
             for (String entityType : entityTypes) {
                 com.joxette.db.SchemaManager.validateEntityType(entityType);
-                String src = "lake.main.entity_" + entityType;
+                String tableName = "entity_" + entityType;
+                String src = "lake.main." + tableName;
 
                 // Check the table exists before querying it
                 boolean exists;
                 try (PreparedStatement ps = duckDB.prepareStatement(
                         "SELECT 1 FROM duckdb_tables() WHERE database_name='lake' AND schema_name='main' AND table_name=?")) {
-                    ps.setString(1, "entity_" + entityType);
+                    ps.setString(1, tableName);
                     try (ResultSet rs = ps.executeQuery()) {
                         exists = rs.next();
                     }
@@ -749,13 +786,13 @@ public class CassetteLifecycleService {
                 }
 
                 // Determine the data source for this entity type.
-                // Primary: the DuckLake-backed catalog table (fast, structured).
-                // Fallback: read_parquet() glob directly from object storage when the catalog
-                // table is empty because the .ducklake file was lost/reset — the Parquet files
-                // on S3 may still contain all the data.
-                String dataSource = resolveEntityDataSource(src, entityType);
+                // Primary: the DuckLake-backed catalog table (fast, structured, deletion-aware).
+                // Fallback: a per-table-scoped read_parquet() glob, opt-in only — see
+                // resolveEntityDataSource() javadoc for the full contract.
+                String dataSource = resolveEntityDataSource(src, tableName, entityType, recoverOrphanedFiles);
                 if (dataSource == null) {
-                    // No data found either through the catalog or directly from object storage.
+                    // No data found — either genuinely empty/deleted, or (with recovery
+                    // disabled/inapplicable) orphaned-file recovery was not performed.
                     continue;
                 }
 
@@ -808,25 +845,53 @@ public class CassetteLifecycleService {
      *
      * <ol>
      *   <li><b>Primary path:</b> {@code lake.main.entity_{type}} — the DuckLake-backed
-     *       catalog table.  Used when it contains at least one row.</li>
-     *   <li><b>Fallback path:</b> {@code read_parquet('objectStoragePath/**\/*.parquet',
-     *       union_by_name=true)} — used when the catalog table is empty (e.g. after the
-     *       {@code .ducklake} catalog file was deleted/reset and the Parquet files on S3
-     *       are no longer referenced by any catalog snapshot).  Only entity-type Parquet
-     *       files contain an {@code entity_id} column; the glob is filtered via
-     *       {@code WHERE entity_id IS NOT NULL} in the caller.</li>
+     *       catalog table.  Used whenever it contains at least one live row.</li>
+     *   <li><b>Zero rows, but the catalog still remembers this table's files:</b>
+     *       {@code ducklake_list_files('lake', tableName)} lists every data/delete file
+     *       the <em>current</em> catalog associates with the table, at any snapshot.
+     *       A full-table {@code DELETE} (GDPR erase, truncate, retention) marks rows
+     *       deleted via delete-file markers but leaves the underlying data file(s)
+     *       tracked until compaction/vacuum reclaims them — so a non-empty result here
+     *       proves the zero count is a real, intentional deletion, not catalog loss.
+     *       DuckLake's live view already excludes those rows; trust it and return
+     *       {@code null} rather than ever reading the raw Parquet bytes underneath.</li>
+     *   <li><b>Zero rows AND zero tracked files, with {@code recoverOrphanedFiles=true}:</b>
+     *       the current catalog has never heard of this table having any data — the
+     *       one state consistent with (but not proof of) the {@code .ducklake} catalog
+     *       file having been lost/reset while {@code SchemaManager} silently recreated
+     *       the table empty at startup, with the original Parquet files orphaned on
+     *       object storage.  Falls back to {@code read_parquet(objectStoragePath/main/
+     *       {tableName}/**\/*.parquet)} — scoped to this table's own default DuckLake
+     *       path convention (<a href="https://ducklake.select/docs/stable/duckdb/usage/paths">
+     *       {@code {data_path}/{schema}/{table_name}/...}</a>), never a bucket-wide glob,
+     *       so recovery for one entity type can never pick up another entity type's
+     *       files.</li>
      * </ol>
      *
-     * <p>Returns {@code null} when both paths yield no data (nothing to rebuild).
+     * <p><b>Residual risk:</b> "zero tracked files" is still structurally indistinguishable
+     * from "this entity type has simply never had data" — there is no catalog-independent
+     * signal that can tell them apart, because by definition a lost/reset catalog knows
+     * nothing about what it lost. That ambiguity is why the fallback is opt-in
+     * ({@code recoverOrphanedFiles}) rather than automatic: an operator invoking recovery
+     * after a confirmed catalog-loss incident is an acceptable use of the ambiguous signal;
+     * a routine/scheduled rebuild silently guessing is not. See {@code docs/known-issues.md}
+     * history and {@code RebuildKnownEntitiesIT} for the production incident this replaced
+     * (an unconditional bucket-wide glob that both cross-contaminated entity types and
+     * resurrected GDPR-deleted rows).
+     *
+     * <p>Returns {@code null} when no data is found or recovery was not requested/applicable.
      *
      * <p><b>Must be called inside {@code synchronized(duckDB)}.</b>
      *
      * @param catalogSrc  fully-qualified DuckLake table name, e.g. {@code lake.main.entity_fixture}
+     * @param tableName   unqualified table name, e.g. {@code entity_fixture}
      * @param entityType  validated entity type name
+     * @param recoverOrphanedFiles whether to attempt the opt-in orphaned-Parquet fallback
      * @return SQL expression to FROM-from, or {@code null} if no data found
      */
-    private String resolveEntityDataSource(String catalogSrc, String entityType) throws SQLException {
-        // --- Primary: check catalog table row count ---
+    private String resolveEntityDataSource(String catalogSrc, String tableName, String entityType,
+                                            boolean recoverOrphanedFiles) throws SQLException {
+        // --- Primary: check catalog table row count (already deletion-aware) ---
         long srcCount;
         try (Statement st = duckDB.createStatement();
              ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM " + catalogSrc)) {
@@ -837,7 +902,23 @@ public class CassetteLifecycleService {
             return catalogSrc;
         }
 
-        // --- Fallback: try reading Parquet files directly from object storage ---
+        // Zero live rows. Before ever considering a raw-storage scan, ask the catalog
+        // whether it still tracks file history for this table — see javadoc above.
+        if (tableHasTrackedFiles(tableName)) {
+            log.info("rebuildKnownEntities: catalog table {} has 0 live rows but the catalog still " +
+                     "tracks on-disk file history for '{}' (rows were deleted, e.g. GDPR erase or " +
+                     "truncate) — trusting the deletion, not scanning raw storage", catalogSrc, tableName);
+            return null;
+        }
+
+        if (!recoverOrphanedFiles) {
+            log.debug("rebuildKnownEntities: catalog table {} is empty with no tracked file history " +
+                      "for '{}'; orphaned-file recovery was not requested — skipping", catalogSrc, tableName);
+            return null;
+        }
+
+        // --- Opt-in disaster-recovery fallback: try reading Parquet files directly from
+        //     object storage, scoped to this table's own path. ---
         if (objectStoragePath == null || objectStoragePath.isBlank()) {
             log.warn("rebuildKnownEntities: catalog table {} is empty and no object-storage-path " +
                      "is configured — cannot fall back to direct Parquet scan for type '{}'",
@@ -845,18 +926,16 @@ public class CassetteLifecycleService {
             return null;
         }
 
-        // Build a glob that covers all Parquet files under the object-storage root.
-        // DuckLake writes entity-cassette files under a path that contains the table name
-        // (e.g. entity_fixture/), but we use **/*.parquet to be robust against path changes.
-        // The WHERE entity_id IS NOT NULL filter (in the caller) eliminates general-cassette
-        // rows that do not have an entity_id column.
+        // Scoped to this table's own default DuckLake on-disk path — {data_path}/main/{tableName}/...
+        // (see https://ducklake.select/docs/stable/duckdb/usage/paths) — never a bucket-wide glob,
+        // so this can never pick up another entity type's (or the general cassettes') files.
         String base = objectStoragePath.endsWith("/")
                 ? objectStoragePath : objectStoragePath + "/";
-        String glob = base + "**/*.parquet";
+        String glob = base + "main/" + tableName + "/**/*.parquet";
         String parquetSrc = "read_parquet('" + glob + "', union_by_name=true, hive_partitioning=false)";
 
-        log.warn("rebuildKnownEntities: catalog table {} is empty — " +
-                 "falling back to direct Parquet scan at '{}' for type '{}'",
+        log.warn("rebuildKnownEntities: catalog table {} is empty and untracked — " +
+                 "recoverOrphanedFiles=true, falling back to table-scoped Parquet scan at '{}' for type '{}'",
                  catalogSrc, glob, entityType);
 
         long parquetCount;
@@ -923,6 +1002,39 @@ public class CassetteLifecycleService {
         // the GROUP BY in the subsequent known_entities INSERT works correctly through the
         // DuckLake-backed table (avoids DuckDB planner issues with read_parquet() in GROUP BY).
         return repopulated ? catalogSrc : parquetSrc;
+    }
+
+    /**
+     * Returns whether the current DuckLake catalog still tracks any data or delete file
+     * for {@code tableName}, at any snapshot — i.e. whether {@code ducklake_list_files}
+     * returns at least one row.
+     *
+     * <p>Used by {@link #resolveEntityDataSource} to tell apart two very different reasons
+     * a table can have zero live rows: rows that were deleted (files still tracked) versus
+     * a table the current catalog has never associated any file with at all (see that
+     * method's javadoc for the full reasoning).
+     *
+     * <p>If the {@code ducklake_list_files} metadata function itself is unavailable (e.g. an
+     * older DuckLake build) this fails <em>closed</em> — returns {@code true} so the caller
+     * skips the fallback rather than risking a resurrection scan when the signal can't be
+     * trusted.
+     *
+     * <p><b>Must be called inside {@code synchronized(duckDB)}.</b>
+     *
+     * @param tableName unqualified table name, e.g. {@code entity_fixture} — caller must have
+     *                  already validated the entity type this is derived from
+     */
+    private boolean tableHasTrackedFiles(String tableName) {
+        try (Statement st = duckDB.createStatement();
+             ResultSet rs = st.executeQuery(
+                     "SELECT 1 FROM ducklake_list_files('lake', '" + tableName + "') LIMIT 1")) {
+            return rs.next();
+        } catch (SQLException e) {
+            log.warn("rebuildKnownEntities: ducklake_list_files('lake', '{}') failed ({}); " +
+                     "treating as having tracked file history to avoid an unsafe fallback scan",
+                     tableName, e.getMessage());
+            return true;
+        }
     }
 
     /**

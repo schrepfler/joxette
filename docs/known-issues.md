@@ -16,16 +16,6 @@ that no longer exists on `joxette_instances` — it was migrated away to
 `SchemaManager.migrateJoxetteInstances`). The test predates that migration
 and was never updated. Fix: rewrite both tests against the current schema.
 
-## `RebuildKnownEntitiesIT` — 2 failures, not yet root-caused
-
-`rebuildKnownEntities_emptyEntityTables_returns0AndLeavesRegistryEmpty` and
-`rebuildKnownEntities_idempotent_secondCallProducesSameResult` return
-non-zero/mismatched row counts. Confirmed pre-existing (reproduces
-identically on main before any recent hardening work), not yet
-investigated further — likely a test-isolation issue (leftover rows from a
-prior test in the same run) rather than a `rebuildKnownEntities()` defect,
-but this needs confirming.
-
 ## `HeadersRoundTripIT` — 4 `NullPointerException`s in `writeRecord`
 
 All four header round-trip scenarios (binary non-UTF8, duplicate keys,

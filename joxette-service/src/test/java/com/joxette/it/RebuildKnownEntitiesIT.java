@@ -5,7 +5,6 @@ import com.joxette.replay.EntityRoute;
 import com.joxette.replay.KafkaMessage;
 import com.joxette.support.DuckDBTestSupport;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -204,7 +203,6 @@ class RebuildKnownEntitiesIT {
     }
 
     @Test
-    @Disabled("Pre-existing failure, unrelated to /v1-hardening work — see docs/known-issues.md")
     void rebuildKnownEntities_emptyEntityTables_returns0AndLeavesRegistryEmpty()
             throws Exception {
         // Entity tables were wiped in @BeforeEach — rebuild finds nothing to scan.
@@ -217,7 +215,6 @@ class RebuildKnownEntitiesIT {
     }
 
     @Test
-    @Disabled("Pre-existing failure, unrelated to /v1-hardening work — see docs/known-issues.md")
     void rebuildKnownEntities_idempotent_secondCallProducesSameResult() throws Exception {
         try (EntityCassetteBatchWriter writer = new EntityCassetteBatchWriter(duckDB)) {
             writer.writeRoutes(
@@ -237,6 +234,87 @@ class RebuildKnownEntitiesIT {
         assertEntityExists("order", "order-X");
         assertFirstSeenEqualsLastSeen("order", "order-X");
         assertThat(DuckDBTestSupport.countRows(duckDB, "known_entities")).isEqualTo(1L);
+    }
+
+    /**
+     * Regression test for the production data-integrity bug this class exists to guard
+     * against: {@code resolveEntityDataSource()} used to fall back to an unscoped,
+     * bucket-wide {@code **\/*.parquet} glob whenever a table's live row count was zero
+     * — regardless of <em>why</em> it was zero. That glob (a) matched Parquet files
+     * belonging to every entity type under the object-storage root, not just the one
+     * being rebuilt, mislabeling their rows with the current loop's {@code entityType},
+     * and (b) could resurrect rows that were already logically DELETEd from the live
+     * table, since DuckLake DELETE only marks rows deleted — it doesn't remove the
+     * underlying Parquet file until compaction/vacuum runs.
+     *
+     * <p>This test reproduces both preconditions in one bucket: real "order" data is
+     * written and flushed to Parquet, then deleted from the live table (so the bucket
+     * genuinely contains "order" Parquet files with all rows delete-marked), while
+     * "customer" is left completely untouched (so the bucket has zero files for it).
+     * It then calls rebuild with the opt-in {@code recoverOrphanedFiles=true} flag —
+     * the most permissive setting — and asserts that even then:
+     * <ul>
+     *   <li>the deleted "order" rows are NOT resurrected (the {@code ducklake_list_files}
+     *       tracked-file gate trusts the deletion instead of scanning raw storage), and</li>
+     *   <li>no "order" data leaks into "customer"'s rebuild (the fallback glob, when it
+     *       does run, is scoped to that table's own on-disk path, never the whole bucket).</li>
+     * </ul>
+     * If either regression reappeared, this test would fail loudly: rows would resurface
+     * in {@code known_entities} under one or both entity types.
+     */
+    @Test
+    void rebuildKnownEntities_recoverOrphanedFiles_doesNotResurrectDeletedRowsOrCrossContaminate()
+            throws Exception {
+        // Write and flush real "order" data so the bucket contains genuine "order" Parquet
+        // files — the exact raw material a bucket-wide glob would (wrongly) hoover up.
+        try (EntityCassetteBatchWriter writer = new EntityCassetteBatchWriter(duckDB)) {
+            writer.writeRoutes(
+                    List.of(new EntityRoute("order", "order-777", 7, "created", "test-topic")),
+                    message("orders.events", 0, 9L, Instant.parse("2024-07-01T09:00:00Z")));
+        }
+        try (Statement st = duckDB.createStatement()) {
+            try {
+                st.execute("CALL ducklake_flush_inlined_data('lake')");
+            } catch (Exception ignored) {
+                // Non-fatal — see other tests in this class for the same pattern.
+            }
+            st.execute("CHECKPOINT");
+        }
+        assertThat(countCassetteRows("order", "order-777")).isEqualTo(1L);
+
+        // Logically delete it — DuckLake keeps the Parquet file(s) tracked (with delete
+        // markers) until compaction/vacuum reclaims them, so the file is still sitting in
+        // the bucket after this DELETE.
+        try (Statement st = duckDB.createStatement()) {
+            st.execute("DELETE FROM lake.main.entity_order WHERE entity_id = 'order-777'");
+        }
+        assertThat(countCassetteRows("order", "order-777")).isEqualTo(0L);
+
+        // "customer" is untouched by this test (and was wiped in @BeforeEach) — zero rows,
+        // zero ever-tracked files.
+
+        // Even with the most permissive recovery flag, neither type may resurrect/contaminate.
+        ResponseEntity<Map> response = restTemplate.postForEntity(
+                url("/cassettes/entities/rebuild-known-entities?recoverOrphanedFiles=true"),
+                null, Map.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(((Number) response.getBody().get("rebuilt")).longValue())
+                .as("deleted 'order' rows must not be resurrected, and 'customer' must not " +
+                    "pick up 'order' data even under recoverOrphanedFiles=true")
+                .isEqualTo(0L);
+        assertThat(DuckDBTestSupport.countRows(duckDB, "known_entities")).isEqualTo(0L);
+
+        // Explicitly confirm no cross-type leakage: order-777 must not appear under either type.
+        try (PreparedStatement ps = duckDB.prepareStatement(
+                "SELECT COUNT(*) FROM known_entities WHERE entity_id = 'order-777'")) {
+            try (ResultSet rs = ps.executeQuery()) {
+                assertThat(rs.next()).isTrue();
+                assertThat(rs.getLong(1))
+                        .as("order-777 must not resurface under any entity type")
+                        .isEqualTo(0L);
+            }
+        }
     }
 
     // -------------------------------------------------------------------------
