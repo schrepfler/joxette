@@ -120,7 +120,7 @@ class TimestampSerializationIT {
 
     @BeforeEach
     void setUp() throws Exception {
-        baseUrl = "http://localhost:" + port;
+        baseUrl = "http://localhost:" + port + "/v1";
 
         // ---- General cassette ----
         DuckDBTestSupport.createGeneralCassetteTable(duckDB, TOPIC);

@@ -104,7 +104,7 @@ class ExportSnapshotToObjectStoreIT {
     private S3Client s3Client;
 
     private String url(String path) {
-        return "http://localhost:" + port + path;
+        return "http://localhost:" + port + "/v1" + path;
     }
 
     @BeforeEach

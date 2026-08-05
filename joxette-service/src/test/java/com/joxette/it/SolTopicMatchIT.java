@@ -224,7 +224,7 @@ class SolTopicMatchIT {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         ResponseEntity<SolMatchResponse> resp = rest.postForEntity(
-                "http://localhost:" + port + "/cassettes/topics/" + topic + "/sol-match",
+                "http://localhost:" + port + "/v1/cassettes/topics/" + topic + "/sol-match",
                 new HttpEntity<>(body, headers),
                 SolMatchResponse.class);
         assertThat(resp.getStatusCode().is2xxSuccessful()).isTrue();

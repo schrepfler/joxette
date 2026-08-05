@@ -100,7 +100,7 @@ class RebuildKnownEntitiesIT {
     private Connection duckDB;
 
     private String url(String path) {
-        return "http://localhost:" + port + path;
+        return "http://localhost:" + port + "/v1" + path;
     }
 
     @BeforeEach

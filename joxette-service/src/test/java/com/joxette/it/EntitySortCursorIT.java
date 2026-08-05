@@ -161,7 +161,7 @@ class EntitySortCursorIT {
 
     private PagedResponse<EntityInfo> fetch(String sortBy, int limit, String cursor) {
         String url = "http://localhost:" + port
-                + "/cassettes/entities/" + ENTITY_TYPE
+                + "/v1/cassettes/entities/" + ENTITY_TYPE
                 + "?sortBy=" + sortBy
                 + "&limit=" + limit
                 + (cursor != null ? "&cursor=" + cursor : "");

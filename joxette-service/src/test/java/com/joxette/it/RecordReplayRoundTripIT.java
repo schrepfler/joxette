@@ -115,7 +115,7 @@ class RecordReplayRoundTripIT {
                 "{\"order_id\":\"ORD-2\"}".getBytes(StandardCharsets.UTF_8));
 
         ResponseEntity<PagedResponse<CassetteRecord>> response = restTemplate.exchange(
-                baseUrl + "/cassettes/topics/" + TEST_TOPIC,
+                baseUrl + "/v1/cassettes/topics/" + TEST_TOPIC,
                 HttpMethod.GET,
                 null,
                 new ParameterizedTypeReference<>() {});
@@ -137,7 +137,7 @@ class RecordReplayRoundTripIT {
     @Test
     void replayApi_emptyTopic_returnsEmptyPage() {
         ResponseEntity<PagedResponse<CassetteRecord>> response = restTemplate.exchange(
-                baseUrl + "/cassettes/topics/" + TEST_TOPIC,
+                baseUrl + "/v1/cassettes/topics/" + TEST_TOPIC,
                 HttpMethod.GET,
                 null,
                 new ParameterizedTypeReference<>() {});
@@ -157,7 +157,7 @@ class RecordReplayRoundTripIT {
         }
 
         ResponseEntity<PagedResponse<CassetteRecord>> page1 = restTemplate.exchange(
-                baseUrl + "/cassettes/topics/" + TEST_TOPIC + "?limit=2",
+                baseUrl + "/v1/cassettes/topics/" + TEST_TOPIC + "?limit=2",
                 HttpMethod.GET, null, new ParameterizedTypeReference<>() {});
 
         assertThat(page1.getBody()).isNotNull();
@@ -167,7 +167,7 @@ class RecordReplayRoundTripIT {
         assertThat(cursor).isNotNull();
 
         ResponseEntity<PagedResponse<CassetteRecord>> page2 = restTemplate.exchange(
-                baseUrl + "/cassettes/topics/" + TEST_TOPIC + "?limit=2&cursor=" + cursor,
+                baseUrl + "/v1/cassettes/topics/" + TEST_TOPIC + "?limit=2&cursor=" + cursor,
                 HttpMethod.GET, null, new ParameterizedTypeReference<>() {});
 
         assertThat(page2.getBody()).isNotNull();
@@ -176,7 +176,7 @@ class RecordReplayRoundTripIT {
 
         String cursor2 = page2.getBody().nextCursor();
         ResponseEntity<PagedResponse<CassetteRecord>> page3 = restTemplate.exchange(
-                baseUrl + "/cassettes/topics/" + TEST_TOPIC + "?limit=2&cursor=" + cursor2,
+                baseUrl + "/v1/cassettes/topics/" + TEST_TOPIC + "?limit=2&cursor=" + cursor2,
                 HttpMethod.GET, null, new ParameterizedTypeReference<>() {});
 
         assertThat(page3.getBody()).isNotNull();
@@ -194,7 +194,7 @@ class RecordReplayRoundTripIT {
                 Instant.parse("2024-09-01T12:00:05Z"), "new-key", b("new"));
 
         ResponseEntity<PagedResponse<CassetteRecord>> response = restTemplate.exchange(
-                baseUrl + "/cassettes/topics/" + TEST_TOPIC,
+                baseUrl + "/v1/cassettes/topics/" + TEST_TOPIC,
                 HttpMethod.GET, null, new ParameterizedTypeReference<>() {});
 
         assertThat(response.getBody()).isNotNull();
@@ -261,7 +261,7 @@ class RecordReplayRoundTripIT {
         Map<String, Object> body = new HashMap<>();
         body.put("topic", topic);
         body.put("mode", mode);
-        restTemplate.postForEntity(baseUrl + "/topics", body, Object.class);
+        restTemplate.postForEntity(baseUrl + "/v1/topics", body, Object.class);
     }
 
     private void createKafkaTopic(String topic, int partitions) throws Exception {

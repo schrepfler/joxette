@@ -101,7 +101,7 @@ class EntityReplayRoundTripIT {
     @BeforeEach
     void setUp() throws Exception {
         restTemplate = new RestTemplate();
-        baseUrl = "http://localhost:" + port;
+        baseUrl = "http://localhost:" + port + "/v1";
 
         // Create Kafka topic once; ignore AlreadyExistsException on subsequent test methods.
         createKafkaTopic(TEST_TOPIC, 1);

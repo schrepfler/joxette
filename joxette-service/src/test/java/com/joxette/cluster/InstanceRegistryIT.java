@@ -176,7 +176,7 @@ class InstanceRegistryIT {
 
     @Test
     void getInstancesReturnsOwnInstance() {
-        String url = "http://localhost:" + port + "/instances";
+        String url = "http://localhost:" + port + "/v1/instances";
         ResponseEntity<List<Map<String, Object>>> response = restTemplate.exchange(
                 url, HttpMethod.GET, null,
                 new ParameterizedTypeReference<>() {});
@@ -193,7 +193,7 @@ class InstanceRegistryIT {
 
     @Test
     void getInstancesComputesAliveStatus() {
-        String url = "http://localhost:" + port + "/instances";
+        String url = "http://localhost:" + port + "/v1/instances";
         ResponseEntity<List<Map<String, Object>>> response = restTemplate.exchange(
                 url, HttpMethod.GET, null,
                 new ParameterizedTypeReference<>() {});
@@ -213,7 +213,7 @@ class InstanceRegistryIT {
 
     @Test
     void getInstancesIncludesRolesAndCatalogBackend() {
-        String url = "http://localhost:" + port + "/instances";
+        String url = "http://localhost:" + port + "/v1/instances";
         ResponseEntity<List<Map<String, Object>>> response = restTemplate.exchange(
                 url, HttpMethod.GET, null,
                 new ParameterizedTypeReference<>() {});
@@ -237,7 +237,7 @@ class InstanceRegistryIT {
 
     @Test
     void healthEndpointIncludesClusterSummary() {
-        String url = "http://localhost:" + port + "/health";
+        String url = "http://localhost:" + port + "/v1/health";
         ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
                 url, HttpMethod.GET, null,
                 new ParameterizedTypeReference<>() {});
@@ -255,7 +255,7 @@ class InstanceRegistryIT {
 
     @Test
     void healthEndpointInstanceIdMatchesRegistry() {
-        String url = "http://localhost:" + port + "/health";
+        String url = "http://localhost:" + port + "/v1/health";
         ResponseEntity<Map<String, Object>> response = restTemplate.exchange(
                 url, HttpMethod.GET, null,
                 new ParameterizedTypeReference<>() {});

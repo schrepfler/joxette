@@ -241,7 +241,7 @@ class SortCursorPaginationIT {
     // -------------------------------------------------------------------------
 
     private String baseUrl() {
-        return "http://localhost:" + port;
+        return "http://localhost:" + port + "/v1";
     }
 
     private static byte[] bytes(String s) {

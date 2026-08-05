@@ -57,7 +57,7 @@ class ApiKeyAuthenticationIT {
     private final ObjectMapper mapper = new ObjectMapper();
 
     private String url(String path) {
-        return "http://localhost:" + port + path;
+        return "http://localhost:" + port + "/v1" + path;
     }
 
     // Uses the java.net.http.HttpClient-backed request factory rather than RestTemplate's
@@ -88,7 +88,7 @@ class ApiKeyAuthenticationIT {
         JsonNode node = mapper.readTree(response.getBody());
         assertThat(node.get("errorCode").asText()).isEqualTo(ErrorCodes.UNAUTHORIZED);
         assertThat(node.get("status").asInt()).isEqualTo(401);
-        assertThat(node.get("path").asText()).isEqualTo("/entities");
+        assertThat(node.get("path").asText()).isEqualTo("/v1/entities");
     }
 
     @Test
@@ -164,12 +164,15 @@ class ApiKeyAuthenticationIT {
         return nonThrowingRestTemplate().exchange(url(path), method, entity, String.class);
     }
 
+    /** {@code expectedPath} is the unprefixed controller path — the actual request (and
+     *  therefore the ProblemDetail's {@code path} field) carries the {@code /v1} prefix
+     *  added by {@link #url}. */
     private void assertRejected(ResponseEntity<String> response, String expectedPath) throws Exception {
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.UNAUTHORIZED);
         assertThat(response.getHeaders().getContentType().toString()).contains("application/problem+json");
         JsonNode node = mapper.readTree(response.getBody());
         assertThat(node.get("errorCode").asText()).isEqualTo(ErrorCodes.UNAUTHORIZED);
         assertThat(node.get("status").asInt()).isEqualTo(401);
-        assertThat(node.get("path").asText()).isEqualTo(expectedPath);
+        assertThat(node.get("path").asText()).isEqualTo("/v1" + expectedPath);
     }
 }

@@ -64,7 +64,7 @@ class ProblemDetailContractIT {
     }
 
     private String url(String path) {
-        return "http://localhost:" + port + path;
+        return "http://localhost:" + port + "/v1" + path;
     }
 
     private JsonNode parse(String body) throws Exception {
@@ -98,7 +98,7 @@ class ProblemDetailContractIT {
         assertThat(body.get("detail").asText()).contains("does-not-exist");
         assertThat(body.get("errorCode").asText()).isEqualTo(ErrorCodes.NOT_FOUND);
         assertThat(body.get("timestamp").asText()).isNotBlank();
-        assertThat(body.get("path").asText()).isEqualTo("/topics/does-not-exist");
+        assertThat(body.get("path").asText()).isEqualTo("/v1/topics/does-not-exist");
     }
 
     // =========================================================================
@@ -129,7 +129,7 @@ class ProblemDetailContractIT {
         assertThat(node.get("status").asInt()).isEqualTo(400);
         assertThat(node.get("errorCode").asText()).isEqualTo(ErrorCodes.VALIDATION);
         assertThat(node.get("timestamp").asText()).isNotBlank();
-        assertThat(node.get("path").asText()).isEqualTo("/topics");
+        assertThat(node.get("path").asText()).isEqualTo("/v1/topics");
 
         // Field-level extension is the contract for bean-validation failures.
         JsonNode errors = node.get("errors");
@@ -163,6 +163,6 @@ class ProblemDetailContractIT {
         JsonNode node = parse(response.getBody());
         assertThat(node.get("type").asText()).isEqualTo(ErrorTypes.VALIDATION.toString());
         assertThat(node.get("errorCode").asText()).isEqualTo(ErrorCodes.VALIDATION);
-        assertThat(node.get("path").asText()).isEqualTo("/entities");
+        assertThat(node.get("path").asText()).isEqualTo("/v1/entities");
     }
 }

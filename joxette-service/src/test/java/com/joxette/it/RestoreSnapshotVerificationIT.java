@@ -75,7 +75,7 @@ class RestoreSnapshotVerificationIT {
     static final String SNAPSHOT_NAME = "it-verify-restore-snap";
 
     private String url(String path) {
-        return "http://localhost:" + port + path;
+        return "http://localhost:" + port + "/v1" + path;
     }
 
     @BeforeEach

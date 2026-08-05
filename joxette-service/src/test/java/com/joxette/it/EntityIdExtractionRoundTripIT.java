@@ -232,7 +232,7 @@ class EntityIdExtractionRoundTripIT {
     // -------------------------------------------------------------------------
 
     private String url(String path) {
-        return "http://localhost:" + port + path;
+        return "http://localhost:" + port + "/v1" + path;
     }
 
     private KafkaProducer<String, byte[]> newProducer() {

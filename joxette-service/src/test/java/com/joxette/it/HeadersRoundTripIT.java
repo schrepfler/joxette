@@ -223,7 +223,7 @@ class HeadersRoundTripIT {
      */
     private List<CassetteRecord.Header> fetchFirstRecordHeaders() {
         ResponseEntity<PagedResponse<CassetteRecord>> response = restTemplate.exchange(
-                "http://localhost:" + port + "/cassettes/topics/" + TOPIC,
+                "http://localhost:" + port + "/v1/cassettes/topics/" + TOPIC,
                 HttpMethod.GET, null, new ParameterizedTypeReference<>() {});
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(response.getBody()).isNotNull();

@@ -512,7 +512,7 @@ class SolMatchIT {
     }
 
     private String url(String path) {
-        return "http://localhost:" + port + path;
+        return "http://localhost:" + port + "/v1" + path;
     }
 
     private static String jsonString(String s) {

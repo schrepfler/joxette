@@ -90,7 +90,7 @@ class ReplayToTopicIT {
     @BeforeEach
     void setUp() throws Exception {
         restTemplate = new RestTemplate();
-        baseUrl = "http://localhost:" + port;
+        baseUrl = "http://localhost:" + port + "/v1";
 
         DuckDBTestSupport.createGeneralCassetteTable(duckDB, SOURCE_TOPIC);
         try (Statement st = duckDB.createStatement()) {

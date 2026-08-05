@@ -257,7 +257,7 @@ class SnapshotTruncateRestoreIT {
     // -------------------------------------------------------------------------
 
     private String url(String path) {
-        return "http://localhost:" + port + path;
+        return "http://localhost:" + port + "/v1" + path;
     }
 
     private static byte[] bytes(String s) {
