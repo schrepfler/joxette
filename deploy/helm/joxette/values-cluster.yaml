@@ -47,6 +47,11 @@ tiers:
       maxReplicas: 10
       targetCPUUtilizationPercentage: 70
       targetActiveReplaysPerPod: 10
+      # Off by default here too — only flip on once prometheus-adapter is
+      # confirmed serving joxette_replay_active in this cluster (see values.yaml
+      # for the scale-down-blocking risk of enabling it without the adapter).
+      activeReplaysMetric:
+        enabled: false
   compaction:
     enabled: true
     roles: [compaction]
@@ -68,3 +73,7 @@ serviceAccount:
 
 serviceMonitor:
   enabled: true
+
+monitoring:
+  prometheusRule:
+    enabled: true

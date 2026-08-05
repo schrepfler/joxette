@@ -106,6 +106,16 @@ tiers:
       # can saturate a pod at low CPU, so this metric scales out cases CPU alone
       # misses. HPA takes the max recommended replicas across all metrics.
       targetActiveReplaysPerPod: 10
+      activeReplaysMetric:
+        # Off by default: this Pods metric only resolves via a custom-metrics
+        # adapter (typically prometheus-adapter) exposing joxette_replay_active
+        # — a real deployment prerequisite this chart does not install. HPA v2
+        # semantics: if ANY configured metric fails to resolve, scale-UP still
+        # proceeds on the healthy metrics, but scale-DOWN is blocked outright.
+        # So enabling this without the adapter installed silently ratchets the
+        # replay tier up to maxReplicas and it never scales back down. Only
+        # opt in once the adapter is confirmed serving this metric.
+        enabled: false
   compaction:
     enabled: true
     # replicas always 1 — the chart pins it regardless of this value.
@@ -176,9 +186,14 @@ serviceMonitor:
 # Prometheus Operator alerting rules (PrometheusRule CR). Metric names must
 # match JoxetteMetrics.java exactly (Micrometer dots become Prometheus
 # underscores on scrape, e.g. joxette.consumer.lag -> joxette_consumer_lag).
+# Defaults to false, same as serviceMonitor above and for the same reason: the
+# PrometheusRule CRD isn't installed on a plain cluster, and `helm install`
+# fails hard ("resource mapping not found... ensure CRDs are installed first")
+# if this is on by default. The template also guards on .Capabilities so
+# enabling this without the CRD degrades to a no-op instead of erroring.
 monitoring:
   prometheusRule:
-    enabled: true
+    enabled: false
     labels: {}
     # Sustained (5m) joxette_consumer_lag above this fires a warning.
     consumerLagThreshold: 10000
