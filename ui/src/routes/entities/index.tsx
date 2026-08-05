@@ -90,6 +90,7 @@ function EntitiesPage() {
   const [showAdd, setShowAdd] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
   const [confirmRebuild, setConfirmRebuild] = useState(false)
+  const [offerOrphanRecovery, setOfferOrphanRecovery] = useState(false)
 
   const { data, isLoading, error } = useQuery({ queryKey: ['entities'], queryFn: entitiesApi.list })
 
@@ -100,8 +101,17 @@ function EntitiesPage() {
   })
 
   const rebuildMutation = useMutation({
-    mutationFn: () => cassettesApi.rebuildKnownEntities(),
-    onSuccess: (d) => addToast(`Rebuilt ${d.rebuilt.toLocaleString()} entity rows`, 'success'),
+    mutationFn: (recoverOrphanedFiles: boolean) => cassettesApi.rebuildKnownEntities(recoverOrphanedFiles),
+    onSuccess: (d, recoverOrphanedFiles) => {
+      addToast(`Rebuilt ${d.rebuilt.toLocaleString()} entity rows`, 'success')
+      // Zero rebuilt on a plain rebuild is ambiguous: it may mean there is genuinely
+      // nothing to rebuild, or that orphaned Parquet files exist but weren't scanned
+      // because recovery wasn't requested (see CassetteLifecycleService.resolveEntityDataSource).
+      // Offer the disaster-recovery follow-up rather than silently reporting "0" as final.
+      if (d.rebuilt === 0 && !recoverOrphanedFiles) {
+        setOfferOrphanRecovery(true)
+      }
+    },
     onError: (e: Error) => addToast(e.message, 'error'),
   })
 
@@ -188,9 +198,16 @@ function EntitiesPage() {
       {showAdd && <AddEntityModal onClose={() => setShowAdd(false)} />}
       {confirmRebuild && (
         <ConfirmDialog
-          message="Rebuild the known_entities registry from all entity cassette tables? This will delete all existing registry rows and re-scan the cassette data. Use this to recover after losing the catalog file."
-          onConfirm={() => { rebuildMutation.mutate(); setConfirmRebuild(false) }}
+          message="Rebuild the known_entities registry from all entity cassette tables? This will delete all existing registry rows and re-scan the cassette data."
+          onConfirm={() => { rebuildMutation.mutate(false); setConfirmRebuild(false) }}
           onCancel={() => setConfirmRebuild(false)}
+        />
+      )}
+      {offerOrphanRecovery && (
+        <ConfirmDialog
+          message="No rows were found to rebuild. If you believe entity data was lost — e.g. the catalog file was reset — the original Parquet files may still be orphaned on object storage. Retry with orphaned-file recovery? Only do this after confirming catalog loss; it is not a routine action."
+          onConfirm={() => { rebuildMutation.mutate(true); setOfferOrphanRecovery(false) }}
+          onCancel={() => setOfferOrphanRecovery(false)}
         />
       )}
       {confirmDelete && (

@@ -912,8 +912,13 @@ public class CassetteLifecycleService {
         }
 
         if (!recoverOrphanedFiles) {
-            log.debug("rebuildKnownEntities: catalog table {} is empty with no tracked file history " +
-                      "for '{}'; orphaned-file recovery was not requested — skipping", catalogSrc, tableName);
+            log.warn("rebuildKnownEntities: catalog table {} is empty with no tracked file history for " +
+                      "'{}' — this is consistent with either a genuinely-empty entity type or a lost/reset " +
+                      "catalog with orphaned Parquet files still sitting on object storage, and " +
+                      "orphaned-file recovery was NOT requested, so nothing was recovered for this type. " +
+                      "If you believe this table's data was actually lost (not just never populated), " +
+                      "re-run POST /cassettes/entities/rebuild-known-entities?recoverOrphanedFiles=true " +
+                      "after confirming catalog loss.", catalogSrc, tableName);
             return null;
         }
 

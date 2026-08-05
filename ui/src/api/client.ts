@@ -522,9 +522,17 @@ export const cassettesApi = {
       method: 'POST',
       body: JSON.stringify(body ?? {}),
     }),
-  /** Rebuild the known_entities registry by scanning all entity cassette tables. */
-  rebuildKnownEntities: () =>
-    request<{ rebuilt: number }>('/cassettes/entities/rebuild-known-entities', { method: 'POST' }),
+  /**
+   * Rebuild the known_entities registry by scanning all entity cassette tables.
+   *
+   * `recoverOrphanedFiles` opts into the disaster-recovery fallback (scanning raw Parquet
+   * on object storage) for tables the catalog has zero live rows AND zero tracked file
+   * history for — the state consistent with a lost/reset `.ducklake` catalog file. Without
+   * it, a table in that state is left alone. Only pass `true` after confirming the catalog
+   * was actually lost, not as a routine default — see `docs/clustering-deployment.md`.
+   */
+  rebuildKnownEntities: (recoverOrphanedFiles?: boolean) =>
+    request<{ rebuilt: number }>(`/cassettes/entities/rebuild-known-entities${buildQuery({ recoverOrphanedFiles: recoverOrphanedFiles ? 'true' : undefined })}`, { method: 'POST' }),
 
   getTopicFields: (topic: string, limit = 500) =>
     request<{ fields: string[] }>(`/cassettes/topics/${encodeURIComponent(topic)}/fields?limit=${limit}`)
