@@ -178,6 +178,28 @@ pre code {
   cursor: pointer;
 }
 
+/* The actual interactive/keyboard-operable control inside a jx-clickable
+   row (e.g. the entity-type cell) — a real <button>, individually
+   focusable, so it doesn't need any ARIA role or keydown handling of its
+   own. Reset to look like plain row text until hovered/focused. */
+.jx-row-link {
+  all: unset;
+  display: inline-block;
+  width: 100%;
+  cursor: pointer;
+}
+
+.jx-row-link:hover,
+.jx-row-link:focus-visible {
+  text-decoration: underline;
+}
+
+.jx-row-link:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--radius-xs);
+}
+
 /* ── Card ────────────────────────────────────────────────────────────── */
 .jx-card {
   background: var(--surface-paper);

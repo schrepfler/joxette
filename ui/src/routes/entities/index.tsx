@@ -83,6 +83,57 @@ function AddEntityModal({ onClose }: { onClose: () => void }) {
   )
 }
 
+/**
+ * A single entity-type row. The row itself (<tr>) carries no interactive
+ * role, tabIndex, or keydown handler — that was the source of two bugs:
+ * pressing Enter/Space on the nested Delete button bubbled up to the row's
+ * own keydown handler, which preventDefault()-ed the button's native
+ * activation and navigated away instead of deleting; and role="button" on
+ * a <tr> strips the whole table of its native row semantics for assistive
+ * tech (queryAllByRole('row') returned nothing).
+ *
+ * Instead, the entity-type cell's text is itself a real, individually
+ * focusable <button> — its own Tab stop, its own Enter/Space activation,
+ * no interference with sibling controls. `className="jx-clickable"` stays
+ * on the <tr> purely for the CSS hover background — it no longer implies
+ * any ARIA role or keyboard handling.
+ *
+ * Exported so `-EntityRow.keyboard.test.tsx` can render the real component
+ * instead of a hand-copied replica (the replica previously omitted the
+ * Delete button entirely, which is exactly why it didn't catch the bug
+ * above).
+ */
+export function EntityRow({
+  entityType,
+  buckets,
+  retentionDays,
+  onNavigate,
+  onDelete,
+}: {
+  entityType: string
+  buckets: number
+  retentionDays: number | null | undefined
+  onNavigate: () => void
+  onDelete: () => void
+}) {
+  return (
+    <tr className="jx-clickable">
+      <td style={tdStyle}>
+        <button type="button" className="jx-row-link" onClick={onNavigate}>
+          {entityType}
+        </button>
+      </td>
+      <td style={tdStyle}>{buckets}</td>
+      <td style={tdStyle}>{retentionDays ?? '—'}</td>
+      <td style={tdStyle}>
+        <button style={dangerBtnSmall} onClick={onDelete}>
+          Delete
+        </button>
+      </td>
+    </tr>
+  )
+}
+
 function EntitiesPage() {
   const navigate = useNavigate()
   const qc = useQueryClient()
@@ -108,19 +159,8 @@ function EntitiesPage() {
   const columns = [
     colHelper.accessor('entityType', { header: 'Entity Type' }),
     colHelper.accessor('buckets', { header: 'Buckets' }),
-    colHelper.accessor('retentionDays', { header: 'Retention Days', cell: i => i.getValue() ?? '—' }),
-    colHelper.display({
-      id: 'actions',
-      header: 'Actions',
-      cell: ({ row }) => (
-        <button
-          style={dangerBtnSmall}
-          onClick={e => { e.stopPropagation(); setConfirmDelete(row.original.entityType) }}
-        >
-          Delete
-        </button>
-      ),
-    }),
+    colHelper.accessor('retentionDays', { header: 'Retention Days' }),
+    colHelper.display({ id: 'actions', header: 'Actions' }),
   ]
 
   const table = useReactTable({ data: data ?? [], columns, getCoreRowModel: getCoreRowModel() })
@@ -170,21 +210,14 @@ function EntitiesPage() {
             </thead>
             <tbody>
               {table.getRowModel().rows.map(row => (
-                <tr
+                <EntityRow
                   key={row.id}
-                  role="button"
-                  tabIndex={0}
-                  className="jx-clickable"
-                  onClick={() => void navigate({ to: '/entities/$entityType', params: { entityType: row.original.entityType } })}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault()
-                      void navigate({ to: '/entities/$entityType', params: { entityType: row.original.entityType } })
-                    }
-                  }}
-                >
-                  {row.getVisibleCells().map(cell => <td key={cell.id} style={tdStyle}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}
-                </tr>
+                  entityType={row.original.entityType}
+                  buckets={row.original.buckets}
+                  retentionDays={row.original.retentionDays}
+                  onNavigate={() => void navigate({ to: '/entities/$entityType', params: { entityType: row.original.entityType } })}
+                  onDelete={() => setConfirmDelete(row.original.entityType)}
+                />
               ))}
             </tbody>
           </table>
