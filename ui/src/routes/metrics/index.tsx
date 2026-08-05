@@ -1,5 +1,5 @@
 import { createFileRoute } from '@tanstack/react-router'
-import { useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useMemo, useState } from 'react'
 import {
   AreaChart, Area, LineChart, Line,
   XAxis, YAxis, CartesianGrid, Legend, ReferenceLine, Tooltip,
@@ -8,15 +8,17 @@ import { ChartContainer, type ChartConfig } from '@/components/ui/chart'
 import { healthApi } from '../../api/client'
 import { Layout } from '../../components/Layout'
 import { pageTitle, cardStyle } from '../../styles/shared'
+import { useVisibilityAwareInterval } from '../../hooks/useVisibilityAwareInterval'
+import {
+  computeLagSeries, computeRateSeries, computeNetPts,
+  type DataPoint, type PtRecord, type MetricFamily,
+} from '../../lib/metricsDerive'
 
 export const Route = createFileRoute('/metrics/')({ component: MetricsPage })
 
 // ---------------------------------------------------------------------------
 // Prometheus text-format parser
 // ---------------------------------------------------------------------------
-
-type MetricSample = { labels: Record<string, string>; value: number }
-type MetricFamily = { help: string; type: string; samples: MetricSample[] }
 
 function parsePrometheus(text: string): Record<string, MetricFamily> {
   const result: Record<string, MetricFamily> = {}
@@ -113,38 +115,6 @@ function getSamplesByTopicAndPartition(family: Record<string, MetricFamily>, nam
 
 const MAX_POINTS = 60
 const POLL_MS    = 3_000
-
-interface DataPoint {
-  ts: number
-  topicKeys: string[]
-  topicLabels: Record<string, string>
-  lag:          Record<string, number>
-  committedLag: Record<string, number>
-  consumed:     Record<string, number>
-  written:      Record<string, number>
-  consumedRate: Record<string, number>
-  bytesRate:    Record<string, number>
-  fetchLatency: Record<string, number>
-  partitionLag:          Record<string, Record<string, number>>
-  partitionConsumedRate: Record<string, Record<string, number>>
-  pollDurationP50:    Record<string, number>
-  pollDurationP99:    Record<string, number>
-  fetchLatencyMax:    Record<string, number>
-  fetchThrottle:      Record<string, number>
-  networkIoRate:      Record<string, number>
-  writeDepth:    number
-  writeDuration: number
-  compactionFiles: number
-  retentionRows:   number
-  catalogBytes:    number
-  inlinedBytes:    number
-  duckdbMemoryTotal: number
-  duckdbMemoryByTag: Record<string, number>
-  activeReplays:   number
-  heapUsed:        number
-  heapMax:         number
-  processRss:      number
-}
 
 const topicKeyMap = new Map<string, string>()
 function safeKey(topic: string): string {
@@ -373,32 +343,21 @@ function Card({ title, subtitle, description, children }: { title: string; subti
 // Per-topic chart row
 // ---------------------------------------------------------------------------
 
-type PtRecord = Omit<DataPoint, 'ts'> & { ts: string }
-
-function TopicRow({ tk, label, latest, pts, axisProps }: {
+const TopicRow = memo(function TopicRow({ tk, label, latest, pts, axisProps }: {
   tk: string
   label: string
   latest: DataPoint | undefined
   pts: PtRecord[]
   axisProps: { tick: { fontSize: number; fill: string }; axisLine: boolean; tickLine: boolean }
 }) {
-  const partitions = Object.keys(latest?.partitionLag?.[label] ?? {})
-    .sort((a, b) => Number(a) - Number(b))
+  const partitions = useMemo(
+    () => Object.keys(latest?.partitionLag?.[label] ?? {}).sort((a, b) => Number(a) - Number(b)),
+    [latest, label],
+  )
 
-  const lagSeries = pts.map(pt => {
-    const row: Record<string, string | number> = { ts: pt.ts }
-    for (const p of partitions) row[`p${p}`] = pt.partitionLag?.[label]?.[p] ?? 0
-    return row
-  })
-
-  const rateSeries = pts.map(pt => {
-    const row: Record<string, string | number> = { ts: pt.ts }
-    for (const p of partitions) {
-      row[`p${p}`] = Math.max(0, pt.partitionConsumedRate?.[label]?.[p] ?? 0)
-    }
-    row['total'] = pt.consumedRate[tk] ?? 0
-    return row
-  })
+  const lagSeries = useMemo(() => computeLagSeries(pts, partitions, label), [pts, partitions, label])
+  const rateSeries = useMemo(() => computeRateSeries(pts, partitions, label, tk), [pts, partitions, label, tk])
+  const netPts = useMemo(() => computeNetPts(pts, tk), [pts, tk])
 
   const pConfig: ChartConfig = {}
   partitions.forEach((p, i) => {
@@ -414,12 +373,6 @@ function TopicRow({ tk, label, latest, pts, axisProps }: {
     p99:  { label: 'poll p99',  color: PALETTE[1] },
     flmax: { label: 'fetch max', color: PALETTE[2] },
   }
-  const netPts = pts.map(pt => ({
-    ts: pt.ts,
-    p50:  pt.pollDurationP50[tk] ?? 0,
-    p99:  pt.pollDurationP99[tk] ?? 0,
-    flmax: pt.fetchLatencyMax[tk] ?? 0,
-  }))
 
   const currentLag  = latest ? Object.values(latest.partitionLag?.[label] ?? {}).reduce((a, b) => a + b, 0) : 0
   const currentRate = latest?.consumedRate[tk] ?? 0
@@ -537,7 +490,7 @@ function TopicRow({ tk, label, latest, pts, axisProps }: {
       </div>
     </div>
   )
-}
+})
 
 // ---------------------------------------------------------------------------
 // Page
@@ -547,7 +500,6 @@ function MetricsPage() {
   const [history, setHistory] = useState<DataPoint[]>([])
   const [error, setError]     = useState<string | null>(null)
   const [lastTs, setLastTs]   = useState<number | null>(null)
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   async function poll() {
     try {
@@ -559,17 +511,14 @@ function MetricsPage() {
     } catch (e) { setError(`Failed to fetch metrics: ${(e as Error).message}`) }
   }
 
-  useEffect(() => {
-    void poll()
-    timerRef.current = setInterval(() => { void poll() }, POLL_MS)
-    return () => { if (timerRef.current) clearInterval(timerRef.current) }
-  }, [])
+  useEffect(() => { void poll() }, [])
+  useVisibilityAwareInterval(() => { void poll() }, POLL_MS)
 
   const latest   = history[history.length - 1]
   const topicKeys   = latest?.topicKeys ?? []
   const topicLabels = latest?.topicLabels ?? {}
 
-  const pts = history.map(p => ({ ...p, ts: String(p.ts) }))
+  const pts = useMemo(() => history.map(p => ({ ...p, ts: String(p.ts) })), [history])
 
   const catalogConfig: ChartConfig = {
     catalogBytes: { label: 'catalog file', color: '#6674cc' },
