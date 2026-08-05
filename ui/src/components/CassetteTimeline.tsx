@@ -108,6 +108,13 @@ export function resolveThemeColors(el: HTMLElement) {
     style.getPropertyValue(`--chart-cat-${i + 1}`).trim() || PALETTE[i % PALETTE.length])
   return {
     chartCat,
+    // The `||` fallbacks below are jsdom/defensive-only: tokens.css always
+    // defines these custom properties in the real app, so getComputedStyle
+    // never actually returns '' for them in production. They only matter in
+    // environments without tokens.css loaded (e.g. a unit test rendering
+    // this component without the app's global stylesheet) — this is the
+    // one documented hardcoded-hex exception called out in the plan's
+    // Global Constraints (canvas-only, theme-independent safety net).
     surfaceSunken: style.getPropertyValue('--surface-sunken').trim() || '#f7fafc',
     ruleStrong: style.getPropertyValue('--rule-strong').trim() || '#cbd5e0',
     inkTertiary: style.getPropertyValue('--ink-tertiary').trim() || '#718096',
@@ -202,7 +209,7 @@ function GroupBySelector({ mode, availableHeaderKeys, supportsMessageType, onCha
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-      <span style={{ fontSize: 11, color: '#718096', fontWeight: 600 }}>Group by</span>
+      <span style={{ fontSize: 11, color: 'var(--ink-secondary)', fontWeight: 600 }}>Group by</span>
       <select
         value={dimensionValue}
         onChange={handleDimensionChange}
@@ -293,7 +300,7 @@ function AndBySelector({ mode, availableHeaderKeys, excludeKind, supportsMessage
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-      <span style={{ fontSize: 11, color: '#718096', fontWeight: 600 }}>And by</span>
+      <span style={{ fontSize: 11, color: 'var(--ink-secondary)', fontWeight: 600 }}>And by</span>
       <select
         value={dimensionValue}
         onChange={handleDimensionChange}
@@ -483,7 +490,10 @@ function TimelineCanvas({ records, selectedIdx, colorKeys, onSelect, fitKey }: T
       ctx.arc(x, MARKER_Y, radius, 0, Math.PI * 2)
       ctx.fillStyle = isSelected ? color : color + '99'
       ctx.fill()
-      ctx.strokeStyle = isSelected ? color : '#fff'
+      // Unselected markers get a subtle ring in the theme's rule color
+      // (rather than a hardcoded white ring, which read wrong against the
+      // dark --surface-sunken canvas background).
+      ctx.strokeStyle = isSelected ? color : theme.ruleStrong
       ctx.lineWidth = isSelected ? 2.5 : 1.5
       ctx.stroke()
 
@@ -643,7 +653,7 @@ function TimelineCanvas({ records, selectedIdx, colorKeys, onSelect, fitKey }: T
 function DetailPanel({ record }: { record: TimelineRecord | null }) {
   if (!record) {
     return (
-      <div style={{ padding: '2rem', textAlign: 'center', color: '#a0aec0', fontSize: 14 }}>
+      <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--ink-tertiary)', fontSize: 14 }}>
         Select a message on the timeline below
       </div>
     )
@@ -655,7 +665,7 @@ function DetailPanel({ record }: { record: TimelineRecord | null }) {
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: '1rem' }}>
       {/* Meta chips */}
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-        <span style={{ fontSize: 12, fontWeight: 700, color: '#718096', marginRight: 4 }}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--ink-secondary)', marginRight: 4 }}>
           {msToFullLabel(isoToMs(record.timestamp))}
         </span>
         {Object.entries(record.meta).map(([k, v]) => (
@@ -667,6 +677,12 @@ function DetailPanel({ record }: { record: TimelineRecord | null }) {
       {parsed ? (
         <JsonView src={parsed.parsed as object} collapsed={false} />
       ) : record.value ? (
+        // Intentionally kept as a fixed dark code block (not theme-tokenized):
+        // this mirrors JsonView's own always-light styling immediately above
+        // (JsonView is a separate, pre-existing, explicitly light-only
+        // component out of this task's scope) — a raw-text fallback matching
+        // a conventional "code block stays dark regardless of page theme"
+        // treatment, same as many syntax-highlighted code viewers.
         <pre style={{
           margin: 0, padding: '0.75rem',
           background: '#1a202c', color: '#e2e8f0',
@@ -676,7 +692,7 @@ function DetailPanel({ record }: { record: TimelineRecord | null }) {
           {record.value}
         </pre>
       ) : (
-        <span style={{ color: '#a0aec0', fontSize: 13 }}>No value</span>
+        <span style={{ color: 'var(--ink-tertiary)', fontSize: 13 }}>No value</span>
       )}
     </div>
   )
@@ -685,11 +701,11 @@ function DetailPanel({ record }: { record: TimelineRecord | null }) {
 function MetaChip({ label, value }: { label: string; value: string }) {
   return (
     <div style={{
-      background: '#edf2f7', border: '1px solid #e2e8f0', borderRadius: 4,
+      background: 'var(--surface-raised)', border: '1px solid var(--rule)', borderRadius: 4,
       padding: '2px 8px', display: 'inline-flex', gap: 5, alignItems: 'baseline',
     }}>
-      <span style={{ fontSize: 10, color: '#718096', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</span>
-      <span style={{ fontSize: 12, color: '#2d3748', fontFamily: 'monospace' }}>{value}</span>
+      <span style={{ fontSize: 10, color: 'var(--ink-secondary)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.04em' }}>{label}</span>
+      <span style={{ fontSize: 12, color: 'var(--ink-primary)', fontFamily: 'monospace' }}>{value}</span>
     </div>
   )
 }
@@ -703,7 +719,7 @@ function Legend({ colorKeys }: { colorKeys: string[] }) {
       {colorKeys.map((k, i) => (
         <span key={k} style={{
           display: 'inline-flex', alignItems: 'center', gap: 5,
-          fontSize: 12, color: '#4a5568',
+          fontSize: 12, color: 'var(--ink-secondary)',
         }}>
           <span style={{
             display: 'inline-block', width: 10, height: 10, borderRadius: '50%',
@@ -812,9 +828,9 @@ export function CassetteTimeline({
       {/* Toolbar */}
       <div style={{
         display: 'flex', alignItems: 'center', gap: 10, padding: '0.5rem 0.75rem',
-        borderBottom: '1px solid #e2e8f0', flexWrap: 'wrap', background: '#fff',
+        borderBottom: '1px solid var(--rule)', flexWrap: 'wrap', background: 'var(--surface-paper)',
       }}>
-        {title && <span style={{ fontSize: 14, fontWeight: 600, color: '#2d3748' }}>{title}</span>}
+        {title && <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--ink-primary)' }}>{title}</span>}
         <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
           <button
             style={btnStyle}
@@ -822,7 +838,7 @@ export function CassetteTimeline({
             onClick={() => handleSelect(Math.max(0, selectedIdx - 1))}
             title="Previous message (←)"
           >‹ Prev</button>
-          <span style={{ fontSize: 12, color: '#718096', minWidth: 80, textAlign: 'center' }}>
+          <span style={{ fontSize: 12, color: 'var(--ink-secondary)', minWidth: 80, textAlign: 'center' }}>
             {records.length > 0 ? `${selectedIdx + 1} / ${records.length}` : '—'}
           </span>
           <button
@@ -854,22 +870,22 @@ export function CassetteTimeline({
         />
         {tooManyGroups && (
           <span style={{
-            fontSize: 11, color: '#c05621', background: '#fffaf0',
-            border: '1px solid #fed7aa', borderRadius: 4, padding: '2px 8px',
+            fontSize: 11, color: 'var(--signal-warn-ink)', background: 'color-mix(in oklab, var(--signal-warn) 15%, var(--surface-paper))',
+            border: '1px solid color-mix(in oklab, var(--signal-warn) 45%, transparent)', borderRadius: 4, padding: '2px 8px',
           }}>
             Too many groups — narrow your filter
           </span>
         )}
         {loading && (
-          <span style={{ fontSize: 12, color: '#718096' }}>Loading…</span>
+          <span style={{ fontSize: 12, color: 'var(--ink-secondary)' }}>Loading…</span>
         )}
         {hasMore && !loading && (
-          <span style={{ fontSize: 12, color: '#718096', fontStyle: 'italic' }}>
+          <span style={{ fontSize: 12, color: 'var(--ink-secondary)', fontStyle: 'italic' }}>
             More pages available — scrub to edges to load
           </span>
         )}
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
-          <span style={{ fontSize: 11, color: '#a0aec0' }}>← → arrow keys • scroll to zoom • drag to pan</span>
+          <span style={{ fontSize: 11, color: 'var(--ink-tertiary)' }}>← → arrow keys • scroll to zoom • drag to pan</span>
           {extraControls}
         </div>
       </div>
@@ -877,19 +893,19 @@ export function CassetteTimeline({
       {/* Upper panel: detail */}
       <div style={{
         flex: '1 1 0', minHeight: 0, overflow: 'auto',
-        borderBottom: '1px solid #e2e8f0',
-        background: '#fff',
+        borderBottom: '1px solid var(--rule)',
+        background: 'var(--surface-paper)',
       }}>
         <DetailPanel record={selectedRecord} />
       </div>
 
       {/* Lower panel: timeline */}
-      <div style={{ flexShrink: 0, background: '#f7fafc', borderTop: '1px solid #e2e8f0' }}>
+      <div style={{ flexShrink: 0, background: 'var(--surface-sunken)', borderTop: '1px solid var(--rule)' }}>
         {/* Legend */}
         <div style={{ padding: '0.5rem 0.75rem 0', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <Legend colorKeys={colorKeys} />
           {records.length === 0 && (
-            <span style={{ fontSize: 13, color: '#a0aec0', padding: '0.5rem 0' }}>No messages to display</span>
+            <span style={{ fontSize: 13, color: 'var(--ink-tertiary)', padding: '0.5rem 0' }}>No messages to display</span>
           )}
         </div>
         <TimelineCanvas
