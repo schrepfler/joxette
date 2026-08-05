@@ -252,15 +252,16 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-failsafe-plugin</artifactId>
-                <!-- Historical note: 8 individual @Test methods across 3 IT classes
+                <!-- Historical note: 10 individual @Test methods across 5 IT classes
                      (RecordReplayRoundTripIT, EntityReplayRoundTripIT,
-                     InstanceRegistryIT, HeadersRoundTripIT) previously failed on
-                     this module and were skipped via @Disabled on each specific
-                     method (Maven Failsafe's static <excludes>/<includes> only
-                     support file-glob patterns, not Class#method filters). All
-                     were tracked as follow-ups and have since been fixed and
-                     re-enabled — see git history. No methods are currently
-                     @Disabled for this reason. -->
+                     RebuildKnownEntitiesIT, InstanceRegistryIT, HeadersRoundTripIT)
+                     previously failed on this module and were skipped via @Disabled
+                     on each specific method (Maven Failsafe's static
+                     <excludes>/<includes> only support file-glob patterns, not
+                     Class#method filters). All were tracked as follow-ups and have
+                     since been fixed and re-enabled — see docs/known-issues.md and
+                     git history. No methods are currently @Disabled for this
+                     reason. -->
             </plugin>
             <plugin>
                 <groupId>org.springframework.boot</groupId>
