@@ -1,0 +1,27 @@
+{{- include "joxette.validate" . -}}
+{{- if eq .Values.catalog.backend "embedded" }}
+{{- /*
+PodDisruptionBudget for the embedded, single-writer catalog StatefulSet.
+
+maxUnavailable is pinned to 0, not a percentage, and this is intentional: the
+embedded catalog always runs replicas:1 (see joxette.validate — replicas>1 here
+is rejected outright because a second writer against the same DuckDB file
+corrupts it). A percentage-based budget (e.g. maxUnavailable: 50%) is
+meaningless at replicas=1 — it rounds to 0 either way and documents nothing.
+maxUnavailable: 0 states the real intent unambiguously: never voluntarily evict
+the only pod (node drain, cluster-autoscaler scale-down, etc. are blocked by
+this budget). It does not, and cannot, protect against involuntary disruption
+(node crash, `kubectl delete pod --force`).
+*/}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "joxette.fullname" . }}
+  labels:
+    {{- include "joxette.labels" . | nindent 4 }}
+spec:
+  maxUnavailable: 0
+  selector:
+    matchLabels:
+      {{- include "joxette.selectorLabels" . | nindent 6 }}
+{{- end }}

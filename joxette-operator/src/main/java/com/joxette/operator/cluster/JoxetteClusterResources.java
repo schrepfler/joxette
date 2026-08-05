@@ -18,6 +18,8 @@ import io.fabric8.kubernetes.api.model.Service;
 import io.fabric8.kubernetes.api.model.ServiceAccount;
 import io.fabric8.kubernetes.api.model.ServiceAccountBuilder;
 import io.fabric8.kubernetes.api.model.ServiceBuilder;
+import io.fabric8.kubernetes.api.model.policy.v1.PodDisruptionBudget;
+import io.fabric8.kubernetes.api.model.policy.v1.PodDisruptionBudgetBuilder;
 import io.fabric8.kubernetes.api.model.rbac.Role;
 import io.fabric8.kubernetes.api.model.rbac.RoleBinding;
 import io.fabric8.kubernetes.api.model.rbac.RoleBindingBuilder;
@@ -63,6 +65,7 @@ public final class JoxetteClusterResources {
         if (embedded) {
             out.add(headlessService(name, spec));
             out.add(embeddedStatefulSet(name, spec));
+            out.add(embeddedPdb(name));
         } else {
             if (spec.getClustering().getMode() == ClusteringMode.pekko_management) {
                 out.add(headlessService(name, spec));
@@ -131,6 +134,23 @@ public final class JoxetteClusterResources {
                 .endSpec()
                 .endTemplate()
                 .withVolumeClaimTemplates(pvc)
+                .endSpec()
+                .build();
+    }
+
+    /**
+     * PodDisruptionBudget for the single-writer embedded catalog StatefulSet.
+     * {@code maxUnavailable: 0} is intentional, not a percentage — the embedded
+     * catalog always runs replicas:1 (see {@link CatalogGuardrail}: replicas>1
+     * here is rejected outright), so a percentage-based budget is meaningless.
+     * This states the real intent: never voluntarily evict the only pod.
+     */
+    private static PodDisruptionBudget embeddedPdb(String name) {
+        return new PodDisruptionBudgetBuilder()
+                .withNewMetadata().withName(name).withLabels(labels(name)).endMetadata()
+                .withNewSpec()
+                .withNewMaxUnavailable(0)
+                .withNewSelector().withMatchLabels(selector(name)).endSelector()
                 .endSpec()
                 .build();
     }

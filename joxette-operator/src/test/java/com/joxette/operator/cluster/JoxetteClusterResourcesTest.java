@@ -10,6 +10,7 @@ import io.fabric8.kubernetes.api.model.Service;
 import io.fabric8.kubernetes.api.model.ServiceAccount;
 import io.fabric8.kubernetes.api.model.apps.Deployment;
 import io.fabric8.kubernetes.api.model.apps.StatefulSet;
+import io.fabric8.kubernetes.api.model.policy.v1.PodDisruptionBudget;
 import io.fabric8.kubernetes.api.model.rbac.Role;
 import io.fabric8.kubernetes.api.model.rbac.RoleBinding;
 import org.junit.jupiter.api.Test;
@@ -227,5 +228,32 @@ class JoxetteClusterResourcesTest {
                 .containsEntry("memory", new Quantity("1Gi"));
         assertThat(container.getResources().getLimits())
                 .containsEntry("memory", new Quantity("1Gi"));
+    }
+
+    @Test
+    void embeddedBackendGetsAZeroMaxUnavailablePdb() {
+        JoxetteClusterSpec spec = new JoxetteClusterSpec();
+        spec.setImage("joxette-service:test");
+        spec.getCatalog().setBackend(CatalogBackend.embedded);
+
+        PodDisruptionBudget pdb = JoxetteClusterResources.build(cluster(spec)).stream()
+                .filter(PodDisruptionBudget.class::isInstance).map(PodDisruptionBudget.class::cast)
+                .findFirst().orElseThrow();
+
+        assertThat(pdb.getMetadata().getName()).isEqualTo("prod");
+        assertThat(pdb.getSpec().getMaxUnavailable().getIntVal()).isEqualTo(0);
+        assertThat(pdb.getSpec().getSelector().getMatchLabels())
+                .containsEntry("app.kubernetes.io/name", "prod");
+    }
+
+    @Test
+    void sharedBackendGetsNoPdb() {
+        JoxetteClusterSpec spec = new JoxetteClusterSpec();
+        spec.setImage("joxette-service:test");
+        spec.getCatalog().setBackend(CatalogBackend.postgresql);
+        spec.getCatalog().setUri("postgresql://pg/joxette");
+
+        assertThat(JoxetteClusterResources.build(cluster(spec)))
+                .noneMatch(PodDisruptionBudget.class::isInstance);
     }
 }
