@@ -35,7 +35,17 @@ import com.joxette.replay.transform.TransformPipeline;
 import com.joxette.replay.transform.TransformPreset;
 import com.joxette.replay.transform.TransformPresetRepository;
 import com.joxette.replay.transform.TransformStep;
+import com.joxette.replay.transform.Predicate;
+import com.joxette.replay.transform.gap.GapSelector;
+import com.joxette.replay.transform.gap.MessagePattern;
+import com.joxette.replay.transform.steps.AddComputedFieldStep;
+import com.joxette.replay.transform.steps.ConditionalStep;
+import com.joxette.replay.transform.steps.CopyToHeaderStep;
 import com.joxette.replay.transform.steps.FilterDropStep;
+import com.joxette.replay.transform.steps.GapTransformStep;
+import com.joxette.replay.transform.steps.MergePatchStep;
+import com.joxette.replay.transform.steps.RedirectTopicStep;
+import com.joxette.replay.transform.steps.RenameFieldStep;
 
 import com.joxette.sol.EntityRecordAdapter;
 import com.joxette.sol.SolResultMapper;
@@ -2794,8 +2804,11 @@ public class CassetteController {
     }
 
     /**
-     * Validates a step list: enforces the max-step cap and pre-compiles any JSONPath
-     * expressions found in {@link FilterDropStep}s that reference {@code $.value.*} paths.
+     * Validates a step list: enforces the max-step cap and eagerly checks every step's
+     * field-path / template syntax so malformed input fails fast with 400 before any
+     * stream starts, instead of silently no-op'ing (JsonStepHelper-style paths) or being
+     * caught only when a matching record happens to execute the step
+     * ({@code $.value.*} JSONPath fragments).
      */
     private List<TransformStep> validated(List<TransformStep> steps) {
         int max = properties.getReplay().getMaxTransformSteps();
@@ -2804,22 +2817,94 @@ public class CassetteController {
                     "Transform pipeline exceeds the maximum of " + max + " steps");
         }
         for (TransformStep step : steps) {
-            if (step instanceof FilterDropStep fds) {
-                String field = fds.field();
-                if (field != null && field.startsWith("$.value.")) {
-                    // Compile the extracted JSONPath portion to catch syntax errors early
-                    String jsonPath = "$" + field.substring("$.value".length());
-                    try {
-                        JsonPath.compile(jsonPath);
-                    } catch (InvalidPathException e) {
-                        throw new ValidationException(
-                                "Invalid JSONPath in filter_drop field '" + field + "': "
-                                        + e.getMessage());
-                    }
-                }
-            }
+            validateStep(step);
         }
         return steps;
+    }
+
+    private void validateStep(TransformStep step) {
+        if (step instanceof FilterDropStep fds) {
+            validatePredicateJsonPaths(fds.predicate());
+        } else if (step instanceof ConditionalStep cs) {
+            validatePredicateJsonPaths(cs.condition());
+            for (TransformStep s : cs.thenSteps()) validateStep(s);
+            for (TransformStep s : cs.elseSteps()) validateStep(s);
+        } else if (step instanceof RenameFieldStep rfs) {
+            validateJsonStepHelperPath("rename_field.source", rfs.source());
+        } else if (step instanceof MergePatchStep mps) {
+            validateJsonStepHelperPath("merge_patch.target", mps.target());
+        } else if (step instanceof AddComputedFieldStep acfs) {
+            validateJsonStepHelperPath("add_computed_field.target", acfs.target());
+            String expr = acfs.expression();
+            if (!"REPLAY_SEQUENCE".equals(expr) && !"NOW_EPOCH_MS".equals(expr) && !"NOW_ISO".equals(expr)) {
+                validateJsonStepHelperPath("add_computed_field.expression", expr);
+            }
+        } else if (step instanceof CopyToHeaderStep cths) {
+            validateValueJsonPath("copy_to_header.source", cths.source());
+        } else if (step instanceof RedirectTopicStep rts) {
+            validateTemplatePlaceholders("redirect_topic.topic", rts.topic());
+        } else if (step instanceof GapTransformStep gts) {
+            validateGapSelector(gts.select());
+        }
+    }
+
+    /** JsonStepHelper-style paths (see {@code JsonStepHelper#parentAndLeaf}): must start with {@code "$."}. */
+    private void validateJsonStepHelperPath(String stepField, String path) {
+        if (path != null && !path.startsWith("$.")) {
+            throw new ValidationException(
+                    "Invalid path in " + stepField + " '" + path + "': must start with '$.'");
+        }
+    }
+
+    /** {@code $.value.*} fragments (see {@code TransformPipeline#extractField}): must compile as JSONPath. */
+    private void validateValueJsonPath(String stepField, String path) {
+        if (path != null && path.startsWith("$.value")) {
+            String jsonPath = "$" + path.substring("$.value".length());
+            try {
+                JsonPath.compile(jsonPath);
+            } catch (InvalidPathException e) {
+                throw new ValidationException(
+                        "Invalid JSONPath in " + stepField + " '" + path + "': " + e.getMessage());
+            }
+        }
+    }
+
+    private static final java.util.regex.Pattern TEMPLATE_VAR =
+            java.util.regex.Pattern.compile("\\$\\{([^}]+)\\}");
+
+    private void validateTemplatePlaceholders(String stepField, String template) {
+        if (template == null || !template.contains("${")) return;
+        java.util.regex.Matcher m = TEMPLATE_VAR.matcher(template);
+        while (m.find()) {
+            validateValueJsonPath(stepField, m.group(1));
+        }
+    }
+
+    private void validatePredicateJsonPaths(Predicate predicate) {
+        if (predicate == null) return;
+        if (predicate instanceof Predicate.Leaf leaf) {
+            validateValueJsonPath("predicate.field", leaf.field());
+        } else if (predicate instanceof Predicate.And and) {
+            and.predicates().forEach(this::validatePredicateJsonPaths);
+        } else if (predicate instanceof Predicate.Or or) {
+            or.predicates().forEach(this::validatePredicateJsonPaths);
+        } else if (predicate instanceof Predicate.Not not) {
+            validatePredicateJsonPaths(not.predicate());
+        }
+    }
+
+    private void validateGapSelector(GapSelector selector) {
+        if (selector == null) return;
+        validateMessagePattern(selector.after());
+        validateMessagePattern(selector.before());
+    }
+
+    private void validateMessagePattern(MessagePattern pattern) {
+        if (pattern == null) return;
+        validatePredicateJsonPaths(pattern.predicate());
+        if (pattern.quantifier() instanceof MessagePattern.Quantifier.FirstAfter fa) {
+            validateMessagePattern(fa.after());
+        }
     }
 
     /**
