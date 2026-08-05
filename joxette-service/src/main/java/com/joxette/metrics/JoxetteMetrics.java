@@ -28,6 +28,11 @@ import java.util.function.Supplier;
  *   <li>{@code joxette.write.duration}    — DuckDB batch write latency (timer)</li>
  *   <li>{@code joxette.write.batch.size}  — records per batch (distribution summary)</li>
  *   <li>{@code joxette.recorder.restarts} — per-topic recorder restart counter</li>
+ *   <li>{@code joxette.sink.state}        — {@code DuckLakeWriteChannel} sink health (gauge):
+ *       0=HEALTHY, 1=DEGRADED, 2=FAILED. See {@code docs/write-resilience.md}. Micrometer
+ *       gauge tags are fixed at registration time, not evaluated per-scrape, so the state
+ *       name is not exposed as a dynamic label — only the numeric encoding is; the
+ *       human-readable name remains available via {@code /health}.</li>
  * </ul>
  *
  * <h2>Kafka client metrics (bridged from KafkaMetric)</h2>
@@ -208,6 +213,22 @@ public class JoxetteMetrics {
         Gauge.builder("joxette.write.channel.depth", depthSupplier, Supplier::get)
                 .description("Current depth of the DuckDB write-channel backpressure buffer")
                 .register(registry);
+    }
+
+    /**
+     * Registers a gauge for the {@code DuckLakeWriteChannel} sink health state.
+     * Called once at startup by {@link com.joxette.recording.DuckLakeWriteChannel}, which
+     * maps its package-private {@code SinkState} enum to the numeric encoding itself
+     * (0=HEALTHY, 1=DEGRADED, 2=FAILED) before handing over the supplier — that enum isn't
+     * visible outside {@code com.joxette.recording}, and doesn't need to be.
+     */
+    public void registerSinkStateGauge(Supplier<Integer> stateOrdinalSupplier) {
+        if (registeredGaugeIds.add("sink:state")) {
+            retainedGaugeState.add(stateOrdinalSupplier);
+            Gauge.builder("joxette.sink.state", stateOrdinalSupplier, Supplier::get)
+                    .description("DuckLakeWriteChannel sink health: 0=HEALTHY, 1=DEGRADED, 2=FAILED")
+                    .register(registry);
+        }
     }
 
     // =========================================================================
