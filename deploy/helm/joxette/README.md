@@ -67,6 +67,7 @@ only connects to them.
 | `tiers.replay.hpa.targetCPUUtilizationPercentage` | `70` | HPA CPU target |
 | `kafka.bootstrapServers` | `kafka:9092` | |
 | `objectStore.existingSecret` | `""` | Secret with `access-key` / `secret-key`; omit for IRSA |
+| `security.existingSecret` | `""` | Secret with `api-key`, wired to `joxette.security.api-key` (X-API-Key auth on POST/PUT/DELETE/PATCH). Omit to run unauthenticated (dev only). The operator needs the same key — see `deploy/operator/README.md`. The UI does not support this yet — see `ui/README.md`. |
 | `serviceAccount.annotations` | `{}` | e.g. `eks.amazonaws.com/role-arn` |
 | `serviceMonitor.enabled` | `false` | Prometheus Operator scrape of `/actuator/prometheus` |
 

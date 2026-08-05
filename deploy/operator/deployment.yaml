@@ -29,6 +29,20 @@ spec:
             # Watch all namespaces for joxette.dev CRs. Set to a namespace name to scope.
             - name: JAVAOPERATORSDK_CLIENT_NAMESPACE
               value: JOSDK_ALL_NAMESPACES
+            # Optional — sent as X-API-Key on mutating joxette-service REST calls
+            # (POST/PUT/DELETE against /topics, /entities, ...). Only needed when the
+            # target cluster(s) have joxette.security.api-key set; harmless otherwise.
+            # `optional: true` means the container starts fine if the Secret/key is
+            # absent (unauthenticated calls, matching joxette-service's own default).
+            # Create it with e.g.:
+            #   kubectl create secret generic joxette-operator-api-key \
+            #     -n joxette-system --from-literal=api-key=<key>
+            - name: JOXETTE_OPERATOR_API-KEY
+              valueFrom:
+                secretKeyRef:
+                  name: joxette-operator-api-key
+                  key: api-key
+                  optional: true
           startupProbe:
             httpGet: { path: /actuator/health, port: http }
             failureThreshold: 30

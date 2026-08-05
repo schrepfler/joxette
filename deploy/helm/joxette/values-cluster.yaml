@@ -57,6 +57,9 @@ objectStore:
   region: "us-east-1"
   existingSecret: "joxette-s3"     # keys: access-key, secret-key
 
+security:
+  existingSecret: "joxette-api-key"   # key: api-key — see deploy/operator/README.md
+
 serviceAccount:
   create: true
   annotations: {}

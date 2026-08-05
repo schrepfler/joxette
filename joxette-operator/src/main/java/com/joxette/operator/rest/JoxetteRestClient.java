@@ -19,25 +19,48 @@ import java.util.Optional;
  * target cluster base URL (resolved from a {@code clusterRef} → Service DNS).
  * Methods map HTTP status to small typed outcomes so reconcilers can branch
  * without parsing bodies for control flow.
+ *
+ * <h2>API-key auth</h2>
+ * <p>When constructed with a non-blank {@code apiKey}, every mutating request
+ * (POST/PUT/DELETE) carries it as the {@code X-API-Key} header, matching
+ * {@code SecurityConfig}'s {@code ApiKeyAuthenticationFilter} in joxette-service.
+ * GET requests never send it — {@code SecurityConfig} permits GET/HEAD
+ * unauthenticated regardless. When {@code apiKey} is null/blank (the default —
+ * see {@link RestClientFactory}), no header is sent and requests behave exactly
+ * as before this was added, which only matters if the target cluster has
+ * {@code joxette.security.api-key} configured.
  */
 public class JoxetteRestClient {
+
+    private static final String API_KEY_HEADER = "X-API-Key";
 
     private final HttpClient http;
     private final ObjectMapper json;
     private final URI baseUri;
     private final Duration timeout;
+    private final String apiKey;
 
     public JoxetteRestClient(String baseUrl) {
+        this(baseUrl, null);
+    }
+
+    /** @param apiKey sent as {@code X-API-Key} on mutating requests; null/blank to send none. */
+    public JoxetteRestClient(String baseUrl, String apiKey) {
         this(baseUrl,
                 HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(5)).build(),
-                new ObjectMapper(), Duration.ofSeconds(10));
+                new ObjectMapper(), Duration.ofSeconds(10), apiKey);
     }
 
     JoxetteRestClient(String baseUrl, HttpClient http, ObjectMapper json, Duration timeout) {
+        this(baseUrl, http, json, timeout, null);
+    }
+
+    JoxetteRestClient(String baseUrl, HttpClient http, ObjectMapper json, Duration timeout, String apiKey) {
         this.baseUri = URI.create(baseUrl.endsWith("/") ? baseUrl.substring(0, baseUrl.length() - 1) : baseUrl);
         this.http = http;
         this.json = json;
         this.timeout = timeout;
+        this.apiKey = apiKey;
     }
 
     /** Outcome of a converge call, so reconcilers can report what happened. */
@@ -75,7 +98,7 @@ public class JoxetteRestClient {
 
     /** POST a JSON body; returns the HTTP status code. */
     public int postJson(String path, Object body) {
-        HttpResponse<String> res = send(request(path)
+        HttpResponse<String> res = send(authenticatedRequest(path)
                 .header("Content-Type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(toJson(body))).build());
         return res.statusCode();
@@ -83,7 +106,7 @@ public class JoxetteRestClient {
 
     /** PUT a JSON body; returns the HTTP status code. */
     public int putJson(String path, Object body) {
-        HttpResponse<String> res = send(request(path)
+        HttpResponse<String> res = send(authenticatedRequest(path)
                 .header("Content-Type", "application/json")
                 .PUT(HttpRequest.BodyPublishers.ofString(toJson(body))).build());
         return res.statusCode();
@@ -91,14 +114,14 @@ public class JoxetteRestClient {
 
     /** POST with no body (e.g. /pause). Returns the status code. */
     public int post(String path) {
-        HttpResponse<String> res = send(request(path)
+        HttpResponse<String> res = send(authenticatedRequest(path)
                 .POST(HttpRequest.BodyPublishers.noBody()).build());
         return res.statusCode();
     }
 
     /** DELETE; returns true if deleted (2xx) or already gone (404). */
     public boolean delete(String path) {
-        HttpResponse<String> res = send(request(path).DELETE().build());
+        HttpResponse<String> res = send(authenticatedRequest(path).DELETE().build());
         int sc = res.statusCode();
         if (sc == 404) {
             return true;
@@ -115,6 +138,15 @@ public class JoxetteRestClient {
     private HttpRequest.Builder request(String path) {
         // path always starts with '/'; baseUri has no trailing slash.
         return HttpRequest.newBuilder(URI.create(baseUri + apiPath(path))).timeout(timeout);
+    }
+
+    /** Like {@link #request(String)}, plus the {@code X-API-Key} header for mutating verbs. */
+    private HttpRequest.Builder authenticatedRequest(String path) {
+        HttpRequest.Builder builder = request(path);
+        if (apiKey != null && !apiKey.isBlank()) {
+            builder.header(API_KEY_HEADER, apiKey);
+        }
+        return builder;
     }
 
     /**

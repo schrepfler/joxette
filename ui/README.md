@@ -1,5 +1,20 @@
 Welcome to your new TanStack Start app! 
 
+## Security note: joxette.security.api-key is NOT supported by this UI
+
+If the joxette-service backend has `joxette.security.api-key` set, it requires
+an `X-API-Key` header on every POST/PUT/DELETE/PATCH call — this UI currently
+has no way to attach that header to its requests. Until UI-side API-key support
+is added, either:
+
+- leave `joxette.security.api-key` unset on any backend this UI talks to
+  (accepting unauthenticated mutating requests), or
+- place the UI behind a trusted gateway / network boundary that injects the
+  `X-API-Key` header on its behalf (so the browser never needs to hold the key).
+
+See [`docs/security.md`](../docs/security.md) for the full picture (header
+name, config property, Helm/operator wiring).
+
 # Getting Started
 
 To run this application:

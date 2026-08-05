@@ -155,6 +155,13 @@ Shared environment block for all pods. `roles` and `replayEnabled` vary per tier
       name: {{ $ctx.Values.objectStore.existingSecret }}
       key: secret-key
 {{- end }}
+{{- if $ctx.Values.security.existingSecret }}
+- name: JOXETTE_SECURITY_API-KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ $ctx.Values.security.existingSecret }}
+      key: api-key
+{{- end }}
 {{- range $k, $v := $ctx.Values.extraEnv }}
 - name: {{ $k }}
   value: {{ $v | quote }}

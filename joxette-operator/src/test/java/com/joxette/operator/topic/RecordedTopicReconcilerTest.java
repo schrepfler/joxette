@@ -31,7 +31,7 @@ class RecordedTopicReconcilerTest {
 
     /** Factory that returns a client pointed at the given base URL. */
     private RestClientFactory factoryFor(String baseUrl) {
-        return new RestClientFactory() {
+        return new RestClientFactory("") {
             @Override
             public JoxetteRestClient forBaseUrl(String ignored) {
                 return new JoxetteRestClient(baseUrl);

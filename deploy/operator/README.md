@@ -39,3 +39,9 @@ running cluster's REST API.
   namespace name and narrowing the ClusterRole to a Role.
 - Metrics: `/actuator/prometheus` on port 8081 (JOSDK reconcile counters +
   JVM/process metrics); the ServiceMonitor scrapes it.
+- **API-key auth**: if the target cluster(s) have `joxette.security.api-key` set
+  (see the Helm chart's `security.existingSecret`), the operator needs the same
+  key to make mutating `/topics` and `/entities` calls. Create a
+  `joxette-operator-api-key` Secret with an `api-key` key in `joxette-system`
+  (see `deployment.yaml`) — it is optional, so the operator runs fine
+  unauthenticated against clusters that don't require the header.

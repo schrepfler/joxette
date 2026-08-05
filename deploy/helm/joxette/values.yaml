@@ -121,6 +121,18 @@ objectStore:
   # injected (rely on IRSA / instance profile / anonymous).
   existingSecret: ""
 
+# ----------------------------------------------------------------------------
+# API-key auth (joxette.security.api-key). Empty means unauthenticated
+# POST/PUT/DELETE/PATCH — fine for local dev, NOT recommended for any
+# deployment reachable outside a trusted network. The joxette-operator needs
+# the same key (see deploy/operator/README.md) to keep making its mutating
+# /topics and /entities calls once this is set. The UI does not yet support
+# sending this header — see ui/README.md.
+# ----------------------------------------------------------------------------
+security:
+  # Secret with key `api-key`. Omit to run unauthenticated (startup WARN).
+  existingSecret: ""
+
 # Extra raw joxette.* env (JOXETTE_*) — escape hatch for any property.
 extraEnv: {}
   # JOXETTE_RECORDING_BATCH-SIZE: "20000"
