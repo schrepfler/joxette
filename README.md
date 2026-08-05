@@ -473,6 +473,8 @@ mvn test
 
 Integration tests use Testcontainers with `apache/kafka-native:4.0.2` — a GraalVM-compiled native image that starts in ~1–2 s (vs ~10–15 s for the JVM-based Confluent image). Tests validate against the KIP-848 cooperative rebalance protocol used by Kafka 4.x. A `JAVA_25_HOME` environment variable is required because the Surefire plugin needs the Java 25+ JVM to support preview-compiled classes.
 
+`mvn test` (above) runs only unit tests and does not need Docker. `mvn verify` (and `mvn install`) additionally binds `maven-failsafe-plugin`, which runs `joxette-service`'s `*IT.java` Testcontainers suite — that requires a running Docker daemon.
+
 ### Managing Kafka Topics with Jikkou
 
 Topic definitions live in `jikkou/topics.yml`. During `docker compose up`, Jikkou applies them automatically. To apply or reconcile manually:

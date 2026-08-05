@@ -135,18 +135,25 @@ public class StreamDefinitionRepository {
                                    SolOutput solOutput, List<TransformStep> transform,
                                    ReplayOutputMode output, StateFoldStrategy stateFold) {
         OffsetDateTime now = OffsetDateTime.now(ZoneOffset.UTC);
+        // Fast-path existence check + fetch of the original createdAt, then build and
+        // serialize the merged definition entirely outside the lock (Jackson is
+        // CPU-bound, not DB I/O) — matches create()'s pattern of keeping serialization
+        // off the shared-connection monitor. The write below re-validates existence via
+        // the affected-row count rather than trusting this earlier read, so a concurrent
+        // delete() between the two doesn't silently no-op the update (same class of
+        // check-then-write race closed for the bucket-count guard).
+        StreamDefinition existing = findById(id)
+                .orElseThrow(() -> ResourceNotFoundException.stream(id));
+        StreamDefinition updated = new StreamDefinition(
+                id, name, entityType, entityId, source, sol,
+                solOutput != null ? solOutput : SolOutput.EVENTS,
+                transform,
+                output != null ? output : ReplayOutputMode.EVENTS,
+                stateFold,
+                existing.createdAt(), now.toInstant());
+        String definitionJson = serialize(updated);
         synchronized (duckDB) {
-            StreamDefinition existing = findById(id)
-                    .orElseThrow(() -> ResourceNotFoundException.stream(id));
-            StreamDefinition updated = new StreamDefinition(
-                    id, name, entityType, entityId, source, sol,
-                    solOutput != null ? solOutput : SolOutput.EVENTS,
-                    transform,
-                    output != null ? output : ReplayOutputMode.EVENTS,
-                    stateFold,
-                    existing.createdAt(), now.toInstant());
-            String definitionJson = serialize(updated);
-            dsl.update(TBL)
+            int updatedRows = dsl.update(TBL)
                     .set(F_NAME,        name)
                     .set(F_ENTITY_TYPE, entityType)
                     .set(F_ENTITY_ID,   entityId)
@@ -154,6 +161,9 @@ public class StreamDefinitionRepository {
                     .set(F_UPDATED_AT,  now)
                     .where(F_ID.eq(id))
                     .execute();
+            if (updatedRows == 0) {
+                throw ResourceNotFoundException.stream(id);
+            }
         }
         return findById(id).orElseThrow();
     }
