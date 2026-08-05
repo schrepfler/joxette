@@ -678,8 +678,8 @@ function DetailPanel({ record }: { record: TimelineRecord | null }) {
         <JsonView src={parsed.parsed as object} collapsed={false} />
       ) : record.value ? (
         // Intentionally kept as a fixed dark code block (not theme-tokenized):
-        // this mirrors JsonView's own always-light styling immediately above
-        // (JsonView is a separate, pre-existing, explicitly light-only
+        // this mirrors JsonView's own theme-independence immediately above
+        // (JsonView is a separate, pre-existing, explicitly non-tokenized
         // component out of this task's scope) — a raw-text fallback matching
         // a conventional "code block stays dark regardless of page theme"
         // treatment, same as many syntax-highlighted code viewers.
