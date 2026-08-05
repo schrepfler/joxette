@@ -140,6 +140,13 @@ joxette:
 - **Log level ERROR**: `Sink FAILED after N attempts — signalling supervisor restart`.
 - **Micrometer metric**: `joxette_recording_restarts_total{topic=...}` increments
   on both `RecorderFailed` and `SinkFailed` paths.
+- **Micrometer gauge**: `joxette_sink_state` tracks `DuckLakeWriteChannel`'s sink
+  health directly — `0`=HEALTHY, `1`=DEGRADED, `2`=FAILED. See
+  `JoxetteMetrics.registerSinkStateGauge()`. This is the canonical Prometheus
+  signal for the state machine above (the log lines and
+  `joxette_recording_restarts_total` are the other two); the chart's
+  `PrometheusRule` alerts `JoxetteSinkNotHealthy` (`joxette_sink_state != 0` for
+  2m) and `JoxetteSinkFailed` (`joxette_sink_state == 2`) fire directly off it.
 - **Consumer lag**: rises during the pause window and drains on resume — the
   natural observable indicator of a degraded sink.
 

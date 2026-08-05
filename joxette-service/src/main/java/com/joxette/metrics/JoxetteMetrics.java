@@ -209,10 +209,12 @@ public class JoxetteMetrics {
      * Called once at startup by {@link com.joxette.recording.DuckLakeWriteChannel}.
      */
     public void registerWriteChannelDepthGauge(Supplier<Integer> depthSupplier) {
-        retainedGaugeState.add(depthSupplier);
-        Gauge.builder("joxette.write.channel.depth", depthSupplier, Supplier::get)
-                .description("Current depth of the DuckDB write-channel backpressure buffer")
-                .register(registry);
+        if (registeredGaugeIds.add("write-channel:depth")) {
+            retainedGaugeState.add(depthSupplier);
+            Gauge.builder("joxette.write.channel.depth", depthSupplier, Supplier::get)
+                    .description("Current depth of the DuckDB write-channel backpressure buffer")
+                    .register(registry);
+        }
     }
 
     /**
