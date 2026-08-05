@@ -22,6 +22,7 @@ public class JoxetteProperties {
     private Bootstrap bootstrap = new Bootstrap();
     private S3 s3 = new S3();
     private ObjectStore objectStore = new ObjectStore();
+    private Security security = new Security();
 
     // -----------------------------------------------------------------------
     // Clustering
@@ -921,6 +922,24 @@ public class JoxetteProperties {
     }
 
     // -----------------------------------------------------------------------
+    // Security: API-key auth (mutating endpoints) and cursor signing
+    // -----------------------------------------------------------------------
+
+    public static class Security {
+        /**
+         * Shared-secret API key required via the {@code X-API-Key} header on every
+         * mutating request (POST/PUT/DELETE/PATCH). GET/HEAD requests are always
+         * unauthenticated. Leave blank to disable authentication entirely (default) —
+         * a WARN is logged at startup when blank so this is not left unset outside
+         * local development.
+         */
+        private String apiKey = "";
+
+        public String getApiKey() { return apiKey; }
+        public void setApiKey(String apiKey) { this.apiKey = apiKey; }
+    }
+
+    // -----------------------------------------------------------------------
     // Root getters/setters
     // -----------------------------------------------------------------------
 
@@ -956,6 +975,9 @@ public class JoxetteProperties {
 
     public ObjectStore getObjectStore() { return objectStore; }
     public void setObjectStore(ObjectStore objectStore) { this.objectStore = objectStore; }
+
+    public Security getSecurity() { return security; }
+    public void setSecurity(Security security) { this.security = security; }
 
     public Clustering getClustering() { return clustering; }
     public void setClustering(Clustering clustering) { this.clustering = clustering; }
