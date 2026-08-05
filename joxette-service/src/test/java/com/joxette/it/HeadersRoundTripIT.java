@@ -8,7 +8,6 @@ import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.header.internals.RecordHeaders;
 import org.apache.kafka.common.record.TimestampType;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -31,8 +30,10 @@ import java.sql.Connection;
 import java.sql.Statement;
 import java.time.Instant;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -58,6 +59,17 @@ import static org.assertj.core.api.Assertions.assertThat;
  * value verbatim — no additional encoding is applied — so the response
  * {@code CassetteRecord.Header.value} is either the original UTF-8 string or
  * the Base64-encoded fallback.
+ *
+ * <h2>Provenance headers</h2>
+ * <p>{@code GET /cassettes/topics/{topic}} always runs a "metadata-only"
+ * {@link com.joxette.replay.transform.TransformPipeline} (see
+ * {@code CassetteController.getTopicJson}), which injects six
+ * {@code x-replay-id}/{@code x-original-*}/{@code x-replayed-at} provenance
+ * headers via {@link com.joxette.replay.transform.ReplayMetadataInjector} into
+ * every returned record — by design, for every browse/stream request, not just
+ * actual replay-to-topic calls. {@link #fetchFirstRecordHeaders} strips those
+ * six well-known keys before returning, so assertions in this class exercise
+ * only the headers this test itself wrote.
  *
  * <h2>Setup</h2>
  * <p>A Kafka container is required because the Spring Boot context (even with
@@ -115,7 +127,6 @@ class HeadersRoundTripIT {
     // -------------------------------------------------------------------------
 
     @Test
-    @Disabled("Pre-existing failure, unrelated to /v1-hardening work — see docs/known-issues.md")
     void headers_utf8ValuesReturnedVerbatim() throws Exception {
         RecordHeaders headers = new RecordHeaders();
         headers.add("content-type", "application/json".getBytes(StandardCharsets.UTF_8));
@@ -134,7 +145,6 @@ class HeadersRoundTripIT {
     }
 
     @Test
-    @Disabled("Pre-existing failure, unrelated to /v1-hardening work — see docs/known-issues.md")
     void headers_binaryNonUtf8ValueStoredAsBase64AndRoundTrips() throws Exception {
         // [0xFF, 0xFE, 0x00] is not valid UTF-8 (0xFF is illegal in UTF-8).
         // CassetteBatchWriter.decodeHeaderValue() falls back to Base64.getEncoder()
@@ -167,7 +177,6 @@ class HeadersRoundTripIT {
     }
 
     @Test
-    @Disabled("Pre-existing failure, unrelated to /v1-hardening work — see docs/known-issues.md")
     void headers_duplicateKeysAllPreservedInInsertionOrder() throws Exception {
         // Kafka allows duplicate header keys; both entries must survive in order.
         RecordHeaders headers = new RecordHeaders();
@@ -188,7 +197,6 @@ class HeadersRoundTripIT {
     }
 
     @Test
-    @Disabled("Pre-existing failure, unrelated to /v1-hardening work — see docs/known-issues.md")
     void headers_emptyHeaderListReturnedForMessageWithNoHeaders() throws Exception {
         // ConsumerRecord with no headers — the stored headers array should be empty.
         writeRecord("key-no-headers", "v".getBytes(StandardCharsets.UTF_8),
@@ -218,13 +226,25 @@ class HeadersRoundTripIT {
                 TOPIC, 0, offset, timestamp.toEpochMilli(), TimestampType.CREATE_TIME,
                 -1, -1, key, value, headers, Optional.empty());
         try (CassetteBatchWriter writer = new CassetteBatchWriter(TOPIC, duckDB)) {
-            writer.writeBatch(List.of(record), List.of((String) null));
+            writer.writeBatch(List.of(record), Collections.singletonList(null));
         }
     }
 
     /**
+     * Six provenance header keys unconditionally injected by
+     * {@link com.joxette.replay.transform.ReplayMetadataInjector} into every
+     * {@code GET /cassettes/topics/{topic}} response (see the class-level javadoc)
+     * — unrelated to the headers this test writes and asserts on.
+     */
+    private static final Set<String> PROVENANCE_HEADER_KEYS = Set.of(
+            "x-replay-id", "x-original-topic", "x-original-partition",
+            "x-original-offset", "x-original-timestamp", "x-replayed-at");
+
+    /**
      * Calls {@code GET /cassettes/topics/{topic}} and returns the header list
-     * of the first (and in each test the only) record in the response.
+     * of the first (and in each test the only) record in the response, with the
+     * always-injected replay-provenance headers stripped out (see
+     * {@link #PROVENANCE_HEADER_KEYS}).
      */
     private List<CassetteRecord.Header> fetchFirstRecordHeaders() {
         ResponseEntity<PagedResponse<CassetteRecord>> response = restTemplate.exchange(
@@ -234,6 +254,8 @@ class HeadersRoundTripIT {
         assertThat(response.getBody()).isNotNull();
         List<CassetteRecord> data = response.getBody().data();
         assertThat(data).as("cassette must contain at least one record").isNotEmpty();
-        return data.get(0).headers();
+        return data.get(0).headers().stream()
+                .filter(h -> !PROVENANCE_HEADER_KEYS.contains(h.key()))
+                .toList();
     }
 }

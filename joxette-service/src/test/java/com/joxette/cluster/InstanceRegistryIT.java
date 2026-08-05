@@ -1,6 +1,5 @@
 package com.joxette.cluster;
 
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -86,7 +85,6 @@ class InstanceRegistryIT {
     // -------------------------------------------------------------------------
 
     @Test
-    @Disabled("Pre-existing failure, unrelated to /v1-hardening work — see docs/known-issues.md")
     void staleInstancesAreReapedWhenReapIsCalled() throws SQLException {
         String staleId = "stale-test-instance:" + System.currentTimeMillis();
 
@@ -94,8 +92,8 @@ class InstanceRegistryIT {
         synchronized (duckDB) {
             try (PreparedStatement ps = duckDB.prepareStatement(
                     "INSERT INTO joxette_instances " +
-                    "    (instance_id, roles, catalog_backend, started_at, last_heartbeat) " +
-                    "VALUES (?, ['recorder'], 'EMBEDDED_DUCKDB', " +
+                    "    (instance_id, recording_enabled, compaction_enabled, catalog_backend, started_at, last_heartbeat) " +
+                    "VALUES (?, true, true, 'EMBEDDED_DUCKDB', " +
                     "        now() - INTERVAL '10 minutes', now() - INTERVAL '10 minutes')")) {
                 ps.setString(1, staleId);
                 ps.executeUpdate();
@@ -214,8 +212,7 @@ class InstanceRegistryIT {
     }
 
     @Test
-    @Disabled("Pre-existing failure, unrelated to /v1-hardening work — see docs/known-issues.md")
-    void getInstancesIncludesRolesAndCatalogBackend() {
+    void getInstancesIncludesCapabilityFlagsAndCatalogBackend() {
         String url = "http://localhost:" + port + "/v1/instances";
         ResponseEntity<List<Map<String, Object>>> response = restTemplate.exchange(
                 url, HttpMethod.GET, null,
@@ -227,7 +224,10 @@ class InstanceRegistryIT {
         body.stream()
                 .filter(row -> registry.getInstanceId().equals(row.get("instanceId")))
                 .forEach(row -> {
-                    assertThat(row.get("roles")).as("roles must be present").isNotNull();
+                    // Test profile (application-it.yml) does not override recording.enabled
+                    // or compaction.enabled, so both default to true (JoxetteProperties).
+                    assertThat(row.get("recordingEnabled")).as("recordingEnabled must be present").isEqualTo(true);
+                    assertThat(row.get("compactionEnabled")).as("compactionEnabled must be present").isEqualTo(true);
                     assertThat(row.get("catalogBackend")).as("catalogBackend must be present").isNotNull();
                     assertThat(row.get("startedAt")).as("startedAt must be present").isNotNull();
                     assertThat(row.get("lastHeartbeat")).as("lastHeartbeat must be present").isNotNull();

@@ -7,17 +7,7 @@ here. Excluded from `mvn verify` (see `joxette-service/pom.xml`'s
 `maven-failsafe-plugin` configuration) so the build stays a real signal
 rather than permanently red; each should get its own fix task.
 
-## `InstanceRegistryIT` — stale `roles` column assertion
-
-`getInstancesIncludesRolesAndCatalogBackend` and
-`staleInstancesAreReapedWhenReapIsCalled` assert against a `roles` column
-that no longer exists on `joxette_instances` — it was migrated away to
-`recording_enabled`/`compaction_enabled` boolean columns (see
-`SchemaManager.migrateJoxetteInstances`). The test predates that migration
-and was never updated. Fix: rewrite both tests against the current schema.
-
-## `HeadersRoundTripIT` — 4 `NullPointerException`s in `writeRecord`
-
-All four header round-trip scenarios (binary non-UTF8, duplicate keys,
-empty header list, UTF8 values) fail at the same `writeRecord` call site.
-Confirmed pre-existing, not yet root-caused.
+No known issues currently tracked. All previously-listed items
+(`InstanceRegistryIT`'s stale `roles`-column assertions,
+`HeadersRoundTripIT`'s `List.of(null)` NPE) have been fixed and their
+tests re-enabled — see git history.
