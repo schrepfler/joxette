@@ -28,6 +28,10 @@ rules:
   - apiGroups: ["rbac.authorization.k8s.io"]
     resources: ["roles", "rolebindings"]
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  # PodDisruptionBudget for the embedded single-writer catalog StatefulSet.
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   # CRD read (JOSDK validates the CRD is installed at startup).
   - apiGroups: ["apiextensions.k8s.io"]
     resources: ["customresourcedefinitions"]

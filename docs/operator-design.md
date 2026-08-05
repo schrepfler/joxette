@@ -66,8 +66,9 @@ Three kinds. `JoxetteCluster` owns Kubernetes workloads; `RecordedTopic` and
 
 ### 3.1 `JoxetteCluster`
 
-Owns the Deployments/StatefulSet, Service, ConfigMap, ServiceAccount, RBAC, and
-(optionally) ServiceMonitor for one Joxette installation.
+Owns the Deployments/StatefulSet, Service, ConfigMap, ServiceAccount, RBAC,
+PodDisruptionBudget (embedded topology only), and (optionally) ServiceMonitor
+for one Joxette installation.
 
 ```yaml
 apiVersion: joxette.dev/v1alpha1
@@ -219,6 +220,8 @@ status:
 - a **ServiceAccount** + **Role/RoleBinding**. Track B grants the pods
   `pods: [get, watch, list]` (discovery) and
   `coordination.k8s.io/leases: [get, create, update, list]` (SBR + singleton lease);
+- a **PodDisruptionBudget** (`maxUnavailable: 0`) for the embedded, single-writer
+  catalog StatefulSet only — never voluntarily evict the only pod;
 - an optional **ServiceMonitor** scraping `/actuator/prometheus`.
 
 Secrets (Kafka SASL/SSL, S3 keys) are **referenced via `secretRef`, never inlined** —
@@ -300,6 +303,7 @@ converge → `Degraded` with the HTTP status/detail).
 `core`: `services`, `configmaps`, `serviceaccounts`, `events` (CRUD), `pods` (read);
 `rbac.authorization.k8s.io`: `roles`, `rolebindings` (CRUD — to provision Track B
 pod RBAC);
+`policy`: `poddisruptionbudgets` (CRUD — the embedded topology's PDB);
 `monitoring.coreos.com`: `servicemonitors` (CRUD, optional);
 `joxette.dev`: the three CRs + their `/status`.
 
