@@ -74,17 +74,25 @@ interface ModalPortalProps {
  */
 export function ModalPortal({ onClose, children, autoFocus = true }: ModalPortalProps) {
   const panelRef = useRef<HTMLDivElement>(null)
+  const previousActiveElementRef = useRef<HTMLElement | null>(null)
 
+  // Mount-only: capture whatever had focus before this modal opened, mark
+  // the background inert, and auto-focus the first focusable element inside
+  // the panel. Deliberately NOT dependent on `onClose`/`autoFocus` — every
+  // call site passes an inline `onClose` arrow, which gets a new identity on
+  // every parent re-render (e.g. AddMatcherModal's parent re-renders every
+  // 250ms while a replay stream is live). Depending on `onClose` here meant
+  // this effect tore down and re-ran on every such re-render, yanking focus
+  // back to the first field mid-typing. On unmount, restore focus to the
+  // pre-open element (WAI-ARIA APG requirement for dialogs) — guarded in
+  // case that element was itself removed from the DOM while the modal was
+  // open.
   useEffect(() => {
+    previousActiveElementRef.current = document.activeElement as HTMLElement | null
+
     openModalCount += 1
     if (openModalCount === 1) setBackgroundInert(true)
-    return () => {
-      openModalCount -= 1
-      if (openModalCount === 0) setBackgroundInert(false)
-    }
-  }, [])
 
-  useEffect(() => {
     if (autoFocus) {
       const first = panelRef.current?.querySelector<HTMLElement>(
         'input:not([disabled]), select:not([disabled]), textarea:not([disabled]), button:not([disabled]), [tabindex]:not([tabindex="-1"])'
@@ -92,10 +100,28 @@ export function ModalPortal({ onClose, children, autoFocus = true }: ModalPortal
       first?.focus()
     }
 
+    return () => {
+      openModalCount -= 1
+      if (openModalCount === 0) setBackgroundInert(false)
+
+      const previous = previousActiveElementRef.current
+      if (previous && document.contains(previous) && typeof previous.focus === 'function') {
+        previous.focus()
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // Escape-to-close: kept in its own effect, depending on `onClose`, so it
+  // always calls the latest callback. Unlike the autofocus effect above,
+  // re-subscribing this listener when `onClose`'s identity changes has no
+  // visible side effect — no focus is moved, nothing flickers — so it's
+  // safe (and necessary for correctness) to depend on it here.
+  useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [onClose, autoFocus])
+  }, [onClose])
 
   return createPortal(<div ref={panelRef}>{children}</div>, getModalPortalRoot())
 }
