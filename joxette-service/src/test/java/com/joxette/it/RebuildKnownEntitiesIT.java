@@ -65,6 +65,30 @@ class RebuildKnownEntitiesIT {
 
     private static final String BUCKET = "joxette-test";
 
+    /**
+     * Entity type used exclusively by
+     * {@link #rebuildKnownEntities_recoverOrphanedFiles_doesNotResurrectDeletedRowsOrCrossContaminate()}
+     * for its "zero ever-tracked files" side of the assertion. Registered on demand (via
+     * {@link #registerEntityType(String)}, not in {@code @BeforeEach}) so no other test method
+     * in this class can accidentally write data for it and invalidate the
+     * execution-order-independence this exists to guarantee.
+     */
+    private static final String ZERO_FILES_ENTITY_TYPE = "invoice";
+
+    /**
+     * Entity type used exclusively by
+     * {@link #rebuildKnownEntities_recoverOrphanedFiles_recoversDataAfterCatalogTableReset()}.
+     * Must not be shared with any other test method: that test {@code DROP}s and recreates
+     * its cassette table, which resets the DuckLake catalog's file tracking for the table's
+     * <em>entire</em> object-storage directory — not just the rows this test itself wrote. If
+     * another test method had already flushed data for this same entity type into the same
+     * bucket, that data's Parquet files would also become "orphaned" by the drop and get
+     * swept up by the recovery scan, inflating the recovered-row count and making the
+     * assertion depend on execution order (the exact class of bug this file's tests exist to
+     * catch elsewhere — see {@link #ZERO_FILES_ENTITY_TYPE}).
+     */
+    private static final String RECOVERY_TEST_ENTITY_TYPE = "shipment";
+
     @Container
     static final MinIOContainer minio =
             new MinIOContainer(DockerImageName.parse("minio/minio:RELEASE.2024-01-16T16-07-38Z"));
@@ -250,21 +274,37 @@ class RebuildKnownEntitiesIT {
      * <p>This test reproduces both preconditions in one bucket: real "order" data is
      * written and flushed to Parquet, then deleted from the live table (so the bucket
      * genuinely contains "order" Parquet files with all rows delete-marked), while
-     * "customer" is left completely untouched (so the bucket has zero files for it).
-     * It then calls rebuild with the opt-in {@code recoverOrphanedFiles=true} flag —
-     * the most permissive setting — and asserts that even then:
+     * {@link #ZERO_FILES_ENTITY_TYPE} is left completely untouched (so the bucket has
+     * zero files for it). It then calls rebuild with the opt-in
+     * {@code recoverOrphanedFiles=true} flag — the most permissive setting — and asserts
+     * that even then:
      * <ul>
      *   <li>the deleted "order" rows are NOT resurrected (the {@code ducklake_list_files}
      *       tracked-file gate trusts the deletion instead of scanning raw storage), and</li>
-     *   <li>no "order" data leaks into "customer"'s rebuild (the fallback glob, when it
-     *       does run, is scoped to that table's own on-disk path, never the whole bucket).</li>
+     *   <li>no "order" data leaks into {@link #ZERO_FILES_ENTITY_TYPE}'s rebuild (the
+     *       fallback glob, when it does run, is scoped to that table's own on-disk path,
+     *       never the whole bucket).</li>
      * </ul>
      * If either regression reappeared, this test would fail loudly: rows would resurface
      * in {@code known_entities} under one or both entity types.
+     *
+     * <p><b>Why a dedicated entity type instead of reusing "order" or "customer":</b> this
+     * test's second half depends on one entity type having genuinely <em>zero ever-tracked
+     * files</em> so that {@code resolveEntityDataSource}'s scoped-glob branch (as opposed to
+     * the {@code tableHasTrackedFiles} short-circuit) actually executes. {@code @BeforeEach}
+     * only {@code DELETE}s rows — it never drops or resets file-level history — so if another
+     * test method in this class writes-and-flushes data for "customer" before JUnit happens
+     * to run this test, "customer" would still carry tracked file history from that earlier
+     * flush and the scoped-glob branch would never run, making the assertion below pass for
+     * the wrong reason regardless of test execution order. {@link #ZERO_FILES_ENTITY_TYPE} is
+     * registered and used only by this test method, so it is guaranteed to have zero rows and
+     * zero tracked files no matter what order the other tests in this class run in.
      */
     @Test
     void rebuildKnownEntities_recoverOrphanedFiles_doesNotResurrectDeletedRowsOrCrossContaminate()
             throws Exception {
+        registerEntityType(ZERO_FILES_ENTITY_TYPE);
+
         // Write and flush real "order" data so the bucket contains genuine "order" Parquet
         // files — the exact raw material a bucket-wide glob would (wrongly) hoover up.
         try (EntityCassetteBatchWriter writer = new EntityCassetteBatchWriter(duckDB)) {
@@ -290,8 +330,9 @@ class RebuildKnownEntitiesIT {
         }
         assertThat(countCassetteRows("order", "order-777")).isEqualTo(0L);
 
-        // "customer" is untouched by this test (and was wiped in @BeforeEach) — zero rows,
-        // zero ever-tracked files.
+        // ZERO_FILES_ENTITY_TYPE is written by no other test in this class — guaranteed zero
+        // rows and zero ever-tracked files regardless of execution order (see class javadoc
+        // on this test method).
 
         // Even with the most permissive recovery flag, neither type may resurrect/contaminate.
         ResponseEntity<Map> response = restTemplate.postForEntity(
@@ -300,8 +341,8 @@ class RebuildKnownEntitiesIT {
 
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         assertThat(((Number) response.getBody().get("rebuilt")).longValue())
-                .as("deleted 'order' rows must not be resurrected, and 'customer' must not " +
-                    "pick up 'order' data even under recoverOrphanedFiles=true")
+                .as("deleted 'order' rows must not be resurrected, and '" + ZERO_FILES_ENTITY_TYPE +
+                    "' must not pick up 'order' data even under recoverOrphanedFiles=true")
                 .isEqualTo(0L);
         assertThat(DuckDBTestSupport.countRows(duckDB, "known_entities")).isEqualTo(0L);
 
@@ -315,6 +356,99 @@ class RebuildKnownEntitiesIT {
                         .isEqualTo(0L);
             }
         }
+    }
+
+    /**
+     * Positive-path proof that {@code recoverOrphanedFiles=true} genuinely recovers real
+     * orphaned data, not just "correctly does nothing" (the only behaviour the other tests
+     * in this class exercise).
+     *
+     * <p>Simulates a lost/reset {@code .ducklake} catalog file by writing and flushing real
+     * {@link #RECOVERY_TEST_ENTITY_TYPE} data to Parquet in MinIO, then dropping and
+     * recreating its cassette table. DuckLake's {@code DROP TABLE} only removes the catalog
+     * entry — it does not delete the already-flushed Parquet file(s) from object storage (see
+     * {@code SchemaManager.probeVariant()}'s vacuum comment for the same documented
+     * behaviour) — and recreating a table with the same name resolves to the same default
+     * on-disk path ({@code {data_path}/main/{table_name}/...}), so the pre-drop Parquet file
+     * becomes exactly the kind of table-scoped "orphaned file" the recovery fallback is built
+     * to find. This was verified directly against the DuckDB/DuckLake CLI before relying on it
+     * here: {@code DROP TABLE} leaves the file on disk under the same
+     * {@code main/entity_<type>/} directory, and the recreated table reports zero rows and
+     * zero {@code ducklake_list_files} entries — the exact precondition
+     * {@code resolveEntityDataSource} requires before it will attempt the fallback scan.
+     *
+     * <p>Uses a dedicated entity type not written by any other test method — see
+     * {@link #RECOVERY_TEST_ENTITY_TYPE}'s javadoc for why: the {@code DROP}/recreate here
+     * resets catalog file-tracking for that type's <em>entire</em> object-storage directory,
+     * so reusing a type another test also writes to would sweep up that other data too and
+     * make the recovered-row count depend on test execution order.
+     *
+     * <p>Asserts both directions: without {@code recoverOrphanedFiles} the orphaned data
+     * stays lost, and with it the data is genuinely recovered — both into {@code known_entities}
+     * and back into the catalog table itself (re-population), matching
+     * {@code resolveEntityDataSource}'s documented behaviour.
+     */
+    @Test
+    void rebuildKnownEntities_recoverOrphanedFiles_recoversDataAfterCatalogTableReset()
+            throws Exception {
+        registerEntityType(RECOVERY_TEST_ENTITY_TYPE);
+
+        try (EntityCassetteBatchWriter writer = new EntityCassetteBatchWriter(duckDB)) {
+            writer.writeRoutes(
+                    List.of(new EntityRoute(RECOVERY_TEST_ENTITY_TYPE, "shipment-999", 4, "created", "test-topic")),
+                    message("shipments.events", 0, 11L, Instant.parse("2024-08-01T09:00:00Z")));
+        }
+        try (Statement st = duckDB.createStatement()) {
+            try {
+                st.execute("CALL ducklake_flush_inlined_data('lake')");
+            } catch (Exception ignored) {
+                // Non-fatal — see other tests in this class for the same pattern.
+            }
+            st.execute("CHECKPOINT");
+        }
+        assertThat(countCassetteRows(RECOVERY_TEST_ENTITY_TYPE, "shipment-999")).isEqualTo(1L);
+
+        // Simulate catalog loss: DROP TABLE removes only the catalog entry for this table.
+        // The Parquet file already flushed to MinIO survives on object storage. Recreating
+        // the table (as SchemaManager does at startup against a reset catalog) resolves to
+        // the same default DuckLake path, making the surviving file an orphan of the
+        // freshly-recreated, catalog-amnesiac table.
+        try (Statement st = duckDB.createStatement()) {
+            st.execute("DROP TABLE lake.main.entity_" + RECOVERY_TEST_ENTITY_TYPE);
+        }
+        DuckDBTestSupport.createEntityTable(duckDB, RECOVERY_TEST_ENTITY_TYPE);
+        assertThat(countCassetteRows(RECOVERY_TEST_ENTITY_TYPE, "shipment-999")).isEqualTo(0L);
+
+        // Without recoverOrphanedFiles, the orphaned data must NOT be recovered.
+        ResponseEntity<Map> noRecover = restTemplate.postForEntity(
+                url("/cassettes/entities/rebuild-known-entities"), null, Map.class);
+        assertThat(noRecover.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(((Number) noRecover.getBody().get("rebuilt")).longValue())
+                .as("orphaned data must stay lost when recoverOrphanedFiles is not requested")
+                .isEqualTo(0L);
+        try (PreparedStatement ps = duckDB.prepareStatement(
+                "SELECT COUNT(*) FROM known_entities WHERE entity_type = ? AND entity_id = 'shipment-999'")) {
+            ps.setString(1, RECOVERY_TEST_ENTITY_TYPE);
+            try (ResultSet rs = ps.executeQuery()) {
+                assertThat(rs.next()).isTrue();
+                assertThat(rs.getLong(1)).isEqualTo(0L);
+            }
+        }
+
+        // With recoverOrphanedFiles=true, the orphaned Parquet file must be found and the
+        // entity's data genuinely recovered — both into known_entities and back into the
+        // catalog table itself.
+        ResponseEntity<Map> recover = restTemplate.postForEntity(
+                url("/cassettes/entities/rebuild-known-entities?recoverOrphanedFiles=true"),
+                null, Map.class);
+        assertThat(recover.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(((Number) recover.getBody().get("rebuilt")).longValue())
+                .as("recoverOrphanedFiles=true must genuinely recover the orphaned 'shipment-999' row")
+                .isEqualTo(1L);
+        assertEntityExists(RECOVERY_TEST_ENTITY_TYPE, "shipment-999");
+        assertFirstSeenEqualsLastSeen(RECOVERY_TEST_ENTITY_TYPE, "shipment-999");
+        // The catalog table itself should have been re-populated from the orphaned file.
+        assertThat(countCassetteRows(RECOVERY_TEST_ENTITY_TYPE, "shipment-999")).isEqualTo(1L);
     }
 
     // -------------------------------------------------------------------------
@@ -385,6 +519,23 @@ class RebuildKnownEntitiesIT {
                 return rs.next() ? rs.getLong(1) : 0L;
             }
         }
+    }
+
+    /**
+     * Registers {@code entityType} in {@code entity_type_configs} and creates its DuckLake
+     * cassette table, on demand from within the one test that needs it — used for entity
+     * types (see {@link #ZERO_FILES_ENTITY_TYPE}, {@link #RECOVERY_TEST_ENTITY_TYPE}) that must
+     * not be shared with any other test method in this class.
+     */
+    private void registerEntityType(String entityType) throws Exception {
+        try (Statement st = duckDB.createStatement()) {
+            st.execute("""
+                    INSERT INTO entity_type_configs (entity_type, bucket_count, created_at)
+                    VALUES ('%s', 256, now())
+                    ON CONFLICT (entity_type) DO NOTHING
+                    """.formatted(entityType));
+        }
+        DuckDBTestSupport.createEntityTable(duckDB, entityType);
     }
 
     /** Creates the MinIO bucket. Called from {@link #minioProperties} before the context starts. */
