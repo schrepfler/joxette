@@ -27,17 +27,24 @@ spec:
         target:
           type: Utilization
           averageUtilization: {{ .Values.tiers.replay.hpa.targetCPUUtilizationPercentage }}
+    {{- if .Values.tiers.replay.hpa.activeReplaysMetric.enabled }}
     {{- /*
     Pods metric: average joxette_replay_active (active replay-to-topic ops) per
     pod. Replay is I/O-bound (SSE/NDJSON fan-out to slow clients) — many
     concurrent streams can saturate a pod at low CPU, which the Resource metric
-    above misses entirely. HPA computes a desired replica count per metric and
-    scales to the MAX of them, so this only ever scales *out* further than CPU
-    alone would, never in place of it.
-    Prerequisite: a metrics adapter (e.g. prometheus-adapter) must be installed
-    and configured to expose joxette_replay_active via the custom metrics API
-    (custom.metrics.k8s.io) for a `type: Pods` metric to resolve. This chart
-    does not install or configure the adapter.
+    above misses entirely.
+    Gated on its own flag (default false): this metric only resolves through a
+    custom-metrics adapter (typically prometheus-adapter) exposing
+    joxette_replay_active via custom.metrics.k8s.io — a real deployment
+    prerequisite this chart does not install. HPA v2 computes a desired replica
+    count per metric and scales UP to the MAX across all of them, so a
+    resolving metric only ever scales out further than CPU alone. But if this
+    metric FAILS to resolve (no adapter installed), HPA v2 semantics reject any
+    scale-down recommendation outright while leaving scale-up on the other
+    metrics untouched — so enabling this without the adapter silently ratchets
+    the replay tier up to maxReplicas and it never scales back down. Only
+    enable tiers.replay.hpa.activeReplaysMetric.enabled once the adapter is
+    confirmed serving this metric.
     */}}
     - type: Pods
       pods:
@@ -46,4 +53,5 @@ spec:
         target:
           type: AverageValue
           averageValue: {{ .Values.tiers.replay.hpa.targetActiveReplaysPerPod | quote }}
+    {{- end }}
 {{- end }}
