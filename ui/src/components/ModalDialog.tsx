@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 
 interface ModalDialogProps {
   title: string
@@ -12,24 +13,76 @@ interface ModalDialogProps {
   autoFocus?: boolean
 }
 
+// Portal target for every modal overlay in the app. Lazily created and
+// appended directly to <body> so that a modal's DOM subtree is always a
+// true sibling of the app root, never a descendant of it — that
+// separation is what lets us mark the app root (and everything else in
+// <body>) inert while a modal is open, without ever touching the modal's
+// own subtree.
+let modalPortalRoot: HTMLDivElement | null = null
+function getModalPortalRoot(): HTMLDivElement {
+  if (!modalPortalRoot) {
+    modalPortalRoot = document.createElement('div')
+    modalPortalRoot.id = 'jx-modal-root'
+    document.body.appendChild(modalPortalRoot)
+  }
+  return modalPortalRoot
+}
+
+// Reference-counted so that if a second modal is ever opened while one is
+// already open (e.g. a confirm dialog stacked on a form modal), the
+// background is only restored once the last modal closes.
+let openModalCount = 0
+function setBackgroundInert(inert: boolean) {
+  const portalRoot = getModalPortalRoot()
+  for (const child of Array.from(document.body.children)) {
+    if (child === portalRoot) continue
+    if (inert) {
+      // `inert` (native attribute) removes the subtree from focus,
+      // pointer events, and the accessibility tree in one step.
+      // `aria-hidden` is set alongside it for assistive-tech/browser
+      // combinations that don't yet honour `inert`'s a11y effects.
+      child.setAttribute('inert', '')
+      child.setAttribute('aria-hidden', 'true')
+    } else {
+      child.removeAttribute('inert')
+      child.removeAttribute('aria-hidden')
+    }
+  }
+}
+
+interface ModalPortalProps {
+  onClose: () => void
+  children: ReactNode
+  /** Focus the first interactive element automatically (default: true). */
+  autoFocus?: boolean
+}
+
 /**
- * Accessible modal overlay wrapper.
+ * Low-level accessible modal primitive: portals `children` to a dedicated
+ * <body>-level node, marks the rest of <body> inert + aria-hidden while
+ * mounted, focuses the first focusable element inside on mount, and closes
+ * on Escape. Renders no chrome of its own (no overlay background, no
+ * panel, no title) — callers own their layout. `ModalDialog` below is the
+ * title+panel flavour built on top of this; `ConfirmDialog` and
+ * `TruncateDialog` use this directly because their content doesn't fit
+ * ModalDialog's title-as-<h2> shape.
  *
- * - Overlay is aria-hidden so assistive technology only reads the dialog.
- * - Inner panel has role="dialog", aria-modal="true", aria-labelledby pointing at the title.
- * - Escape key closes the dialog.
- * - Focus is moved to the first focusable element inside on mount.
+ * Because the rest of the document is inert while this is mounted, focus
+ * can never leave the portaled subtree via Tab/Shift-Tab — that doubles
+ * as the focus trap, with no manual key interception required.
  */
-export function ModalDialog({
-  title,
-  onClose,
-  children,
-  style,
-  className = 'jx-modal',
-  autoFocus = true,
-}: ModalDialogProps) {
-  const titleId = useId()
+export function ModalPortal({ onClose, children, autoFocus = true }: ModalPortalProps) {
   const panelRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    openModalCount += 1
+    if (openModalCount === 1) setBackgroundInert(true)
+    return () => {
+      openModalCount -= 1
+      if (openModalCount === 0) setBackgroundInert(false)
+    }
+  }, [])
 
   useEffect(() => {
     if (autoFocus) {
@@ -44,20 +97,47 @@ export function ModalDialog({
     return () => document.removeEventListener('keydown', onKey)
   }, [onClose, autoFocus])
 
+  return createPortal(<div ref={panelRef}>{children}</div>, getModalPortalRoot())
+}
+
+/**
+ * Accessible modal overlay wrapper — title + panel chrome on top of
+ * ModalPortal.
+ *
+ * - Renders through ModalPortal: a true <body>-level sibling of the app
+ *   root, with the app root marked inert + aria-hidden while open. The
+ *   dialog's own subtree is never aria-hidden — assistive technology
+ *   reads it normally.
+ * - Inner panel has role="dialog", aria-modal="true", aria-labelledby
+ *   pointing at the title.
+ * - Escape key closes the dialog.
+ * - Focus is moved to the first focusable element inside on mount.
+ */
+export function ModalDialog({
+  title,
+  onClose,
+  children,
+  style,
+  className = 'jx-modal',
+  autoFocus = true,
+}: ModalDialogProps) {
+  const titleId = useId()
+
   return (
-    <div className="jx-overlay" onClick={onClose} aria-hidden="true">
-      <div
-        ref={panelRef}
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        className={className}
-        style={style}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <h2 id={titleId} style={{ margin: '0 0 1.25rem', fontSize: 18, fontWeight: 700 }}>{title}</h2>
-        {children}
+    <ModalPortal onClose={onClose} autoFocus={autoFocus}>
+      <div className="jx-overlay" onClick={onClose}>
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby={titleId}
+          className={className}
+          style={style}
+          onClick={(e) => e.stopPropagation()}
+        >
+          <h2 id={titleId} style={{ margin: '0 0 1.25rem', fontSize: 18, fontWeight: 700 }}>{title}</h2>
+          {children}
+        </div>
       </div>
-    </div>
+    </ModalPortal>
   )
 }
