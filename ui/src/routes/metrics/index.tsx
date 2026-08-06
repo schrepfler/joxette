@@ -2,7 +2,7 @@ import { createFileRoute } from '@tanstack/react-router'
 import { memo, useEffect, useId, useMemo, useState } from 'react'
 import {
   AreaChart, Area, LineChart, Line,
-  XAxis, YAxis, CartesianGrid, Legend, ReferenceLine, Tooltip,
+  XAxis, YAxis, CartesianGrid, Legend, ReferenceLine, ReferenceDot, Tooltip,
 } from 'recharts'
 import { ChartContainer, type ChartConfig } from '@/components/ui/chart'
 import { healthApi } from '../../api/client'
@@ -234,6 +234,37 @@ const PALETTE = ['#6674cc', '#3E9A7A', '#A26612', '#8B2121', '#1E5A8A', '#6B46A0
 // activeDot machinery running without rendering a tooltip popup box.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Dot + paint-order-outlined value text — the shared visual for "show a
+// value at this point on the chart". Used both by the cursor-following
+// activeDot (makeActiveDot) and by LegendHoverDot (value at a series' last
+// point, shown on legend hover instead of on cursor movement).
+// ---------------------------------------------------------------------------
+
+function ValueLabel({ cx, cy, color, text }: { cx?: number | null; cy?: number | null; color?: string; text: string }) {
+  if (cx == null || cy == null) return <g />
+  return (
+    <g>
+      <circle cx={cx} cy={cy} r={4} fill={color ?? '#6674cc'} stroke="rgba(10,12,22,0.7)" strokeWidth={1.5} />
+      <text
+        x={cx + 8}
+        y={cy + 4}
+        fontSize={10}
+        fontFamily="var(--font-mono)"
+        fill="rgba(10,12,22,0.9)"
+        style={{
+          paintOrder: 'stroke',
+          stroke: 'rgba(255,255,255,0.85)',
+          strokeWidth: 5,
+          strokeLinejoin: 'round',
+        } as React.CSSProperties}
+      >
+        {text}
+      </text>
+    </g>
+  )
+}
+
 type ActiveDotProps = {
   cx?: number | null
   cy?: number | null
@@ -243,32 +274,11 @@ type ActiveDotProps = {
 
 function makeActiveDot(formatter: (v: number) => string) {
   return function ActiveDot({ cx, cy, stroke, value }: ActiveDotProps) {
-    if (cx == null || cy == null) return <g />
     // For stacked areas value may arrive as [base, top]; show the contribution.
     const raw = Array.isArray(value)
       ? (value as number[])[1] - (value as number[])[0]
       : (value ?? 0)
-    const color = stroke ?? '#6674cc'
-    return (
-      <g>
-        <circle cx={cx} cy={cy} r={4} fill={color} stroke="rgba(10,12,22,0.7)" strokeWidth={1.5} />
-        <text
-          x={cx + 8}
-          y={cy + 4}
-          fontSize={10}
-          fontFamily="var(--font-mono)"
-          fill="rgba(10,12,22,0.9)"
-          style={{
-            paintOrder: 'stroke',
-            stroke: 'rgba(255,255,255,0.85)',
-            strokeWidth: 5,
-            strokeLinejoin: 'round',
-          } as React.CSSProperties}
-        >
-          {formatter(Number(raw))}
-        </text>
-      </g>
-    )
+    return <ValueLabel cx={cx} cy={cy} color={stroke} text={formatter(Number(raw))} />
   }
 }
 
@@ -277,23 +287,22 @@ const CURSOR_STYLE = { stroke: 'rgba(200,205,240,0.35)', strokeWidth: 1, strokeD
 
 // ---------------------------------------------------------------------------
 // Interactive legend — hovering a series name highlights that series (dims
-// the rest, via `emphasis` below on each Area/Line) and shows its most
-// recent value inline. Pair with useState<string | null>(null) per chart.
+// the rest, via `emphasis` below on each Area/Line) without moving any
+// label. Pair with useState<string | null>(null) per chart, and render one
+// <LegendHoverDot> per series to show its last value at its actual point on
+// the chart, the same way the cursor-following activeDot does.
 // ---------------------------------------------------------------------------
 
 type LegendPayloadEntry = { value?: string; color?: string; dataKey?: string | number }
 
 function InteractiveLegend({
-  payload, data, formatter, activeKey, onHover,
+  payload, activeKey, onHover,
 }: {
   payload?: LegendPayloadEntry[]
-  data: readonly unknown[]
-  formatter: (v: number, key: string) => string
   activeKey: string | null
   onHover: (key: string | null) => void
 }) {
   if (!payload || payload.length === 0) return null
-  const last = data[data.length - 1] as Record<string, unknown> | undefined
   return (
     <ul style={{
       display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '4px 14px',
@@ -303,7 +312,6 @@ function InteractiveLegend({
         const key = String(entry.dataKey ?? entry.value ?? '')
         const active = activeKey === key
         const dimmed = activeKey !== null && !active
-        const raw = last ? Number(last[key]) : NaN
         return (
           <li key={key}
             onMouseEnter={() => onHover(key)}
@@ -318,13 +326,45 @@ function InteractiveLegend({
           >
             <span style={{ width: 8, height: 8, borderRadius: 2, background: entry.color, flexShrink: 0 }} />
             <span style={{ fontWeight: active ? 700 : 400 }}>{entry.value}</span>
-            {active && !isNaN(raw) && (
-              <span style={{ color: 'var(--ink-primary)', fontWeight: 700 }}>{formatter(raw, key)}</span>
-            )}
           </li>
         )
       })}
     </ul>
+  )
+}
+
+/**
+ * Renders a ValueLabel at a series' last data point — only while that
+ * series is the hovered legend entry. Mirrors what the cursor-following
+ * activeDot shows, but anchored to the last point instead of the cursor,
+ * so hovering the legend doesn't require moving the mouse onto the chart.
+ */
+function LegendHoverDot({
+  seriesKey, activeKey, data, formatter, color, yAxisId, positionAt,
+}: {
+  seriesKey: string
+  activeKey: string | null
+  data: readonly unknown[]
+  formatter: (v: number) => string
+  color: string
+  yAxisId?: string
+  /**
+   * Y position on the chart, given the last data row. Defaults to
+   * `row[seriesKey]`. Stacked areas need the cumulative stack height here
+   * instead — the displayed value stays the series' own (non-cumulative)
+   * contribution, matching what the cursor-following activeDot shows.
+   */
+  positionAt?: (last: Record<string, unknown>) => number
+}) {
+  if (activeKey !== seriesKey) return null
+  const last = data[data.length - 1] as Record<string, unknown> | undefined
+  const x = last?.ts as string | number | undefined
+  const raw = last ? Number(last[seriesKey]) : NaN
+  const y = last ? (positionAt ? positionAt(last) : raw) : NaN
+  if (x == null || isNaN(raw) || isNaN(y)) return null
+  return (
+    <ReferenceDot x={x} y={y} yAxisId={yAxisId} r={0} ifOverflow="extendDomain"
+      shape={(props: { cx?: number; cy?: number }) => <ValueLabel cx={props.cx} cy={props.cy} color={color} text={formatter(raw)} />} />
   )
 }
 
@@ -481,9 +521,7 @@ const TopicRow = memo(function TopicRow({ tk, label, latest, pts, axisProps }: {
               <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
               <YAxis tickFormatter={v => fmt(v, 0)} {...axisProps} width={44} />
               <Tooltip content={() => null} cursor={CURSOR_STYLE} />
-              <Legend content={
-                <InteractiveLegend data={lagSeries} formatter={v => fmt(v, 0)} activeKey={lagActive} onHover={setLagActive} />
-              } />
+              <Legend content={<InteractiveLegend activeKey={lagActive} onHover={setLagActive} />} />
               {partitions.map((p, i) => (
                 <Area key={p} type="monotone" dataKey={`p${p}`} name={`p${p}`}
                   stackId="lag"
@@ -491,6 +529,12 @@ const TopicRow = memo(function TopicRow({ tk, label, latest, pts, axisProps }: {
                   fill={PALETTE[i % PALETTE.length]}
                   strokeWidth={1.5} dot={false} activeDot={lagDot} isAnimationActive={false}
                   {...emphasis(`p${p}`, lagActive, 0.33)} />
+              ))}
+              {partitions.map((p, i) => (
+                <LegendHoverDot key={p} seriesKey={`p${p}`} activeKey={lagActive} data={lagSeries}
+                  formatter={v => fmt(v, 0)} color={PALETTE[i % PALETTE.length]}
+                  positionAt={last => partitions.slice(0, i + 1)
+                    .reduce((sum, pp) => sum + (Number(last[`p${pp}`]) || 0), 0)} />
               ))}
             </AreaChart>
           </ChartContainer>
@@ -504,9 +548,7 @@ const TopicRow = memo(function TopicRow({ tk, label, latest, pts, axisProps }: {
               <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
               <YAxis tickFormatter={v => fmt(v, 0)} {...axisProps} width={44} />
               <Tooltip content={() => null} cursor={CURSOR_STYLE} />
-              <Legend content={
-                <InteractiveLegend data={rateSeries} formatter={v => `${fmt(v, 1)}/s`} activeKey={rateActive} onHover={setRateActive} />
-              } />
+              <Legend content={<InteractiveLegend activeKey={rateActive} onHover={setRateActive} />} />
               {partitions.map((p, i) => (
                 <Line key={p} type="monotone" dataKey={`p${p}`} name={`p${p}`}
                   stroke={PALETTE[i % PALETTE.length]}
@@ -517,6 +559,12 @@ const TopicRow = memo(function TopicRow({ tk, label, latest, pts, axisProps }: {
                 stroke="#f0c040" strokeWidth={2} strokeDasharray="5 3"
                 dot={false} activeDot={makeActiveDot(v => `${fmt(v, 1)}/s`)} isAnimationActive={false}
                 {...emphasis('total', rateActive, 0)} />
+              {partitions.map((p, i) => (
+                <LegendHoverDot key={p} seriesKey={`p${p}`} activeKey={rateActive} data={rateSeries}
+                  formatter={v => `${fmt(v, 1)}/s`} color={PALETTE[i % PALETTE.length]} />
+              ))}
+              <LegendHoverDot seriesKey="total" activeKey={rateActive} data={rateSeries}
+                formatter={v => `${fmt(v, 1)}/s`} color="#f0c040" />
             </LineChart>
           </ChartContainer>
         </Card>
@@ -559,9 +607,7 @@ const TopicRow = memo(function TopicRow({ tk, label, latest, pts, axisProps }: {
               <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
               <YAxis tickFormatter={v => fmtMs(v)} {...axisProps} width={56} domain={[0, 120]} />
               <Tooltip content={() => null} cursor={CURSOR_STYLE} />
-              <Legend content={
-                <InteractiveLegend data={netPts} formatter={fmtMs} activeKey={netActive} onHover={setNetActive} />
-              } />
+              <Legend content={<InteractiveLegend activeKey={netActive} onHover={setNetActive} />} />
               <Line type="monotone" dataKey="p50" name="poll p50"
                 stroke={PALETTE[0]} strokeWidth={2} dot={false} activeDot={msDot} isAnimationActive={false}
                 {...emphasis('p50', netActive, 0)} />
@@ -573,6 +619,9 @@ const TopicRow = memo(function TopicRow({ tk, label, latest, pts, axisProps }: {
                 stroke={PALETTE[2]} strokeWidth={1} strokeDasharray="1 3"
                 dot={false} activeDot={msDot} isAnimationActive={false}
                 {...emphasis('flmax', netActive, 0)} />
+              <LegendHoverDot seriesKey="p50" activeKey={netActive} data={netPts} formatter={fmtMs} color={PALETTE[0]} />
+              <LegendHoverDot seriesKey="p99" activeKey={netActive} data={netPts} formatter={fmtMs} color={PALETTE[1]} />
+              <LegendHoverDot seriesKey="flmax" activeKey={netActive} data={netPts} formatter={fmtMs} color={PALETTE[2]} />
             </LineChart>
           </ChartContainer>
         </Card>
@@ -748,14 +797,15 @@ function MetricsPage() {
                 <YAxis yAxisId="depth" {...AXIS_PROPS} width={28} />
                 <YAxis yAxisId="ms" orientation="right" tickFormatter={v => v + 'ms'} {...AXIS_PROPS} width={48} />
                 <Tooltip content={() => null} cursor={CURSOR_STYLE} />
-                <Legend content={
-                  <InteractiveLegend data={pts} formatter={(v, key) => key === 'writeDuration' ? fmtMs(v) : fmt(v, 0)}
-                    activeKey={writeActive} onHover={setWriteActive} />
-                } />
+                <Legend content={<InteractiveLegend activeKey={writeActive} onHover={setWriteActive} />} />
                 <Line yAxisId="depth" type="monotone" dataKey="writeDepth"    name="depth"    stroke="var(--color-writeDepth)"    strokeWidth={1.5} dot={false} activeDot={countDot} isAnimationActive={false}
                   {...emphasis('writeDepth', writeActive, 0)} />
                 <Line yAxisId="ms"    type="monotone" dataKey="writeDuration" name="batch ms" stroke="var(--color-writeDuration)" strokeWidth={1.5} dot={false} activeDot={msDot}   isAnimationActive={false}
                   {...emphasis('writeDuration', writeActive, 0)} />
+                <LegendHoverDot seriesKey="writeDepth" activeKey={writeActive} data={pts} yAxisId="depth"
+                  formatter={v => fmt(v, 0)} color="var(--color-writeDepth)" />
+                <LegendHoverDot seriesKey="writeDuration" activeKey={writeActive} data={pts} yAxisId="ms"
+                  formatter={fmtMs} color="var(--color-writeDuration)" />
               </LineChart>
             </ChartContainer>
           </Card>
@@ -769,15 +819,16 @@ function MetricsPage() {
                 <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...AXIS_PROPS} minTickGap={40} />
                 <YAxis tickFormatter={fmtBytes} {...AXIS_PROPS} width={68} />
                 <Tooltip content={() => null} cursor={CURSOR_STYLE} />
-                <Legend content={
-                  <InteractiveLegend data={pts} formatter={fmtBytes} activeKey={catalogActive} onHover={setCatalogActive} />
-                } />
+                <Legend content={<InteractiveLegend activeKey={catalogActive} onHover={setCatalogActive} />} />
                 <Area type="monotone" dataKey="catalogBytes" name="catalog file" stroke="var(--color-catalogBytes)" fill="var(--color-catalogBytes)" strokeWidth={1.5} dot={false} activeDot={bytesDot} isAnimationActive={false}
                   {...emphasis('catalogBytes', catalogActive, 0.15)} />
                 <Area type="monotone" dataKey="inlinedBytes" name="inlined"       stroke="var(--color-inlinedBytes)" fill="var(--color-inlinedBytes)" strokeWidth={1.5} dot={false} activeDot={bytesDot} isAnimationActive={false}
                   {...emphasis('inlinedBytes', catalogActive, 0.15)} />
                 <Area type="monotone" dataKey="flushedBytes" name="flushed"       stroke="var(--color-flushedBytes)" fill="var(--color-flushedBytes)" strokeWidth={1.5} dot={false} activeDot={bytesDot} isAnimationActive={false}
                   {...emphasis('flushedBytes', catalogActive, 0.15)} />
+                <LegendHoverDot seriesKey="catalogBytes" activeKey={catalogActive} data={pts} formatter={fmtBytes} color="var(--color-catalogBytes)" />
+                <LegendHoverDot seriesKey="inlinedBytes" activeKey={catalogActive} data={pts} formatter={fmtBytes} color="var(--color-inlinedBytes)" />
+                <LegendHoverDot seriesKey="flushedBytes" activeKey={catalogActive} data={pts} formatter={fmtBytes} color="var(--color-flushedBytes)" />
               </AreaChart>
             </ChartContainer>
           </Card>
@@ -791,9 +842,7 @@ function MetricsPage() {
                 <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...AXIS_PROPS} minTickGap={40} />
                 <YAxis tickFormatter={fmtBytes} {...AXIS_PROPS} width={68} />
                 <Tooltip content={() => null} cursor={CURSOR_STYLE} />
-                <Legend content={
-                  <InteractiveLegend data={duckdbMemPts} formatter={fmtBytes} activeKey={duckdbMemActive} onHover={setDuckdbMemActive} />
-                } />
+                <Legend content={<InteractiveLegend activeKey={duckdbMemActive} onHover={setDuckdbMemActive} />} />
                 <Area type="monotone" dataKey="total" name="total"
                   stroke={PALETTE[0]} fill={PALETTE[0]} strokeWidth={2}
                   dot={false} activeDot={bytesDot} isAnimationActive={false}
@@ -804,6 +853,11 @@ function MetricsPage() {
                     strokeWidth={1} strokeDasharray="3 2"
                     dot={false} activeDot={bytesDot} isAnimationActive={false}
                     {...emphasis(t, duckdbMemActive, 0)} />
+                ))}
+                <LegendHoverDot seriesKey="total" activeKey={duckdbMemActive} data={duckdbMemPts} formatter={fmtBytes} color={PALETTE[0]} />
+                {duckdbMemTags.map((t, i) => (
+                  <LegendHoverDot key={t} seriesKey={t} activeKey={duckdbMemActive} data={duckdbMemPts}
+                    formatter={fmtBytes} color={PALETTE[(i + 1) % PALETTE.length]} />
                 ))}
               </AreaChart>
             </ChartContainer>
@@ -819,9 +873,7 @@ function MetricsPage() {
                 <YAxis tickFormatter={fmtBytes} {...AXIS_PROPS} width={68}
                   domain={[0, (latest?.heapMax ?? 0) > 0 ? latest!.heapMax * 1.05 : 'auto']} />
                 <Tooltip content={() => null} cursor={CURSOR_STYLE} />
-                <Legend content={
-                  <InteractiveLegend data={pts} formatter={fmtBytes} activeKey={heapActive} onHover={setHeapActive} />
-                } />
+                <Legend content={<InteractiveLegend activeKey={heapActive} onHover={setHeapActive} />} />
                 {(latest?.heapMax ?? 0) > 0 && <>
                   <ReferenceLine y={latest!.heapMax} stroke="var(--ink-tertiary)" strokeWidth={1.5} strokeDasharray="6 3"
                     label={{ value: `max  ${fmtBytes(latest!.heapMax)}`, position: 'insideTopLeft', fontSize: 9, fill: 'var(--ink-tertiary)', fontFamily: 'var(--font-mono)' }} />
@@ -832,6 +884,8 @@ function MetricsPage() {
                   {...emphasis('heapUsed', heapActive, 0.12)} />
                 <Area type="monotone" dataKey="processRss" name="process RSS" stroke="var(--color-processRss)" fill="none"                     strokeWidth={1.5} strokeDasharray="4 2" dot={false} activeDot={bytesDot} isAnimationActive={false}
                   {...emphasis('processRss', heapActive, 0)} />
+                <LegendHoverDot seriesKey="heapUsed" activeKey={heapActive} data={pts} formatter={fmtBytes} color="var(--color-heapUsed)" />
+                <LegendHoverDot seriesKey="processRss" activeKey={heapActive} data={pts} formatter={fmtBytes} color="var(--color-processRss)" />
               </AreaChart>
             </ChartContainer>
           </Card>
