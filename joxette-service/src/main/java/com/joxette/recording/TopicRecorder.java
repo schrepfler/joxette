@@ -247,6 +247,16 @@ public class TopicRecorder {
                             if (toCommit != null) {
                                 kc.commitSync(toCommit);
                             }
+                            // Sink degraded: pause assigned partitions so poll() returns
+                            // immediately (no new data buffered downstream while nothing can
+                            // be written) while this thread keeps heartbeating normally via
+                            // its own regular poll() calls below. This — and every other kc.*
+                            // call — must run on THIS thread only: batchWeighted forks the
+                            // downstream map/runForeach stage onto a separate thread, and
+                            // KafkaConsumer is not safe for concurrent access from two threads
+                            // (see the class doc's Rebalance/threading notes and
+                            // waitForSinkRecovery below, which deliberately never touches kc).
+                            reconcilePauseState(kc, label);
                             long pollStart = System.nanoTime();
                             var records = kc.poll(POLL_TIMEOUT);
                             meters.pollDuration().record(System.nanoTime() - pollStart,
@@ -295,11 +305,14 @@ public class TopicRecorder {
                     (acc, records) -> { acc.addAll(records); return acc; })
                 .map(this::buildWriteBatch)
                 .runForeach(wb -> {
-                    // If the sink is degraded, pause consumption and spin-wait for recovery
-                    // before submitting. This keeps the consumer alive (heartbeats via poll)
-                    // without committing offsets or tearing down the pipeline.
+                    // If the sink is degraded, block here until it recovers, before
+                    // submitting. This stage runs on batchWeighted's forked downstream
+                    // thread, NOT the poll-loop thread above — it must never touch kc
+                    // directly (see reconcilePauseState's note). The poll loop keeps the
+                    // consumer alive (heartbeats via its own poll calls) and paused
+                    // (no new data buffered) while this thread waits.
                     if (!writeChannel.isHealthy()) {
-                        pauseForSinkRecovery(kc, label);
+                        waitForSinkRecovery(label);
                     }
                     submitWriteBatch(wb);
                     pendingCommit.set(buildOffsets(wb.sourceRecords()));
@@ -408,23 +421,41 @@ public class TopicRecorder {
      * to HEALTHY. Keeps the consumer alive (heartbeats via empty poll calls) without
      * advancing offsets or committing, so no rebalance is triggered.
      */
-    private void pauseForSinkRecovery(KafkaConsumer<String, byte[]> kc, String label) throws InterruptedException {
-        Set<TopicPartition> paused = new java.util.HashSet<>(kc.assignment());
-        if (!paused.isEmpty()) {
-            kc.pause(paused);
-            log.warn("Recorder '{}': sink DEGRADED — paused {} partition(s); waiting for recovery", label, paused.size());
+    /**
+     * Pauses/resumes assigned partitions to match the sink's health, called once per
+     * poll-loop iteration. Idempotent and driven entirely off {@code kc.paused()} —
+     * no extra field needed to track "did I pause it" across iterations.
+     *
+     * <p>Must only ever be called from the poll-loop thread (the sole owner of
+     * {@code kc}) — never from the downstream {@code batchWeighted}/{@code runForeach}
+     * thread. See {@link #waitForSinkRecovery} for that side's kc-free equivalent.
+     */
+    private void reconcilePauseState(KafkaConsumer<String, byte[]> kc, String label) {
+        boolean healthy = writeChannel.isHealthy();
+        Set<TopicPartition> currentlyPaused = kc.paused();
+        if (!healthy && currentlyPaused.isEmpty()) {
+            Set<TopicPartition> assignment = kc.assignment();
+            if (!assignment.isEmpty()) {
+                kc.pause(assignment);
+                log.warn("Recorder '{}': sink DEGRADED — paused {} partition(s); waiting for recovery",
+                        label, assignment.size());
+            }
+        } else if (healthy && !currentlyPaused.isEmpty()) {
+            kc.resume(currentlyPaused);
+            log.info("Recorder '{}': sink recovered — resumed {} partition(s)", label, currentlyPaused.size());
         }
-        try {
-            while (!writeChannel.isHealthy() && !stopped && !Thread.currentThread().isInterrupted()) {
-                // Keep polling to send heartbeats — discard records (consumer is paused)
-                kc.poll(POLL_TIMEOUT);
-                updateLag(kc);
-            }
-        } finally {
-            if (!paused.isEmpty() && !stopped) {
-                kc.resume(paused);
-                log.info("Recorder '{}': sink recovered — resumed {} partition(s)", label, paused.size());
-            }
+    }
+
+    /**
+     * Blocks the downstream {@code runForeach} thread until the sink recovers to
+     * HEALTHY, without touching {@code kc} — that thread is not its owner (see
+     * {@link #reconcilePauseState}, which does the actual pause/resume/heartbeat work
+     * from the poll-loop thread while this waits).
+     */
+    private void waitForSinkRecovery(String label) throws InterruptedException {
+        log.debug("Recorder '{}': sink degraded — waiting to write next batch", label);
+        while (!writeChannel.isHealthy() && !stopped && !Thread.currentThread().isInterrupted()) {
+            Thread.sleep(POLL_TIMEOUT.toMillis());
         }
     }
 
