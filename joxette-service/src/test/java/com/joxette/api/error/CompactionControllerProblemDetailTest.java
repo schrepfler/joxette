@@ -8,6 +8,7 @@ import com.joxette.compaction.TriggerSource;
 import com.joxette.compaction.CompactionService;
 import com.joxette.compaction.CompactionSingletonActor;
 import com.joxette.compaction.RetentionService;
+import com.joxette.reconciliation.ReconciliationService;
 import com.joxette.config.JoxetteProperties;
 import com.joxette.lifecycle.BackgroundTaskRegistry;
 import org.apache.pekko.actor.typed.ActorRef;
@@ -51,6 +52,7 @@ class CompactionControllerProblemDetailTest {
 
     @Mock CompactionService compactionService;
     @Mock RetentionService retentionService;
+    @Mock ReconciliationService reconciliationService;
     @Mock JoxetteProperties props;
     @Mock com.joxette.compaction.CompactionLockManager lockManager;
 
@@ -109,7 +111,7 @@ class CompactionControllerProblemDetailTest {
     @Test
     void trigger_whileAlreadyRunning_returnsConflictProblem() throws Exception {
         CompactionController controller = new CompactionController(
-                compactionService, retentionService, busySingleton, actorSystem, props, taskRegistry(), lockManager);
+                compactionService, retentionService, reconciliationService, busySingleton, actorSystem, props, taskRegistry(), lockManager);
         mvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
@@ -132,7 +134,7 @@ class CompactionControllerProblemDetailTest {
     @Test
     void status_duckDbUnavailable_returnsUpstreamUnavailableProblem() throws Exception {
         CompactionController controller = new CompactionController(
-                compactionService, retentionService, acceptingSingleton, actorSystem, props, taskRegistry(), lockManager);
+                compactionService, retentionService, reconciliationService, acceptingSingleton, actorSystem, props, taskRegistry(), lockManager);
         mvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
@@ -154,7 +156,7 @@ class CompactionControllerProblemDetailTest {
     @Test
     void history_runtime_returnsInternalProblemWithoutDetails() throws Exception {
         CompactionController controller = new CompactionController(
-                compactionService, retentionService, acceptingSingleton, actorSystem, props, taskRegistry(), lockManager);
+                compactionService, retentionService, reconciliationService, acceptingSingleton, actorSystem, props, taskRegistry(), lockManager);
         mvc = MockMvcBuilders.standaloneSetup(controller)
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();

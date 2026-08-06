@@ -2,6 +2,9 @@ package com.joxette.compaction;
 
 import com.joxette.config.JoxetteProperties;
 import com.joxette.lifecycle.BackgroundTaskRegistry;
+import com.joxette.reconciliation.ReconciliationRun;
+import com.joxette.reconciliation.ReconciliationService;
+import com.joxette.reconciliation.ReconciliationStatus;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.media.Content;
@@ -59,6 +62,7 @@ public class CompactionController {
 
     private final CompactionService   compactionService;
     private final RetentionService    retentionService;
+    private final ReconciliationService reconciliationService;
     private final ActorRef<CompactionSingletonActor.CompactionCommand> compactionSingleton;
     private final ActorSystem<?>      system;
     private final JoxetteProperties   props;
@@ -68,6 +72,7 @@ public class CompactionController {
     public CompactionController(
             CompactionService compactionService,
             RetentionService retentionService,
+            ReconciliationService reconciliationService,
             ActorRef<CompactionSingletonActor.CompactionCommand> compactionSingleton,
             ActorSystem<?> system,
             JoxetteProperties props,
@@ -75,6 +80,7 @@ public class CompactionController {
             CompactionLockManager lockManager) {
         this.compactionService   = compactionService;
         this.retentionService    = retentionService;
+        this.reconciliationService = reconciliationService;
         this.compactionSingleton = compactionSingleton;
         this.system              = system;
         this.props               = props;
@@ -301,6 +307,73 @@ public class CompactionController {
         return ResponseEntity.accepted().body(run);
     }
 
+    @Operation(
+        operationId = "getReconciliationStatus",
+        summary = "Get catalog/object-storage reconciliation status",
+        description = "Returns the current reconciliation status including the most-recent run summary " +
+                      "(orphaned and missing file counts), the next scheduled cron fire time, and whether " +
+                      "a run is currently active."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Current reconciliation status",
+            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                schema = @Schema(implementation = ReconciliationStatus.class))),
+        @ApiResponse(responseCode = "500", description = "Database error",
+            content = @Content(schema = @Schema(type = "string")))
+    })
+    @GetMapping(value = "/reconciliation-status", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ReconciliationStatus getReconciliationStatus() throws SQLException {
+        return reconciliationService.getStatus();
+    }
+
+    @Operation(
+        operationId = "getReconciliationHistory",
+        summary = "Get reconciliation run history",
+        description = "Returns the most-recent reconciliation runs in descending chronological order."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Reconciliation run history",
+            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE)),
+        @ApiResponse(responseCode = "500", description = "Database error",
+            content = @Content(schema = @Schema(type = "string")))
+    })
+    @GetMapping(value = "/reconciliation-history", produces = MediaType.APPLICATION_JSON_VALUE)
+    public List<ReconciliationRun> getReconciliationHistory(
+            @RequestParam(defaultValue = "20") int limit) throws SQLException {
+        return reconciliationService.getHistory(limit);
+    }
+
+    @Operation(
+        operationId = "triggerReconciliation",
+        summary = "Trigger a catalog/object-storage reconciliation run",
+        description = "Starts an immediate reconciliation run asynchronously. Returns 409 if a run is " +
+                      "already in progress on this or another instance sharing the catalog. " +
+                      "`recoverOrphanedFiles` is opt-in and defaults to false; scheduled runs never set it."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "202", description = "Reconciliation run started",
+            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                schema = @Schema(implementation = ReconciliationRun.class))),
+        @ApiResponse(responseCode = "409", description = "Reconciliation run already in progress",
+            content = @Content(schema = @Schema(type = "string")))
+    })
+    @PostMapping(value = "/trigger-reconciliation", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<ReconciliationRun> triggerReconciliation(
+            @io.swagger.v3.oas.annotations.parameters.RequestBody(
+                description = "Optional scoping/recovery options.",
+                required = false,
+                content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                    schema = @Schema(implementation = TriggerReconciliationRequest.class)))
+            @Valid @RequestBody(required = false) TriggerReconciliationRequest body) throws SQLException {
+        List<String> targets = (body != null) ? body.targets() : null;
+        boolean recoverOrphanedFiles = (body != null && body.recoverOrphanedFiles() != null)
+                && body.recoverOrphanedFiles();
+        ReconciliationRun run = reconciliationService.beginRun(TriggerSource.MANUAL, targets, recoverOrphanedFiles);
+        taskRegistry.submit("reconciliation-manual-" + run.id(),
+                () -> reconciliationService.executeRun(run.id(), targets, recoverOrphanedFiles));
+        return ResponseEntity.accepted().body(run);
+    }
+
     // =========================================================================
     // Response / request types
     // =========================================================================
@@ -342,5 +415,16 @@ public class CompactionController {
             @Schema(description = "Entity-type names to compact; null or absent means all types (plus general if enabled)",
                     example = "[\"order\", \"payment\"]")
             List<String> targets) {}
+
+    @Schema(description = "Optional request body for POST /compaction/trigger-reconciliation",
+            example = "{\"targets\": [\"orders.events\", \"entity:order\"], \"recoverOrphanedFiles\": false}")
+    record TriggerReconciliationRequest(
+            @Schema(description = "Table scoping, reusing compaction's format: bare topic name or " +
+                    "'entity:{type}'. Null or absent means every cassette table.",
+                    example = "[\"orders.events\", \"entity:order\"]")
+            List<String> targets,
+            @Schema(description = "Whether to register orphaned files back into the catalog via " +
+                    "ducklake_add_data_files. Defaults to false.", example = "false")
+            Boolean recoverOrphanedFiles) {}
 
 }
