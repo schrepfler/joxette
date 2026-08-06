@@ -164,6 +164,8 @@ public class CompactionService {
             generalTopics  = generalResult.unitsProcessed();
             totalFileStats = totalFileStats.add(generalResult.fileStats());
 
+            expireSnapshotsAndCleanup();
+
             checkpoint();
             filesProcessedCounter.increment(totalFileStats.filesProcessed());
             filesCreatedCounter.increment(totalFileStats.filesCreated());
