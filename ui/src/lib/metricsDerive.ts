@@ -31,6 +31,7 @@ export interface DataPoint {
   retentionRows:   number
   catalogBytes:    number
   inlinedBytes:    number
+  flushedBytes:    number
   duckdbMemoryTotal: number
   duckdbMemoryByTag: Record<string, number>
   activeReplays:   number

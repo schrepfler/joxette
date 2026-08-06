@@ -191,6 +191,7 @@ function scrapeToPoint(family: Record<string, MetricFamily>): DataPoint {
     retentionRows: Object.values(getSamplesBy(family, 'joxette_retention_rows_deleted_total', 'table_type')).reduce((a, b) => a + b, 0),
     catalogBytes: getSample(family, 'joxette_catalog_size_bytes')   || 0,
     inlinedBytes: getSample(family, 'joxette_catalog_inlined_bytes') || 0,
+    flushedBytes: getSample(family, 'joxette_catalog_flushed_bytes') || 0,
     duckdbMemoryTotal: getSample(family, 'joxette_duckdb_memory_total_bytes') || 0,
     duckdbMemoryByTag: getSamplesBy(family, 'joxette_duckdb_memory_bytes', 'tag'),
     activeReplays: getSample(family, 'joxette_replay_active') || 0,
@@ -544,6 +545,7 @@ function MetricsPage() {
   const catalogConfig: ChartConfig = {
     catalogBytes: { label: 'catalog file', color: '#6674cc' },
     inlinedBytes: { label: 'inlined',       color: '#A26612' },
+    flushedBytes: { label: 'flushed',       color: '#3E9A7A' },
   }
   const heapConfig: ChartConfig = {
     heapUsed:   { label: 'heap used', color: '#1E5A8A' },
@@ -615,8 +617,9 @@ function MetricsPage() {
                 title="Worst-case KafkaConsumer.poll() duration across all topics (p99). Near 100 ms means consumers are broker-bound (waiting on fetch.max.wait.ms). Near 0 ms means local DuckDB writes are pacing consumption. A throttle value > 0 means the broker is rate-limiting this client." />
             )
           })()}
-          <Stat label="catalog" value={fmtBytes(latest.catalogBytes)} sub={`${fmtBytes(latest.inlinedBytes)} inlined`}
-            title="Total size of the DuckDB catalog file. The inlined sub-value is data buffered inside the catalog before being flushed to Parquet on object storage." />
+          <Stat label="total data" value={fmtBytes(latest.catalogBytes + latest.flushedBytes)}
+            sub={`${fmtBytes(latest.catalogBytes)} catalog · ${fmtBytes(latest.flushedBytes)} flushed`}
+            title="All cassette data under management: the local DuckDB catalog file (catalog, which includes any not-yet-flushed inlined data) plus everything already flushed to Parquet in object storage." />
           <Stat label="duckdb mem" value={fmtBytes(latest.duckdbMemoryTotal)} sub="allocator total"
             title="Total memory used by DuckDB's internal allocator across all allocation tags (duckdb_memory()). A value that keeps growing without compaction may indicate a memory leak inside the embedded DuckDB instance." />
           <Stat label="replays" value={String(latest.activeReplays)} sub="active"
@@ -664,8 +667,8 @@ function MetricsPage() {
             </ChartContainer>
           </Card>
 
-          <Card title="Catalog Storage" subtitle="catalog file · inlined data"
-            description="Catalog file: total size of the DuckDB .ducklake file on disk, including inlined data and metadata. Inlined: bytes currently buffered inside the catalog before being flushed to Parquet on object storage. DuckLake flushes automatically when the inline threshold is reached."
+          <Card title="Catalog Storage" subtitle="catalog file · inlined · flushed"
+            description="Catalog file: total size of the DuckDB .ducklake file on disk, including inlined data and metadata. Inlined: bytes currently buffered inside the catalog before being flushed to Parquet on object storage — a subset of the catalog file. Flushed: bytes already written to Parquet in object storage (S3/GCS/Azure), separate from the catalog file. DuckLake flushes automatically when the inline threshold is reached."
           >
             <ChartContainer config={catalogConfig} className="h-[180px] w-full">
               <AreaChart syncId="metrics" data={pts} margin={{ right: 8 }}>
@@ -676,6 +679,7 @@ function MetricsPage() {
                 <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
                 <Area type="monotone" dataKey="catalogBytes" name="catalog file" stroke="var(--color-catalogBytes)" fill="var(--color-catalogBytes)" fillOpacity={0.15} strokeWidth={1.5} dot={false} activeDot={bytesDot} isAnimationActive={false} />
                 <Area type="monotone" dataKey="inlinedBytes" name="inlined"       stroke="var(--color-inlinedBytes)" fill="var(--color-inlinedBytes)" fillOpacity={0.15} strokeWidth={1.5} dot={false} activeDot={bytesDot} isAnimationActive={false} />
+                <Area type="monotone" dataKey="flushedBytes" name="flushed"       stroke="var(--color-flushedBytes)" fill="var(--color-flushedBytes)" fillOpacity={0.15} strokeWidth={1.5} dot={false} activeDot={bytesDot} isAnimationActive={false} />
               </AreaChart>
             </ChartContainer>
           </Card>
