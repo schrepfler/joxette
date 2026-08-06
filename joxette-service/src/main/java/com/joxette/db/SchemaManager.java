@@ -372,6 +372,30 @@ public class SchemaManager {
                 )
                 """);
 
+            stmt.execute("CREATE SEQUENCE IF NOT EXISTS seq_reconciliation_history START 1");
+
+            stmt.execute("""
+                CREATE TABLE IF NOT EXISTS reconciliation_history (
+                    id                 INTEGER     PRIMARY KEY
+                                         DEFAULT nextval('seq_reconciliation_history'),
+                    started_at         TIMESTAMPTZ NOT NULL,
+                    completed_at       TIMESTAMPTZ,
+                    status             VARCHAR     NOT NULL
+                                         CHECK (status IN ('running', 'completed', 'failed')),
+                    triggered_by       VARCHAR     NOT NULL,
+                    targets            VARCHAR[],
+                    tables_scanned     INTEGER     NOT NULL DEFAULT 0,
+                    orphaned_files     INTEGER     NOT NULL DEFAULT 0,
+                    orphaned_bytes     BIGINT      NOT NULL DEFAULT 0,
+                    missing_files      INTEGER     NOT NULL DEFAULT 0,
+                    missing_bytes      BIGINT      NOT NULL DEFAULT 0,
+                    recovered_files    INTEGER     NOT NULL DEFAULT 0,
+                    recovery_requested BOOLEAN     NOT NULL DEFAULT false,
+                    details            JSON,
+                    error_message      VARCHAR
+                )
+                """);
+
             // Named transform pipeline presets (plain DuckDB, not DuckLake).
             // Steps are stored as a JSON array that is deserialised at read time.
             stmt.execute("""

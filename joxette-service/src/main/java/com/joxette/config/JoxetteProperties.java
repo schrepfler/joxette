@@ -15,6 +15,7 @@ public class JoxetteProperties {
     private Inline inline = new Inline();
     private Compaction compaction = new Compaction();
     private Retention retention = new Retention();
+    private Reconciliation reconciliation = new Reconciliation();
     private Kafka kafka = new Kafka();
     private Recording recording = new Recording();
     private Threading threading = new Threading();
@@ -399,6 +400,33 @@ public class JoxetteProperties {
         public void setRewriteDeleteThreshold(double rewriteDeleteThreshold) {
             this.rewriteDeleteThreshold = rewriteDeleteThreshold;
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Reconciliation
+    // -----------------------------------------------------------------------
+
+    public static class Reconciliation {
+        /**
+         * Whether to run the scheduled catalog/object-storage reconciliation
+         * audit on this node. The {@code POST /compaction/trigger-reconciliation}
+         * endpoint remains available regardless of this flag.
+         */
+        private boolean enabled = true;
+
+        /**
+         * Cron expression for the scheduled reconciliation run.
+         * Uses Spring 6-field format: {@code <sec> <min> <hour> <dom> <month> <dow>}.
+         * Default: daily at 04:00:00 — after retention (01:00) and compaction (03:00),
+         * so the scan reflects a settled catalog rather than racing either job.
+         */
+        private String schedule = "0 0 4 * * *";
+
+        public boolean isEnabled() { return enabled; }
+        public void setEnabled(boolean enabled) { this.enabled = enabled; }
+
+        public String getSchedule() { return schedule; }
+        public void setSchedule(String schedule) { this.schedule = schedule; }
     }
 
     // -----------------------------------------------------------------------
@@ -966,6 +994,9 @@ public class JoxetteProperties {
 
     public Retention getRetention() { return retention; }
     public void setRetention(Retention retention) { this.retention = retention; }
+
+    public Reconciliation getReconciliation() { return reconciliation; }
+    public void setReconciliation(Reconciliation reconciliation) { this.reconciliation = reconciliation; }
 
     public Kafka getKafka() { return kafka; }
     public void setKafka(Kafka kafka) { this.kafka = kafka; }
