@@ -453,10 +453,25 @@ public class JoxetteMetrics {
     // Reconciliation
     // =========================================================================
 
-    // Temporary stub — Task 6 replaces the body with real Gauge registration.
-    public void registerReconciliationOrphanedFilesGauge(java.util.function.Supplier<Integer> supplier) {}
-    // Temporary stub — Task 6 replaces the body with real Gauge registration.
-    public void registerReconciliationMissingFilesGauge(java.util.function.Supplier<Integer> supplier) {}
+    public void registerReconciliationOrphanedFilesGauge(java.util.function.Supplier<Integer> countSupplier) {
+        if (registeredGaugeIds.add("reconciliation:orphaned")) {
+            retainedGaugeState.add(countSupplier);
+            Gauge.builder("joxette.reconciliation.orphaned.files", countSupplier,
+                          s -> { try { Integer v = s.get(); return v != null ? v.doubleValue() : 0.0; } catch (Exception e) { return 0.0; } })
+                    .description("Files present in object storage but not tracked by the catalog, as of the most recent completed reconciliation run")
+                    .register(registry);
+        }
+    }
+
+    public void registerReconciliationMissingFilesGauge(java.util.function.Supplier<Integer> countSupplier) {
+        if (registeredGaugeIds.add("reconciliation:missing")) {
+            retainedGaugeState.add(countSupplier);
+            Gauge.builder("joxette.reconciliation.missing.files", countSupplier,
+                          s -> { try { Integer v = s.get(); return v != null ? v.doubleValue() : 0.0; } catch (Exception e) { return 0.0; } })
+                    .description("Files the catalog's current snapshot references but that are no longer present in object storage, as of the most recent completed reconciliation run")
+                    .register(registry);
+        }
+    }
 
     // =========================================================================
     // Process RSS
