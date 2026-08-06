@@ -9,7 +9,7 @@ import {
 import { useState, useRef, useEffect } from 'react'
 import { JsonView } from '../../../components/JsonView'
 import { ValueCell } from '../../../components/ValueCell'
-import { cassettesApi, entityOutputApi, entitiesApi, streamEntityRecords, type EntityRecord, type Order, type StreamMode, type EntityStreamParams, type PortraitResult } from '../../../api/client'
+import { cassettesApi, entityOutputApi, entitiesApi, compactionApi, streamEntityRecords, type EntityRecord, type Order, type StreamMode, type EntityStreamParams, type PortraitResult } from '../../../api/client'
 import { Layout } from '../../../components/Layout'
 import { LoadingSpinner } from '../../../components/LoadingSpinner'
 import { ErrorMessage } from '../../../components/ErrorMessage'
@@ -188,6 +188,12 @@ function EntityInstancePage() {
     onError: (e: Error) => addToast(e.message, 'error'),
   })
 
+  const compactMutation = useMutation({
+    mutationFn: () => compactionApi.trigger({ targets: [`entity:${entityType}`] }),
+    onSuccess: () => addToast(`Compaction triggered for entity type "${entityType}"`, 'success'),
+    onError: (e: Error) => addToast(e.message, 'error'),
+  })
+
   function stopStream() {
     abortRef.current?.abort()
     abortRef.current = null
@@ -343,6 +349,16 @@ function EntityInstancePage() {
           >
             <span aria-hidden="true">⏱</span> Timeline
           </Link>
+          <button
+            data-testid="btn-compact-entity-type"
+            aria-label={`Compact all "${entityType}" entities`}
+            title={`Merges small Parquet files for the entire "${entityType}" entity type, not just ${entityId}`}
+            disabled={compactMutation.isPending}
+            style={{ padding: '0.45rem 1rem', background: '#edf2f7', color: '#2d3748', border: '1px solid #cbd5e0', borderRadius: 4, cursor: compactMutation.isPending ? 'default' : 'pointer', fontSize: 14 }}
+            onClick={() => compactMutation.mutate()}
+          >
+            {compactMutation.isPending ? 'Compacting…' : `Compact "${entityType}" Entities`}
+          </button>
           <button
             data-testid="btn-delete-entity"
             aria-label={`Delete all data for entity ${entityId}`}
