@@ -68,13 +68,31 @@ Object store fails
 
 ### `TopicRecorder`
 
-- Before each `submitWriteBatch()` call, checks `writeChannel.isHealthy()`.
-- If not healthy, calls `pauseForSinkRecovery(kc, label)`:
-  - Pauses all assigned `TopicPartition`s via `kc.pause()`.
-  - Spin-polls `kc.poll(POLL_TIMEOUT)` in a loop — keeps consumer alive,
-    sends heartbeats, never advances offsets.
-  - When `writeChannel.isHealthy()` returns true, calls `kc.resume()` and
-    returns to normal pipeline operation.
+The pause/resume/heartbeat logic is split across two threads, because Jox's
+`batchWeighted` forks the downstream `map`/`runForeach` stage onto its own
+thread — separate from the poll-loop thread that owns the `KafkaConsumer`.
+`KafkaConsumer` is not safe for concurrent access from two threads (this
+was a real production bug: `pauseForSinkRecovery` used to call
+`kc.pause()`/`poll()`/`resume()` directly from the downstream thread,
+crashing with `ConcurrentModificationException` whenever the sink degraded
+under load).
+
+- **Poll-loop thread** (the sole owner of `kc`): calls `reconcilePauseState(kc,
+  label)` once per iteration, right before `kc.poll()`.
+  - If the sink is not healthy and no partitions are currently paused: pauses
+    all assigned `TopicPartition`s via `kc.pause()`.
+  - If the sink is healthy and partitions are currently paused: `kc.resume()`s
+    them.
+  - Idempotent and driven entirely off `kc.paused()` — no extra field needed.
+    While paused, this thread's normal `kc.poll(POLL_TIMEOUT)` calls keep
+    heartbeating the consumer group (paused partitions return no data, but
+    `poll()` itself is what a healthy consumer needs to call regularly).
+- **Downstream `runForeach` thread**: before each `submitWriteBatch()` call,
+  checks `writeChannel.isHealthy()`. If not healthy, calls
+  `waitForSinkRecovery(label)` — blocks in a plain sleep loop until
+  `writeChannel.isHealthy()` returns true, **without touching `kc` at all**.
+  All heartbeating and pause/resume is the poll-loop thread's job; this side
+  only waits.
 - Kafka offsets are **never committed** while paused — at-least-once
   delivery is preserved.
 
@@ -224,8 +242,8 @@ Offsets are committed at the **start of the next poll cycle**, after a
 successful write. The sequence is:
 
 ```
-poll() → emit records → batchWeighted → buildWriteBatch
-       → pauseForSinkRecovery (if degraded)
+poll() → reconcilePauseState → emit records → batchWeighted → buildWriteBatch
+       → waitForSinkRecovery (if degraded — no kc access, see above)
        → submitWriteBatch (blocks until write succeeds)
        → pendingCommit.set(offsets)   ← only after success
        → next poll() → commitSync(pendingCommit)
