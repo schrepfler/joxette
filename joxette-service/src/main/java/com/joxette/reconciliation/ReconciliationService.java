@@ -136,6 +136,8 @@ public class ReconciliationService {
      * distributed lock and resets the running flag on exit, even on error.
      */
     public void executeRun(long runId, List<String> targets, boolean recoverOrphanedFiles) {
+        log.info("Reconciliation run {} starting (targets={}, recoverOrphanedFiles={})",
+                runId, targets, recoverOrphanedFiles);
         int tablesScanned = 0;
         int orphanedFiles = 0;
         long orphanedBytes = 0;
@@ -145,17 +147,30 @@ public class ReconciliationService {
         try {
             List<String> tables = resolveTargetTables(targets);
             tablesScanned = tables.size();
+            log.info("Reconciliation run {}: resolved {} target table(s): {}", runId, tablesScanned, tables);
 
+            log.info("Reconciliation run {}: starting orphaned-file scan", runId);
+            long orphanScanStart = System.nanoTime();
             List<OrphanedFile> orphans = scanOrphanedFiles();
             orphanedFiles = orphans.size();
             orphanedBytes = orphans.stream().mapToLong(OrphanedFile::sizeBytes).sum();
+            log.info("Reconciliation run {}: orphaned-file scan complete in {} ms — {} found ({} bytes)",
+                    runId, elapsedMs(orphanScanStart), orphanedFiles, orphanedBytes);
 
+            log.info("Reconciliation run {}: starting missing-file scan across {} table(s)", runId, tablesScanned);
+            long missingScanStart = System.nanoTime();
             List<MissingFile> missing = scanMissingFiles(tables);
             missingFiles = missing.size();
             missingBytes = missing.stream().mapToLong(MissingFile::lastKnownSizeBytes).sum();
+            log.info("Reconciliation run {}: missing-file scan complete in {} ms — {} found ({} bytes)",
+                    runId, elapsedMs(missingScanStart), missingFiles, missingBytes);
 
             if (recoverOrphanedFiles && !orphans.isEmpty()) {
+                log.info("Reconciliation run {}: starting recovery of {} orphaned file(s)", runId, orphans.size());
+                long recoveryStart = System.nanoTime();
                 recoveredFiles = recoverOrphans(orphans);
+                log.info("Reconciliation run {}: recovery complete in {} ms — {} of {} file(s) recovered",
+                        runId, elapsedMs(recoveryStart), recoveredFiles, orphans.size());
             }
 
             String detailsJson = buildDetailsJson(orphans, missing);
@@ -178,6 +193,10 @@ public class ReconciliationService {
             lockManager.release(LOCK_TARGET);
             running.set(false);
         }
+    }
+
+    private static long elapsedMs(long startNanos) {
+        return (System.nanoTime() - startNanos) / 1_000_000;
     }
 
     public List<ReconciliationRun> getHistory(int limit) throws SQLException {
@@ -238,6 +257,9 @@ public class ReconciliationService {
     List<OrphanedFile> scanOrphanedFiles() throws SQLException {
         List<String> paths = new ArrayList<>();
         synchronized (duckDB) {
+            log.info("scanOrphanedFiles: calling ducklake_delete_orphaned_files(cleanup_all=>true, dry_run=>true) " +
+                    "— this scans the entire object-storage bucket");
+            long start = System.nanoTime();
             // cleanup_all => true is REQUIRED alongside dry_run => true — without it,
             // this call silently returns zero rows even when orphaned files exist.
             try (Statement st = duckDB.createStatement();
@@ -245,6 +267,11 @@ public class ReconciliationService {
                          "CALL ducklake_delete_orphaned_files('lake', cleanup_all => true, dry_run => true)")) {
                 while (rs.next()) paths.add(rs.getString("path"));
             }
+            log.info("scanOrphanedFiles: ducklake_delete_orphaned_files returned {} candidate path(s) in {} ms",
+                    paths.size(), elapsedMs(start));
+        }
+        if (!paths.isEmpty()) {
+            log.info("scanOrphanedFiles: sizing {} orphaned file(s) via parquet_file_metadata", paths.size());
         }
         List<OrphanedFile> orphans = new ArrayList<>();
         for (String path : paths) {
@@ -263,11 +290,15 @@ public class ReconciliationService {
      */
     private long orphanedFileSizeBytes(String path) {
         synchronized (duckDB) {
+            log.debug("orphanedFileSizeBytes: querying parquet_file_metadata for '{}'", path);
+            long start = System.nanoTime();
             try (PreparedStatement ps = duckDB.prepareStatement(
                     "SELECT file_size_bytes FROM parquet_file_metadata(?)")) {
                 ps.setString(1, path);
                 try (ResultSet rs = ps.executeQuery()) {
-                    return rs.next() ? rs.getLong(1) : 0L;
+                    long size = rs.next() ? rs.getLong(1) : 0L;
+                    log.debug("orphanedFileSizeBytes: '{}' = {} bytes ({} ms)", path, size, elapsedMs(start));
+                    return size;
                 }
             } catch (SQLException e) {
                 log.warn("Could not read size of orphaned file '{}': {}", path, e.getMessage());
@@ -300,15 +331,22 @@ public class ReconciliationService {
         String base = objectStoragePath.endsWith("/") ? objectStoragePath : objectStoragePath + "/";
 
         List<MissingFile> missing = new ArrayList<>();
+        int tableIndex = 0;
         for (String table : tables) {
+            tableIndex++;
             java.util.Map<String, Long> tracked = new java.util.LinkedHashMap<>();
             synchronized (duckDB) {
+                log.info("scanMissingFiles: table '{}' ({}/{}) — querying ducklake_list_files",
+                        table, tableIndex, tables.size());
+                long start = System.nanoTime();
                 try (PreparedStatement ps = duckDB.prepareStatement(
                         "SELECT data_file, data_file_size_bytes FROM ducklake_list_files('lake', ?)")) {
                     ps.setString(1, table);
                     try (ResultSet rs = ps.executeQuery()) {
                         while (rs.next()) tracked.put(rs.getString(1), rs.getLong(2));
                     }
+                    log.info("scanMissingFiles: table '{}' — ducklake_list_files returned {} tracked file(s) in {} ms",
+                            table, tracked.size(), elapsedMs(start));
                 } catch (SQLException e) {
                     log.warn("scanMissingFiles: ducklake_list_files failed for table '{}' ({}); skipping",
                             table, e.getMessage());
@@ -320,11 +358,15 @@ public class ReconciliationService {
             java.util.Set<String> present = new java.util.HashSet<>();
             String glob = base + "main/" + table + "/**/*.parquet";
             synchronized (duckDB) {
+                log.info("scanMissingFiles: table '{}' — listing object storage via glob('{}')", table, glob);
+                long start = System.nanoTime();
                 try (PreparedStatement ps = duckDB.prepareStatement("SELECT file FROM glob(?)")) {
                     ps.setString(1, glob);
                     try (ResultSet rs = ps.executeQuery()) {
                         while (rs.next()) present.add(rs.getString(1));
                     }
+                    log.info("scanMissingFiles: table '{}' — glob() found {} file(s) in object storage in {} ms",
+                            table, present.size(), elapsedMs(start));
                 } catch (SQLException e) {
                     log.warn("scanMissingFiles: glob('{}') failed ({}); skipping table '{}'",
                             glob, e.getMessage(), table);
@@ -332,24 +374,32 @@ public class ReconciliationService {
                 }
             }
 
+            int missingBefore = missing.size();
             for (var entry : tracked.entrySet()) {
                 if (!present.contains(entry.getKey())) {
                     missing.add(new MissingFile(entry.getKey(), entry.getValue()));
                 }
             }
+            log.info("scanMissingFiles: table '{}' — {} tracked, {} present, {} missing",
+                    table, tracked.size(), present.size(), missing.size() - missingBefore);
         }
         return missing;
     }
 
     int recoverOrphans(List<OrphanedFile> orphans) throws SQLException {
         int recovered = 0;
+        int index = 0;
         for (OrphanedFile orphan : orphans) {
+            index++;
             if ("unknown".equals(orphan.tableName())) {
                 log.warn("recoverOrphans: could not determine owning table for '{}'; skipping",
                         orphan.path());
                 continue;
             }
             synchronized (duckDB) {
+                log.debug("recoverOrphans: ({}/{}) registering '{}' into table '{}' via ducklake_add_data_files",
+                        index, orphans.size(), orphan.path(), orphan.tableName());
+                long start = System.nanoTime();
                 try (Statement st = duckDB.createStatement()) {
                     st.execute(String.format(
                             "CALL ducklake_add_data_files('lake', '%s', '%s', " +
@@ -357,6 +407,8 @@ public class ReconciliationService {
                             orphan.tableName().replace("'", "''"),
                             orphan.path().replace("'", "''")));
                     recovered++;
+                    log.debug("recoverOrphans: ({}/{}) registered '{}' in {} ms",
+                            index, orphans.size(), orphan.path(), elapsedMs(start));
                 } catch (SQLException e) {
                     log.warn("recoverOrphans: failed to register '{}' into table '{}': {}",
                             orphan.path(), orphan.tableName(), e.getMessage());
