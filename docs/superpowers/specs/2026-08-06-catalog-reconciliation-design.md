@@ -85,10 +85,19 @@ assumed):
 
 1. **Orphaned-in-storage** — one call:
    ```sql
-   CALL ducklake_delete_orphaned_files('lake', dry_run => true);
+   CALL ducklake_delete_orphaned_files('lake', cleanup_all => true, dry_run => true);
    ```
-   Catalog-wide, snapshot-aware (correctly excludes files still referenced
-   by un-expired historical snapshots — a naive bucket-listing diff would
+   **`cleanup_all => true` is required alongside `dry_run => true`** —
+   verified directly against a real local DuckLake catalog while writing
+   this spec: `dry_run => true` on its own silently returns zero rows
+   even when a genuinely untracked file sits in the table's directory
+   (the exact same silent-zero failure mode as the `inlinedDataSizeBytes`
+   bug that started this investigation). With `cleanup_all => true`
+   added, a manually-planted stray file was correctly reported, and
+   after registering it via `ducklake_add_data_files` (see below) a
+   repeat dry-run correctly reported zero orphans. Catalog-wide,
+   snapshot-aware (correctly excludes files still referenced by
+   un-expired historical snapshots — a naive bucket-listing diff would
    false-positive on those). Each reported path is attributed to its
    owning table via the existing `main/{tableName}/…` path convention
    already used in `resolveEntityDataSource`.
@@ -305,6 +314,6 @@ convention exactly.
 - Full catalog rebuild from object storage when the catalog itself is
   destroyed — separate future spec, reuses `ducklake_add_data_files` from
   this spec's recovery path.
-- Whether `ducklake_add_data_files` accepts a glob/list of files in one
-  call or must be invoked per-file — docs only show single-file examples;
-  confirm at implementation time (loop-per-file is the safe fallback).
+- ~~Whether `ducklake_add_data_files` accepts a glob/list of files in one
+  call~~ — confirmed by direct testing: it takes a single file path per
+  call. Recovery loops once per orphaned file.
