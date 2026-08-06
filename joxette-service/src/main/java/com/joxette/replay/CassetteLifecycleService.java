@@ -176,7 +176,8 @@ public class CassetteLifecycleService {
                         total > 0 ? (size * e.getValue() / total) : 0L))
                 .toList();
 
-        return new EntityStorageStats(entityType, qualifiedTable, totalRows, estimatedSize, buckets);
+        long flushedSize = flushedTableBytes(tableName);
+        return new EntityStorageStats(entityType, qualifiedTable, totalRows, estimatedSize, flushedSize, buckets);
     }
 
     // -------------------------------------------------------------------------
