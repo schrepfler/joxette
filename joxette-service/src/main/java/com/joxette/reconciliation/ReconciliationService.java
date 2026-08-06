@@ -290,9 +290,55 @@ public class ReconciliationService {
         return slash < 0 ? rest : rest.substring(0, slash);
     }
 
-    /** Stub — replaced with the real {@code ducklake_list_files} vs {@code glob} diff in Task 4. */
     List<MissingFile> scanMissingFiles(List<String> tables) throws SQLException {
-        return List.of();
+        String objectStoragePath = props.getCatalog().getObjectStoragePath();
+        if (objectStoragePath == null || objectStoragePath.isBlank()) {
+            log.debug("scanMissingFiles: no object-storage-path configured; skipping " +
+                    "(local-filesystem mode is not covered by this scan)");
+            return List.of();
+        }
+        String base = objectStoragePath.endsWith("/") ? objectStoragePath : objectStoragePath + "/";
+
+        List<MissingFile> missing = new ArrayList<>();
+        for (String table : tables) {
+            java.util.Map<String, Long> tracked = new java.util.LinkedHashMap<>();
+            synchronized (duckDB) {
+                try (PreparedStatement ps = duckDB.prepareStatement(
+                        "SELECT data_file, data_file_size_bytes FROM ducklake_list_files('lake', ?)")) {
+                    ps.setString(1, table);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        while (rs.next()) tracked.put(rs.getString(1), rs.getLong(2));
+                    }
+                } catch (SQLException e) {
+                    log.warn("scanMissingFiles: ducklake_list_files failed for table '{}' ({}); skipping",
+                            table, e.getMessage());
+                    continue;
+                }
+            }
+            if (tracked.isEmpty()) continue;
+
+            java.util.Set<String> present = new java.util.HashSet<>();
+            String glob = base + "main/" + table + "/**/*.parquet";
+            synchronized (duckDB) {
+                try (PreparedStatement ps = duckDB.prepareStatement("SELECT file FROM glob(?)")) {
+                    ps.setString(1, glob);
+                    try (ResultSet rs = ps.executeQuery()) {
+                        while (rs.next()) present.add(rs.getString(1));
+                    }
+                } catch (SQLException e) {
+                    log.warn("scanMissingFiles: glob('{}') failed ({}); skipping table '{}'",
+                            glob, e.getMessage(), table);
+                    continue;
+                }
+            }
+
+            for (var entry : tracked.entrySet()) {
+                if (!present.contains(entry.getKey())) {
+                    missing.add(new MissingFile(entry.getKey(), entry.getValue()));
+                }
+            }
+        }
+        return missing;
     }
 
     /** Stub — replaced with the real {@code ducklake_add_data_files} loop in Task 5. */
