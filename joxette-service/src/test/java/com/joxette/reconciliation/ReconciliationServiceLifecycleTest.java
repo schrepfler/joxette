@@ -1,5 +1,8 @@
 package com.joxette.reconciliation;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.joxette.cluster.InstanceRegistry;
 import com.joxette.compaction.CompactionLockManager;
 import com.joxette.compaction.RunStatus;
@@ -12,6 +15,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 
 import java.sql.Connection;
 import java.util.List;
@@ -96,6 +100,39 @@ class ReconciliationServiceLifecycleTest {
         // a fresh beginRun() must succeed rather than throw ConflictException.
         ReconciliationRun next = service.beginRun(TriggerSource.MANUAL, null, false);
         assertThat(next.id()).isNotEqualTo(started.id());
+    }
+
+    /**
+     * Diagnostic logging exists precisely so that when a run hangs (observed in
+     * production: a stuck object-storage call froze the whole app and didn't even
+     * respond to shutdown interruption), the last log line pinpoints which phase
+     * was in flight. Since {@code scanOrphanedFiles()} fails immediately against
+     * the fake harness (see the class javadoc on the sibling failure test), this
+     * verifies only the "starting" line — the "complete" line for a real scan is
+     * covered by the IT tests, which exercise real ducklake_ calls.
+     */
+    @Test
+    void executeRun_logsRunStartAndPhaseStart_beforeScanFails() throws Exception {
+        ch.qos.logback.classic.Logger logger =
+                (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(ReconciliationService.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        Level savedLevel = logger.getLevel();
+        logger.setLevel(Level.DEBUG);
+        logger.addAppender(appender);
+        try {
+            ReconciliationRun started = service.beginRun(TriggerSource.MANUAL, null, false);
+
+            service.executeRun(started.id(), null, false);
+
+            List<String> messages = appender.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
+            assertThat(messages).anyMatch(m -> m.contains("Reconciliation run " + started.id() + " starting"));
+            assertThat(messages).anyMatch(m -> m.contains("resolved 2 target table(s)"));
+            assertThat(messages).anyMatch(m -> m.contains("starting orphaned-file scan"));
+        } finally {
+            logger.detachAppender(appender);
+            logger.setLevel(savedLevel);
+        }
     }
 
     @Test
