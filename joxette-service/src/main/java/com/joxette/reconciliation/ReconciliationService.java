@@ -391,20 +391,7 @@ public class ReconciliationService {
     }
 
     private List<String> listAllCassetteTables() throws SQLException {
-        List<String> tables = new ArrayList<>();
-        synchronized (duckDB) {
-            try (Statement st = duckDB.createStatement();
-                 ResultSet rs = st.executeQuery("""
-                         SELECT table_name FROM duckdb_tables()
-                         WHERE database_name = 'lake' AND schema_name = 'main'
-                           AND (table_name LIKE 'general\\_%' ESCAPE '\\'
-                                OR table_name LIKE 'entity\\_%' ESCAPE '\\')
-                         ORDER BY table_name
-                         """)) {
-                while (rs.next()) tables.add(rs.getString(1));
-            }
-        }
-        return tables;
+        return com.joxette.db.SchemaManager.listCassetteTableNames(duckDB);
     }
 
     // =========================================================================

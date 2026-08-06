@@ -109,7 +109,26 @@ public class CassetteLifecycleService {
                 }
             }
         }
-        return new CassetteStats(topic, qualifiedTable, rowCount, estimatedSize);
+        long flushedSize = flushedTableBytes(tableName);
+        return new CassetteStats(topic, qualifiedTable, rowCount, estimatedSize, flushedSize);
+    }
+
+    /**
+     * Sums {@code ducklake_list_files}'s {@code data_file_size_bytes} for one
+     * cassette table — bytes actually flushed to Parquet in object storage,
+     * as opposed to {@code duckdb_tables().estimated_size} which also counts
+     * data still buffered inline in the catalog.
+     */
+    private long flushedTableBytes(String tableName) throws SQLException {
+        synchronized (duckDB) {
+            try (PreparedStatement ps = duckDB.prepareStatement(
+                    "SELECT COALESCE(SUM(data_file_size_bytes), 0) FROM ducklake_list_files('lake', ?)")) {
+                ps.setString(1, tableName);
+                try (ResultSet rs = ps.executeQuery()) {
+                    return rs.next() ? rs.getLong(1) : 0;
+                }
+            }
+        }
     }
 
     /**
@@ -157,7 +176,8 @@ public class CassetteLifecycleService {
                         total > 0 ? (size * e.getValue() / total) : 0L))
                 .toList();
 
-        return new EntityStorageStats(entityType, qualifiedTable, totalRows, estimatedSize, buckets);
+        long flushedSize = flushedTableBytes(tableName);
+        return new EntityStorageStats(entityType, qualifiedTable, totalRows, estimatedSize, flushedSize, buckets);
     }
 
     // -------------------------------------------------------------------------

@@ -18,6 +18,7 @@ import java.util.List;
               "tableName": "lake.main.entity_order",
               "totalRows": 500000,
               "totalEstimatedSizeBytes": 134217728,
+              "totalFlushedSizeBytes": 121634816,
               "buckets": [
                 {"bucket": 0, "rowCount": 2012, "estimatedSizeBytes": 539648},
                 {"bucket": 1, "rowCount": 1987, "estimatedSizeBytes": 532941}
@@ -33,9 +34,17 @@ public record EntityStorageStats(
         @Schema(description = "Total row count across all buckets", example = "500000")
         long totalRows,
 
-        @Schema(description = "DuckDB-estimated total size of the entity table in bytes (order-of-magnitude guide only)",
+        @Schema(description = "DuckDB-estimated total size of the entity table in bytes (order-of-magnitude guide only; " +
+                "includes data still buffered inline in the catalog, not yet flushed to Parquet)",
                 example = "134217728")
         long totalEstimatedSizeBytes,
+
+        @Schema(description = "Bytes of this table's data actually flushed to Parquet in object storage " +
+                "(sum of ducklake_list_files' data_file_size_bytes). Not broken down per bucket — " +
+                "DuckLake's file manifest does not expose a per-bucket size, unlike the proportional " +
+                "estimate used for BucketStats.estimatedSizeBytes",
+                example = "121634816")
+        long totalFlushedSizeBytes,
 
         @Schema(description = "Per-bucket breakdown, ordered by bucket number")
         List<BucketStats> buckets

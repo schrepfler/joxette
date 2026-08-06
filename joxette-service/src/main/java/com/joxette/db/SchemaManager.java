@@ -940,6 +940,33 @@ public class SchemaManager {
         return name.toLowerCase().replaceAll("[^a-z0-9_]", "_");
     }
 
+    /**
+     * Lists every {@code lake.main.general_*}/{@code entity_*} cassette table
+     * currently registered in the DuckLake catalog, sorted by name.
+     *
+     * <p>Shared by every caller that needs to enumerate cassette tables generically
+     * rather than naming them by hand (e.g. {@code ReconciliationService},
+     * {@code HealthController}'s flushed-bytes gauge) — enumerating via
+     * {@code duckdb_tables()} means adding, removing, or renaming a topic/entity
+     * type is picked up automatically.
+     */
+    public static java.util.List<String> listCassetteTableNames(Connection conn) throws SQLException {
+        java.util.List<String> tables = new java.util.ArrayList<>();
+        synchronized (conn) {
+            try (Statement st = conn.createStatement();
+                 var rs = st.executeQuery("""
+                         SELECT table_name FROM duckdb_tables()
+                         WHERE database_name = 'lake' AND schema_name = 'main'
+                           AND (table_name LIKE 'general\\_%' ESCAPE '\\'
+                                OR table_name LIKE 'entity\\_%' ESCAPE '\\')
+                         ORDER BY table_name
+                         """)) {
+                while (rs.next()) tables.add(rs.getString(1));
+            }
+        }
+        return tables;
+    }
+
     /** Whether VARIANT type was confirmed to round-trip through DuckLake Parquet. */
     public boolean isVariantSupported() {
         return variantSupported;
