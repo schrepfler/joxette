@@ -241,14 +241,15 @@ const PALETTE = ['#6674cc', '#3E9A7A', '#A26612', '#8B2121', '#1E5A8A', '#6B46A0
 // point, shown on legend hover instead of on cursor movement).
 // ---------------------------------------------------------------------------
 
-function ValueLabel({ cx, cy, color, text }: { cx?: number | null; cy?: number | null; color?: string; text: string }) {
+function ValueLabel({ cx, cy, color, text, flip }: { cx?: number | null; cy?: number | null; color?: string; text: string; flip?: boolean }) {
   if (cx == null || cy == null) return <g />
   return (
     <g>
       <circle cx={cx} cy={cy} r={4} fill={color ?? '#6674cc'} stroke="rgba(10,12,22,0.7)" strokeWidth={1.5} />
       <text
-        x={cx + 8}
+        x={flip ? cx - 8 : cx + 8}
         y={cy + 4}
+        textAnchor={flip ? 'end' : 'start'}
         fontSize={10}
         fontFamily="var(--font-mono)"
         fill="rgba(10,12,22,0.9)"
@@ -314,8 +315,12 @@ function InteractiveLegend({
         const dimmed = activeKey !== null && !active
         return (
           <li key={key}
-            onMouseEnter={() => onHover(key)}
-            onMouseLeave={() => onHover(null)}
+            // stopPropagation: the legend shares a mouse-tracking ancestor with
+            // the chart's own Tooltip/cursor machinery — without this, hovering
+            // a legend item also bubbles into recharts' native activeDot,
+            // which then renders a second, unrelated dot on the chart.
+            onMouseEnter={e => { e.stopPropagation(); onHover(key) }}
+            onMouseLeave={e => { e.stopPropagation(); onHover(null) }}
             style={{
               display: 'flex', alignItems: 'center', gap: 5, cursor: 'default',
               fontSize: '0.75rem', fontFamily: 'var(--font-mono)',
@@ -364,7 +369,10 @@ function LegendHoverDot({
   if (x == null || isNaN(raw) || isNaN(y)) return null
   return (
     <ReferenceDot x={x} y={y} yAxisId={yAxisId} r={0} ifOverflow="extendDomain"
-      shape={(props: { cx?: number; cy?: number }) => <ValueLabel cx={props.cx} cy={props.cy} color={color} text={formatter(raw)} />} />
+      // Always the chart's rightmost point (the last data row) — flip the
+      // label to the left so it lands inside the plot instead of getting
+      // clipped by the chart's ~8px right margin.
+      shape={(props: { cx?: number; cy?: number }) => <ValueLabel cx={props.cx} cy={props.cy} color={color} text={formatter(raw)} flip />} />
   )
 }
 
