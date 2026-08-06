@@ -106,6 +106,11 @@ public class EntityReplayService implements EntityCassetteSource {
     // Keep the old name as an alias so internal callers that don't pass a policy use OFFSET
     private static final Condition QUALIFY_DEDUP = QUALIFY_DEDUP_OFFSET;
 
+    /** Carries getEntityStats' three query results out of the withObjectStoreRetry lambda. */
+    private record StatsQueryResult(
+            long count, Instant firstMsg, Instant lastMsg,
+            Map<String, Long> countByTopic, Instant firstSeen, Instant lastSeen) {}
+
     private final DSLContext dsl;
     private final Connection duckDB;
 
@@ -225,6 +230,7 @@ public class EntityReplayService implements EntityCassetteSource {
         Condition cond = pushdown.pushdownCondition().and(F_ENTITY_ID.eq(entityId));
         if (messageTypes != null && !messageTypes.isEmpty())
             cond = cond.and(F_MESSAGE_TYPE.in(messageTypes));
+        final Condition finalCond = cond;
 
         Condition qualifyClause = switch (dedup == null ? DedupPolicy.OFFSET : dedup) {
             case OFFSET -> QUALIFY_DEDUP_OFFSET;
@@ -234,20 +240,22 @@ public class EntityReplayService implements EntityCassetteSource {
 
         // last_n: tail-window query — ignore from/to/cursor, query DESC, reverse result
         if (lastN != null) {
-            List<EntityRecord> tail;
-            synchronized (duckDB) {
-                var tailBase = dsl
-                        .select(F_ENTITY_ID, F_MESSAGE_TYPE, F_TOPIC, F_PARTITION, F_OFFSET,
-                                F_TIMESTAMP, F_RECORDED_AT, F_KEY, F_VALUE, F_HEADERS)
-                        .from(entityTable)
-                        .where(cond);
-                var qualified = qualifyClause != null ? tailBase.qualify(qualifyClause) : tailBase;
-                tail = qualified
-                        .orderBy(F_TIMESTAMP.desc(), F_RECORDED_AT.desc(),
-                                 F_TOPIC.desc(), F_PARTITION.desc(), F_OFFSET.desc())
-                        .limit(lastN)
-                        .fetch(EntityReplayService::mapEntityRecord);
-            }
+            List<EntityRecord> tail = TopicReplayService.withObjectStoreRetry(
+                    "queryEntityEvents:lastN:" + entityType, () -> {
+                synchronized (duckDB) {
+                    var tailBase = dsl
+                            .select(F_ENTITY_ID, F_MESSAGE_TYPE, F_TOPIC, F_PARTITION, F_OFFSET,
+                                    F_TIMESTAMP, F_RECORDED_AT, F_KEY, F_VALUE, F_HEADERS)
+                            .from(entityTable)
+                            .where(finalCond);
+                    var qualified = qualifyClause != null ? tailBase.qualify(qualifyClause) : tailBase;
+                    return qualified
+                            .orderBy(F_TIMESTAMP.desc(), F_RECORDED_AT.desc(),
+                                     F_TOPIC.desc(), F_PARTITION.desc(), F_OFFSET.desc())
+                            .limit(lastN)
+                            .fetch(EntityReplayService::mapEntityRecord);
+                }
+            });
             // Reverse to chronological order
             java.util.Collections.reverse(tail);
 
@@ -268,51 +276,54 @@ public class EntityReplayService implements EntityCassetteSource {
 
         if (from != null) cond = cond.and(F_TIMESTAMP.ge(from.atOffset(ZoneOffset.UTC)));
         if (to != null)   cond = cond.and(F_TIMESTAMP.le(to.atOffset(ZoneOffset.UTC)));
+        final Condition finalCondWithRange = cond;
 
         boolean desc = order == Order.DESC;
         // kafka_timestamp is producer-assigned and subject to cross-host clock skew when
         // events originate from multiple topics / services. recorded_at is the tiebreaker
         // and provides a consistent single-clock view, but it is not the primary sort key.
         // See docs/entity-ordering.md for guidance on when to prefer recorded_at ordering.
-        List<EntityRecord> records;
-        synchronized (duckDB) {
-            var baseSelect = dsl
-                    .select(F_ENTITY_ID, F_MESSAGE_TYPE, F_TOPIC, F_PARTITION, F_OFFSET,
-                            F_TIMESTAMP, F_RECORDED_AT, F_KEY, F_VALUE, F_HEADERS)
-                    .from(entityTable)
-                    .where(cond);
-            var selectBase = qualifyClause != null
-                    ? baseSelect.qualify(qualifyClause)
-                            .orderBy(desc ? F_TIMESTAMP.desc()   : F_TIMESTAMP.asc(),
-                                     desc ? F_RECORDED_AT.desc() : F_RECORDED_AT.asc(),
-                                     desc ? F_TOPIC.desc()       : F_TOPIC.asc(),
-                                     desc ? F_PARTITION.desc()   : F_PARTITION.asc(),
-                                     desc ? F_OFFSET.desc()      : F_OFFSET.asc())
-                    : baseSelect
-                            .orderBy(desc ? F_TIMESTAMP.desc()   : F_TIMESTAMP.asc(),
-                                     desc ? F_RECORDED_AT.desc() : F_RECORDED_AT.asc(),
-                                     desc ? F_TOPIC.desc()       : F_TOPIC.asc(),
-                                     desc ? F_PARTITION.desc()   : F_PARTITION.asc(),
-                                     desc ? F_OFFSET.desc()      : F_OFFSET.asc());
+        List<EntityRecord> records = TopicReplayService.withObjectStoreRetry(
+                "queryEntityEvents:" + entityType, () -> {
+            synchronized (duckDB) {
+                var baseSelect = dsl
+                        .select(F_ENTITY_ID, F_MESSAGE_TYPE, F_TOPIC, F_PARTITION, F_OFFSET,
+                                F_TIMESTAMP, F_RECORDED_AT, F_KEY, F_VALUE, F_HEADERS)
+                        .from(entityTable)
+                        .where(finalCondWithRange);
+                var selectBase = qualifyClause != null
+                        ? baseSelect.qualify(qualifyClause)
+                                .orderBy(desc ? F_TIMESTAMP.desc()   : F_TIMESTAMP.asc(),
+                                         desc ? F_RECORDED_AT.desc() : F_RECORDED_AT.asc(),
+                                         desc ? F_TOPIC.desc()       : F_TOPIC.asc(),
+                                         desc ? F_PARTITION.desc()   : F_PARTITION.asc(),
+                                         desc ? F_OFFSET.desc()      : F_OFFSET.asc())
+                        : baseSelect
+                                .orderBy(desc ? F_TIMESTAMP.desc()   : F_TIMESTAMP.asc(),
+                                         desc ? F_RECORDED_AT.desc() : F_RECORDED_AT.asc(),
+                                         desc ? F_TOPIC.desc()       : F_TOPIC.asc(),
+                                         desc ? F_PARTITION.desc()   : F_PARTITION.asc(),
+                                         desc ? F_OFFSET.desc()      : F_OFFSET.asc());
 
-            // seekAfter is direction-aware in jOOQ: it inspects the ORDER BY
-            // and emits the correct comparison for ASC / DESC. The cursor is
-            // the same tuple; only the query direction changes.
-            if (decoded != null) {
-                records = selectBase
-                        .seekAfter(decoded.timestamp().atOffset(ZoneOffset.UTC),
-                                   decoded.recordedAt().atOffset(ZoneOffset.UTC),
-                                   decoded.sourceTopic(),
-                                   decoded.sourcePartition(),
-                                   decoded.sourceOffset())
-                        .limit(limit + 1)
-                        .fetch(EntityReplayService::mapEntityRecord);
-            } else {
-                records = selectBase
-                        .limit(limit + 1)
-                        .fetch(EntityReplayService::mapEntityRecord);
+                // seekAfter is direction-aware in jOOQ: it inspects the ORDER BY
+                // and emits the correct comparison for ASC / DESC. The cursor is
+                // the same tuple; only the query direction changes.
+                if (decoded != null) {
+                    return selectBase
+                            .seekAfter(decoded.timestamp().atOffset(ZoneOffset.UTC),
+                                       decoded.recordedAt().atOffset(ZoneOffset.UTC),
+                                       decoded.sourceTopic(),
+                                       decoded.sourcePartition(),
+                                       decoded.sourceOffset())
+                            .limit(limit + 1)
+                            .fetch(EntityReplayService::mapEntityRecord);
+                } else {
+                    return selectBase
+                            .limit(limit + 1)
+                            .fetch(EntityReplayService::mapEntityRecord);
+                }
             }
-        }
+        });
 
         if (!prunedPipeline.isIdentity()) {
             List<EntityRecord> transformed = new ArrayList<>();
@@ -640,46 +651,56 @@ public class EntityReplayService implements EntityCassetteSource {
 
         org.jooq.Param<String> idParam = DSL.val(entityId);
 
-        long count = 0;
-        Instant firstMsg = null;
-        Instant lastMsg  = null;
+        StatsQueryResult result = TopicReplayService.withObjectStoreRetry(
+                "getEntityStats:" + entityType, () -> {
+            long count = 0;
+            Instant firstMsg = null;
+            Instant lastMsg  = null;
+            Map<String, Long> countByTopic = new LinkedHashMap<>();
+            Instant firstSeen = null;
+            Instant lastSeen  = null;
+            synchronized (duckDB) {
+                var aggRecord = dsl.fetchOne(
+                        DSL.resultQuery(dedupCte
+                                + "SELECT COUNT(*) AS cnt, MIN(ts) AS first_msg, MAX(ts) AS last_msg"
+                                + " FROM deduped",
+                                idParam));
+                if (aggRecord != null) {
+                    count = ((Number) aggRecord.get("cnt")).longValue();
+                    var f = aggRecord.get("first_msg", java.time.OffsetDateTime.class);
+                    var l = aggRecord.get("last_msg",  java.time.OffsetDateTime.class);
+                    if (f != null) firstMsg = f.toInstant();
+                    if (l != null) lastMsg  = l.toInstant();
+                }
 
-        Map<String, Long> countByTopic = new LinkedHashMap<>();
-        Instant firstSeen = null;
-        Instant lastSeen  = null;
-        synchronized (duckDB) {
-            var aggRecord = dsl.fetchOne(
-                    DSL.resultQuery(dedupCte
-                            + "SELECT COUNT(*) AS cnt, MIN(ts) AS first_msg, MAX(ts) AS last_msg"
-                            + " FROM deduped",
-                            idParam));
-            if (aggRecord != null) {
-                count = ((Number) aggRecord.get("cnt")).longValue();
-                var f = aggRecord.get("first_msg", java.time.OffsetDateTime.class);
-                var l = aggRecord.get("last_msg",  java.time.OffsetDateTime.class);
-                if (f != null) firstMsg = f.toInstant();
-                if (l != null) lastMsg  = l.toInstant();
+                dsl.fetch(
+                        DSL.resultQuery(dedupCte
+                                + "SELECT topic, COUNT(*) AS cnt FROM deduped"
+                                + " GROUP BY topic ORDER BY topic",
+                                idParam))
+                   .forEach(r -> countByTopic.put(
+                           r.get("topic", String.class),
+                           ((Number) r.get("cnt")).longValue()));
+
+                var regRecord = dsl
+                        .select(F_FIRST_SEEN, F_LAST_SEEN)
+                        .from(KNOWN_ENTITIES)
+                        .where(F_ENTITY_TYPE.eq(entityType).and(F_ENTITY_ID.eq(entityId)))
+                        .fetchOne();
+                if (regRecord != null) {
+                    firstSeen = regRecord.get(F_FIRST_SEEN).toInstant();
+                    lastSeen  = regRecord.get(F_LAST_SEEN).toInstant();
+                }
             }
+            return new StatsQueryResult(count, firstMsg, lastMsg, countByTopic, firstSeen, lastSeen);
+        });
 
-            dsl.fetch(
-                    DSL.resultQuery(dedupCte
-                            + "SELECT topic, COUNT(*) AS cnt FROM deduped"
-                            + " GROUP BY topic ORDER BY topic",
-                            idParam))
-               .forEach(r -> countByTopic.put(
-                       r.get("topic", String.class),
-                       ((Number) r.get("cnt")).longValue()));
-
-            var regRecord = dsl
-                    .select(F_FIRST_SEEN, F_LAST_SEEN)
-                    .from(KNOWN_ENTITIES)
-                    .where(F_ENTITY_TYPE.eq(entityType).and(F_ENTITY_ID.eq(entityId)))
-                    .fetchOne();
-            if (regRecord != null) {
-                firstSeen = regRecord.get(F_FIRST_SEEN).toInstant();
-                lastSeen  = regRecord.get(F_LAST_SEEN).toInstant();
-            }
-        }
+        long count = result.count();
+        Instant firstMsg = result.firstMsg();
+        Instant lastMsg = result.lastMsg();
+        Map<String, Long> countByTopic = result.countByTopic();
+        Instant firstSeen = result.firstSeen();
+        Instant lastSeen = result.lastSeen();
 
         return new EntityStats(entityType, entityId, count, firstMsg, lastMsg,
                 firstSeen, lastSeen, countByTopic);
