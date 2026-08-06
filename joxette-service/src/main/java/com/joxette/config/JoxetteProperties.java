@@ -296,6 +296,20 @@ public class JoxetteProperties {
          */
         private int deadInstanceThresholdMinutes = 30;
 
+        /**
+         * How long an old (superseded-by-merge) snapshot is kept before it is
+         * expired and its files become eligible for cleanup, in hours.
+         *
+         * <p>{@code ducklake_merge_adjacent_files} does not delete the files it
+         * replaces — DuckLake keeps them for time travel until their snapshot
+         * is explicitly expired. Without this step, every compaction run leaks
+         * disk space equal to whatever it just merged. Trades off disk space
+         * held by superseded files (higher = more retained history) against
+         * the time-travel/restore window (lower = less history available via
+         * {@code GET /cassettes/snapshots} restore).
+         */
+        private int snapshotRetentionHours = 24;
+
         public static class Entity {
             private int minFilesPerBucket = 10;
             private int targetFileSizeMb = 256;
@@ -370,6 +384,11 @@ public class JoxetteProperties {
         public int getDeadInstanceThresholdMinutes() { return deadInstanceThresholdMinutes; }
         public void setDeadInstanceThresholdMinutes(int deadInstanceThresholdMinutes) {
             this.deadInstanceThresholdMinutes = deadInstanceThresholdMinutes;
+        }
+
+        public int getSnapshotRetentionHours() { return snapshotRetentionHours; }
+        public void setSnapshotRetentionHours(int snapshotRetentionHours) {
+            this.snapshotRetentionHours = snapshotRetentionHours;
         }
     }
 

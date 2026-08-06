@@ -169,6 +169,23 @@ class CompactionServiceTest {
         assertThat(history).hasSize(2);
     }
 
+    // -------------------------------------------------------------------------
+    // Config
+    // -------------------------------------------------------------------------
+
+    @Test
+    void compactionConfig_snapshotRetentionHours_defaultsTo24() {
+        JoxetteProperties props = new JoxetteProperties();
+        assertThat(props.getCompaction().getSnapshotRetentionHours()).isEqualTo(24);
+    }
+
+    @Test
+    void compactionConfig_snapshotRetentionHours_isSettable() {
+        JoxetteProperties props = new JoxetteProperties();
+        props.getCompaction().setSnapshotRetentionHours(48);
+        assertThat(props.getCompaction().getSnapshotRetentionHours()).isEqualTo(48);
+    }
+
     @Test
     void getStatus_noRuns_returnsNullLastRun() throws Exception {
         CompactionStatus status = service.getStatus();
