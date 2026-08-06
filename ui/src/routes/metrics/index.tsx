@@ -260,8 +260,8 @@ function makeActiveDot(formatter: (v: number) => string) {
           fill="rgba(10,12,22,0.9)"
           style={{
             paintOrder: 'stroke',
-            stroke: 'rgba(255,255,255,0.25)',
-            strokeWidth: 4,
+            stroke: 'rgba(255,255,255,0.85)',
+            strokeWidth: 5,
             strokeLinejoin: 'round',
           } as React.CSSProperties}
         >
@@ -274,6 +274,68 @@ function makeActiveDot(formatter: (v: number) => string) {
 
 // Shared cursor style for all charts — a subtle dashed vertical line.
 const CURSOR_STYLE = { stroke: 'rgba(200,205,240,0.35)', strokeWidth: 1, strokeDasharray: '3 2' }
+
+// ---------------------------------------------------------------------------
+// Interactive legend — hovering a series name highlights that series (dims
+// the rest, via `emphasis` below on each Area/Line) and shows its most
+// recent value inline. Pair with useState<string | null>(null) per chart.
+// ---------------------------------------------------------------------------
+
+type LegendPayloadEntry = { value?: string; color?: string; dataKey?: string | number }
+
+function InteractiveLegend({
+  payload, data, formatter, activeKey, onHover,
+}: {
+  payload?: LegendPayloadEntry[]
+  data: readonly unknown[]
+  formatter: (v: number, key: string) => string
+  activeKey: string | null
+  onHover: (key: string | null) => void
+}) {
+  if (!payload || payload.length === 0) return null
+  const last = data[data.length - 1] as Record<string, unknown> | undefined
+  return (
+    <ul style={{
+      display: 'flex', flexWrap: 'wrap', justifyContent: 'center', gap: '4px 14px',
+      listStyle: 'none', margin: '8px 0 0', padding: 0,
+    }}>
+      {payload.map(entry => {
+        const key = String(entry.dataKey ?? entry.value ?? '')
+        const active = activeKey === key
+        const dimmed = activeKey !== null && !active
+        const raw = last ? Number(last[key]) : NaN
+        return (
+          <li key={key}
+            onMouseEnter={() => onHover(key)}
+            onMouseLeave={() => onHover(null)}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 5, cursor: 'default',
+              fontSize: '0.75rem', fontFamily: 'var(--font-mono)',
+              color: dimmed ? 'var(--ink-tertiary)' : 'var(--ink-secondary)',
+              opacity: dimmed ? 0.5 : 1,
+              transition: 'opacity 120ms ease, color 120ms ease',
+            }}
+          >
+            <span style={{ width: 8, height: 8, borderRadius: 2, background: entry.color, flexShrink: 0 }} />
+            <span style={{ fontWeight: active ? 700 : 400 }}>{entry.value}</span>
+            {active && !isNaN(raw) && (
+              <span style={{ color: 'var(--ink-primary)', fontWeight: 700 }}>{formatter(raw, key)}</span>
+            )}
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
+
+/** fillOpacity/strokeOpacity for one Area/Line, dimmed when another series is hovered. */
+function emphasis(key: string, activeKey: string | null, fillOpacity: number) {
+  const dimmed = activeKey !== null && activeKey !== key
+  return {
+    fillOpacity: dimmed ? fillOpacity * 0.25 : fillOpacity,
+    strokeOpacity: dimmed ? 0.3 : 1,
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Tooltip bubble (shared, used by Stat pills and Card headers only)
@@ -392,6 +454,10 @@ const TopicRow = memo(function TopicRow({ tk, label, latest, pts, axisProps }: {
   const rateDot = makeActiveDot(v => `${fmt(v, 1)}/s`)
   const msDot   = makeActiveDot(fmtMs)
 
+  const [lagActive, setLagActive] = useState<string | null>(null)
+  const [rateActive, setRateActive] = useState<string | null>(null)
+  const [netActive, setNetActive] = useState<string | null>(null)
+
   return (
     <div style={{ marginBottom: 28 }}>
       <div style={{
@@ -415,13 +481,16 @@ const TopicRow = memo(function TopicRow({ tk, label, latest, pts, axisProps }: {
               <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
               <YAxis tickFormatter={v => fmt(v, 0)} {...axisProps} width={44} />
               <Tooltip content={() => null} cursor={CURSOR_STYLE} />
-              <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
+              <Legend content={
+                <InteractiveLegend data={lagSeries} formatter={v => fmt(v, 0)} activeKey={lagActive} onHover={setLagActive} />
+              } />
               {partitions.map((p, i) => (
                 <Area key={p} type="monotone" dataKey={`p${p}`} name={`p${p}`}
                   stackId="lag"
                   stroke={PALETTE[i % PALETTE.length]}
-                  fill={PALETTE[i % PALETTE.length] + '55'}
-                  strokeWidth={1.5} dot={false} activeDot={lagDot} isAnimationActive={false} />
+                  fill={PALETTE[i % PALETTE.length]}
+                  strokeWidth={1.5} dot={false} activeDot={lagDot} isAnimationActive={false}
+                  {...emphasis(`p${p}`, lagActive, 0.33)} />
               ))}
             </AreaChart>
           </ChartContainer>
@@ -435,15 +504,19 @@ const TopicRow = memo(function TopicRow({ tk, label, latest, pts, axisProps }: {
               <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
               <YAxis tickFormatter={v => fmt(v, 0)} {...axisProps} width={44} />
               <Tooltip content={() => null} cursor={CURSOR_STYLE} />
-              <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
+              <Legend content={
+                <InteractiveLegend data={rateSeries} formatter={v => `${fmt(v, 1)}/s`} activeKey={rateActive} onHover={setRateActive} />
+              } />
               {partitions.map((p, i) => (
                 <Line key={p} type="monotone" dataKey={`p${p}`} name={`p${p}`}
                   stroke={PALETTE[i % PALETTE.length]}
-                  strokeWidth={1.5} dot={false} activeDot={rateDot} isAnimationActive={false} />
+                  strokeWidth={1.5} dot={false} activeDot={rateDot} isAnimationActive={false}
+                  {...emphasis(`p${p}`, rateActive, 0)} />
               ))}
               <Line type="monotone" dataKey="total" name="total"
                 stroke="#f0c040" strokeWidth={2} strokeDasharray="5 3"
-                dot={false} activeDot={makeActiveDot(v => `${fmt(v, 1)}/s`)} isAnimationActive={false} />
+                dot={false} activeDot={makeActiveDot(v => `${fmt(v, 1)}/s`)} isAnimationActive={false}
+                {...emphasis('total', rateActive, 0)} />
             </LineChart>
           </ChartContainer>
         </Card>
@@ -486,15 +559,20 @@ const TopicRow = memo(function TopicRow({ tk, label, latest, pts, axisProps }: {
               <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...axisProps} minTickGap={40} />
               <YAxis tickFormatter={v => fmtMs(v)} {...axisProps} width={56} domain={[0, 120]} />
               <Tooltip content={() => null} cursor={CURSOR_STYLE} />
-              <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
+              <Legend content={
+                <InteractiveLegend data={netPts} formatter={fmtMs} activeKey={netActive} onHover={setNetActive} />
+              } />
               <Line type="monotone" dataKey="p50" name="poll p50"
-                stroke={PALETTE[0]} strokeWidth={2} dot={false} activeDot={msDot} isAnimationActive={false} />
+                stroke={PALETTE[0]} strokeWidth={2} dot={false} activeDot={msDot} isAnimationActive={false}
+                {...emphasis('p50', netActive, 0)} />
               <Line type="monotone" dataKey="p99" name="poll p99"
                 stroke={PALETTE[1]} strokeWidth={1} strokeDasharray="4 2"
-                dot={false} activeDot={msDot} isAnimationActive={false} />
+                dot={false} activeDot={msDot} isAnimationActive={false}
+                {...emphasis('p99', netActive, 0)} />
               <Line type="monotone" dataKey="flmax" name="fetch max"
                 stroke={PALETTE[2]} strokeWidth={1} strokeDasharray="1 3"
-                dot={false} activeDot={msDot} isAnimationActive={false} />
+                dot={false} activeDot={msDot} isAnimationActive={false}
+                {...emphasis('flmax', netActive, 0)} />
             </LineChart>
           </ChartContainer>
         </Card>
@@ -557,6 +635,11 @@ function MetricsPage() {
   const duckdbMemConfig: ChartConfig = Object.fromEntries(
     duckdbMemTags.map((t, i) => [t, { label: t, color: PALETTE[i % PALETTE.length] }])
   )
+  const duckdbMemPts = pts.map(pt => ({
+    ts: pt.ts,
+    total: pt.duckdbMemoryTotal,
+    ...Object.fromEntries(duckdbMemTags.map(t => [t, pt.duckdbMemoryByTag[t] ?? 0])),
+  }))
   const writeConfig: ChartConfig = {
     writeDepth:    { label: 'depth',    color: '#6674cc' },
     writeDuration: { label: 'batch ms', color: '#3E9A7A' },
@@ -568,6 +651,11 @@ function MetricsPage() {
   const bytesDot   = makeActiveDot(fmtBytes)
   const msDot      = makeActiveDot(fmtMs)
   const countDot   = makeActiveDot(v => fmt(v, 0))
+
+  const [writeActive, setWriteActive] = useState<string | null>(null)
+  const [catalogActive, setCatalogActive] = useState<string | null>(null)
+  const [duckdbMemActive, setDuckdbMemActive] = useState<string | null>(null)
+  const [heapActive, setHeapActive] = useState<string | null>(null)
 
   return (
     <Layout>
@@ -660,9 +748,14 @@ function MetricsPage() {
                 <YAxis yAxisId="depth" {...AXIS_PROPS} width={28} />
                 <YAxis yAxisId="ms" orientation="right" tickFormatter={v => v + 'ms'} {...AXIS_PROPS} width={48} />
                 <Tooltip content={() => null} cursor={CURSOR_STYLE} />
-                <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
-                <Line yAxisId="depth" type="monotone" dataKey="writeDepth"    name="depth"    stroke="var(--color-writeDepth)"    strokeWidth={1.5} dot={false} activeDot={countDot} isAnimationActive={false} />
-                <Line yAxisId="ms"    type="monotone" dataKey="writeDuration" name="batch ms" stroke="var(--color-writeDuration)" strokeWidth={1.5} dot={false} activeDot={msDot}   isAnimationActive={false} />
+                <Legend content={
+                  <InteractiveLegend data={pts} formatter={(v, key) => key === 'writeDuration' ? fmtMs(v) : fmt(v, 0)}
+                    activeKey={writeActive} onHover={setWriteActive} />
+                } />
+                <Line yAxisId="depth" type="monotone" dataKey="writeDepth"    name="depth"    stroke="var(--color-writeDepth)"    strokeWidth={1.5} dot={false} activeDot={countDot} isAnimationActive={false}
+                  {...emphasis('writeDepth', writeActive, 0)} />
+                <Line yAxisId="ms"    type="monotone" dataKey="writeDuration" name="batch ms" stroke="var(--color-writeDuration)" strokeWidth={1.5} dot={false} activeDot={msDot}   isAnimationActive={false}
+                  {...emphasis('writeDuration', writeActive, 0)} />
               </LineChart>
             </ChartContainer>
           </Card>
@@ -676,10 +769,15 @@ function MetricsPage() {
                 <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...AXIS_PROPS} minTickGap={40} />
                 <YAxis tickFormatter={fmtBytes} {...AXIS_PROPS} width={68} />
                 <Tooltip content={() => null} cursor={CURSOR_STYLE} />
-                <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
-                <Area type="monotone" dataKey="catalogBytes" name="catalog file" stroke="var(--color-catalogBytes)" fill="var(--color-catalogBytes)" fillOpacity={0.15} strokeWidth={1.5} dot={false} activeDot={bytesDot} isAnimationActive={false} />
-                <Area type="monotone" dataKey="inlinedBytes" name="inlined"       stroke="var(--color-inlinedBytes)" fill="var(--color-inlinedBytes)" fillOpacity={0.15} strokeWidth={1.5} dot={false} activeDot={bytesDot} isAnimationActive={false} />
-                <Area type="monotone" dataKey="flushedBytes" name="flushed"       stroke="var(--color-flushedBytes)" fill="var(--color-flushedBytes)" fillOpacity={0.15} strokeWidth={1.5} dot={false} activeDot={bytesDot} isAnimationActive={false} />
+                <Legend content={
+                  <InteractiveLegend data={pts} formatter={fmtBytes} activeKey={catalogActive} onHover={setCatalogActive} />
+                } />
+                <Area type="monotone" dataKey="catalogBytes" name="catalog file" stroke="var(--color-catalogBytes)" fill="var(--color-catalogBytes)" strokeWidth={1.5} dot={false} activeDot={bytesDot} isAnimationActive={false}
+                  {...emphasis('catalogBytes', catalogActive, 0.15)} />
+                <Area type="monotone" dataKey="inlinedBytes" name="inlined"       stroke="var(--color-inlinedBytes)" fill="var(--color-inlinedBytes)" strokeWidth={1.5} dot={false} activeDot={bytesDot} isAnimationActive={false}
+                  {...emphasis('inlinedBytes', catalogActive, 0.15)} />
+                <Area type="monotone" dataKey="flushedBytes" name="flushed"       stroke="var(--color-flushedBytes)" fill="var(--color-flushedBytes)" strokeWidth={1.5} dot={false} activeDot={bytesDot} isAnimationActive={false}
+                  {...emphasis('flushedBytes', catalogActive, 0.15)} />
               </AreaChart>
             </ChartContainer>
           </Card>
@@ -688,24 +786,24 @@ function MetricsPage() {
             description="Memory used by DuckDB's internal allocator, broken down by tag (BASE_TABLE, HASH_TABLE, PARQUET_READER, ALLOCATOR, etc.). Sourced from duckdb_memory() on every scrape. A steadily growing ALLOCATOR or BASE_TABLE value that does not shrink after compaction may indicate a memory leak inside the embedded DuckDB instance."
           >
             <ChartContainer config={{ total: { label: 'total', color: PALETTE[0] }, ...duckdbMemConfig }} className="h-[180px] w-full">
-              <AreaChart syncId="metrics" data={pts.map(pt => ({
-                ts: pt.ts,
-                total: pt.duckdbMemoryTotal,
-                ...Object.fromEntries(duckdbMemTags.map(t => [t, pt.duckdbMemoryByTag[t] ?? 0])),
-              }))} margin={{ right: 8 }}>
+              <AreaChart syncId="metrics" data={duckdbMemPts} margin={{ right: 8 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--rule)" vertical={false} />
                 <XAxis dataKey="ts" tickFormatter={v => timeTick(Number(v))} {...AXIS_PROPS} minTickGap={40} />
                 <YAxis tickFormatter={fmtBytes} {...AXIS_PROPS} width={68} />
                 <Tooltip content={() => null} cursor={CURSOR_STYLE} />
-                <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
+                <Legend content={
+                  <InteractiveLegend data={duckdbMemPts} formatter={fmtBytes} activeKey={duckdbMemActive} onHover={setDuckdbMemActive} />
+                } />
                 <Area type="monotone" dataKey="total" name="total"
-                  stroke={PALETTE[0]} fill={PALETTE[0]} fillOpacity={0.15} strokeWidth={2}
-                  dot={false} activeDot={bytesDot} isAnimationActive={false} />
+                  stroke={PALETTE[0]} fill={PALETTE[0]} strokeWidth={2}
+                  dot={false} activeDot={bytesDot} isAnimationActive={false}
+                  {...emphasis('total', duckdbMemActive, 0.15)} />
                 {duckdbMemTags.map((t, i) => (
                   <Area key={t} type="monotone" dataKey={t} name={t}
                     stroke={PALETTE[(i + 1) % PALETTE.length]} fill="none"
                     strokeWidth={1} strokeDasharray="3 2"
-                    dot={false} activeDot={bytesDot} isAnimationActive={false} />
+                    dot={false} activeDot={bytesDot} isAnimationActive={false}
+                    {...emphasis(t, duckdbMemActive, 0)} />
                 ))}
               </AreaChart>
             </ChartContainer>
@@ -721,15 +819,19 @@ function MetricsPage() {
                 <YAxis tickFormatter={fmtBytes} {...AXIS_PROPS} width={68}
                   domain={[0, (latest?.heapMax ?? 0) > 0 ? latest!.heapMax * 1.05 : 'auto']} />
                 <Tooltip content={() => null} cursor={CURSOR_STYLE} />
-                <Legend wrapperStyle={{ fontSize: '0.75rem' }} />
+                <Legend content={
+                  <InteractiveLegend data={pts} formatter={fmtBytes} activeKey={heapActive} onHover={setHeapActive} />
+                } />
                 {(latest?.heapMax ?? 0) > 0 && <>
                   <ReferenceLine y={latest!.heapMax} stroke="var(--ink-tertiary)" strokeWidth={1.5} strokeDasharray="6 3"
                     label={{ value: `max  ${fmtBytes(latest!.heapMax)}`, position: 'insideTopLeft', fontSize: 9, fill: 'var(--ink-tertiary)', fontFamily: 'var(--font-mono)' }} />
                   <ReferenceLine y={latest!.heapMax * 0.8} stroke="var(--signal-warn)" strokeWidth={1.5} strokeDasharray="4 3"
                     label={{ value: `80%  ${fmtBytes(latest!.heapMax * 0.8)}`, position: 'insideTopLeft', fontSize: 9, fill: 'var(--signal-warn)', fontFamily: 'var(--font-mono)' }} />
                 </>}
-                <Area type="monotone" dataKey="heapUsed"   name="heap used"   stroke="var(--color-heapUsed)"   fill="var(--color-heapUsed)"   fillOpacity={0.12} strokeWidth={1.5} dot={false} activeDot={bytesDot} isAnimationActive={false} />
-                <Area type="monotone" dataKey="processRss" name="process RSS" stroke="var(--color-processRss)" fill="none"                     strokeWidth={1.5} strokeDasharray="4 2" dot={false} activeDot={bytesDot} isAnimationActive={false} />
+                <Area type="monotone" dataKey="heapUsed"   name="heap used"   stroke="var(--color-heapUsed)"   fill="var(--color-heapUsed)"   strokeWidth={1.5} dot={false} activeDot={bytesDot} isAnimationActive={false}
+                  {...emphasis('heapUsed', heapActive, 0.12)} />
+                <Area type="monotone" dataKey="processRss" name="process RSS" stroke="var(--color-processRss)" fill="none"                     strokeWidth={1.5} strokeDasharray="4 2" dot={false} activeDot={bytesDot} isAnimationActive={false}
+                  {...emphasis('processRss', heapActive, 0)} />
               </AreaChart>
             </ChartContainer>
           </Card>
