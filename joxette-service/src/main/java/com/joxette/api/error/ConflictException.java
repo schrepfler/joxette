@@ -36,6 +36,10 @@ public class ConflictException extends JoxetteException {
         return new ConflictException("Retention run already in progress");
     }
 
+    public static ConflictException reconciliationAlreadyRunning() {
+        return new ConflictException("Reconciliation run already in progress");
+    }
+
     public static ConflictException scheduledReplayCapacityReached(int max) {
         return new ConflictException(
                 "Maximum number of concurrent scheduled replays (" + max + ") reached");

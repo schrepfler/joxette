@@ -450,6 +450,15 @@ public class JoxetteMetrics {
     }
 
     // =========================================================================
+    // Reconciliation
+    // =========================================================================
+
+    // Temporary stub — Task 6 replaces the body with real Gauge registration.
+    public void registerReconciliationOrphanedFilesGauge(java.util.function.Supplier<Integer> supplier) {}
+    // Temporary stub — Task 6 replaces the body with real Gauge registration.
+    public void registerReconciliationMissingFilesGauge(java.util.function.Supplier<Integer> supplier) {}
+
+    // =========================================================================
     // Process RSS
     // =========================================================================
 
