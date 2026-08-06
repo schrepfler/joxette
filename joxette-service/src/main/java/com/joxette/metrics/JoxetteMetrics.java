@@ -449,6 +449,17 @@ public class JoxetteMetrics {
         }
     }
 
+    public void registerFlushedDataGauge(Supplier<Long> bytesSupplier) {
+        if (registeredGaugeIds.add("catalog:flushed")) {
+            retainedGaugeState.add(bytesSupplier);
+            Gauge.builder("joxette.catalog.flushed.bytes", bytesSupplier,
+                          s -> { try { Long v = s.get(); return v != null ? v.doubleValue() : 0.0; } catch (Exception e) { return 0.0; } })
+                    .description("Bytes of cassette data flushed to Parquet in object storage (S3/GCS/Azure), summed across every general/entity cassette table")
+                    .baseUnit("bytes")
+                    .register(registry);
+        }
+    }
+
     // =========================================================================
     // Reconciliation
     // =========================================================================

@@ -27,6 +27,7 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -108,6 +109,7 @@ public class HealthController {
               ],
               "catalogSizeBytes": 1073741824,
               "inlinedDataSizeBytes": 52428800,
+              "flushedDataSizeBytes": 1073741824,
               "catalogPath": "./data/joxette.ducklake",
               "roles": ["compaction", "entity-router", "recorder", "replay"],
               "instanceId": "myhost:12345",
@@ -126,6 +128,9 @@ public class HealthController {
             @Schema(description = "Estimated bytes of data buffered inline in the DuckDB catalog (not yet flushed to Parquet); -1 on error",
                     example = "52428800")
             long inlinedDataSizeBytes,
+            @Schema(description = "Bytes of cassette data flushed to Parquet in object storage (S3/GCS/Azure), summed across every general/entity cassette table; -1 on error",
+                    example = "1073741824")
+            long flushedDataSizeBytes,
             @Schema(description = "Filesystem path to the DuckDB catalog file", example = "./data/joxette.ducklake")
             String catalogPath,
             @Schema(description = "Whether recording (Kafka consumers) is enabled on this node", example = "true")
@@ -199,6 +204,7 @@ public class HealthController {
     void registerCatalogGauges() {
         joxetteMetrics.registerCatalogSizeGauge(this::catalogSizeBytes);
         joxetteMetrics.registerInlinedDataGauge(this::inlinedDataSizeBytes);
+        joxetteMetrics.registerFlushedDataGauge(this::flushedDataSizeBytes);
         registerDuckDbMemoryGauges();
         joxetteMetrics.registerProcessRssGauge(this::processRssBytes);
     }
@@ -282,6 +288,7 @@ public class HealthController {
                       ],
                       "catalogSizeBytes": 1073741824,
                       "inlinedDataSizeBytes": 52428800,
+              "flushedDataSizeBytes": 1073741824,
                       "catalogPath": "./data/joxette.ducklake"
                     }""")))
     })
@@ -300,6 +307,7 @@ public class HealthController {
                 computeConsumerLag(active, running),
                 catalogSizeBytes(),
                 inlinedDataSizeBytes(),
+                flushedDataSizeBytes(),
                 properties.getCatalog().getPath(),
                 properties.getRecording().isEnabled(),
                 properties.getCompaction().isEnabled(),
@@ -453,6 +461,39 @@ public class HealthController {
                          "AND schema_name = 'main'")) {
                 return rs.next() ? rs.getLong("total") : 0;
             }
+        } catch (SQLException e) {
+            return -1;
+        }
+    }
+
+    /**
+     * Returns the sum of {@code ducklake_list_files}'s {@code data_file_size_bytes}
+     * across every {@code lake.main.general_*}/{@code entity_*} cassette table —
+     * i.e. bytes actually flushed to Parquet in object storage, as opposed to
+     * {@link #inlinedDataSizeBytes()}'s not-yet-flushed catalog-buffered portion.
+     *
+     * <p>Unlike {@code inlinedDataSizeBytes()}, this reads DuckLake's file manifest
+     * via a table function rather than stored {@code duckdb_tables()} statistics, so
+     * it is wrapped in {@code synchronized(duckDB)} — there is no equivalent proof
+     * that {@code ducklake_list_files} is safe for concurrent unlocked reads the way
+     * {@code duckdb_tables()} is documented to be.
+     */
+    private long flushedDataSizeBytes() {
+        try {
+            java.util.List<String> tables = com.joxette.db.SchemaManager.listCassetteTableNames(duckDB);
+            long total = 0;
+            for (String table : tables) {
+                synchronized (duckDB) {
+                    try (PreparedStatement ps = duckDB.prepareStatement(
+                            "SELECT COALESCE(SUM(data_file_size_bytes), 0) FROM ducklake_list_files('lake', ?)")) {
+                        ps.setString(1, table);
+                        try (ResultSet rs = ps.executeQuery()) {
+                            if (rs.next()) total += rs.getLong(1);
+                        }
+                    }
+                }
+            }
+            return total;
         } catch (SQLException e) {
             return -1;
         }
