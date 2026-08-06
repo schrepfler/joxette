@@ -235,9 +235,59 @@ public class ReconciliationService {
     /** Represents one file the catalog's current snapshot references that no longer exists in storage. */
     record MissingFile(String path, long lastKnownSizeBytes) {}
 
-    /** Stub — replaced with the real {@code ducklake_delete_orphaned_files} scan in Task 3. */
     List<OrphanedFile> scanOrphanedFiles() throws SQLException {
-        return List.of();
+        List<String> paths = new ArrayList<>();
+        synchronized (duckDB) {
+            // cleanup_all => true is REQUIRED alongside dry_run => true — without it,
+            // this call silently returns zero rows even when orphaned files exist.
+            try (Statement st = duckDB.createStatement();
+                 ResultSet rs = st.executeQuery(
+                         "CALL ducklake_delete_orphaned_files('lake', cleanup_all => true, dry_run => true)")) {
+                while (rs.next()) paths.add(rs.getString("path"));
+            }
+        }
+        List<OrphanedFile> orphans = new ArrayList<>();
+        for (String path : paths) {
+            long size = orphanedFileSizeBytes(path);
+            orphans.add(new OrphanedFile(path, extractTableName(path), size));
+        }
+        return orphans;
+    }
+
+    /**
+     * Reads the file size via {@code parquet_file_metadata} — DuckDB has no cheap
+     * raw file-stat primitive, so this is the lightest verified way to size an
+     * orphaned file without duplicating S3 credential handling in Java.
+     * Non-fatal: a single unreadable file (e.g. corrupt, mid-write) logs and
+     * contributes 0 bytes rather than failing the whole scan.
+     */
+    private long orphanedFileSizeBytes(String path) {
+        synchronized (duckDB) {
+            try (PreparedStatement ps = duckDB.prepareStatement(
+                    "SELECT file_size_bytes FROM parquet_file_metadata(?)")) {
+                ps.setString(1, path);
+                try (ResultSet rs = ps.executeQuery()) {
+                    return rs.next() ? rs.getLong(1) : 0L;
+                }
+            } catch (SQLException e) {
+                log.warn("Could not read size of orphaned file '{}': {}", path, e.getMessage());
+                return 0L;
+            }
+        }
+    }
+
+    /**
+     * Extracts the owning table name from a DuckLake data-file path following the
+     * {@code {data_path}/main/{tableName}/...} convention (see
+     * https://ducklake.select/docs/stable/duckdb/usage/paths), the same convention
+     * already relied on by {@code CassetteLifecycleService.resolveEntityDataSource}.
+     */
+    private static String extractTableName(String path) {
+        int idx = path.indexOf("/main/");
+        if (idx < 0) return "unknown";
+        String rest = path.substring(idx + "/main/".length());
+        int slash = rest.indexOf('/');
+        return slash < 0 ? rest : rest.substring(0, slash);
     }
 
     /** Stub — replaced with the real {@code ducklake_list_files} vs {@code glob} diff in Task 4. */
@@ -319,7 +369,9 @@ public class ReconciliationService {
     // reconciliation_history CRUD
     // =========================================================================
 
-    private long insertRunRecord(TriggerSource triggeredBy, List<String> targets,
+    // Package-private (not private) so fast unit tests can drive the bookkeeping
+    // layer directly without a real DuckLake scan — see ReconciliationServiceLifecycleTest.
+    long insertRunRecord(TriggerSource triggeredBy, List<String> targets,
                                   boolean recoverOrphanedFiles) throws SQLException {
         synchronized (duckDB) {
             try (PreparedStatement ps = duckDB.prepareStatement("""
@@ -347,7 +399,8 @@ public class ReconciliationService {
         }
     }
 
-    private void updateRunRecord(long runId, RunStatus status, int tablesScanned,
+    // Package-private (not private) — see insertRunRecord's note above.
+    void updateRunRecord(long runId, RunStatus status, int tablesScanned,
                                   int orphanedFiles, long orphanedBytes,
                                   int missingFiles, long missingBytes,
                                   int recoveredFiles, String detailsJson,
