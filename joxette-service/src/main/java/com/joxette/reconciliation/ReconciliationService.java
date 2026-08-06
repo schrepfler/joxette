@@ -6,6 +6,8 @@ import com.joxette.compaction.RunStatus;
 import com.joxette.compaction.TriggerSource;
 import com.joxette.config.JoxetteProperties;
 import com.joxette.metrics.JoxetteMetrics;
+import org.duckdb.DuckDBPreparedStatement;
+import org.duckdb.QueryProgress;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.context.annotation.DependsOn;
@@ -37,6 +39,14 @@ public class ReconciliationService {
 
     static final String LOCK_TARGET = "reconciliation";
     private static final int MAX_DETAILS_ENTRIES = 500;
+
+    /** DuckDB's own built-in {@code http_timeout} default (seconds) — verified via
+     * {@code duckdb_settings()}. Restored after every watched object-storage call so the
+     * configured reconciliation timeout never leaks into unrelated code paths (replay,
+     * compaction) that share this connection. */
+    static final int DEFAULT_HTTP_TIMEOUT_SECONDS = 30;
+    private static final long DEFAULT_PROGRESS_LOG_THRESHOLD_MS = 10_000;
+    private static final long DEFAULT_PROGRESS_LOG_INTERVAL_MS = 10_000;
 
     private final Connection duckDB;
     private final JoxetteProperties props;
@@ -199,6 +209,95 @@ public class ReconciliationService {
         return (System.nanoTime() - startNanos) / 1_000_000;
     }
 
+    // =========================================================================
+    // Object-storage call watchdog
+    // =========================================================================
+
+    @FunctionalInterface
+    interface SqlAction<T> {
+        T run() throws SQLException;
+    }
+
+    /**
+     * Wraps one of the five object-storage-touching DuckDB calls
+     * ({@code ducklake_delete_orphaned_files}, {@code ducklake_list_files}, {@code glob()},
+     * {@code parquet_file_metadata}, {@code ducklake_add_data_files}) with:
+     *
+     * <ol>
+     *   <li><b>Cancellation via {@code http_timeout}</b> — sets DuckDB's own {@code http_timeout}
+     *       session setting (in seconds, from {@code joxette.reconciliation.object-storage-timeout-seconds})
+     *       for the duration of the call, then restores {@link #DEFAULT_HTTP_TIMEOUT_SECONDS}.
+     *       This, and not JDBC {@link Statement#cancel()} / {@link Statement#setQueryTimeout(int)},
+     *       is the real cancellation mechanism: empirically verified against a genuinely wedged
+     *       (accept-but-never-respond) TCP socket that {@code cancel()}/{@code setQueryTimeout()}
+     *       never unblock it — DuckDB's interrupt flag is only checked between rows, which a
+     *       stuck native socket read never reaches — while {@code http_timeout} does, because
+     *       httpfs enforces it on the HTTP client itself, below the JNI boundary.</li>
+     *   <li><b>Progress logging</b> — a daemon watchdog thread that, once the call has run past
+     *       {@code progressLogThresholdMs}, logs {@link DuckDBPreparedStatement#getQueryProgress()}
+     *       every {@code progressLogIntervalMs} until the call finishes.</li>
+     * </ol>
+     *
+     * <p>The watchdog thread deliberately does NOT synchronize on {@code duckDB} — like
+     * {@code cancel()}, {@code getQueryProgress()} is designed to be polled concurrently with
+     * the blocking call on {@code stmt}, which the calling thread is executing while already
+     * holding that lock (same precedent as {@code HealthController.inlinedDataSizeBytes()}).
+     *
+     * <p>Callers must already hold {@code synchronized (duckDB)}.
+     */
+    <T> T withObjectStorageWatchdog(String description, Statement stmt, SqlAction<T> action) throws SQLException {
+        return withObjectStorageWatchdog(description, stmt, action,
+                DEFAULT_PROGRESS_LOG_THRESHOLD_MS, DEFAULT_PROGRESS_LOG_INTERVAL_MS);
+    }
+
+    /** Test seam: lets tests use short thresholds instead of waiting 10s+. */
+    <T> T withObjectStorageWatchdog(String description, Statement stmt, SqlAction<T> action,
+                                     long progressLogThresholdMs, long progressLogIntervalMs) throws SQLException {
+        int timeoutSeconds = props.getReconciliation().getObjectStorageTimeoutSeconds();
+        try (Statement set = duckDB.createStatement()) {
+            set.execute("SET http_timeout = " + timeoutSeconds);
+        }
+        DuckDBPreparedStatement duckStmt = (DuckDBPreparedStatement) stmt;
+        AtomicBoolean done = new AtomicBoolean(false);
+        long start = System.nanoTime();
+        Thread watchdog = new Thread(
+                () -> runProgressWatchdog(description, duckStmt, done, start, progressLogThresholdMs, progressLogIntervalMs),
+                "reconciliation-watchdog");
+        watchdog.setDaemon(true);
+        watchdog.start();
+        try {
+            return action.run();
+        } finally {
+            done.set(true);
+            watchdog.interrupt();
+            try (Statement reset = duckDB.createStatement()) {
+                reset.execute("SET http_timeout = " + DEFAULT_HTTP_TIMEOUT_SECONDS);
+            } catch (SQLException e) {
+                log.warn("{}: failed to restore default http_timeout: {}", description, e.getMessage());
+            }
+        }
+    }
+
+    private void runProgressWatchdog(String description, DuckDBPreparedStatement stmt, AtomicBoolean done,
+                                      long startNanos, long thresholdMs, long intervalMs) {
+        try {
+            Thread.sleep(thresholdMs);
+            while (!done.get()) {
+                try {
+                    QueryProgress progress = stmt.getQueryProgress();
+                    log.warn("{}: still running after {} ms (progress {}%, {}/{} rows)",
+                            description, elapsedMs(startNanos), progress.getPercentage(),
+                            progress.getRowsProcessed(), progress.getTotalRowsToProcess());
+                } catch (SQLException e) {
+                    log.debug("{}: getQueryProgress() failed: {}", description, e.getMessage());
+                }
+                Thread.sleep(intervalMs);
+            }
+        } catch (InterruptedException expected) {
+            // Normal shutdown path once the watched call finishes.
+        }
+    }
+
     public List<ReconciliationRun> getHistory(int limit) throws SQLException {
         List<ReconciliationRun> result = new ArrayList<>();
         synchronized (duckDB) {
@@ -262,10 +361,15 @@ public class ReconciliationService {
             long start = System.nanoTime();
             // cleanup_all => true is REQUIRED alongside dry_run => true — without it,
             // this call silently returns zero rows even when orphaned files exist.
-            try (Statement st = duckDB.createStatement();
-                 ResultSet rs = st.executeQuery(
-                         "CALL ducklake_delete_orphaned_files('lake', cleanup_all => true, dry_run => true)")) {
-                while (rs.next()) paths.add(rs.getString("path"));
+            try (Statement st = duckDB.createStatement()) {
+                paths.addAll(withObjectStorageWatchdog("scanOrphanedFiles", st, () -> {
+                    List<String> found = new ArrayList<>();
+                    try (ResultSet rs = st.executeQuery(
+                            "CALL ducklake_delete_orphaned_files('lake', cleanup_all => true, dry_run => true)")) {
+                        while (rs.next()) found.add(rs.getString("path"));
+                    }
+                    return found;
+                }));
             }
             log.info("scanOrphanedFiles: ducklake_delete_orphaned_files returned {} candidate path(s) in {} ms",
                     paths.size(), elapsedMs(start));
@@ -295,11 +399,13 @@ public class ReconciliationService {
             try (PreparedStatement ps = duckDB.prepareStatement(
                     "SELECT file_size_bytes FROM parquet_file_metadata(?)")) {
                 ps.setString(1, path);
-                try (ResultSet rs = ps.executeQuery()) {
-                    long size = rs.next() ? rs.getLong(1) : 0L;
-                    log.debug("orphanedFileSizeBytes: '{}' = {} bytes ({} ms)", path, size, elapsedMs(start));
-                    return size;
-                }
+                long size = withObjectStorageWatchdog("orphanedFileSizeBytes:" + path, ps, () -> {
+                    try (ResultSet rs = ps.executeQuery()) {
+                        return rs.next() ? rs.getLong(1) : 0L;
+                    }
+                });
+                log.debug("orphanedFileSizeBytes: '{}' = {} bytes ({} ms)", path, size, elapsedMs(start));
+                return size;
             } catch (SQLException e) {
                 log.warn("Could not read size of orphaned file '{}': {}", path, e.getMessage());
                 return 0L;
@@ -342,9 +448,12 @@ public class ReconciliationService {
                 try (PreparedStatement ps = duckDB.prepareStatement(
                         "SELECT data_file, data_file_size_bytes FROM ducklake_list_files('lake', ?)")) {
                     ps.setString(1, table);
-                    try (ResultSet rs = ps.executeQuery()) {
-                        while (rs.next()) tracked.put(rs.getString(1), rs.getLong(2));
-                    }
+                    withObjectStorageWatchdog("scanMissingFiles:list_files:" + table, ps, () -> {
+                        try (ResultSet rs = ps.executeQuery()) {
+                            while (rs.next()) tracked.put(rs.getString(1), rs.getLong(2));
+                        }
+                        return null;
+                    });
                     log.info("scanMissingFiles: table '{}' — ducklake_list_files returned {} tracked file(s) in {} ms",
                             table, tracked.size(), elapsedMs(start));
                 } catch (SQLException e) {
@@ -362,9 +471,12 @@ public class ReconciliationService {
                 long start = System.nanoTime();
                 try (PreparedStatement ps = duckDB.prepareStatement("SELECT file FROM glob(?)")) {
                     ps.setString(1, glob);
-                    try (ResultSet rs = ps.executeQuery()) {
-                        while (rs.next()) present.add(rs.getString(1));
-                    }
+                    withObjectStorageWatchdog("scanMissingFiles:glob:" + table, ps, () -> {
+                        try (ResultSet rs = ps.executeQuery()) {
+                            while (rs.next()) present.add(rs.getString(1));
+                        }
+                        return null;
+                    });
                     log.info("scanMissingFiles: table '{}' — glob() found {} file(s) in object storage in {} ms",
                             table, present.size(), elapsedMs(start));
                 } catch (SQLException e) {
@@ -401,11 +513,15 @@ public class ReconciliationService {
                         index, orphans.size(), orphan.path(), orphan.tableName());
                 long start = System.nanoTime();
                 try (Statement st = duckDB.createStatement()) {
-                    st.execute(String.format(
-                            "CALL ducklake_add_data_files('lake', '%s', '%s', " +
-                                    "schema => 'main', ignore_extra_columns => true)",
-                            orphan.tableName().replace("'", "''"),
-                            orphan.path().replace("'", "''")));
+                    String description = "recoverOrphans:" + orphan.tableName();
+                    withObjectStorageWatchdog(description, st, () -> {
+                        st.execute(String.format(
+                                "CALL ducklake_add_data_files('lake', '%s', '%s', " +
+                                        "schema => 'main', ignore_extra_columns => true)",
+                                orphan.tableName().replace("'", "''"),
+                                orphan.path().replace("'", "''")));
+                        return null;
+                    });
                     recovered++;
                     log.debug("recoverOrphans: ({}/{}) registered '{}' in {} ms",
                             index, orphans.size(), orphan.path(), elapsedMs(start));
