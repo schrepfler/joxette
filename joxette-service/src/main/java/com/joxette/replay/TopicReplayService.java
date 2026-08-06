@@ -8,6 +8,8 @@ import org.jooq.Table;
 import org.jooq.exception.DataAccessException;
 import org.jooq.impl.DSL;
 import org.jooq.impl.SQLDataType;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import org.duckdb.DuckDBStruct;
@@ -19,6 +21,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import com.joxette.api.error.UpstreamUnavailableException;
 import com.joxette.replay.transform.ReplayMessage;
 import com.joxette.replay.transform.TransformContext;
 import com.joxette.replay.transform.TransformPipeline;
@@ -32,6 +35,7 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.function.Consumer;
 import java.util.function.Function;
+import java.util.function.Supplier;
 
 
 /**
@@ -58,6 +62,8 @@ import java.util.function.Function;
  */
 @Service
 public class TopicReplayService implements CassetteSource {
+
+    private static final Logger log = LoggerFactory.getLogger(TopicReplayService.class);
 
     private static final int STREAM_PAGE_SIZE = 500;
 
@@ -174,38 +180,40 @@ public class TopicReplayService implements CassetteSource {
         if (partition != null)  cond = cond.and(F_PARTITION.eq(partition));
         if (offsetFrom != null) cond = cond.and(F_OFFSET.ge(offsetFrom));
         if (offsetTo != null)   cond = cond.and(F_OFFSET.le(offsetTo));
+        final Condition finalCond = cond;
 
         boolean desc = order == Order.DESC;
         final String topicFinal = topic;
-        List<CassetteRecord> records;
-        synchronized (duckDB) {
-            var selectBase = dsl
-                    .select(F_PARTITION, F_OFFSET, F_TIMESTAMP, F_RECORDED_AT, F_KEY, F_VALUE, F_HEADERS, F_MESSAGE_TYPE)
-                    .from(table)
-                    .where(cond)
-                    .qualify(QUALIFY_DEDUP)
-                    .orderBy(desc ? F_TIMESTAMP.desc() : F_TIMESTAMP.asc(),
-                             desc ? F_PARTITION.desc() : F_PARTITION.asc(),
-                             desc ? F_OFFSET.desc()    : F_OFFSET.asc());
+        List<CassetteRecord> records = withObjectStoreRetry("query:" + topic, () -> {
+            synchronized (duckDB) {
+                var selectBase = dsl
+                        .select(F_PARTITION, F_OFFSET, F_TIMESTAMP, F_RECORDED_AT, F_KEY, F_VALUE, F_HEADERS, F_MESSAGE_TYPE)
+                        .from(table)
+                        .where(finalCond)
+                        .qualify(QUALIFY_DEDUP)
+                        .orderBy(desc ? F_TIMESTAMP.desc() : F_TIMESTAMP.asc(),
+                                 desc ? F_PARTITION.desc() : F_PARTITION.asc(),
+                                 desc ? F_OFFSET.desc()    : F_OFFSET.asc());
 
-            // jOOQ's seekAfter is direction-aware: it inspects the ORDER BY
-            // clause and generates `WHERE (cols) > (vals)` for ASC or
-            // `WHERE (cols) < (vals)` for DESC.  So a single code path
-            // serves both directions correctly as long as the ORDER BY
-            // matches.
-            if (decoded != null) {
-                records = selectBase
-                        .seekAfter(decoded.timestamp().atOffset(ZoneOffset.UTC),
-                                   decoded.partition(),
-                                   decoded.offset())
-                        .limit(limit + 1)
-                        .fetch(r -> mapRecord(topicFinal, r));
-            } else {
-                records = selectBase
-                        .limit(limit + 1)
-                        .fetch(r -> mapRecord(topicFinal, r));
+                // jOOQ's seekAfter is direction-aware: it inspects the ORDER BY
+                // clause and generates `WHERE (cols) > (vals)` for ASC or
+                // `WHERE (cols) < (vals)` for DESC.  So a single code path
+                // serves both directions correctly as long as the ORDER BY
+                // matches.
+                if (decoded != null) {
+                    return selectBase
+                            .seekAfter(decoded.timestamp().atOffset(ZoneOffset.UTC),
+                                       decoded.partition(),
+                                       decoded.offset())
+                            .limit(limit + 1)
+                            .fetch(r -> mapRecord(topicFinal, r));
+                } else {
+                    return selectBase
+                            .limit(limit + 1)
+                            .fetch(r -> mapRecord(topicFinal, r));
+                }
             }
-        }
+        });
 
         if (!prunedPipeline.isIdentity()) {
             List<CassetteRecord> transformed = new ArrayList<>();
@@ -461,6 +469,66 @@ public class TopicReplayService implements CassetteSource {
     // -------------------------------------------------------------------------
     // Package-visible helpers (used by EntityReplayService)
     // -------------------------------------------------------------------------
+
+    static final int OBJECT_STORE_RETRY_ATTEMPTS = 3;
+    private static final long OBJECT_STORE_RETRY_BASE_DELAY_MS = 300;
+
+    /**
+     * Runs {@code query} (a jOOQ fetch/fetchOne call, typically wrapping its own
+     * {@code synchronized (duckDB)} block so each retry re-acquires the lock fresh),
+     * retrying up to {@link #OBJECT_STORE_RETRY_ATTEMPTS} times on a transient
+     * object-storage I/O failure — DuckDB's httpfs prefixes these with
+     * {@code "IO Error:"} (verified against real production failures: RustFS/MinIO
+     * briefly dropping a connection mid-request, e.g. {@code "Server returned
+     * nothing (no headers, no data)"} or {@code "Timeout was reached"}).
+     *
+     * <p>Non-I/O {@link DataAccessException}s (bad SQL, missing columns, etc.) are
+     * real bugs, not transient — those are rethrown immediately, unretried.
+     *
+     * <p>If every attempt fails with a transient I/O error, throws
+     * {@link UpstreamUnavailableException} (503, typed) instead of leaking the raw
+     * {@link DataAccessException} up to {@code GlobalExceptionHandler}'s generic
+     * 500 fallback.
+     */
+    static <T> T withObjectStoreRetry(String description, Supplier<T> query) {
+        return withObjectStoreRetry(description, query, OBJECT_STORE_RETRY_BASE_DELAY_MS);
+    }
+
+    /** Test seam: {@code baseDelayMs} lets tests skip the real backoff wait. */
+    static <T> T withObjectStoreRetry(String description, Supplier<T> query, long baseDelayMs) {
+        DataAccessException lastError = null;
+        for (int attempt = 1; attempt <= OBJECT_STORE_RETRY_ATTEMPTS; attempt++) {
+            try {
+                return query.get();
+            } catch (DataAccessException e) {
+                if (!isTransientObjectStoreError(e)) throw e;
+                lastError = e;
+                if (attempt < OBJECT_STORE_RETRY_ATTEMPTS) {
+                    log.warn("{}: transient object-store I/O error on attempt {}/{}, retrying: {}",
+                            description, attempt, OBJECT_STORE_RETRY_ATTEMPTS, e.getMessage());
+                    sleepBackoff(baseDelayMs * attempt);
+                }
+            }
+        }
+        throw UpstreamUnavailableException.objectStore(description, lastError);
+    }
+
+    private static boolean isTransientObjectStoreError(Throwable e) {
+        for (Throwable t = e; t != null; t = t.getCause()) {
+            String msg = t.getMessage();
+            if (msg != null && msg.contains("IO Error")) return true;
+        }
+        return false;
+    }
+
+    private static void sleepBackoff(long delayMs) {
+        if (delayMs <= 0) return;
+        try {
+            Thread.sleep(delayMs);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
 
     static String encodeBlob(byte[] bytes) {
         return bytes == null ? null
