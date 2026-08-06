@@ -1062,6 +1062,44 @@ export const retentionApi = {
     request<RetentionRun>('/compaction/trigger-retention', { method: 'POST' }),
 }
 
+// ---- Reconciliation ----
+
+export interface ReconciliationRun {
+  id: number
+  startedAt: string
+  completedAt: string | null
+  status: 'running' | 'completed' | 'failed'
+  triggeredBy: string
+  targets: string[] | null
+  tablesScanned: number
+  orphanedFiles: number
+  orphanedBytes: number
+  missingFiles: number
+  missingBytes: number
+  recoveredFiles: number
+  recoveryRequested: boolean
+  errorMessage: string | null
+}
+
+export interface ReconciliationStatus {
+  lastRun: ReconciliationRun | null
+  nextScheduledRun: string | null
+  running: boolean
+}
+
+export interface TriggerReconciliationRequest {
+  targets?: string[]
+  recoverOrphanedFiles?: boolean
+}
+
+export const reconciliationApi = {
+  getStatus: () => request<ReconciliationStatus>('/compaction/reconciliation-status'),
+  getHistory: (limit?: number) =>
+    request<ReconciliationRun[]>(`/compaction/reconciliation-history${limit != null ? `?limit=${limit}` : ''}`),
+  trigger: (body?: TriggerReconciliationRequest) =>
+    request<ReconciliationRun>('/compaction/trigger-reconciliation', { method: 'POST', body: JSON.stringify(body ?? {}) }),
+}
+
 // ---- Health ----
 
 export const healthApi = {

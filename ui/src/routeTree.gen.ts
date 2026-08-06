@@ -16,6 +16,7 @@ import { Route as StreamsIndexRouteImport } from './routes/streams/index'
 import { Route as SnapshotsIndexRouteImport } from './routes/snapshots/index'
 import { Route as SettingsIndexRouteImport } from './routes/settings/index'
 import { Route as RetentionIndexRouteImport } from './routes/retention/index'
+import { Route as ReconciliationIndexRouteImport } from './routes/reconciliation/index'
 import { Route as MetricsIndexRouteImport } from './routes/metrics/index'
 import { Route as HealthIndexRouteImport } from './routes/health/index'
 import { Route as EntitiesIndexRouteImport } from './routes/entities/index'
@@ -66,6 +67,11 @@ const SettingsIndexRoute = SettingsIndexRouteImport.update({
 const RetentionIndexRoute = RetentionIndexRouteImport.update({
   id: '/retention/',
   path: '/retention/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ReconciliationIndexRoute = ReconciliationIndexRouteImport.update({
+  id: '/reconciliation/',
+  path: '/reconciliation/',
   getParentRoute: () => rootRouteImport,
 } as any)
 const MetricsIndexRoute = MetricsIndexRouteImport.update({
@@ -166,6 +172,7 @@ export interface FileRoutesByFullPath {
   '/entities/': typeof EntitiesIndexRoute
   '/health/': typeof HealthIndexRoute
   '/metrics/': typeof MetricsIndexRoute
+  '/reconciliation/': typeof ReconciliationIndexRoute
   '/retention/': typeof RetentionIndexRoute
   '/settings/': typeof SettingsIndexRoute
   '/snapshots/': typeof SnapshotsIndexRoute
@@ -191,6 +198,7 @@ export interface FileRoutesByTo {
   '/entities': typeof EntitiesIndexRoute
   '/health': typeof HealthIndexRoute
   '/metrics': typeof MetricsIndexRoute
+  '/reconciliation': typeof ReconciliationIndexRoute
   '/retention': typeof RetentionIndexRoute
   '/settings': typeof SettingsIndexRoute
   '/snapshots': typeof SnapshotsIndexRoute
@@ -217,6 +225,7 @@ export interface FileRoutesById {
   '/entities/': typeof EntitiesIndexRoute
   '/health/': typeof HealthIndexRoute
   '/metrics/': typeof MetricsIndexRoute
+  '/reconciliation/': typeof ReconciliationIndexRoute
   '/retention/': typeof RetentionIndexRoute
   '/settings/': typeof SettingsIndexRoute
   '/snapshots/': typeof SnapshotsIndexRoute
@@ -244,6 +253,7 @@ export interface FileRouteTypes {
     | '/entities/'
     | '/health/'
     | '/metrics/'
+    | '/reconciliation/'
     | '/retention/'
     | '/settings/'
     | '/snapshots/'
@@ -269,6 +279,7 @@ export interface FileRouteTypes {
     | '/entities'
     | '/health'
     | '/metrics'
+    | '/reconciliation'
     | '/retention'
     | '/settings'
     | '/snapshots'
@@ -294,6 +305,7 @@ export interface FileRouteTypes {
     | '/entities/'
     | '/health/'
     | '/metrics/'
+    | '/reconciliation/'
     | '/retention/'
     | '/settings/'
     | '/snapshots/'
@@ -320,6 +332,7 @@ export interface RootRouteChildren {
   EntitiesIndexRoute: typeof EntitiesIndexRoute
   HealthIndexRoute: typeof HealthIndexRoute
   MetricsIndexRoute: typeof MetricsIndexRoute
+  ReconciliationIndexRoute: typeof ReconciliationIndexRoute
   RetentionIndexRoute: typeof RetentionIndexRoute
   SettingsIndexRoute: typeof SettingsIndexRoute
   SnapshotsIndexRoute: typeof SnapshotsIndexRoute
@@ -382,6 +395,13 @@ declare module '@tanstack/react-router' {
       path: '/retention'
       fullPath: '/retention/'
       preLoaderRoute: typeof RetentionIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/reconciliation/': {
+      id: '/reconciliation/'
+      path: '/reconciliation'
+      fullPath: '/reconciliation/'
+      preLoaderRoute: typeof ReconciliationIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/metrics/': {
@@ -512,6 +532,7 @@ const rootRouteChildren: RootRouteChildren = {
   EntitiesIndexRoute: EntitiesIndexRoute,
   HealthIndexRoute: HealthIndexRoute,
   MetricsIndexRoute: MetricsIndexRoute,
+  ReconciliationIndexRoute: ReconciliationIndexRoute,
   RetentionIndexRoute: RetentionIndexRoute,
   SettingsIndexRoute: SettingsIndexRoute,
   SnapshotsIndexRoute: SnapshotsIndexRoute,
