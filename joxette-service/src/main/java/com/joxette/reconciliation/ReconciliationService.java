@@ -341,9 +341,29 @@ public class ReconciliationService {
         return missing;
     }
 
-    /** Stub — replaced with the real {@code ducklake_add_data_files} loop in Task 5. */
     int recoverOrphans(List<OrphanedFile> orphans) throws SQLException {
-        return 0;
+        int recovered = 0;
+        for (OrphanedFile orphan : orphans) {
+            if ("unknown".equals(orphan.tableName())) {
+                log.warn("recoverOrphans: could not determine owning table for '{}'; skipping",
+                        orphan.path());
+                continue;
+            }
+            synchronized (duckDB) {
+                try (Statement st = duckDB.createStatement()) {
+                    st.execute(String.format(
+                            "CALL ducklake_add_data_files('lake', '%s', '%s', " +
+                                    "schema => 'main', ignore_extra_columns => true)",
+                            orphan.tableName().replace("'", "''"),
+                            orphan.path().replace("'", "''")));
+                    recovered++;
+                } catch (SQLException e) {
+                    log.warn("recoverOrphans: failed to register '{}' into table '{}': {}",
+                            orphan.path(), orphan.tableName(), e.getMessage());
+                }
+            }
+        }
+        return recovered;
     }
 
     // =========================================================================
