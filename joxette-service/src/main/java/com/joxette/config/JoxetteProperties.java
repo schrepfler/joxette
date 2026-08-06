@@ -422,11 +422,31 @@ public class JoxetteProperties {
          */
         private String schedule = "0 0 4 * * *";
 
+        /**
+         * DuckDB {@code http_timeout} (seconds) applied only while an object-storage-touching
+         * reconciliation call is in flight ({@code ducklake_delete_orphaned_files},
+         * {@code ducklake_list_files}, {@code glob()}, {@code parquet_file_metadata},
+         * {@code ducklake_add_data_files}) — restored to DuckDB's built-in default
+         * afterwards. This, not JDBC {@code Statement.cancel()}/{@code setQueryTimeout()},
+         * is the actual cancellation mechanism: empirically verified that a genuinely
+         * wedged (accept-but-never-respond) S3 connection does NOT unblock via
+         * {@code cancel()}/{@code setQueryTimeout()} — DuckDB's interrupt flag is only
+         * checked between rows, which a stuck native socket read never reaches — but
+         * DOES unblock via {@code http_timeout}, which httpfs enforces on the HTTP client
+         * itself.
+         */
+        private int objectStorageTimeoutSeconds = 60;
+
         public boolean isEnabled() { return enabled; }
         public void setEnabled(boolean enabled) { this.enabled = enabled; }
 
         public String getSchedule() { return schedule; }
         public void setSchedule(String schedule) { this.schedule = schedule; }
+
+        public int getObjectStorageTimeoutSeconds() { return objectStorageTimeoutSeconds; }
+        public void setObjectStorageTimeoutSeconds(int objectStorageTimeoutSeconds) {
+            this.objectStorageTimeoutSeconds = objectStorageTimeoutSeconds;
+        }
     }
 
     // -----------------------------------------------------------------------

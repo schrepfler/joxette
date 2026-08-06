@@ -62,5 +62,13 @@ class ReconciliationSchemaAndConfigTest {
         JoxetteProperties props = new JoxetteProperties();
         assertThat(props.getReconciliation().isEnabled()).isTrue();
         assertThat(props.getReconciliation().getSchedule()).isEqualTo("0 0 4 * * *");
+        assertThat(props.getReconciliation().getObjectStorageTimeoutSeconds()).isEqualTo(60);
+    }
+
+    @Test
+    void reconciliationConfig_objectStorageTimeoutSeconds_isSettable() {
+        JoxetteProperties props = new JoxetteProperties();
+        props.getReconciliation().setObjectStorageTimeoutSeconds(120);
+        assertThat(props.getReconciliation().getObjectStorageTimeoutSeconds()).isEqualTo(120);
     }
 }
