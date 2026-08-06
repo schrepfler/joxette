@@ -54,3 +54,6 @@ motif-docs-wayback/
 
 # Local environment overrides — never commit
 joxette-service/src/main/resources/application-local.yml
+
+# Brainstorming visual-companion session artifacts
+.superpowers/
