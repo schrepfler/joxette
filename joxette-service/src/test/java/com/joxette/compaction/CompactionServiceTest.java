@@ -128,6 +128,38 @@ class CompactionServiceTest {
         assertThat(completed.errorMessage()).isNull();
     }
 
+    /**
+     * Ran against the fake (non-DuckLake) harness, so the actual
+     * ducklake_expire_snapshots/ducklake_cleanup_old_files calls always fail here —
+     * verifies the attempt happened and the run survived it, not that the SQL itself
+     * succeeded. Task 4's real Testcontainers IT verifies the SQL actually reclaims disk
+     * space against a genuine DuckLake catalog.
+     */
+    @Test
+    void executeRun_attemptsSnapshotExpiryAndCleanup_logsFailureButStillCompletes() throws Exception {
+        ch.qos.logback.classic.Logger logger =
+                (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(CompactionService.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        Level savedLevel = logger.getLevel();
+        logger.setLevel(Level.DEBUG);
+        logger.addAppender(appender);
+
+        CompactionRun started = service.beginRun(TriggerSource.MANUAL, null);
+        List<String> messages;
+        try {
+            service.executeRun(started.id(), null);
+            messages = appender.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
+        } finally {
+            logger.detachAppender(appender);
+            logger.setLevel(savedLevel);
+        }
+
+        assertThat(messages).anyMatch(m -> m.contains("expire") || m.contains("cleanup"));
+        CompactionRun completed = service.getRunById(started.id());
+        assertThat(completed.status()).isEqualTo(RunStatus.COMPLETED);
+    }
+
     @Test
     void executeRun_resetsRunningFlagOnCompletion() throws Exception {
         CompactionRun run = service.beginRun(TriggerSource.MANUAL, null);

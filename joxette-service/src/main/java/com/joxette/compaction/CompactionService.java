@@ -623,6 +623,39 @@ public class CompactionService {
         }
     }
 
+    /**
+     * Expires snapshots older than {@code snapshot-retention-hours} and deletes the
+     * now-unreferenced files those snapshots were the last reference to. Runs once per
+     * compaction run (see caller), after every {@code ducklake_merge_adjacent_files}
+     * call — merging alone never deletes the files it replaces; DuckLake keeps them for
+     * time travel until their snapshot is explicitly expired.
+     *
+     * <p>Failure here follows the same "log and continue" pattern as
+     * {@code ducklake_merge_adjacent_files} failures elsewhere in this class: a missed
+     * cleanup this run just means the space is reclaimed on the next successful run
+     * instead of this one.
+     */
+    private void expireSnapshotsAndCleanup() {
+        int retentionHours = props.getCompaction().getSnapshotRetentionHours();
+        try {
+            synchronized (duckDB) {
+                try (Statement st = duckDB.createStatement()) {
+                    log.debug("Expiring snapshots older than {}h and cleaning up old files", retentionHours);
+                    st.execute("CALL ducklake_expire_snapshots('lake', older_than => now() - INTERVAL '"
+                            + retentionHours + "' HOUR)");
+                    st.execute("CALL ducklake_cleanup_old_files('lake', cleanup_all => true)");
+                }
+            }
+        } catch (SQLException e) {
+            if (DuckDbErrors.isTransient(e)) {
+                log.warn("Transient S3 failure during snapshot expiry/cleanup (will retry next run): {}",
+                        e.getMessage());
+            } else {
+                log.warn("Snapshot expiry/cleanup failed: {}", e.getMessage());
+            }
+        }
+    }
+
     // =========================================================================
     // compaction_history CRUD
     // =========================================================================
