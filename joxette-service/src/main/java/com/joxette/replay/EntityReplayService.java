@@ -11,6 +11,7 @@ import org.jooq.impl.SQLDataType;
 import org.springframework.stereotype.Service;
 
 import com.joxette.config.JoxetteProperties;
+import com.joxette.db.SchemaManager;
 import com.joxette.replay.transform.ReplayMessage;
 import com.joxette.replay.transform.TransformContext;
 import com.joxette.replay.transform.TransformPipeline;
@@ -706,7 +707,7 @@ public class EntityReplayService implements EntityCassetteSource {
 
                 int fileCount;
                 try {
-                    fileCount = countEntityFiles(bareTable, entityId);
+                    fileCount = countEntityFiles(bareTable, entityType, entityId);
                 } catch (SQLException e) {
                     throw new DataAccessException("countEntityFiles failed for " + bareTable, e);
                 }
@@ -770,16 +771,25 @@ public class EntityReplayService implements EntityCassetteSource {
      * app-facing API); reports 0 if DuckLake's own {@code ducklake_list_files}
      * is unavailable at all (e.g. not a real DuckLake-backed catalog).
      */
-    private int countEntityFiles(String table, String entityId) throws SQLException {
+    private int countEntityFiles(String table, String entityType, String entityId) throws SQLException {
         String objectStoragePath = props.getCatalog().getObjectStoragePath();
         if (objectStoragePath == null || objectStoragePath.isBlank()) return 0;
 
-        List<String> candidates = pruneCandidateFiles(table, entityId);
+        List<String> candidates = pruneCandidateFiles(table, entityType, entityId);
         if (candidates.isEmpty()) return 0;
         return verifyCandidates(candidates, entityId);
     }
 
-    private List<String> pruneCandidateFiles(String table, String entityId) {
+    private List<String> pruneCandidateFiles(String table, String entityType, String entityId) {
+        try {
+            if (!SchemaManager.hasUnpartitionedFiles(duckDB, table)) {
+                return globBucketDirectory(table, entityType, entityId);
+            }
+        } catch (SQLException e) {
+            log.debug("countEntityFiles: bucket-glob fast path unavailable for table '{}' ({}); " +
+                    "falling back to full scan", table, e.getMessage());
+        }
+
         List<String> allFiles;
         try {
             allFiles = listAllFiles(table);
@@ -805,6 +815,40 @@ public class EntityReplayService implements EntityCassetteSource {
             if (candidateFilenames.contains(basename)) filtered.add(path);
         }
         return filtered;
+    }
+
+    /**
+     * Fast path: once a table has no legacy unpartitioned files left
+     * ({@link SchemaManager#hasUnpartitionedFiles} returned {@code false}),
+     * every file that could contain this entity's rows lives under its own
+     * {@code bucket=N/} directory — glob just that directory instead of
+     * scanning the whole table's catalog metadata.
+     */
+    private List<String> globBucketDirectory(String table, String entityType, String entityId) throws SQLException {
+        int bucketCount = lookupBucketCount(entityType);
+        int bucket = MessageRouter.computeBucket(entityType, entityId, bucketCount);
+        String objectStoragePath = props.getCatalog().getObjectStoragePath();
+        String base = objectStoragePath.endsWith("/") ? objectStoragePath : objectStoragePath + "/";
+        String glob = base + "main/" + table + "/bucket=" + bucket + "/**/*.parquet";
+        List<String> files = new ArrayList<>();
+        try (PreparedStatement ps = duckDB.prepareStatement("SELECT file FROM glob(?)")) {
+            ps.setString(1, glob);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) files.add(rs.getString(1));
+            }
+        }
+        return files;
+    }
+
+    /** Bucket count configured for {@code entityType}, defaulting to 256 if not registered. */
+    private int lookupBucketCount(String entityType) throws SQLException {
+        try (PreparedStatement ps = duckDB.prepareStatement(
+                "SELECT bucket_count FROM entity_type_configs WHERE entity_type = ?")) {
+            ps.setString(1, entityType);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getInt(1) : 256;
+            }
+        }
     }
 
     /** Full, fully-resolved file list for {@code table} via DuckLake's own function. */
