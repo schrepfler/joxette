@@ -54,7 +54,7 @@ class EntityReplayServiceConcurrencyTest {
                     "orders.events", 0, i, base.plusSeconds(i), base.plusSeconds(i),
                     "cust-1", ("{\"seq\":" + i + "}").getBytes());
         }
-        service = new EntityReplayService(DSL.using(duckDB, SQLDialect.DUCKDB), duckDB);
+        service = new EntityReplayService(DSL.using(duckDB, SQLDialect.DUCKDB), duckDB, new com.joxette.config.JoxetteProperties());
     }
 
     @AfterEach

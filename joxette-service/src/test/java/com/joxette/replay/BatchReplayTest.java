@@ -86,7 +86,7 @@ class BatchReplayTest {
         objectMapper.disable(com.fasterxml.jackson.databind.SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
 
         EntityReplayService entityService =
-                new EntityReplayService(DSL.using(conn, SQLDialect.DUCKDB), conn);
+                new EntityReplayService(DSL.using(conn, SQLDialect.DUCKDB), conn, new com.joxette.config.JoxetteProperties());
 
         JoxetteProperties.Replay replay = mock(JoxetteProperties.Replay.class);
         JoxetteProperties.Replay.Follow follow = mock(JoxetteProperties.Replay.Follow.class);

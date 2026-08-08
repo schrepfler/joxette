@@ -10,10 +10,14 @@ import org.jooq.impl.DSL;
 import org.jooq.impl.SQLDataType;
 import org.springframework.stereotype.Service;
 
+import com.joxette.config.JoxetteProperties;
 import com.joxette.replay.transform.ReplayMessage;
 import com.joxette.replay.transform.TransformContext;
 import com.joxette.replay.transform.TransformPipeline;
 import com.joxette.replay.transform.steps.SqlPushdownAnalyzer;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
@@ -53,6 +57,8 @@ import java.util.regex.Pattern;
  */
 @Service
 public class EntityReplayService implements EntityCassetteSource {
+
+    private static final Logger log = LoggerFactory.getLogger(EntityReplayService.class);
 
     private static final Pattern SAFE_IDENTIFIER = Pattern.compile("[a-z][a-z0-9_]*");
     private static final int STREAM_PAGE_SIZE = 500;
@@ -109,14 +115,17 @@ public class EntityReplayService implements EntityCassetteSource {
     /** Carries getEntityStats' three query results out of the withObjectStoreRetry lambda. */
     private record StatsQueryResult(
             long count, Instant firstMsg, Instant lastMsg,
-            Map<String, Long> countByTopic, Instant firstSeen, Instant lastSeen) {}
+            Map<String, Long> countByTopic, Instant firstSeen, Instant lastSeen,
+            int fileCount) {}
 
     private final DSLContext dsl;
     private final Connection duckDB;
+    private final JoxetteProperties props;
 
-    public EntityReplayService(DSLContext dsl, Connection duckDB) {
+    public EntityReplayService(DSLContext dsl, Connection duckDB, JoxetteProperties props) {
         this.dsl = dsl;
         this.duckDB = duckDB;
+        this.props = props;
     }
 
     // -------------------------------------------------------------------------
@@ -692,7 +701,7 @@ public class EntityReplayService implements EntityCassetteSource {
                     lastSeen  = regRecord.get(F_LAST_SEEN).toInstant();
                 }
             }
-            return new StatsQueryResult(count, firstMsg, lastMsg, countByTopic, firstSeen, lastSeen);
+            return new StatsQueryResult(count, firstMsg, lastMsg, countByTopic, firstSeen, lastSeen, 0);
         });
 
         long count = result.count();
@@ -703,7 +712,7 @@ public class EntityReplayService implements EntityCassetteSource {
         Instant lastSeen = result.lastSeen();
 
         return new EntityStats(entityType, entityId, count, firstMsg, lastMsg,
-                firstSeen, lastSeen, countByTopic);
+                firstSeen, lastSeen, countByTopic, result.fileCount(), null, null);
     }
 
     // -------------------------------------------------------------------------

@@ -51,7 +51,7 @@ class EntityReplayServiceTest {
     void setUp() throws Exception {
         duckDB = DuckDBTestSupport.newConnection();
         DuckDBTestSupport.createEntityTable(duckDB, ENTITY_TYPE);
-        service = new EntityReplayService(DSL.using(duckDB, SQLDialect.DUCKDB), duckDB);
+        service = new EntityReplayService(DSL.using(duckDB, SQLDialect.DUCKDB), duckDB, new com.joxette.config.JoxetteProperties());
     }
 
     @AfterEach
