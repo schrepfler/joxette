@@ -197,6 +197,9 @@ export interface EntityStats {
   firstSeen: string | null
   lastSeen: string | null
   countByTopic: Record<string, number>
+  fileCount: number
+  objectStoreDirectory: string | null
+  storageConsoleUrl: string | null
 }
 
 // ---- Entity output modes ----
