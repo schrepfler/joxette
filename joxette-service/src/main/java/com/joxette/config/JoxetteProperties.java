@@ -23,6 +23,7 @@ public class JoxetteProperties {
     private Bootstrap bootstrap = new Bootstrap();
     private S3 s3 = new S3();
     private ObjectStore objectStore = new ObjectStore();
+    private StorageConsole storageConsole = new StorageConsole();
     private Security security = new Security();
 
     // -----------------------------------------------------------------------
@@ -989,6 +990,25 @@ public class JoxetteProperties {
     }
 
     // -----------------------------------------------------------------------
+    // Storage console: optional deep-link into a storage UI (RustFS/MinIO-style)
+    // -----------------------------------------------------------------------
+
+    public static class StorageConsole {
+        /**
+         * URL template for deep-linking into a storage console's file browser,
+         * e.g. "http://localhost:9001/rustfs/console/browser/?bucket={bucket}&key={prefix}"
+         * (RustFS/MinIO-style). {bucket} and {prefix} are substituted per request
+         * ({prefix} URL-encoded, including its slashes). Unset by default — when
+         * null or blank, entity stats responses omit the console link and the UI
+         * shows the raw s3:// path instead.
+         */
+        private String urlTemplate;
+
+        public String getUrlTemplate() { return urlTemplate; }
+        public void setUrlTemplate(String urlTemplate) { this.urlTemplate = urlTemplate; }
+    }
+
+    // -----------------------------------------------------------------------
     // Security: API-key auth (mutating endpoints) and cursor signing
     // -----------------------------------------------------------------------
 
@@ -1057,6 +1077,9 @@ public class JoxetteProperties {
 
     public ObjectStore getObjectStore() { return objectStore; }
     public void setObjectStore(ObjectStore objectStore) { this.objectStore = objectStore; }
+
+    public StorageConsole getStorageConsole() { return storageConsole; }
+    public void setStorageConsole(StorageConsole storageConsole) { this.storageConsole = storageConsole; }
 
     public Security getSecurity() { return security; }
     public void setSecurity(Security security) { this.security = security; }
