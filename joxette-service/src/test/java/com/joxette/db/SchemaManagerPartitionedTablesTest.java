@@ -10,6 +10,7 @@ import java.sql.SQLException;
 import java.sql.Statement;
 
 import static org.assertj.core.api.Assertions.assertThatCode;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -87,5 +88,16 @@ class SchemaManagerPartitionedTablesTest {
         assertThatCode(() ->
             SchemaManager.ensureTablePartitioned(mockConn, "lake", "entity_order"))
                 .doesNotThrowAnyException();
+    }
+
+    @Test
+    void hasUnpartitionedFiles_againstPlainDuckDB_throwsSQLException() {
+        // The fake harness has no __ducklake_metadata_lake tables — this proves
+        // the method surfaces the failure as a checked SQLException rather than
+        // silently returning a wrong boolean, so callers can choose their own
+        // fallback behavior (CompactionService and EntityReplayService both do).
+        assertThatThrownBy(() ->
+                SchemaManager.hasUnpartitionedFiles(conn, "entity_order"))
+                .isInstanceOf(SQLException.class);
     }
 }

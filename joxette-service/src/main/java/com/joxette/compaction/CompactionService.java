@@ -387,6 +387,72 @@ public class CompactionService {
     }
 
     /**
+     * One-time migration: if {@code entity_{entityType}} still has any files
+     * that predate bucket partitioning (see {@link SchemaManager#hasUnpartitionedFiles}),
+     * rewrite the whole table so every row lands in its correct
+     * {@code bucket=N/} file. The original flat file(s) end up with every
+     * row soft-deleted; {@link #expireSnapshotsAndCleanup()} physically
+     * reclaims them later in the same run once their retention window
+     * allows it.
+     *
+     * <p>There is no way to scope this rewrite to just the legacy file(s)'
+     * rows without an expensive full-table scan (no queryable "which file
+     * did this row come from" column on a DuckLake table) — this is
+     * deliberately a whole-table operation, but it only ever runs once per
+     * entity type: once every file is partitioned, {@code hasUnpartitionedFiles}
+     * returns {@code false} on every subsequent call and this is skipped
+     * entirely.
+     *
+     * <p>A plain {@code DELETE} alone does not mark the original file as
+     * superseded — verified empirically: the flat file remained physically
+     * present even after {@code ducklake_expire_snapshots}/
+     * {@code ducklake_cleanup_old_files}, because from DuckLake's
+     * perspective the file is still "live," just filtered by a paired
+     * delete-marker file at read time. {@code ducklake_rewrite_data_files}
+     * is what actually rewrites a file exceeding its delete-ratio threshold
+     * (default 0.95) — for a migrated flat file, which is always 100%
+     * deleted, this produces zero replacement rows and is what makes the
+     * file eligible for {@link #expireSnapshotsAndCleanup()} to physically
+     * reclaim later in the same run. Skipping this call would leave
+     * migration "working" (rows correctly repartitioned) but never actually
+     * freeing the old files' disk space — silently reintroducing the exact
+     * problem the earlier compaction-cleanup feature fixed.
+     *
+     * <p>Failures are logged and swallowed — a failed migration attempt
+     * does not prevent the merge step that follows it, and simply retries
+     * on the next compaction run.
+     */
+    private void migrateLegacyPartitionFiles(String entityType) {
+        String table = "entity_" + entityType;
+        try {
+            if (!SchemaManager.hasUnpartitionedFiles(duckDB, table)) return;
+        } catch (SQLException e) {
+            log.debug("Could not check for unpartitioned files on entity_type='{}' ({}); skipping migration this run",
+                    entityType, e.getMessage());
+            return;
+        }
+        log.info("Migrating legacy unpartitioned files for entity_type='{}' into bucket layout", entityType);
+        try (Statement st = duckDB.createStatement()) {
+            st.execute("BEGIN TRANSACTION");
+            st.execute("CREATE TEMP TABLE tmp_migrate_" + entityType
+                    + " AS SELECT * FROM lake.main." + table);
+            st.execute("DELETE FROM lake.main." + table);
+            st.execute("INSERT INTO lake.main." + table
+                    + " SELECT * FROM tmp_migrate_" + entityType);
+            st.execute("COMMIT");
+            try (ResultSet rs = st.executeQuery(
+                    "SELECT * FROM ducklake_rewrite_data_files('lake', '" + table + "')")) {
+                // No rows needed — this call's effect (marking the now-fully-deleted
+                // flat file superseded) is what matters, not its return value.
+            }
+            log.info("Legacy file migration complete for entity_type='{}'", entityType);
+        } catch (SQLException e) {
+            log.warn("Legacy file migration failed for entity_type='{}' ({}); will retry next run",
+                    entityType, e.getMessage());
+        }
+    }
+
+    /**
      * Merges adjacent small files for one entity type using
      * {@code ducklake_merge_adjacent_files} — DuckLake 1.0.
      *
@@ -427,6 +493,8 @@ public class CompactionService {
                        + " max_file_size => " + maxFileSizeBytes + ")";
             log.debug("Merging adjacent files for entity_type='{}'", entityType);
             synchronized (duckDB) {
+                migrateLegacyPartitionFiles(entityType);
+
                 // Apply the Parquet row-group memory cap before the merge (DuckDB 1.5.3+).
                 // A value of 0 means "use the DuckDB default" — skip the SET entirely.
                 if (rowGroupMemoryLimitMb > 0) {

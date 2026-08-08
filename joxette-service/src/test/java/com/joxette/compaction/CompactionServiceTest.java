@@ -286,6 +286,26 @@ class CompactionServiceTest {
         assertThat(countAfter).isEqualTo(rows);
     }
 
+    // -------------------------------------------------------------------------
+    // Legacy-file migration (bucket partitioning) — graceful degradation
+    // -------------------------------------------------------------------------
+    //
+    // The fake :memory:-attached `lake` harness has no __ducklake_metadata_lake
+    // tables, so SchemaManager.hasUnpartitionedFiles always throws SQLException
+    // here. This proves that failure doesn't abort the whole compaction run —
+    // it must still complete, falling through to the (also-failing, per
+    // existing tests) merge call. Real migration correctness is proven by
+    // EntityBucketPartitioningIT against a genuine DuckLake catalog.
+
+    @Test
+    void executeRun_migrationCheckFails_stillCompletesRun() throws Exception {
+        CompactionRun run = service.beginRun(TriggerSource.MANUAL, List.of(ENTITY_TYPE));
+        service.executeRun(run.id(), List.of(ENTITY_TYPE));
+
+        CompactionRun result = service.getRunById(run.id());
+        assertThat(result.status()).isEqualTo(RunStatus.COMPLETED);
+    }
+
     @Test
     void executeRun_preservesGeneralCassetteData() throws Exception {
         int rows = 8;

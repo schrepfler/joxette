@@ -964,6 +964,41 @@ public class SchemaManager {
         }
     }
 
+    /**
+     * True if {@code tableName} has any physical Parquet file that predates
+     * bucket partitioning being declared on it — i.e. a file with no row in
+     * DuckLake's internal {@code ducklake_file_partition_value} tracking
+     * table. Pure catalog-metadata query, no object-store I/O.
+     *
+     * <p>Used by {@code CompactionService} to decide whether a one-time
+     * migration rewrite is needed, and by {@code EntityReplayService} to
+     * decide whether the fast bucket-glob file-count path is safe to use
+     * (it isn't, until this returns {@code false}).
+     *
+     * <p>Queries DuckLake's internal metadata schema (not a documented
+     * app-facing API) — throws {@link SQLException} if unavailable (e.g. not
+     * a real DuckLake-backed catalog), so every caller must handle that
+     * explicitly rather than receiving a silently-wrong boolean.
+     */
+    public static boolean hasUnpartitionedFiles(Connection duckDB, String tableName) throws SQLException {
+        String sql =
+                "SELECT EXISTS (" +
+                "  SELECT 1 FROM __ducklake_metadata_lake.ducklake_data_file df " +
+                "  JOIN __ducklake_metadata_lake.ducklake_table t ON t.table_id = df.table_id " +
+                "  WHERE t.table_name = ? AND t.end_snapshot IS NULL AND df.end_snapshot IS NULL " +
+                "  AND NOT EXISTS (" +
+                "    SELECT 1 FROM __ducklake_metadata_lake.ducklake_file_partition_value fpv " +
+                "    WHERE fpv.data_file_id = df.data_file_id" +
+                "  )" +
+                ")";
+        try (java.sql.PreparedStatement ps = duckDB.prepareStatement(sql)) {
+            ps.setString(1, tableName);
+            try (var rs = ps.executeQuery()) {
+                return rs.next() && rs.getBoolean(1);
+            }
+        }
+    }
+
     private void exec(Connection conn, String sql) throws SQLException {
         try (Statement stmt = conn.createStatement()) {
             stmt.execute(sql);
