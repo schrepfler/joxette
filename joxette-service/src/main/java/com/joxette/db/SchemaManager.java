@@ -876,6 +876,7 @@ public class SchemaManager {
         }
         for (String tableName : tableNames) {
             dropColumnIfExists(conn, catalog + ".main." + tableName, "kafka_value_str");
+            ensureTablePartitioned(conn, catalog, tableName);
         }
     }
 
@@ -925,6 +926,40 @@ public class SchemaManager {
         } catch (SQLException e) {
             log.warn("Could not apply SORTED BY to {}.main.{} ({}); " +
                      "DuckLake will not enforce sort order automatically for this table",
+                     catalog, tableName, e.getMessage());
+        }
+    }
+
+    /**
+     * Applies {@code ALTER TABLE … SET PARTITIONED BY (bucket)} so entity
+     * cassette tables get real per-bucket object-store subdirectories
+     * (Hive-style {@code bucket=N/}) instead of one flat directory shared by
+     * every entity of that type.
+     *
+     * <p>Issued on every startup for every entity table, new or pre-existing
+     * — safe to repeat; DuckLake treats a repeated {@code SET PARTITIONED BY}
+     * with the same column as a no-op (verified empirically; see
+     * {@code docs/superpowers/specs/2026-08-09-entity-bucket-partitioning-design.md}).
+     *
+     * <p><b>Important:</b> like {@link #ensureTableSorted}, this does
+     * <em>not</em> retroactively move existing files into the new layout —
+     * only files written after this call land under {@code bucket=N/}.
+     * Migrating pre-existing flat files into the new layout is
+     * {@code CompactionService}'s responsibility, not this method's.
+     *
+     * <p>Failures are logged as warnings and swallowed so that an older
+     * DuckLake version that does not yet support the statement cannot
+     * prevent startup.
+     */
+    static void ensureTablePartitioned(Connection conn, String catalog, String tableName) {
+        String sql = "ALTER TABLE " + catalog + ".main." + tableName
+                     + " SET PARTITIONED BY (bucket)";
+        try (Statement stmt = conn.createStatement()) {
+            stmt.execute(sql);
+            log.debug("Bucket partitioning applied to {}.main.{}", catalog, tableName);
+        } catch (SQLException e) {
+            log.warn("Could not apply bucket partitioning to {}.main.{} ({}); " +
+                     "this table's files will not be organized into bucket=N/ subdirectories",
                      catalog, tableName, e.getMessage());
         }
     }
