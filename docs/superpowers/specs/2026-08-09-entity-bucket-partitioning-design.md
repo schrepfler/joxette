@@ -189,11 +189,21 @@ lock was originally sized for. Accepted deliberately (see Scope) — it fires
 at most once per entity type, ever, and compaction already defaults to an
 off-peak 3am schedule.
 
-`expireSnapshotsAndCleanup` (`CompactionService.java:167`, after all
-per-entity/per-topic compaction in `executeRun`) needs no changes — it
-already expires old snapshots and cleans up tracked-but-superseded files
-lake-wide; the migration's soft-deleted flat files fall under exactly that
-umbrella once their retention window passes.
+**Correction found during plan-writing, empirically verified**: a plain
+`DELETE` does *not* mark the original file as superseded — the flat file
+remained physically present even after running
+`ducklake_expire_snapshots`/`ducklake_cleanup_old_files` directly against it,
+because DuckLake still considers the file "live," merely filtered by a
+paired delete-marker file at read time. The migration step must also call
+`ducklake_rewrite_data_files('lake', 'entity_{type}')` (default delete-ratio
+threshold 0.95) right after the delete-then-reinsert — for a migrated flat
+file, which is always 100% deleted, this rewrites it down to zero
+replacement rows and is what actually makes it eligible for supersession.
+Only then does `expireSnapshotsAndCleanup` (`CompactionService.java:167`,
+unchanged, still runs once lake-wide after all per-entity/per-topic
+compaction) reclaim it once its retention window passes. Skipping this call
+would leave migration "working" (rows correctly repartitioned) but never
+actually freeing the old files' disk space.
 
 ### 3. `EntityReplayService`: bucket-glob fast path
 
