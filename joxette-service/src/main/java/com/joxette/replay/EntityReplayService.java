@@ -21,6 +21,8 @@ import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.time.Duration;
 import java.time.Instant;
@@ -648,6 +650,7 @@ public class EntityReplayService implements EntityCassetteSource {
         // catalog backend (embedded DuckDB, Quack, PostgreSQL).
         // entityType is validated above ([a-z][a-z0-9_]*); entityId is a bind param.
         String tableName = "lake.main.entity_" + entityType;
+        String bareTable = "entity_" + entityType;
         String dedupCte =
                 "WITH deduped AS ("
                 + "  SELECT kafka_timestamp AS ts, topic"
@@ -700,8 +703,15 @@ public class EntityReplayService implements EntityCassetteSource {
                     firstSeen = regRecord.get(F_FIRST_SEEN).toInstant();
                     lastSeen  = regRecord.get(F_LAST_SEEN).toInstant();
                 }
+
+                int fileCount;
+                try {
+                    fileCount = countEntityFiles(bareTable, entityId);
+                } catch (SQLException e) {
+                    throw new DataAccessException("countEntityFiles failed for " + bareTable, e);
+                }
+                return new StatsQueryResult(count, firstMsg, lastMsg, countByTopic, firstSeen, lastSeen, fileCount);
             }
-            return new StatsQueryResult(count, firstMsg, lastMsg, countByTopic, firstSeen, lastSeen, 0);
         });
 
         long count = result.count();
@@ -711,8 +721,152 @@ public class EntityReplayService implements EntityCassetteSource {
         Instant firstSeen = result.firstSeen();
         Instant lastSeen = result.lastSeen();
 
+        String objectStoreDirectory = computeObjectStoreDirectory(bareTable);
+        String storageConsoleUrl = computeStorageConsoleUrl(bareTable);
+
         return new EntityStats(entityType, entityId, count, firstMsg, lastMsg,
-                firstSeen, lastSeen, countByTopic, result.fileCount(), null, null);
+                firstSeen, lastSeen, countByTopic, result.fileCount(),
+                objectStoreDirectory, storageConsoleUrl);
+    }
+
+    // -------------------------------------------------------------------------
+    // Entity stats: object-store location
+    // -------------------------------------------------------------------------
+
+    private String computeObjectStoreDirectory(String table) {
+        String objectStoragePath = props.getCatalog().getObjectStoragePath();
+        if (objectStoragePath == null || objectStoragePath.isBlank()) return null;
+        String base = objectStoragePath.endsWith("/") ? objectStoragePath : objectStoragePath + "/";
+        return base + "main/" + table + "/";
+    }
+
+    private String computeStorageConsoleUrl(String table) {
+        String objectStoragePath = props.getCatalog().getObjectStoragePath();
+        String urlTemplate = props.getStorageConsole().getUrlTemplate();
+        if (objectStoragePath == null || objectStoragePath.isBlank()
+                || urlTemplate == null || urlTemplate.isBlank()) {
+            return null;
+        }
+        String noScheme = objectStoragePath.replaceFirst("^s3://", "");
+        int slash = noScheme.indexOf('/');
+        String bucket = slash < 0 ? noScheme : noScheme.substring(0, slash);
+        String rest = slash < 0 ? "" : noScheme.substring(slash + 1);
+        if (!rest.isEmpty() && !rest.endsWith("/")) rest = rest + "/";
+        String prefix = rest + "main/" + table + "/";
+        String encodedPrefix = java.net.URLEncoder.encode(prefix, java.nio.charset.StandardCharsets.UTF_8);
+        return urlTemplate.replace("{bucket}", bucket).replace("{prefix}", encodedPrefix);
+    }
+
+    // -------------------------------------------------------------------------
+    // Entity stats: file count (two-stage catalog-prune + verify)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Exact count of physical Parquet files containing at least one row for
+     * {@code entityId}. Stage 1 prunes candidates via DuckLake's internal
+     * per-file column statistics (cheap, catalog-only); stage 2 verifies the
+     * survivors with a targeted read. Falls back to verifying every file for
+     * the table if stage 1's internal-metadata query fails (not a stable
+     * app-facing API); reports 0 if DuckLake's own {@code ducklake_list_files}
+     * is unavailable at all (e.g. not a real DuckLake-backed catalog).
+     */
+    private int countEntityFiles(String table, String entityId) throws SQLException {
+        String objectStoragePath = props.getCatalog().getObjectStoragePath();
+        if (objectStoragePath == null || objectStoragePath.isBlank()) return 0;
+
+        List<String> candidates = pruneCandidateFiles(table, entityId);
+        if (candidates.isEmpty()) return 0;
+        return verifyCandidates(candidates, entityId);
+    }
+
+    private List<String> pruneCandidateFiles(String table, String entityId) {
+        List<String> allFiles;
+        try {
+            allFiles = listAllFiles(table);
+        } catch (SQLException e) {
+            log.debug("countEntityFiles: ducklake_list_files unavailable for table '{}' ({}); reporting 0 files",
+                    table, e.getMessage());
+            return List.of();
+        }
+        if (allFiles.isEmpty()) return List.of();
+
+        Set<String> candidateFilenames;
+        try {
+            candidateFilenames = candidateFilenamesViaColumnStats(table, entityId);
+        } catch (SQLException e) {
+            log.debug("countEntityFiles: catalog column-stats prune unavailable for table '{}' ({}); " +
+                    "verifying all {} file(s)", table, e.getMessage(), allFiles.size());
+            return allFiles;
+        }
+
+        List<String> filtered = new ArrayList<>();
+        for (String path : allFiles) {
+            String basename = path.substring(path.lastIndexOf('/') + 1);
+            if (candidateFilenames.contains(basename)) filtered.add(path);
+        }
+        return filtered;
+    }
+
+    /** Full, fully-resolved file list for {@code table} via DuckLake's own function. */
+    private List<String> listAllFiles(String table) throws SQLException {
+        List<String> files = new ArrayList<>();
+        try (PreparedStatement ps = duckDB.prepareStatement(
+                "SELECT data_file FROM ducklake_list_files('lake', ?)")) {
+            ps.setString(1, table);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) files.add(rs.getString(1));
+            }
+        }
+        return files;
+    }
+
+    /**
+     * Bare filenames (not full paths) of files whose entity_id column
+     * min/max range could include {@code entityId}, per DuckLake's internal
+     * per-file column statistics. Zone-map pruning: a file surviving this
+     * filter isn't guaranteed to actually contain the value, only that it
+     * isn't excluded by range — {@link #verifyCandidates} does the exact check.
+     */
+    private Set<String> candidateFilenamesViaColumnStats(String table, String entityId) throws SQLException {
+        String sql =
+                "SELECT df.path "
+              + "FROM __ducklake_metadata_lake.ducklake_file_column_stats fcs "
+              + "JOIN __ducklake_metadata_lake.ducklake_data_file df USING (data_file_id) "
+              + "JOIN __ducklake_metadata_lake.ducklake_table t ON t.table_id = fcs.table_id "
+              + "JOIN __ducklake_metadata_lake.ducklake_column c "
+              + "  ON c.table_id = fcs.table_id AND c.column_id = fcs.column_id "
+              + "WHERE t.table_name = ? AND t.end_snapshot IS NULL "
+              + "  AND c.column_name = 'entity_id' AND c.end_snapshot IS NULL "
+              + "  AND (? >= fcs.min_value OR fcs.min_value IS NULL) "
+              + "  AND (? <= fcs.max_value OR fcs.max_value IS NULL)";
+        Set<String> filenames = new java.util.HashSet<>();
+        try (PreparedStatement ps = duckDB.prepareStatement(sql)) {
+            ps.setString(1, table);
+            ps.setString(2, entityId);
+            ps.setString(3, entityId);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    String p = rs.getString(1);
+                    filenames.add(p.substring(p.lastIndexOf('/') + 1));
+                }
+            }
+        }
+        return filenames;
+    }
+
+    /** Exact count: reads only {@code candidates}, filtered to real entity_id matches. */
+    private int verifyCandidates(List<String> candidates, String entityId) throws SQLException {
+        String filesLiteral = candidates.stream()
+                .map(p -> "'" + p.replace("'", "''") + "'")
+                .collect(java.util.stream.Collectors.joining(", "));
+        String sql = "SELECT COUNT(DISTINCT filename) FROM read_parquet([" + filesLiteral
+                + "], filename => true) WHERE entity_id = ?";
+        try (PreparedStatement ps = duckDB.prepareStatement(sql)) {
+            ps.setString(1, entityId);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getInt(1) : 0;
+            }
+        }
     }
 
     // -------------------------------------------------------------------------
