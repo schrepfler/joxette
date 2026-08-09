@@ -395,50 +395,6 @@ class EntityReplayServiceTest {
     }
 
     // -------------------------------------------------------------------------
-    // Entity stats: file count / object-store location (graceful degradation)
-    // -------------------------------------------------------------------------
-    //
-    // These run against DuckDBTestSupport's plain `ATTACH ':memory:' AS lake`
-    // harness — not a real DuckLake catalog — so ducklake_list_files() and the
-    // __ducklake_metadata_lake internal tables genuinely don't exist here.
-    // fileCount must gracefully degrade to 0 rather than throw. Real numeric
-    // correctness against a live DuckLake catalog is proven separately by
-    // EntityFileCountIT.
-
-    @Test
-    void getEntityStats_fileCountIsZero_whenObjectStoragePathNotConfigured() throws Exception {
-        insertEntityRow("ORD-FC1", 1, "orders.events", 0, 0L,
-                Instant.parse("2024-05-01T10:00:00Z"), b("{}"));
-
-        EntityStats stats = service.getEntityStats(ENTITY_TYPE, "ORD-FC1");
-
-        assertThat(stats.fileCount()).isZero();
-        assertThat(stats.objectStoreDirectory()).isNull();
-        assertThat(stats.storageConsoleUrl()).isNull();
-    }
-
-    @Test
-    void getEntityStats_computesDirectoryAndConsoleUrl_evenWhenFileCountUnavailable() throws Exception {
-        com.joxette.config.JoxetteProperties props = new com.joxette.config.JoxetteProperties();
-        props.getCatalog().setObjectStoragePath("s3://test-bucket/");
-        props.getStorageConsole().setUrlTemplate("http://console/?bucket={bucket}&key={prefix}");
-        EntityReplayService configuredService =
-                new EntityReplayService(DSL.using(duckDB, SQLDialect.DUCKDB), duckDB, props);
-
-        insertEntityRow("ORD-FC2", 2, "orders.events", 0, 0L,
-                Instant.parse("2024-05-01T10:00:00Z"), b("{}"));
-
-        EntityStats stats = configuredService.getEntityStats(ENTITY_TYPE, "ORD-FC2");
-
-        // No real DuckLake catalog in this harness -> file discovery fails gracefully -> 0.
-        assertThat(stats.fileCount()).isZero();
-        // Directory/console URL are pure string construction, independent of DuckLake -> still populated.
-        assertThat(stats.objectStoreDirectory()).isEqualTo("s3://test-bucket/main/entity_" + ENTITY_TYPE + "/");
-        assertThat(stats.storageConsoleUrl())
-                .isEqualTo("http://console/?bucket=test-bucket&key=main%2Fentity_" + ENTITY_TYPE + "%2F");
-    }
-
-    // -------------------------------------------------------------------------
     // getEntityFileLocation: file count / object-store location (graceful degradation)
     // -------------------------------------------------------------------------
     //

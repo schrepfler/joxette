@@ -118,8 +118,7 @@ public class EntityReplayService implements EntityCassetteSource {
     /** Carries getEntityStats' three query results out of the withObjectStoreRetry lambda. */
     private record StatsQueryResult(
             long count, Instant firstMsg, Instant lastMsg,
-            Map<String, Long> countByTopic, Instant firstSeen, Instant lastSeen,
-            int fileCount) {}
+            Map<String, Long> countByTopic, Instant firstSeen, Instant lastSeen) {}
 
     private final DSLContext dsl;
     private final Connection duckDB;
@@ -651,7 +650,6 @@ public class EntityReplayService implements EntityCassetteSource {
         // catalog backend (embedded DuckDB, Quack, PostgreSQL).
         // entityType is validated above ([a-z][a-z0-9_]*); entityId is a bind param.
         String tableName = "lake.main.entity_" + entityType;
-        String bareTable = "entity_" + entityType;
         String dedupCte =
                 "WITH deduped AS ("
                 + "  SELECT kafka_timestamp AS ts, topic"
@@ -704,14 +702,7 @@ public class EntityReplayService implements EntityCassetteSource {
                     firstSeen = regRecord.get(F_FIRST_SEEN).toInstant();
                     lastSeen  = regRecord.get(F_LAST_SEEN).toInstant();
                 }
-
-                int fileCount;
-                try {
-                    fileCount = countEntityFiles(bareTable, entityType, entityId);
-                } catch (SQLException e) {
-                    throw new DataAccessException("countEntityFiles failed for " + bareTable, e);
-                }
-                return new StatsQueryResult(count, firstMsg, lastMsg, countByTopic, firstSeen, lastSeen, fileCount);
+                return new StatsQueryResult(count, firstMsg, lastMsg, countByTopic, firstSeen, lastSeen);
             }
         });
 
@@ -722,12 +713,8 @@ public class EntityReplayService implements EntityCassetteSource {
         Instant firstSeen = result.firstSeen();
         Instant lastSeen = result.lastSeen();
 
-        String objectStoreDirectory = computeObjectStoreDirectory(bareTable);
-        String storageConsoleUrl = computeStorageConsoleUrl(bareTable);
-
         return new EntityStats(entityType, entityId, count, firstMsg, lastMsg,
-                firstSeen, lastSeen, countByTopic, result.fileCount(),
-                objectStoreDirectory, storageConsoleUrl);
+                firstSeen, lastSeen, countByTopic);
     }
 
     /**
