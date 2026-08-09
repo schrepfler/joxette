@@ -194,7 +194,12 @@ function EntityInstancePage() {
   })
 
   const compactMutation = useMutation({
-    mutationFn: () => compactionApi.trigger({ targets: [`entity:${entityType}`] }),
+    // Bare entity type name, no "entity:" prefix -- that prefix is only the
+    // internal compaction-lock naming convention, not part of the /compaction
+    // /trigger targets contract (see CompactionRun.targets()'s own schema
+    // example). Sending it prefixed here previously crashed the whole
+    // compaction run for every other entity type too.
+    mutationFn: () => compactionApi.trigger({ targets: [entityType] }),
     onSuccess: () => addToast(`Compaction triggered for entity type "${entityType}"`, 'success'),
     onError: (e: Error) => addToast(e.message, 'error'),
   })

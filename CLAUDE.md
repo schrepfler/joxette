@@ -519,7 +519,7 @@ of Spring/Kafka. See [`docs/replay-pipeline.puml`](docs/replay-pipeline.puml).
 | Method | Path | Description |
 |---|---|---|
 | GET | `/compaction/status` | Running/idle, last run, next scheduled, stats |
-| POST | `/compaction/trigger` | Trigger compaction (optional body: `{"targets": ["orders.events", "entity:order"]}`) |
+| POST | `/compaction/trigger` | Trigger compaction (optional body: `{"targets": ["order", "payment"]}` — bare entity type names, or the literal `"general"` to also compact general cassettes; omit/null targets to compact everything). **Not** `"entity:"`-prefixed — that's the internal compaction-lock naming convention only, and is rejected as an invalid entity type. |
 | GET | `/compaction/history` | Past compaction runs with stats |
 | GET | `/health` | Liveness, consumer lag, catalog size, inlined data size |
 | GET | `/metrics` | Prometheus-compatible metrics |

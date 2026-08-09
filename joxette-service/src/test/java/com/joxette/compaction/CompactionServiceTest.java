@@ -254,6 +254,48 @@ class CompactionServiceTest {
         assertThat(result.targets()).containsExactly(ENTITY_TYPE);
     }
 
+    // -------------------------------------------------------------------------
+    // Malformed entity target resilience
+    // -------------------------------------------------------------------------
+    //
+    // Reproduces a real production incident: a caller sent "entity:fixture" as a
+    // target (the internal lock-key naming convention, not a valid target — the
+    // real contract uses bare entity type names, e.g. "fixture"). That single bad
+    // target crashed doCompactEntityType's unguarded validateEntityType call,
+    // which propagated up through compactEntityTypes' for-loop and aborted the
+    // *entire* run — silently skipping every other, perfectly valid entity type
+    // that would have compacted that cycle. One bad target must not do that.
+
+    @Test
+    void executeRun_malformedEntityTarget_logsWarningAndStillCompactsOtherTargets() throws Exception {
+        ch.qos.logback.classic.Logger logger =
+                (ch.qos.logback.classic.Logger) LoggerFactory.getLogger(CompactionService.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        Level savedLevel = logger.getLevel();
+        logger.setLevel(Level.DEBUG);
+        logger.addAppender(appender);
+
+        List<String> messages;
+        CompactionRun completed;
+        try {
+            CompactionRun run = service.beginRun(TriggerSource.MANUAL, List.of("entity:fixture", ENTITY_TYPE));
+            service.executeRun(run.id(), List.of("entity:fixture", ENTITY_TYPE));
+            messages = appender.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
+            completed = service.getRunById(run.id());
+        } finally {
+            logger.detachAppender(appender);
+            logger.setLevel(savedLevel);
+        }
+
+        assertThat(completed.status())
+                .as("one malformed target must not abort the whole run")
+                .isEqualTo(RunStatus.COMPLETED);
+        assertThat(messages)
+                .as("the bad target is logged, not silently swallowed")
+                .anyMatch(m -> m.contains("entity:fixture"));
+    }
+
     @Test
     void executeRun_withGeneralTarget_generalCompactionDisabledByDefault() throws Exception {
         insertCassetteRows(5);

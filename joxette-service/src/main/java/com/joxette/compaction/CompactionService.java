@@ -368,7 +368,15 @@ public class CompactionService {
         List<String> types = resolveEntityTargets(targets);
         CompactionResult total = CompactionResult.NONE;
         for (String type : types) {
-            total = total.add(compactEntityType(type));
+            try {
+                total = total.add(compactEntityType(type));
+            } catch (RuntimeException e) {
+                // One malformed target (e.g. an entity-type-shaped string that fails
+                // validateEntityType) must not abort every other target in this run —
+                // see CompactionServiceTest#executeRun_malformedEntityTarget_...
+                log.warn("Skipping malformed compaction target '{}' ({}); other targets in this run are unaffected",
+                        type, e.getMessage());
+            }
         }
         return total;
     }
