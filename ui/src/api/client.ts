@@ -197,6 +197,9 @@ export interface EntityStats {
   firstSeen: string | null
   lastSeen: string | null
   countByTopic: Record<string, number>
+}
+
+export interface EntityFileLocation {
   fileCount: number
   objectStoreDirectory: string | null
   storageConsoleUrl: string | null
@@ -512,6 +515,8 @@ export const cassettesApi = {
     request<PagedResponse<EntityRecord>>(`/cassettes/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}${buildQuery(params ?? {})}`),
   getEntityStats: (entityType: string, entityId: string) =>
     request<EntityStats>(`/cassettes/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}/stats`),
+  getEntityFileLocation: (entityType: string, entityId: string) =>
+    request<EntityFileLocation>(`/cassettes/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}/storage`),
   deleteEntity: (entityType: string, entityId: string) =>
     request<{ deleted: number }>(`/cassettes/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}`, { method: 'DELETE' }),
   listSnapshots: () => request<SnapshotInfo[]>('/cassettes/snapshots'),

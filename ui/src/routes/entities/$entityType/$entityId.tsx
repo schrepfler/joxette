@@ -144,6 +144,11 @@ function EntityInstancePage() {
     queryFn: () => cassettesApi.getEntityStats(entityType, entityId),
   })
 
+  const storageQuery = useQuery({
+    queryKey: ['cassettes', 'entities', entityType, entityId, 'storage'],
+    queryFn: () => cassettesApi.getEntityFileLocation(entityType, entityId),
+  })
+
   const sourcesQuery = useQuery({
     queryKey: ['entities', entityType, 'sources'],
     queryFn: () => entitiesApi.getSources(entityType),
@@ -382,29 +387,36 @@ function EntityInstancePage() {
               ['Last Message', stats.lastMessage?.slice(0, 19).replace('T', ' ') ?? '—'],
               ['First Seen', stats.firstSeen?.slice(0, 19).replace('T', ' ') ?? '—'],
               ['Last Seen', stats.lastSeen?.slice(0, 19).replace('T', ' ') ?? '—'],
-              ['Object Store Files', stats.fileCount.toLocaleString()],
             ].map(([k, v]) => (
               <div key={k} style={{ background: '#f7fafc', border: '1px solid #e2e8f0', borderRadius: 6, padding: '0.5rem 0.85rem', minWidth: 140 }}>
                 <div style={{ fontSize: 11, color: '#718096', marginBottom: 2 }}>{k}</div>
                 <div style={{ fontSize: 14, fontWeight: 600 }}>{v}</div>
               </div>
             ))}
+            <div style={{ background: '#f7fafc', border: '1px solid #e2e8f0', borderRadius: 6, padding: '0.5rem 0.85rem', minWidth: 140 }}>
+              <div style={{ fontSize: 11, color: '#718096', marginBottom: 2 }}>Object Store Files</div>
+              <div style={{ fontSize: 14, fontWeight: 600 }}>
+                {storageQuery.isLoading ? '…' : (storageQuery.data?.fileCount.toLocaleString() ?? '—')}
+              </div>
+            </div>
           </div>
-          {stats.objectStoreDirectory && (
+          {storageQuery.isLoading ? (
+            <div style={{ marginBottom: '0.75rem', fontSize: 13, color: '#718096' }}>Loading storage location…</div>
+          ) : storageQuery.data?.objectStoreDirectory ? (
             <div style={{ marginBottom: '0.75rem' }}>
               <div style={{ fontSize: 13, fontWeight: 600, color: '#4a5568', marginBottom: 4 }}>Storage Location</div>
-              {stats.storageConsoleUrl ? (
-                <a href={stats.storageConsoleUrl} target="_blank" rel="noreferrer"
+              {storageQuery.data.storageConsoleUrl ? (
+                <a href={storageQuery.data.storageConsoleUrl} target="_blank" rel="noreferrer"
                    style={{ fontSize: 13, color: '#3182ce' }}>
-                  {stats.objectStoreDirectory}
+                  {storageQuery.data.objectStoreDirectory}
                 </a>
               ) : (
                 <span style={{ fontSize: 13, fontFamily: 'monospace', userSelect: 'all' }}>
-                  {stats.objectStoreDirectory}
+                  {storageQuery.data.objectStoreDirectory}
                 </span>
               )}
             </div>
-          )}
+          ) : null}
           {Object.keys(stats.countByTopic).length > 0 && (
             <div>
               <div style={{ fontSize: 13, fontWeight: 600, color: '#4a5568', marginBottom: 4 }}>Messages by Topic</div>
