@@ -439,6 +439,50 @@ class EntityReplayServiceTest {
     }
 
     // -------------------------------------------------------------------------
+    // getEntityFileLocation: file count / object-store location (graceful degradation)
+    // -------------------------------------------------------------------------
+    //
+    // These run against DuckDBTestSupport's plain `ATTACH ':memory:' AS lake`
+    // harness — not a real DuckLake catalog — so ducklake_list_files() and the
+    // __ducklake_metadata_lake internal tables genuinely don't exist here.
+    // fileCount must gracefully degrade to 0 rather than throw. Real numeric
+    // correctness against a live DuckLake catalog is proven separately by
+    // EntityFileCountIT.
+
+    @Test
+    void getEntityFileLocation_fileCountIsZero_whenObjectStoragePathNotConfigured() throws Exception {
+        insertEntityRow("ORD-FL1", 1, "orders.events", 0, 0L,
+                Instant.parse("2024-05-01T10:00:00Z"), b("{}"));
+
+        EntityFileLocation location = service.getEntityFileLocation(ENTITY_TYPE, "ORD-FL1");
+
+        assertThat(location.fileCount()).isZero();
+        assertThat(location.objectStoreDirectory()).isNull();
+        assertThat(location.storageConsoleUrl()).isNull();
+    }
+
+    @Test
+    void getEntityFileLocation_computesDirectoryAndConsoleUrl_evenWhenFileCountUnavailable() throws Exception {
+        com.joxette.config.JoxetteProperties props = new com.joxette.config.JoxetteProperties();
+        props.getCatalog().setObjectStoragePath("s3://test-bucket/");
+        props.getStorageConsole().setUrlTemplate("http://console/?bucket={bucket}&key={prefix}");
+        EntityReplayService configuredService =
+                new EntityReplayService(DSL.using(duckDB, SQLDialect.DUCKDB), duckDB, props);
+
+        insertEntityRow("ORD-FL2", 2, "orders.events", 0, 0L,
+                Instant.parse("2024-05-01T10:00:00Z"), b("{}"));
+
+        EntityFileLocation location = configuredService.getEntityFileLocation(ENTITY_TYPE, "ORD-FL2");
+
+        // No real DuckLake catalog in this harness -> file discovery fails gracefully -> 0.
+        assertThat(location.fileCount()).isZero();
+        // Directory/console URL are pure string construction, independent of DuckLake -> still populated.
+        assertThat(location.objectStoreDirectory()).isEqualTo("s3://test-bucket/main/entity_" + ENTITY_TYPE + "/");
+        assertThat(location.storageConsoleUrl())
+                .isEqualTo("http://console/?bucket=test-bucket&key=main%2Fentity_" + ENTITY_TYPE + "%2F");
+    }
+
+    // -------------------------------------------------------------------------
     // order=asc|desc — parameterized ordering and cursor round-trip
     // -------------------------------------------------------------------------
 

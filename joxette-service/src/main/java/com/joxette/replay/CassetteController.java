@@ -1174,6 +1174,41 @@ public class CassetteController {
         return entityService.getEntityStats(entityType, entityId);
     }
 
+    @Operation(
+        operationId = "getEntityFileLocation",
+        summary = "Entity physical file location",
+        description = "Returns the exact number of physical Parquet files containing this entity's " +
+                      "data, the object-store directory those files live in, and (if configured) a " +
+                      "deep link into a storage console's file browser for that directory. Split from " +
+                      "/stats into its own endpoint since this can be slower to compute than the rest " +
+                      "of an entity's stats."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Entity file location",
+            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                schema = @Schema(implementation = EntityFileLocation.class),
+                examples = @ExampleObject(name = "location", value = """
+                    {
+                      "fileCount": 3,
+                      "objectStoreDirectory": "s3://joxette-data/main/entity_customer/",
+                      "storageConsoleUrl": "http://localhost:9001/rustfs/console/browser/?bucket=joxette-data&key=main%2Fentity_customer%2F"
+                    }"""))),
+        @ApiResponse(responseCode = "400", description = "Invalid entity type name",
+            content = @Content(schema = @Schema(type = "string"))),
+        @ApiResponse(responseCode = "500", description = "Database error",
+            content = @Content(schema = @Schema(type = "string")))
+    })
+    @GetMapping(value = "/entities/{entityType}/{entityId}/storage",
+                produces = MediaType.APPLICATION_JSON_VALUE)
+    public EntityFileLocation getEntityFileLocation(
+            @Parameter(description = "Entity type name (must match `[a-z][a-z0-9_]*`)", required = true, example = "customer")
+            @PathVariable String entityType,
+            @Parameter(description = "Entity identifier", required = true, example = "cust-042")
+            @PathVariable String entityId
+    ) throws SQLException {
+        return entityService.getEntityFileLocation(entityType, entityId);
+    }
+
     // =========================================================================
     // Batch / cohort replay
     // =========================================================================

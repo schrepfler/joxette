@@ -730,6 +730,32 @@ public class EntityReplayService implements EntityCassetteSource {
                 objectStoreDirectory, storageConsoleUrl);
     }
 
+    /**
+     * Physical file-location info for {@code entityId} — split from
+     * {@link #getEntityStats} into its own call since the file count can be
+     * slower to compute than the rest of an entity's stats (see
+     * {@code docs/superpowers/specs/2026-08-09-entity-file-location-async-fetch-design.md}).
+     */
+    public EntityFileLocation getEntityFileLocation(String entityType, String entityId) throws SQLException {
+        validateEntityType(entityType);
+        String bareTable = "entity_" + entityType;
+
+        int fileCount = TopicReplayService.withObjectStoreRetry(
+                "getEntityFileLocation:" + entityType, () -> {
+            synchronized (duckDB) {
+                try {
+                    return countEntityFiles(bareTable, entityType, entityId);
+                } catch (SQLException e) {
+                    throw new DataAccessException("countEntityFiles failed for " + bareTable, e);
+                }
+            }
+        });
+
+        String objectStoreDirectory = computeObjectStoreDirectory(bareTable);
+        String storageConsoleUrl = computeStorageConsoleUrl(bareTable);
+        return new EntityFileLocation(fileCount, objectStoreDirectory, storageConsoleUrl);
+    }
+
     // -------------------------------------------------------------------------
     // Entity stats: object-store location
     // -------------------------------------------------------------------------
