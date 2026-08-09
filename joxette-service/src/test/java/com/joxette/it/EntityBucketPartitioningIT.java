@@ -3,6 +3,7 @@ package com.joxette.it;
 import com.joxette.compaction.CompactionService;
 import com.joxette.compaction.RunStatus;
 import com.joxette.compaction.TriggerSource;
+import com.joxette.replay.EntityFileLocation;
 import com.joxette.replay.EntityReplayService;
 import com.joxette.replay.EntityStats;
 import org.junit.jupiter.api.Test;
@@ -141,8 +142,10 @@ class EntityBucketPartitioningIT {
 
         EntityStats statsA = entityReplayService.getEntityStats(ENTITY_TYPE, "A");
         EntityStats statsB = entityReplayService.getEntityStats(ENTITY_TYPE, "B");
-        assertThat(statsA.fileCount()).as("fast path gives a correct, nonzero count for A").isGreaterThan(0);
-        assertThat(statsB.fileCount()).as("fast path gives a correct, nonzero count for B").isGreaterThan(0);
+        EntityFileLocation locationA = entityReplayService.getEntityFileLocation(ENTITY_TYPE, "A");
+        EntityFileLocation locationB = entityReplayService.getEntityFileLocation(ENTITY_TYPE, "B");
+        assertThat(locationA.fileCount()).as("fast path gives a correct, nonzero count for A").isGreaterThan(0);
+        assertThat(locationB.fileCount()).as("fast path gives a correct, nonzero count for B").isGreaterThan(0);
         assertThat(statsA.messageCount()).as("row data intact for A after migration").isEqualTo(2);
         assertThat(statsB.messageCount()).as("row data intact for B after migration").isEqualTo(2);
     }

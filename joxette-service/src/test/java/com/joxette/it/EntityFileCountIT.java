@@ -1,7 +1,7 @@
 package com.joxette.it;
 
+import com.joxette.replay.EntityFileLocation;
 import com.joxette.replay.EntityReplayService;
-import com.joxette.replay.EntityStats;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -87,19 +87,19 @@ class EntityFileCountIT {
         insertAndFlush("B", 1);              // file 2: B-only
         insertBothAndFlush(2, 3);            // file 3: mixed A+B
 
-        EntityStats statsA = entityReplayService.getEntityStats(ENTITY_TYPE, "A");
-        EntityStats statsB = entityReplayService.getEntityStats(ENTITY_TYPE, "B");
+        EntityFileLocation locationA = entityReplayService.getEntityFileLocation(ENTITY_TYPE, "A");
+        EntityFileLocation locationB = entityReplayService.getEntityFileLocation(ENTITY_TYPE, "B");
 
-        assertThat(statsA.fileCount())
+        assertThat(locationA.fileCount())
                 .as("entity A appears in the A-only file and the mixed file, not the B-only file")
                 .isEqualTo(2);
-        assertThat(statsB.fileCount())
+        assertThat(locationB.fileCount())
                 .as("entity B appears in the B-only file and the mixed file, not the A-only file")
                 .isEqualTo(2);
 
-        assertThat(statsA.objectStoreDirectory())
+        assertThat(locationA.objectStoreDirectory())
                 .isEqualTo("s3://" + BUCKET + "/data/main/entity_" + ENTITY_TYPE + "/");
-        assertThat(statsA.storageConsoleUrl())
+        assertThat(locationA.storageConsoleUrl())
                 .isEqualTo("http://localhost:9001/rustfs/console/browser/?bucket=" + BUCKET
                         + "&key=data%2Fmain%2Fentity_" + ENTITY_TYPE + "%2F");
     }
