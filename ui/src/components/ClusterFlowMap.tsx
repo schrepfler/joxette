@@ -32,7 +32,7 @@ interface Particle {
   color: string
 }
 
-interface ParticleStore {
+export interface ParticleStore {
   particles: Particle[]
   subscribe: (cb: () => void) => () => void
   spawn: (edgeId: string, count: number, color: string) => void
@@ -40,7 +40,7 @@ interface ParticleStore {
   tick: (dt: number) => void
 }
 
-function makeParticleStore(): ParticleStore {
+export function makeParticleStore(): ParticleStore {
   let particles: Particle[] = []
   let nextId = 0
   const listeners = new Set<() => void>()
@@ -68,7 +68,7 @@ function makeParticleStore(): ParticleStore {
   }
 }
 
-const ParticleContext = createContext<ParticleStore | null>(null)
+export const ParticleContext = createContext<ParticleStore | null>(null)
 function useParticleStore() {
   const s = useContext(ParticleContext)
   if (!s) throw new Error('ParticleContext not provided')
@@ -79,7 +79,7 @@ function useParticleStore() {
 // SSE hook
 // ---------------------------------------------------------------------------
 
-function useLiveMetrics(): { data: ClusterStateView | null; connected: boolean } {
+export function useLiveMetrics(): { data: ClusterStateView | null; connected: boolean } {
   const [data, setData] = useState<ClusterStateView | null>(null)
   const [connected, setConnected] = useState(false)
 
@@ -105,7 +105,7 @@ const MAX_PARTICLES_PER_TICK = 8
 // 1 tier particle per this many writes — represents async batched Parquet flush
 const TIER_WRITE_RATIO = 100
 
-function useParticleSpawner(
+export function useParticleSpawner(
   recorders: Record<string, RecorderStatus>,
   replays: ActiveReplay[],
   store: ParticleStore,
@@ -161,7 +161,7 @@ function useParticleSpawner(
   }, [recorders, replays, store])
 }
 
-function useAnimationLoop(store: ParticleStore) {
+export function useAnimationLoop(store: ParticleStore) {
   useEffect(() => {
     let raf: number
     let last = performance.now()
@@ -175,13 +175,13 @@ function useAnimationLoop(store: ParticleStore) {
 // Custom particle edge
 // ---------------------------------------------------------------------------
 
-interface ParticleEdgeData extends Record<string, unknown> {
+export interface ParticleEdgeData extends Record<string, unknown> {
   active: boolean
   rateLabel?: string
   dashed?: boolean  // passive edges (e.g. async tiering to object storage)
 }
 
-function ParticleEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data, markerEnd }: EdgeProps<Edge<ParticleEdgeData>>) {
+export function ParticleEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data, markerEnd }: EdgeProps<Edge<ParticleEdgeData>>) {
   const store = useParticleStore()
   const [, forceRender] = useState(0)
   useEffect(() => store.subscribe(() => forceRender(n => n + 1)), [store])
@@ -227,7 +227,7 @@ function ParticleEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, 
 // Node data types
 // ---------------------------------------------------------------------------
 
-interface KafkaTopicNodeData extends Record<string, unknown> { label: string; partitions: number }
+export interface KafkaTopicNodeData extends Record<string, unknown> { label: string; partitions: number }
 interface InstanceContainerNodeData extends Record<string, unknown> {
   instanceId: string; recordingEnabled: boolean; compactionEnabled: boolean
   pekkoStatus: string | null; reachable: boolean; width: number; height: number
@@ -241,15 +241,15 @@ interface ReplayJobNodeData extends Record<string, unknown> {
   sourceTopic: string; targetTopic: string; sentCount: number; status: ActiveReplay['status']
 }
 interface DuckDbEngineNodeData extends Record<string, unknown> { totalWritten: number; nodeWidth: number }
-interface DuckLakeNodeData extends Record<string, unknown> { label: string; totalWritten: number }
-interface ObjectStorageNodeData extends Record<string, unknown> { label: string }
-interface ReplayTargetNodeData extends Record<string, unknown> { label: string }
+export interface DuckLakeNodeData extends Record<string, unknown> { label: string; totalWritten: number }
+export interface ObjectStorageNodeData extends Record<string, unknown> { label: string }
+export interface ReplayTargetNodeData extends Record<string, unknown> { label: string }
 
 // ---------------------------------------------------------------------------
 // Node components
 // ---------------------------------------------------------------------------
 
-function KafkaTopicNode({ data }: NodeProps<Node<KafkaTopicNodeData>>) {
+export function KafkaTopicNode({ data }: NodeProps<Node<KafkaTopicNodeData>>) {
   return (
     <div style={{ ...nodeBase, minWidth: 150 }}>
       <div style={nodeHeader}>
@@ -383,7 +383,7 @@ function ReplayJobNode({ data }: NodeProps<Node<ReplayJobNodeData>>) {
 }
 
 // Used only when catalog is NOT on this node (remote DuckLake)
-function DuckLakeNode({ data }: NodeProps<Node<DuckLakeNodeData>>) {
+export function DuckLakeNode({ data }: NodeProps<Node<DuckLakeNodeData>>) {
   return (
     <div style={{ ...nodeBase, background: 'var(--surface-sunken)', minWidth: 150 }}>
       <Handle type="target" position={Position.Left}  style={handleStyle} />
@@ -400,7 +400,7 @@ function DuckLakeNode({ data }: NodeProps<Node<DuckLakeNodeData>>) {
   )
 }
 
-function ReplayTargetNode({ data }: NodeProps<Node<ReplayTargetNodeData>>) {
+export function ReplayTargetNode({ data }: NodeProps<Node<ReplayTargetNodeData>>) {
   return (
     <div style={{ ...nodeBase, minWidth: 140 }}>
       <Handle type="target" position={Position.Left} style={handleStyle} />
@@ -412,7 +412,7 @@ function ReplayTargetNode({ data }: NodeProps<Node<ReplayTargetNodeData>>) {
   )
 }
 
-function ObjectStorageNode({ data }: NodeProps<Node<ObjectStorageNodeData>>) {
+export function ObjectStorageNode({ data }: NodeProps<Node<ObjectStorageNodeData>>) {
   return (
     <div style={{ ...nodeBase, minWidth: 150, borderStyle: 'dashed', borderColor: 'var(--ink-tertiary)', background: 'var(--surface-sunken)', opacity: 0.85 }}>
       <Handle type="target" position={Position.Top} style={handleStyle} />
@@ -439,7 +439,7 @@ const COL_GAP      = 24
 const X_KAFKA      = 0
 const X_INSTANCE   = 220
 
-interface Rates { consumedPerSec: number; writtenPerSec: number }
+export interface Rates { consumedPerSec: number; writtenPerSec: number }
 
 function buildGraph(data: ClusterStateView, rates: Record<string, Rates>): { nodes: Node[]; edges: Edge[] } {
   const nodes: Node[] = []
@@ -647,7 +647,7 @@ function buildGraph(data: ClusterStateView, rates: Record<string, Rates>): { nod
 
 interface RateState { consumed: number; written: number; ts: number }
 
-function useRates(recorders: Record<string, RecorderStatus>): Record<string, Rates> {
+export function useRates(recorders: Record<string, RecorderStatus>): Record<string, Rates> {
   const prevRef = useRef<Record<string, RateState>>({})
   const [rates, setRates] = useState<Record<string, Rates>>({})
 
@@ -798,7 +798,7 @@ export function ClusterFlowMap() {
 // Shared styles
 // ---------------------------------------------------------------------------
 
-function Stat({ label, value, color }: { label: string; value: string; color?: string }) {
+export function Stat({ label, value, color }: { label: string; value: string; color?: string }) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column' }}>
       <span style={{ fontSize: '0.5625rem', fontWeight: 600, letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--ink-tertiary)' }}>{label}</span>
@@ -807,12 +807,12 @@ function Stat({ label, value, color }: { label: string; value: string; color?: s
   )
 }
 
-function fmt(n: number): string {
+export function fmt(n: number): string {
   if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
   return Math.round(n).toString()
 }
 
-const nodeBase: React.CSSProperties = {
+export const nodeBase: React.CSSProperties = {
   background: 'var(--surface-raised)',
   border: '1px solid var(--rule)',
   borderRadius: 'var(--radius-sm)',
@@ -821,12 +821,12 @@ const nodeBase: React.CSSProperties = {
   boxShadow: '0 1px 3px rgba(30,26,20,0.07)',
   fontFamily: 'var(--font-body)',
 }
-const nodeHeader: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, flexWrap: 'wrap' }
-const nodeTitle: React.CSSProperties = { fontSize: '0.8125rem', fontWeight: 600, color: 'var(--ink-primary)' }
-const nodeMeta: React.CSSProperties = { display: 'flex', gap: 12, flexWrap: 'wrap' }
-const handleStyle: React.CSSProperties = { background: 'var(--rule-strong)', border: 'none', width: 8, height: 8 }
-const pill: React.CSSProperties = { fontSize: '0.5625rem', fontWeight: 600, padding: '1px 6px', borderRadius: '999px', letterSpacing: '0.04em' }
-const jobTypeLabel: React.CSSProperties = { fontSize: '0.5625rem', fontWeight: 700, letterSpacing: '0.1em', color: 'var(--ink-tertiary)', textTransform: 'uppercase' }
+export const nodeHeader: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6, flexWrap: 'wrap' }
+export const nodeTitle: React.CSSProperties = { fontSize: '0.8125rem', fontWeight: 600, color: 'var(--ink-primary)' }
+export const nodeMeta: React.CSSProperties = { display: 'flex', gap: 12, flexWrap: 'wrap' }
+export const handleStyle: React.CSSProperties = { background: 'var(--rule-strong)', border: 'none', width: 8, height: 8 }
+export const pill: React.CSSProperties = { fontSize: '0.5625rem', fontWeight: 600, padding: '1px 6px', borderRadius: '999px', letterSpacing: '0.04em' }
+export const jobTypeLabel: React.CSSProperties = { fontSize: '0.5625rem', fontWeight: 700, letterSpacing: '0.1em', color: 'var(--ink-tertiary)', textTransform: 'uppercase' }
 
 function dotStyle(color: string): React.CSSProperties {
   return { width: 7, height: 7, borderRadius: '50%', background: color, display: 'inline-block', flexShrink: 0 }
