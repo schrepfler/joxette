@@ -312,14 +312,19 @@ function buildGraph(data: ClusterStateView, rates: Record<string, Rates>): { nod
 }
 
 // Rebuilding the graph on every live-metrics tick would otherwise snap any
-// manually dragged node straight back to buildGraph's computed position.
-// Keep each already-known node's current on-screen position; only brand-new
-// nodes (e.g. a recorder that just started) get buildGraph's default.
-function preservePositions(prev: Node[], next: Node[]): Node[] {
+// manually dragged node straight back to buildGraph's computed position —
+// and worse, replacing an in-progress-drag node with a freshly reconstructed
+// object desyncs React Flow's own drag tracking ("trying to drag a node
+// that is not initialized", xyflow error #015). The documented-safe pattern
+// (https://reactflow.dev/examples/nodes/update-node) is to spread the
+// EXISTING tracked node — position, measured size, drag state, all of it —
+// and only replace `data`. Brand-new nodes (e.g. a recorder that just
+// started) fall through to buildGraph's freshly computed node as-is.
+function mergeNodeData(prev: Node[], next: Node[]): Node[] {
   const prevById = new Map(prev.map(n => [n.id, n]))
   return next.map(n => {
     const existing = prevById.get(n.id)
-    return existing ? { ...n, position: existing.position } : n
+    return existing ? { ...existing, data: n.data } : n
   })
 }
 
@@ -358,14 +363,14 @@ function FlowInner({ store }: { store: ParticleStore }) {
   useEffect(() => {
     if (!data) return
     const { nodes: n, edges: e } = buildGraph(data, ratesRef.current)
-    setNodes(prev => preservePositions(prev, n)); setEdges(e)
+    setNodes(prev => mergeNodeData(prev, n)); setEdges(e)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data])
 
   useEffect(() => {
     if (!data) return
     const { nodes: n, edges: e } = buildGraph(data, rates)
-    setNodes(prev => preservePositions(prev, n)); setEdges(e)
+    setNodes(prev => mergeNodeData(prev, n)); setEdges(e)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rates])
 
