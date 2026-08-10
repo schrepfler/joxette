@@ -215,7 +215,6 @@ function buildGraph(data: ClusterStateView, rates: Record<string, Rates>): { nod
       recorderEntries, rates, totalWritten,
       replays: activeReplays,
     } satisfies InstanceContainerNodeData,
-    draggable: false, selectable: false, focusable: false,
   })
 
   if (!hasCatalog) {
@@ -312,6 +311,18 @@ function buildGraph(data: ClusterStateView, rates: Record<string, Rates>): { nod
   return { nodes, edges }
 }
 
+// Rebuilding the graph on every live-metrics tick would otherwise snap any
+// manually dragged node straight back to buildGraph's computed position.
+// Keep each already-known node's current on-screen position; only brand-new
+// nodes (e.g. a recorder that just started) get buildGraph's default.
+function preservePositions(prev: Node[], next: Node[]): Node[] {
+  const prevById = new Map(prev.map(n => [n.id, n]))
+  return next.map(n => {
+    const existing = prevById.get(n.id)
+    return existing ? { ...n, position: existing.position } : n
+  })
+}
+
 // ---------------------------------------------------------------------------
 // Node / edge type registries
 // ---------------------------------------------------------------------------
@@ -347,14 +358,14 @@ function FlowInner({ store }: { store: ParticleStore }) {
   useEffect(() => {
     if (!data) return
     const { nodes: n, edges: e } = buildGraph(data, ratesRef.current)
-    setNodes(n); setEdges(e)
+    setNodes(prev => preservePositions(prev, n)); setEdges(e)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data])
 
   useEffect(() => {
     if (!data) return
     const { nodes: n, edges: e } = buildGraph(data, rates)
-    setNodes(n); setEdges(e)
+    setNodes(prev => preservePositions(prev, n)); setEdges(e)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rates])
 
