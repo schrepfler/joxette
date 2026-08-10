@@ -5,7 +5,7 @@ import { instancesApi, topicsApi, type RecorderStatus, type InstanceRecord, type
 import { Layout } from '../../components/Layout'
 import { LoadingSpinner } from '../../components/LoadingSpinner'
 import { ErrorMessage } from '../../components/ErrorMessage'
-import { ClusterFlowMap } from '../../components/ClusterFlowMap'
+import { ClusterFlowMapObjects } from '../../components/ClusterFlowMapObjects'
 import { pageTitle, cardStyle } from '../../styles/shared'
 
 export const Route = createFileRoute('/cluster/')({
@@ -77,7 +77,7 @@ function ClusterPage() {
         </div>
       </div>
 
-      {tab === 'map' && <ClusterFlowMap />}
+      {tab === 'map' && <ClusterFlowMapObjects />}
 
       {tab === 'detail' && (
         <>
