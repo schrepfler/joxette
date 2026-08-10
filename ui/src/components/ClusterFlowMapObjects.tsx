@@ -394,6 +394,7 @@ function FlowInner({ store }: { store: ParticleStore }) {
         nodes={nodes} edges={edges}
         onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
         nodeTypes={nodeTypes} edgeTypes={edgeTypes}
+        defaultEdgeOptions={{ zIndex: 1000 }}
         proOptions={{ hideAttribution: true }}
         colorMode="light"
         style={{ background: 'transparent' }}
