@@ -8,6 +8,7 @@ import { CassetteTimeline, type TimelineRecord, type GroupByMode, colorForKey } 
 import { Layout } from '../../../components/Layout'
 import { LoadingSpinner } from '../../../components/LoadingSpinner'
 import { ErrorMessage } from '../../../components/ErrorMessage'
+import { DatasetSummaryPanel, type DatasetSummarySelection } from '../../../components/DatasetSummaryPanel'
 
 export const Route = createFileRoute('/entities/$entityType/$entityId_/timeline')({
   component: EntityTimelinePage,
@@ -108,6 +109,21 @@ function EntityTimelinePage() {
   const [error, setError] = useState<string | null>(null)
   const [initialLoaded, setInitialLoaded] = useState(false)
   const [groupByKind, setGroupByKind] = useState<GroupByMode['kind']>('messageType')
+  const [summarySelection, setSummarySelection] = useState<DatasetSummarySelection | null>(null)
+
+  const handleSummarySelect = useCallback((dimension: string, value: string | null) => {
+    setSummarySelection(prev => (prev?.dimension === dimension && prev?.value === value ? null : { dimension, value }))
+  }, [])
+
+  const highlightPredicate = useMemo(() => {
+    if (!summarySelection) return undefined
+    const { dimension, value } = summarySelection
+    return (r: TimelineRecord) => {
+      if (dimension === 'sourceTopic') return r.sourceTopic === value
+      if (dimension === 'messageType') return r.meta.type === value || (value === null && r.meta.type === undefined)
+      return true
+    }
+  }, [summarySelection])
   const abortRef = useState<{ cancelled: boolean }>({ cancelled: false })[0]
 
   const PAGE_SIZE = 200
@@ -189,22 +205,32 @@ function EntityTimelinePage() {
                 <TopicActivityChart records={records} groupByKind={groupByKind} />
               </div>
             )}
-            <div style={{ flex: '1 1 0', minHeight: 0, border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'hidden' }}>
-              <CassetteTimeline
-                records={timelineRecords}
-                hasMore={false}
-                loading={loading}
-                title={`${entityType} / ${entityId}`}
-                supportsMessageType={true}
-                onGroupByModeChange={mode => setGroupByKind(mode.kind)}
-                extraControls={
-                  loading
-                    ? <span style={{ fontSize: 12, color: '#718096' }}>
-                        Loading… {loadedCount} messages
-                        <button style={{ ...secondaryBtn, marginLeft: 8 }} onClick={handleCancel}>Cancel</button>
-                      </span>
-                    : undefined
-                }
+            <div style={{ flex: '1 1 0', minHeight: 0, display: 'flex', gap: 12 }}>
+              <div style={{ flex: '1 1 0', minWidth: 0, border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'hidden' }}>
+                <CassetteTimeline
+                  records={timelineRecords}
+                  hasMore={false}
+                  loading={loading}
+                  title={`${entityType} / ${entityId}`}
+                  supportsMessageType={true}
+                  onGroupByModeChange={mode => setGroupByKind(mode.kind)}
+                  highlightPredicate={highlightPredicate}
+                  extraControls={
+                    loading
+                      ? <span style={{ fontSize: 12, color: '#718096' }}>
+                          Loading… {loadedCount} messages
+                          <button style={{ ...secondaryBtn, marginLeft: 8 }} onClick={handleCancel}>Cancel</button>
+                        </span>
+                      : undefined
+                  }
+                />
+              </div>
+              <DatasetSummaryPanel
+                kind="entity"
+                entityType={entityType}
+                entityId={entityId}
+                selected={summarySelection}
+                onSelect={handleSummarySelect}
               />
             </div>
           </>
