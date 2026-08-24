@@ -494,6 +494,24 @@ export type EntityRecordsParams = QueryParams & {
   limit?: number
   cursor?: string
   order?: Order
+  messageTypes?: string[]
+}
+
+export interface ValueCount {
+  value: string | null
+  count: number
+}
+
+export interface CassetteSummary {
+  totalRecords: number
+  from: string | null
+  to: string | null
+  dimensions: Record<string, ValueCount[]>
+}
+
+export type CassetteSummaryParams = QueryParams & {
+  from?: string
+  to?: string
 }
 
 export const cassettesApi = {
@@ -501,6 +519,8 @@ export const cassettesApi = {
     request<PagedResponse<CassetteRecord>>(`/cassettes/topics/${encodeURIComponent(topic)}${buildQuery(params ?? {})}`),
   getTopicStats: (topic: string) =>
     request<CassetteStats>(`/cassettes/topics/${encodeURIComponent(topic)}/stats`),
+  getTopicSummary: (topic: string, params?: CassetteSummaryParams) =>
+    request<CassetteSummary>(`/cassettes/topics/${encodeURIComponent(topic)}/summary${buildQuery(params ?? {})}`),
   compactTopic: (topic: string) =>
     request<void>(`/cassettes/topics/${encodeURIComponent(topic)}/compact`, { method: 'POST' }),
   truncateTopic: (topic: string, before: string) =>
@@ -511,10 +531,18 @@ export const cassettesApi = {
     request<PagedResponse<EntityInfo>>(`/cassettes/entities/${encodeURIComponent(entityType)}${buildQuery(params ?? {})}`),
   searchEntities: (entityType: string, params?: EntitySearchParams) =>
     request<PagedResponse<EntityInfo>>(`/cassettes/entities/${encodeURIComponent(entityType)}/search${buildQuery(params ?? {})}`),
-  getEntityRecords: (entityType: string, entityId: string, params?: EntityRecordsParams) =>
-    request<PagedResponse<EntityRecord>>(`/cassettes/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}${buildQuery(params ?? {})}`),
+  getEntityRecords: (entityType: string, entityId: string, params?: EntityRecordsParams) => {
+    const { messageTypes, ...rest } = params ?? {}
+    const messageTypesParam = messageTypes && messageTypes.length > 0 ? messageTypes.join(',') : undefined
+    return request<PagedResponse<EntityRecord>>(
+      `/cassettes/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}`
+      + buildQuery({ ...rest, message_types: messageTypesParam }),
+    )
+  },
   getEntityStats: (entityType: string, entityId: string) =>
     request<EntityStats>(`/cassettes/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}/stats`),
+  getEntitySummary: (entityType: string, entityId: string, params?: CassetteSummaryParams) =>
+    request<CassetteSummary>(`/cassettes/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}/summary${buildQuery(params ?? {})}`),
   getEntityFileLocation: (entityType: string, entityId: string) =>
     request<EntityFileLocation>(`/cassettes/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}/storage`),
   deleteEntity: (entityType: string, entityId: string) =>
