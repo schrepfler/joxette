@@ -717,6 +717,60 @@ public class EntityReplayService implements EntityCassetteSource {
                 firstSeen, lastSeen, countByTopic);
     }
 
+    // -------------------------------------------------------------------------
+    // Cassette summary
+    // -------------------------------------------------------------------------
+
+    private static final int SUMMARY_TOP_N = 20;
+
+    /**
+     * Returns a dimension-cardinality breakdown (by source topic and message
+     * type) for this entity type's cassette, optionally scoped to a time
+     * window. Deduplicates the same way {@link #getEntityStats} does (QUALIFY
+     * {@code ROW_NUMBER()} over {@code (topic, kafka_partition, kafka_offset)},
+     * keeping the most recently recorded row) before counting.
+     */
+    public CassetteSummary getEntitySummary(String entityType, Instant from, Instant to) throws SQLException {
+        validateEntityType(entityType);
+        Table<?> table = entityTable(entityType);
+        Condition cond = DSL.noCondition();
+        if (from != null) cond = cond.and(F_TIMESTAMP.ge(from.atOffset(ZoneOffset.UTC)));
+        if (to != null)   cond = cond.and(F_TIMESTAMP.le(to.atOffset(ZoneOffset.UTC)));
+        final Condition finalCond = cond;
+
+        return TopicReplayService.withObjectStoreRetry("entitySummary:" + entityType, () -> {
+            synchronized (duckDB) {
+                var deduped = dsl.select(F_TOPIC, F_MESSAGE_TYPE)
+                        .from(table)
+                        .where(finalCond)
+                        .qualify(QUALIFY_DEDUP)
+                        .asTable("deduped");
+                Field<String> dTopic       = deduped.field(F_TOPIC);
+                Field<String> dMessageType = deduped.field(F_MESSAGE_TYPE);
+
+                int totalRecords = dsl.fetchCount(deduped);
+
+                var topicRows = dsl.select(dTopic, DSL.count())
+                        .from(deduped)
+                        .groupBy(dTopic)
+                        .orderBy(DSL.count().desc())
+                        .limit(SUMMARY_TOP_N + 1)
+                        .fetch();
+
+                var messageTypeRows = dsl.select(dMessageType, DSL.count())
+                        .from(deduped)
+                        .groupBy(dMessageType)
+                        .orderBy(DSL.count().desc())
+                        .limit(SUMMARY_TOP_N + 1)
+                        .fetch();
+
+                return new CassetteSummary(totalRecords, from, to, Map.of(
+                        "sourceTopic", TopicReplayService.toValueCounts(topicRows, totalRecords),
+                        "messageType", TopicReplayService.toValueCounts(messageTypeRows, totalRecords)));
+            }
+        });
+    }
+
     /**
      * Physical file-location info for {@code entityId} — split from
      * {@link #getEntityStats} into its own call since the file count can be

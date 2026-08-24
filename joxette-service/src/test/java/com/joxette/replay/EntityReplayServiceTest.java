@@ -870,6 +870,48 @@ class EntityReplayServiceTest {
     }
 
     // -------------------------------------------------------------------------
+    // getEntitySummary
+    // -------------------------------------------------------------------------
+
+    @Test
+    void getEntitySummary_breaksDownBySourceTopicAndMessageType() throws Exception {
+        Instant ts = Instant.parse("2024-01-01T10:00:00Z");
+        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, "order-1", 0, "Created",
+                "orders.events", 0, 0L, ts, Instant.now(), "k0", b("v0"));
+        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, "order-1", 0, "Paid",
+                "payments.events", 0, 0L, ts.plusSeconds(1), Instant.now(), "k1", b("v1"));
+        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, "order-2", 0, "Created",
+                "orders.events", 0, 1L, ts.plusSeconds(2), Instant.now(), "k2", b("v2"));
+
+        CassetteSummary summary = service.getEntitySummary(ENTITY_TYPE, null, null);
+
+        assertThat(summary.totalRecords()).isEqualTo(3);
+        assertThat(summary.dimensions().get("sourceTopic"))
+                .containsExactlyInAnyOrder(new ValueCount("orders.events", 2), new ValueCount("payments.events", 1));
+        assertThat(summary.dimensions().get("messageType"))
+                .containsExactlyInAnyOrder(new ValueCount("Created", 2), new ValueCount("Paid", 1));
+    }
+
+    @Test
+    void getEntitySummary_dedupesSameSourceOffsetRecordedTwice() throws Exception {
+        Instant ts = Instant.parse("2024-01-01T10:00:00Z");
+        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, "order-1", 0, "Created",
+                "orders.events", 0, 0L, ts, Instant.now().minusSeconds(10), "k0", b("v0"));
+        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, "order-1", 0, "Created",
+                "orders.events", 0, 0L, ts, Instant.now(), "k0", b("v0"));
+
+        CassetteSummary summary = service.getEntitySummary(ENTITY_TYPE, null, null);
+
+        assertThat(summary.totalRecords()).isEqualTo(1);
+    }
+
+    @Test
+    void getEntitySummary_rejectsInvalidEntityType() {
+        assertThatThrownBy(() -> service.getEntitySummary("Not Valid!", null, null))
+                .isInstanceOf(com.joxette.api.error.ValidationException.class);
+    }
+
+    // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
 
