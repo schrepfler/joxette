@@ -1175,6 +1175,47 @@ public class CassetteController {
     }
 
     @Operation(
+        operationId = "getEntitySummary",
+        summary = "Entity cassette dimension summary",
+        description = "Returns a deduplicated dimension-cardinality breakdown (by source topic and message type) "
+                     + "for the entity type's cassette, optionally scoped to a time window. Each dimension is "
+                     + "capped at the top 20 values by count, with the remainder folded into an \"__other__\" entry."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Dataset summary",
+            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                schema = @Schema(implementation = CassetteSummary.class),
+                examples = @ExampleObject(name = "summary", value = """
+                    {
+                      "totalRecords": 17,
+                      "from": null,
+                      "to": null,
+                      "dimensions": {
+                        "sourceTopic": [{"value": "customer-events", "count": 12}, {"value": "customer-orders", "count": 5}],
+                        "messageType": [{"value": "Created", "count": 10}, {"value": "Updated", "count": 7}]
+                      }
+                    }"""))),
+        @ApiResponse(responseCode = "400", description = "Invalid entity type name",
+            content = @Content(schema = @Schema(type = "string"))),
+        @ApiResponse(responseCode = "500", description = "Database error",
+            content = @Content(schema = @Schema(type = "string")))
+    })
+    @GetMapping(value = "/entities/{entityType}/{entityId}/summary",
+                produces = MediaType.APPLICATION_JSON_VALUE)
+    public CassetteSummary getEntitySummary(
+            @Parameter(description = "Entity type name (must match `[a-z][a-z0-9_]*`)", required = true, example = "customer")
+            @PathVariable String entityType,
+            @Parameter(description = "Entity identifier (unused — summary is per-type, not per-instance; present for URL symmetry with sibling endpoints)", required = true, example = "cust-042")
+            @PathVariable String entityId,
+            @Parameter(description = "Include only records with timestamp >= this value (ISO-8601 instant)")
+            @RequestParam(required = false) Instant from,
+            @Parameter(description = "Include only records with timestamp <= this value (ISO-8601 instant)")
+            @RequestParam(required = false) Instant to
+    ) throws SQLException {
+        return entityService.getEntitySummary(entityType, from, to);
+    }
+
+    @Operation(
         operationId = "getEntityFileLocation",
         summary = "Entity physical file location",
         description = "Returns the exact number of physical Parquet files containing this entity's " +
@@ -1553,6 +1594,42 @@ public class CassetteController {
             @PathVariable String topic
     ) throws SQLException {
         return lifecycle.getTopicCassetteStats(topic);
+    }
+
+    @Operation(
+        operationId = "getTopicSummary",
+        summary = "Topic cassette dimension summary",
+        description = "Returns a deduplicated dimension-cardinality breakdown (by partition and message type) "
+                     + "for the topic's general cassette, optionally scoped to a time window. Each dimension is "
+                     + "capped at the top 20 values by count, with the remainder folded into an \"__other__\" entry."
+    )
+    @ApiResponses({
+        @ApiResponse(responseCode = "200", description = "Dataset summary",
+            content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
+                schema = @Schema(implementation = CassetteSummary.class),
+                examples = @ExampleObject(name = "summary", value = """
+                    {
+                      "totalRecords": 128456,
+                      "from": null,
+                      "to": null,
+                      "dimensions": {
+                        "partition": [{"value": "3", "count": 40213}, {"value": "1", "count": 38010}],
+                        "messageType": [{"value": "OrderCreated", "count": 88012}, {"value": null, "count": 1200}]
+                      }
+                    }"""))),
+        @ApiResponse(responseCode = "500", description = "Database error",
+            content = @Content(schema = @Schema(type = "string")))
+    })
+    @GetMapping(value = "/topics/{topic}/summary", produces = MediaType.APPLICATION_JSON_VALUE)
+    public CassetteSummary getTopicSummary(
+            @Parameter(description = "Kafka topic name", required = true, example = "orders")
+            @PathVariable String topic,
+            @Parameter(description = "Include only records with timestamp >= this value (ISO-8601 instant)")
+            @RequestParam(required = false) Instant from,
+            @Parameter(description = "Include only records with timestamp <= this value (ISO-8601 instant)")
+            @RequestParam(required = false) Instant to
+    ) throws SQLException {
+        return topicService.getTopicSummary(topic, from, to);
     }
 
     @Operation(
