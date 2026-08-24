@@ -8,6 +8,7 @@ import { CassetteTimeline, type TimelineRecord, PALETTE } from '../../components
 import { Layout } from '../../components/Layout'
 import { LoadingSpinner } from '../../components/LoadingSpinner'
 import { ErrorMessage } from '../../components/ErrorMessage'
+import { DatasetSummaryPanel, type DatasetSummarySelection } from '../../components/DatasetSummaryPanel'
 
 export const Route = createFileRoute('/topics/$topic_/timeline')({
   component: TopicTimelinePage,
@@ -115,6 +116,7 @@ function toTimelineRecord(r: CassetteRecord): TimelineRecord {
     meta: {
       partition: String(r.partition),
       offset: String(r.offset),
+      ...(r.messageType ? { type: r.messageType } : {}),
       ...(r.key ? { key: r.key } : {}),
       recorded: r.recordedAt.slice(0, 19).replace('T', ' '),
     },
@@ -132,6 +134,21 @@ function TopicTimelinePage() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [initialLoaded, setInitialLoaded] = useState(false)
+  const [summarySelection, setSummarySelection] = useState<DatasetSummarySelection | null>(null)
+
+  const handleSummarySelect = useCallback((dimension: string, value: string | null) => {
+    setSummarySelection(prev => (prev?.dimension === dimension && prev?.value === value ? null : { dimension, value }))
+  }, [])
+
+  const highlightPredicate = useMemo(() => {
+    if (!summarySelection) return undefined
+    const { dimension, value } = summarySelection
+    return (r: TimelineRecord) => {
+      if (dimension === 'partition') return r.meta.partition === value
+      if (dimension === 'messageType') return r.meta.type === value || (value === null && r.meta.type === undefined)
+      return true
+    }
+  }, [summarySelection])
 
   const PAGE_SIZE = 200
 
@@ -205,18 +222,27 @@ function TopicTimelinePage() {
                 <PartitionHeatmap records={records} />
               </div>
             )}
-            <div style={{ flex: '1 1 0', minHeight: 0, border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'hidden' }}>
-              <CassetteTimeline
-                records={timelineRecords}
-                onLoadAfter={handleLoadAfter}
-                hasMore={hasMoreAfter}
-                loading={loading}
-                title={topic}
-                extraControls={
-                  hasMoreAfter && !loading
-                    ? <button style={secondaryBtn} onClick={handleLoadAfter}>Load next page</button>
-                    : undefined
-                }
+            <div style={{ flex: '1 1 0', minHeight: 0, display: 'flex', gap: 12 }}>
+              <div style={{ flex: '1 1 0', minWidth: 0, border: '1px solid #e2e8f0', borderRadius: 8, overflow: 'hidden' }}>
+                <CassetteTimeline
+                  records={timelineRecords}
+                  onLoadAfter={handleLoadAfter}
+                  hasMore={hasMoreAfter}
+                  loading={loading}
+                  title={topic}
+                  highlightPredicate={highlightPredicate}
+                  extraControls={
+                    hasMoreAfter && !loading
+                      ? <button style={secondaryBtn} onClick={handleLoadAfter}>Load next page</button>
+                      : undefined
+                  }
+                />
+              </div>
+              <DatasetSummaryPanel
+                kind="topic"
+                topic={topic}
+                selected={summarySelection}
+                onSelect={handleSummarySelect}
               />
             </div>
           </>
