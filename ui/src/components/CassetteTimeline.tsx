@@ -64,6 +64,8 @@ export interface CassetteTimelineProps {
   supportsMessageType?: boolean
   /** Called whenever the primary group-by mode changes */
   onGroupByModeChange?: (mode: GroupByMode) => void
+  /** When set, markers for records where this returns false render dimmed. Purely visual — does not filter what's loaded. */
+  highlightPredicate?: (record: TimelineRecord) => boolean
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -370,9 +372,10 @@ interface TimelineCanvasProps {
   onSelect: (idx: number) => void
   onViewChange?: (vs: ViewState) => void
   fitKey?: number  // increment to trigger fit-to-window
+  highlightPredicate?: (record: TimelineRecord) => boolean
 }
 
-function TimelineCanvas({ records, selectedIdx, colorKeys, onSelect, fitKey }: TimelineCanvasProps) {
+function TimelineCanvas({ records, selectedIdx, colorKeys, onSelect, fitKey, highlightPredicate }: TimelineCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const vsRef = useRef<ViewState>({ msPerPx: 1, originPx: 0 })
   const dragRef = useRef<{ startX: number; startOriginPx: number } | null>(null)
@@ -478,6 +481,7 @@ function TimelineCanvas({ records, selectedIdx, colorKeys, onSelect, fitKey }: T
 
       const color = colorForKey(r.colorKey, colorKeys, theme.chartCat)
       const isSelected = i === selectedIdx
+      const isDimmed = !isSelected && highlightPredicate != null && !highlightPredicate(r)
       const radius = isSelected ? SELECTED_RADIUS : MARKER_RADIUS
 
       // Shadow for selected
@@ -488,7 +492,7 @@ function TimelineCanvas({ records, selectedIdx, colorKeys, onSelect, fitKey }: T
 
       ctx.beginPath()
       ctx.arc(x, MARKER_Y, radius, 0, Math.PI * 2)
-      ctx.fillStyle = isSelected ? color : color + '99'
+      ctx.fillStyle = isSelected ? color : (isDimmed ? color + '33' : color + '99')
       ctx.fill()
       // Unselected markers get a subtle ring in the theme's rule color
       // (rather than a hardcoded white ring, which read wrong against the
@@ -510,7 +514,7 @@ function TimelineCanvas({ records, selectedIdx, colorKeys, onSelect, fitKey }: T
     })
 
     ctx.restore()
-  }, [records, timestamps, selectedIdx, colorKeys, minMs, maxMs])
+  }, [records, timestamps, selectedIdx, colorKeys, minMs, maxMs, highlightPredicate])
 
   // Redraw when data/selection changes
   useEffect(() => { draw() }, [draw])
@@ -744,6 +748,7 @@ export function CassetteTimeline({
   extraControls,
   supportsMessageType,
   onGroupByModeChange,
+  highlightPredicate,
 }: CassetteTimelineProps) {
   const [selectedIdx, setSelectedIdx] = useState(0)
   const [fitKey, setFitKey] = useState(0)
@@ -914,6 +919,7 @@ export function CassetteTimeline({
           colorKeys={colorKeys}
           onSelect={handleSelect}
           fitKey={fitKey}
+          highlightPredicate={highlightPredicate}
         />
       </div>
     </div>
