@@ -488,7 +488,7 @@ export type EntitySearchParams = QueryParams & {
   sortBy?: EntitySortBy
 }
 
-export type EntityRecordsParams = QueryParams & {
+export type EntityRecordsParams = {
   from?: string
   to?: string
   limit?: number

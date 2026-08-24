@@ -6,7 +6,7 @@ import {
   flexRender,
   createColumnHelper,
 } from '@tanstack/react-table'
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useCallback } from 'react'
 import { JsonView } from '../../../components/JsonView'
 import { ValueCell } from '../../../components/ValueCell'
 import { cassettesApi, entityOutputApi, entitiesApi, compactionApi, streamEntityRecords, type EntityRecord, type Order, type StreamMode, type EntityStreamParams, type PortraitResult } from '../../../api/client'
@@ -23,6 +23,7 @@ import { useToast } from '../../../components/Toast'
 import { useDebounce } from '../../../hooks/useDebounce'
 import type { FragmentDefinition } from '../../../transforms/types'
 import { SequenceQueryPanel } from '../../../components/SequenceQueryPanel'
+import { DatasetSummaryPanel, type DatasetSummarySelection } from '../../../components/DatasetSummaryPanel'
 
 interface EntitySearch {
   /** Sort direction for entity event replay. UI default: 'desc' (latest first). */
@@ -120,6 +121,16 @@ function EntityInstancePage() {
   const [toRaw, setToRaw] = useState('')
   const from = useDebounce(fromRaw, 300)
   const to = useDebounce(toRaw, 300)
+  const [messageTypesRaw, setMessageTypesRaw] = useState<string[]>([])
+  const [summarySelection, setSummarySelection] = useState<DatasetSummarySelection | null>(null)
+
+  const handleSummarySelect = useCallback((dimension: string, value: string | null) => {
+    setSummarySelection(prev => (prev?.dimension === dimension && prev?.value === value ? null : { dimension, value }))
+    if (dimension === 'messageType') {
+      const isToggleOff = summarySelection?.dimension === 'messageType' && summarySelection?.value === value
+      setMessageTypesRaw(isToggleOff || value === null ? [] : [value])
+    }
+  }, [summarySelection])
   const [cursor, setCursor] = useState<string | undefined>()
   const [cursors, setCursors] = useState<string[]>([])
   const [deleteStep, setDeleteStep] = useState<0 | 1 | 2>(0)
@@ -155,13 +166,14 @@ function EntityInstancePage() {
   })
 
   const recordsQuery = useQuery({
-    queryKey: ['cassettes', 'entities', entityType, entityId, 'records', { from, to, cursor, order }],
+    queryKey: ['cassettes', 'entities', entityType, entityId, 'records', { from, to, cursor, order, messageTypesRaw }],
     queryFn: () => cassettesApi.getEntityRecords(entityType, entityId, {
       from: from || undefined,
       to: to || undefined,
       cursor,
       limit: 50,
       order,
+      messageTypes: messageTypesRaw.length > 0 ? messageTypesRaw : undefined,
     }),
   })
 
@@ -467,6 +479,9 @@ function EntityInstancePage() {
           <BarcodeXModeToggle value={barcodeXMode} onChange={setBarcodeXMode} />
         )}
       </div>
+
+      <div style={{ display: 'flex', gap: '1.5rem', alignItems: 'flex-start' }}>
+      <div style={{ flex: '1 1 0', minWidth: 0 }}>
 
       {/* SOL tab */}
       {activeTab === 'sol' && (
@@ -780,6 +795,18 @@ function EntityInstancePage() {
         )}
       </div>
       )}
+
+      </div>
+      <DatasetSummaryPanel
+        kind="entity"
+        entityType={entityType}
+        entityId={entityId}
+        from={from || undefined}
+        to={to || undefined}
+        selected={summarySelection}
+        onSelect={handleSummarySelect}
+      />
+      </div>
 
       {deleteStep === 1 && (
         <ConfirmDialog
