@@ -7,7 +7,7 @@ import {
   createColumnHelper,
 } from '@tanstack/react-table'
 import { useForm } from '@tanstack/react-form'
-import { useState, useRef, useEffect, type CSSProperties } from 'react'
+import { useState, useRef, useEffect, useCallback, type CSSProperties } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { pushCapped, composeStreamView } from '../../lib/streamBuffer'
 import { ValueCell } from '../../components/ValueCell'
@@ -39,6 +39,7 @@ import { useDebounce } from '../../hooks/useDebounce'
 import { Button, Input, Select, Hairline, Tabular, Badge, StatusDot } from '../../design/primitives'
 import type { FragmentDefinition } from '../../transforms/types'
 import { SequenceQueryPanel } from '../../components/SequenceQueryPanel'
+import { DatasetSummaryPanel, type DatasetSummarySelection } from '../../components/DatasetSummaryPanel'
 
 
 interface TopicSearch {
@@ -167,6 +168,15 @@ function TopicDetailPage() {
   const [activeTab, setActiveTab] = useState<'records' | 'sol' | 'timeline' | 'barcode' | 'sequence'>('records')
   const [barcodeXMode, setBarcodeXMode] = useState<BarcodeXMode>('time')
   const [_replayPipelineFragments, _setReplayPipelineFragments] = useState<FragmentDefinition[]>([])
+  const [summarySelection, setSummarySelection] = useState<DatasetSummarySelection | null>(null)
+
+  const handleSummarySelect = useCallback((dimension: string, value: string | null) => {
+    setSummarySelection(prev => (prev?.dimension === dimension && prev?.value === value ? null : { dimension, value }))
+    if (dimension === 'partition') {
+      const isToggleOff = summarySelection?.dimension === 'partition' && summarySelection?.value === value
+      setPartitionRaw(isToggleOff ? '' : (value ?? ''))
+    }
+  }, [summarySelection])
 
   // Streaming state
   const [streamMode, setStreamMode] = useState<StreamMode>('json')
@@ -696,6 +706,9 @@ function TopicDetailPage() {
             />
           </div>
 
+          <div style={{ display: 'flex', gap: 'var(--space-6)', alignItems: 'flex-start' }}>
+          <div style={{ flex: '1 1 0', minWidth: 0 }}>
+
           {activeTab === 'sol' && (
             <section style={{ marginBottom: 24 }}>
               <SolQueryPanel
@@ -901,6 +914,17 @@ function TopicDetailPage() {
               )}
             </section>
           )}
+
+          </div>
+          <DatasetSummaryPanel
+            kind="topic"
+            topic={topic}
+            from={from || undefined}
+            to={to || undefined}
+            selected={summarySelection}
+            onSelect={handleSummarySelect}
+          />
+          </div>
         </div>
       )}
       {showTruncateDialog && (
