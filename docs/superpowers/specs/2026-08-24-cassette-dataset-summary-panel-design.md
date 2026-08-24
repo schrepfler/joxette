@@ -71,52 +71,71 @@ existing `CassetteStats`/`EntityStats` DTOs in `com.joxette.replay`.
 
 ### Query strategy
 
-One jOOQ query per cassette, computing both dimension breakdowns in a
-single table scan via `GROUP BY GROUPING SETS`, mirroring the technique
-DuckDB documents (linked from the blog post) rather than issuing two
-separate `GROUP BY` round trips:
+**Corrected during implementation research** (`GROUPING SETS` has zero
+precedent in this codebase — `grep -rn "groupingSets\|GROUPING SETS"` across
+`src/main` returns nothing, and jOOQ 3.21.7's DuckDB-dialect support for it
+is unverified): two independent, simple `GROUP BY` queries per cassette
+(one per dimension), each scoped by the same `from`/`to` `Condition` the
+existing replay queries already build inline, run back-to-back inside one
+`synchronized(duckDB)` block. This directly mirrors the existing aggregate
+query in `EntityReplayService.getEntityStats()` (`GROUP BY topic ORDER BY
+topic`) — same fluent `.select(...).from(...).where(...).groupBy(...)
+.orderBy(...).limit(...)` shape used throughout `query()`. Same response
+shape and architecture as originally sketched; safer query construction.
 
-```sql
-SELECT kafka_partition, message_type, COUNT(*) AS cnt
-FROM lake.main.general_{topic}
-WHERE kafka_timestamp >= ? AND kafka_timestamp < ?   -- same from/to predicate
-                                                       -- TopicReplayService
-                                                       -- already builds
-GROUP BY GROUPING SETS ((kafka_partition), (message_type))
+```java
+var rows = dsl.select(F_PARTITION, DSL.count())
+    .from(table)
+    .where(cond)
+    .groupBy(F_PARTITION)
+    .orderBy(DSL.count().desc())
+    .limit(TOP_N + 1)   // +1 lets Java detect "more than TOP_N remain" for the "other" bucket
+    .fetch();
 ```
 
-jOOQ supports this via `DSL.groupingSets(...)` — the query is built with
-jOOQ `DSLContext`, consistent with the existing pattern in
-`TopicReplayService`/`EntityReplayService` (both already build `Condition`s
-for `from`/`to` with jOOQ; this reuses that same condition-building code
-rather than duplicating WHERE-clause logic).
-
-The result set has `GROUPING SETS` marker rows (partition set: message_type
-NULL and vice versa) — split into the two dimension lists in Java by
-checking which grouping key is non-null, matching the two grouping sets
-requested. Each dimension list is capped at the top 20 values by count
-(`ORDER BY cnt DESC LIMIT 20` per grouping set, or truncated in Java after
-one query — either is fine at implementation time); anything beyond that is
-folded into a single `{"value": "__other__", "count": remainder}` entry so
-a 485-distinct-value field doesn't blow up the response.
+Each dimension list is capped at the top 20 values by count; the 21st+ rows
+(if `limit(21)` returns a 21st row) are folded into a single
+`{"value": "__other__", "count": remainder}` entry, computed as
+`totalRecords - sum(top 20 counts)` so a 485-distinct-value field (e.g.
+`message_type`) doesn't blow up the response.
 
 Executed on the shared connection under `synchronized(duckDB)`, exactly
-like every other read path (`docs/write-resilience.md` / CLAUDE.md
-threading model) — no new locking pattern.
+like every other read path (CLAUDE.md threading model) — no new locking
+pattern.
 
 ### Service + controller
 
-New method on `TopicReplayService`/`EntityReplayService` (or a small new
-`CassetteSummaryService` if the query-building logic is substantial enough
-to warrant its own class — decide at implementation time based on how much
-shared logic exists between the topic and entity variants).
+**Corrected during implementation research:** the summary method belongs
+on `TopicReplayService` (topic) and `EntityReplayService` (entity) — *not*
+a new shared class, and *not* `CassetteLifecycleService` (which owns the
+existing `/stats`/`/storage` endpoints, but those answer a storage-metadata
+question; this is a content `GROUP BY` query, which is what
+`TopicReplayService`/`EntityReplayService` already do for every other read).
+Each service gets its own summary method next to its existing `F_*` static
+`Field` constants and table helper (`tableFor(topic)` /
+`entityTable(entityType)`) — no cross-service sharing needed, the two
+dimension sets differ (`partition`+`messageType` vs `sourceTopic`+
+`messageType`) and the query shape is identical either way.
 
 `CassetteController` gains two `@GetMapping` handlers
 (`/topics/{topic}/summary`, `/entities/{entityType}/{entityId}/summary`),
-following the existing OpenAPI-annotation style already used for
-`/topics/{topic}/stats` (operationId, `@ApiResponse` with example JSON).
-Errors: `ResourceNotFoundException` if the topic/entity is unknown, same as
-existing endpoints — no new exception types needed.
+thin delegating bodies (`throws SQLException`) following the existing
+`getTopicStats`/`getEntityStats` OpenAPI-annotation style (operationId,
+`@ApiResponse` with example JSON) — `from`/`to` as `@RequestParam(required
+= false) Instant`, same as the topic replay GET handler (Spring parses
+ISO-8601 directly, no manual parsing).
+
+**Corrected error handling:** neither `/stats` endpoint today performs a
+not-found check on an unknown topic/entity — a missing DuckDB table simply
+raises `SQLException`, which `GlobalExceptionHandler` already maps to a
+**503 "Database error"** (`UPSTREAM_UNAVAILABLE`), not 404. The new
+endpoints follow this exact existing precedent: no explicit existence
+check, `@ApiResponses` documents `200`/`500` only (matching
+`getTopicStats`), no new exception type. The entity summary endpoint does
+call the existing `validateEntityType(entityType)` first (same as
+`getEntityStats`), which throws `ValidationException.field(...)` → 400 for
+a malformed (not merely unknown) entity type — that check is about input
+shape, not existence, and is unchanged from today's behavior.
 
 ## Frontend
 
@@ -139,16 +158,32 @@ Fetches via TanStack Query, key `['cassettes', kind, id, 'summary', {from, to}]`
 `staleTime` similar to existing stats queries. Refetches only when `from`/`to`
 change — not on tab switches, not on record-table pagination.
 
-Rendered once per route (`topics/$topic.tsx`, `entities/$entityType/$entityId.tsx`),
-as a persistent right-hand rail alongside the existing tab content — sibling
-to the tab panel, not inside it, so it stays mounted and visible across
-Records / Timeline / Barcode / SOL / Sequence tabs.
+**Corrected during implementation research:** `DESIGN.md`'s described
+palette (warm paper, oxblood accent, Fraunces/Figtree/JetBrains Mono) does
+not match what `ui/src/design/tokens.css` actually defines today — the live
+tokens are a blue-accent, Montserrat/DM Sans/DM Mono system (`--accent:
+#166DF8` light / `#60a5fa` dark, `--surface-raised`, `--ink-secondary`,
+`--rule`/`--rule-strong` are the real, currently-defined custom
+properties). `DESIGN.md` is stale; the panel styles against the real
+tokens above, not the doc.
+
+**Corrected during implementation research:** the "Timeline" tab in both
+`topics/$topic.tsx` and `entities/$entityType/$entityId.tsx` is a link-out
+card to a *separate* route (`topics/$topic_.timeline.tsx`,
+`entities/$entityType/$entityId_.timeline.tsx`) — `CassetteTimeline` is
+never mounted on the detail page itself. So "persistent across every tab"
+requires the panel on **four** route files, not two: the two detail routes
+(covering Records / SOL / Barcode / Sequence) and the two dedicated
+timeline routes (covering Timeline). Each of the four renders its own
+`<DatasetSummaryPanel>` instance with the same `kind`/id/`from`/`to` props;
+TanStack Query's cache (same query key) means only one network request
+fires even though the component mounts separately per route.
 
 Each dimension renders as a small ranked list: label + `<Tabular>` count
-(design tokens from `ui/src/design/primitives`), oxblood `--accent` on the
-selected row, quiet skeleton (not a spinner overlay) while loading —
-consistent with `DESIGN.md`'s "instrument, not dashboard" tone. No bars,
-no gradients; this is a ranked list of numbers, not a bar chart.
+(`ui/src/design/primitives/Tabular.tsx`), `var(--accent)` on the selected
+row, a quiet skeleton (not `LoadingSpinner`, which is sized for full-page
+loading, not an inline panel) while loading. No bars, no gradients; this is
+a ranked list of numbers, not a bar chart.
 
 ### Interaction wiring
 
@@ -158,9 +193,19 @@ supports today:
 | Dimension | Cassette | Wiring |
 |---|---|---|
 | partition | topic | `setPartitionRaw(value)` in `topics/$topic.tsx` → real server refetch (existing filter, `topics/$topic.tsx:159`) |
-| messageType | entity | sets existing `message_types` query param → real server refetch |
+| messageType | entity | new `messageTypes` field on `EntityRecordsParams` (see below) → real server refetch |
 | messageType | topic | client-side highlight/dim of already-loaded records (no server filter exists) |
 | sourceTopic | entity | client-side highlight/dim of already-loaded records (no server filter exists) |
+
+**Corrected during implementation research:** the entity `message_types`
+filter is backend-only today — `EntityRecordsParams` in `ui/src/api/client.ts`
+(the entity records query params type) has no `messageTypes` field, and
+`getEntityRecords` doesn't send one. Wiring the entity message-type
+leaderboard to a "real" filter means *adding* `messageTypes?: string[]` to
+`EntityRecordsParams`, passing it through `getEntityRecords`'s query-string
+building, and adding the corresponding state in
+`entities/$entityType/$entityId.tsx` (mirroring how `partitionRaw` works in
+the topic route) — not just reusing something that already exists.
 
 Client-side highlight means: `CassetteTimeline` markers and records-table
 rows that don't match the selected value are dimmed (lower opacity / muted
@@ -180,37 +225,57 @@ click-to-filter/click-to-clear behavior.
 - `ui/src/components/DatasetSummaryPanel.tsx` — new.
 - `ui/src/api/client.ts` — new `cassettesApi.getTopicSummary(topic, {from, to})`
   and `cassettesApi.getEntitySummary(entityType, entityId, {from, to})`,
-  alongside the existing `getTopicStats`/`getEntityStats` methods.
+  alongside the existing `getTopicStats`/`getEntityStats` methods; new
+  `CassetteSummary`/`DimensionBreakdown`/`ValueCount` types; new
+  `messageTypes?: string[]` field on `EntityRecordsParams`, threaded into
+  `getEntityRecords`'s query-string building.
 - `ui/src/routes/topics/$topic.tsx` — render `<DatasetSummaryPanel kind="topic" .../>`
   alongside the tab content; thread `selected`/`onSelect` into the existing
   `partitionRaw` state and into `CassetteTimeline`'s highlight prop (new,
   see below) / the records table's row styling.
-- `ui/src/routes/entities/$entityType/$entityId.tsx` — same, `kind="entity"`.
+- `ui/src/routes/topics/$topic_.timeline.tsx` — same `<DatasetSummaryPanel
+  kind="topic" .../>`, alongside the page's `CassetteTimeline`, wired to
+  its `highlightPredicate` prop.
+- `ui/src/routes/entities/$entityType/$entityId.tsx` — same, `kind="entity"`;
+  new `messageTypesRaw`/`setMessageTypesRaw`-style state (mirroring
+  `partitionRaw`) feeding the new `EntityRecordsParams.messageTypes`.
+- `ui/src/routes/entities/$entityType/$entityId_.timeline.tsx` — same
+  `<DatasetSummaryPanel kind="entity" .../>`, wired to `CassetteTimeline`'s
+  `highlightPredicate`.
 - `CassetteTimeline.tsx` — gains an optional `highlightPredicate?: (record: TimelineRecord) => boolean`
-  prop; when set, non-matching markers render at reduced opacity. Additive,
-  doesn't change existing behavior when the prop is omitted.
+  prop; when set, non-matching markers render at reduced opacity via the
+  existing hex-alpha-suffix trick already used for marker fill color
+  (`color + '99'` today for the default state; a lower-alpha suffix for
+  dimmed markers). Additive, doesn't change existing behavior when the prop
+  is omitted.
 
 ## Testing / verification
 
-**Backend:**
-- `CassetteSummaryServiceTest` (or wherever the query lands) — GROUPING SETS
-  query construction against a Testcontainers DuckDB fixture; assert the
-  two dimension lists come back correctly split and counted.
+**Backend** (corrected during implementation research — service-level
+tests against the existing lightweight embedded-DuckDB fixture, no
+Testcontainers and no new controller test, matching how `/stats` itself is
+tested today):
+- New tests in `TopicReplayServiceTest.java`/`EntityReplayServiceTest.java`
+  using the existing `DuckDBTestSupport` helpers (`newConnection()`,
+  `createGeneralCassetteTable()`/`createEntityTable()`,
+  `insertCassetteRow()`/`insertEntityRow()` — all already present, no new
+  fixtures needed) — assert the two dimension lists come back correctly
+  split and counted for known inserted rows.
 - Top-N + `__other__` bucketing edge case (a dimension with >20 distinct
   values).
 - `from`/`to` scoping — records outside the window excluded from counts.
-- Controller-level: `ResourceNotFoundException` → RFC7807 problem-detail
-  for an unknown topic/entity, matching `CassetteControllerProblemDetailTest`
-  patterns.
+- No dedicated controller-level test: the generic `SQLException` → 503
+  mapping is already covered by existing `GlobalExceptionHandler` tests,
+  and the new handlers are thin delegating bodies with no new branching
+  logic to test at that layer.
 
 **Frontend:**
-- `DatasetSummaryPanel` component test (vitest + testing-library, pattern
-  matching `CrudModals.a11y.test.tsx`): renders dimension lists from a
-  mocked query response; click selects/highlights; click again clears.
-- `topics/$topic.tsx`: clicking a partition row updates `partitionRaw` and
-  triggers the existing records refetch (can assert via the existing query
-  mocking setup already in that route's tests, if any — otherwise a new
-  light test).
+- `DatasetSummaryPanel.test.tsx` (vitest + testing-library; `vi.mock('../api/client', ...)`
+  + an inline `QueryClientProvider` wrap — the established per-file pattern,
+  e.g. `topics/-AddMatcherModal.a11y.test.tsx`; no shared test-utils file
+  exists in this codebase and one file doesn't justify adding one): renders
+  dimension lists from a mocked query response; click selects, click again
+  clears.
 - Manual verification in the browser: partition/message-type/source-topic
   breakdowns look correct against real recorded data; panel stays visible
   and doesn't refetch when switching tabs; light and dark mode (existing
