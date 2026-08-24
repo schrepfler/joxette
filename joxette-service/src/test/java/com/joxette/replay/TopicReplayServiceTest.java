@@ -357,6 +357,72 @@ class TopicReplayServiceTest {
     }
 
     // -------------------------------------------------------------------------
+    // getTopicSummary
+    // -------------------------------------------------------------------------
+
+    @Test
+    void getTopicSummary_breaksDownByPartitionAndMessageType() throws Exception {
+        Instant ts = Instant.parse("2024-01-01T10:00:00Z");
+        DuckDBTestSupport.insertCassetteRow(duckDB, TOPIC, 0, 0L, ts, Instant.now(), "k0", b("v0"), "OrderCreated");
+        DuckDBTestSupport.insertCassetteRow(duckDB, TOPIC, 0, 1L, ts.plusSeconds(1), Instant.now(), "k1", b("v1"), "OrderCreated");
+        DuckDBTestSupport.insertCassetteRow(duckDB, TOPIC, 1, 0L, ts.plusSeconds(2), Instant.now(), "k2", b("v2"), "OrderCancelled");
+
+        CassetteSummary summary = service.getTopicSummary(TOPIC, null, null);
+
+        assertThat(summary.totalRecords()).isEqualTo(3);
+        assertThat(summary.dimensions().get("partition"))
+                .containsExactlyInAnyOrder(new ValueCount("0", 2), new ValueCount("1", 1));
+        assertThat(summary.dimensions().get("messageType"))
+                .containsExactlyInAnyOrder(new ValueCount("OrderCreated", 2), new ValueCount("OrderCancelled", 1));
+    }
+
+    @Test
+    void getTopicSummary_dedupesSameOffsetRecordedTwice() throws Exception {
+        Instant ts = Instant.parse("2024-01-01T10:00:00Z");
+        // Same (partition, offset) inserted twice with different recorded_at — simulates
+        // an at-least-once redelivery. Only the most-recently-recorded row should count.
+        DuckDBTestSupport.insertCassetteRow(duckDB, TOPIC, 0, 0L, ts, Instant.now().minusSeconds(10), "k0", b("v0"), "A");
+        DuckDBTestSupport.insertCassetteRow(duckDB, TOPIC, 0, 0L, ts, Instant.now(), "k0", b("v0"), "A");
+
+        CassetteSummary summary = service.getTopicSummary(TOPIC, null, null);
+
+        assertThat(summary.totalRecords()).isEqualTo(1);
+        assertThat(summary.dimensions().get("partition")).containsExactly(new ValueCount("0", 1));
+    }
+
+    @Test
+    void getTopicSummary_scopesToFromToWindow() throws Exception {
+        Instant inWindow = Instant.parse("2024-01-01T10:00:00Z");
+        Instant outOfWindow = Instant.parse("2024-01-02T10:00:00Z");
+        DuckDBTestSupport.insertCassetteRow(duckDB, TOPIC, 0, 0L, inWindow, Instant.now(), "k0", b("v0"), "A");
+        DuckDBTestSupport.insertCassetteRow(duckDB, TOPIC, 0, 1L, outOfWindow, Instant.now(), "k1", b("v1"), "A");
+
+        CassetteSummary summary = service.getTopicSummary(TOPIC,
+                Instant.parse("2024-01-01T00:00:00Z"), Instant.parse("2024-01-01T23:59:59Z"));
+
+        assertThat(summary.totalRecords()).isEqualTo(1);
+    }
+
+    @Test
+    void getTopicSummary_foldsBeyondTop20IntoOtherBucket() throws Exception {
+        Instant ts = Instant.parse("2024-01-01T10:00:00Z");
+        // 25 distinct message types, one record each — only 20 should appear by name,
+        // the remaining 5 folded into a single "__other__" entry.
+        for (int i = 0; i < 25; i++) {
+            DuckDBTestSupport.insertCassetteRow(duckDB, TOPIC, 0, i, ts.plusSeconds(i), Instant.now(),
+                    "k" + i, b("v" + i), "type" + i);
+        }
+
+        CassetteSummary summary = service.getTopicSummary(TOPIC, null, null);
+
+        List<ValueCount> messageTypes = summary.dimensions().get("messageType");
+        assertThat(messageTypes).hasSize(21); // 20 named + 1 "other"
+        assertThat(messageTypes).filteredOn(vc -> "__other__".equals(vc.value()))
+                .singleElement()
+                .satisfies(vc -> assertThat(vc.count()).isEqualTo(5));
+    }
+
+    // -------------------------------------------------------------------------
     // Helpers
     // -------------------------------------------------------------------------
 

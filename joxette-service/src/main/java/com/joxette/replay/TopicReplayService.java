@@ -4,6 +4,8 @@ import org.jooq.Condition;
 import org.jooq.DSLContext;
 import org.jooq.Field;
 import org.jooq.Record;
+import org.jooq.Record2;
+import org.jooq.Result;
 import org.jooq.Table;
 import org.jooq.exception.DataAccessException;
 import org.jooq.impl.DSL;
@@ -442,6 +444,82 @@ public class TopicReplayService implements CassetteSource {
      */
     static String normalizeTopicName(String topic) {
         return topic.toLowerCase().replaceAll("[^a-z0-9_]", "_");
+    }
+
+    // -------------------------------------------------------------------------
+    // Cassette summary
+    // -------------------------------------------------------------------------
+
+    private static final int SUMMARY_TOP_N = 20;
+
+    /**
+     * Returns a dimension-cardinality breakdown (by partition and message type)
+     * for this topic's general cassette, optionally scoped to a time window.
+     * Deduplicates the same way {@link #query} does (QUALIFY {@code ROW_NUMBER()}
+     * over {@code (kafka_partition, kafka_offset)}, keeping the most recently
+     * recorded row) before counting, so at-least-once Kafka duplicates aren't
+     * double-counted.
+     */
+    public CassetteSummary getTopicSummary(String topic, Instant from, Instant to) throws SQLException {
+        Table<?> table = tableFor(topic);
+        Condition cond = DSL.noCondition();
+        if (from != null) cond = cond.and(F_TIMESTAMP.ge(from.atOffset(ZoneOffset.UTC)));
+        if (to != null)   cond = cond.and(F_TIMESTAMP.le(to.atOffset(ZoneOffset.UTC)));
+        final Condition finalCond = cond;
+
+        return withObjectStoreRetry("summary:" + topic, () -> {
+            synchronized (duckDB) {
+                var deduped = dsl.select(F_PARTITION, F_MESSAGE_TYPE)
+                        .from(table)
+                        .where(finalCond)
+                        .qualify(QUALIFY_DEDUP)
+                        .asTable("deduped");
+                Field<Integer> dPartition   = deduped.field(F_PARTITION);
+                Field<String>  dMessageType = deduped.field(F_MESSAGE_TYPE);
+
+                int totalRecords = dsl.fetchCount(deduped);
+
+                var partitionRows = dsl.select(dPartition.cast(String.class), DSL.count())
+                        .from(deduped)
+                        .groupBy(dPartition)
+                        .orderBy(DSL.count().desc())
+                        .limit(SUMMARY_TOP_N + 1)
+                        .fetch();
+
+                var messageTypeRows = dsl.select(dMessageType, DSL.count())
+                        .from(deduped)
+                        .groupBy(dMessageType)
+                        .orderBy(DSL.count().desc())
+                        .limit(SUMMARY_TOP_N + 1)
+                        .fetch();
+
+                return new CassetteSummary(totalRecords, from, to, Map.of(
+                        "partition", toValueCounts(partitionRows, totalRecords),
+                        "messageType", toValueCounts(messageTypeRows, totalRecords)));
+            }
+        });
+    }
+
+    /**
+     * Converts a {@code SELECT value, COUNT(*) ... LIMIT TOP_N+1} result into a
+     * capped {@link ValueCount} list, folding anything beyond {@link #SUMMARY_TOP_N}
+     * into a single {@code "__other__"} entry so a high-cardinality dimension
+     * doesn't blow up the response.
+     */
+    static List<ValueCount> toValueCounts(Result<Record2<String, Integer>> rows, long total) {
+        List<ValueCount> out = new ArrayList<>();
+        long topSum = 0;
+        int n = Math.min(rows.size(), SUMMARY_TOP_N);
+        for (int i = 0; i < n; i++) {
+            String value = rows.get(i).value1();
+            int count = rows.get(i).value2();
+            out.add(new ValueCount(value, count));
+            topSum += count;
+        }
+        if (rows.size() > SUMMARY_TOP_N) {
+            out.add(new ValueCount("__other__", total - topSum));
+        }
+        return out;
     }
 
     // -------------------------------------------------------------------------
