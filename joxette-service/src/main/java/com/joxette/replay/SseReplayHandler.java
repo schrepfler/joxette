@@ -334,8 +334,6 @@ public class SseReplayHandler implements SmartLifecycle {
             Runnable onClose,
             FollowRecordStreamer<T> streamer) {
         return outputStream -> {
-            var writer = new BufferedWriter(
-                    new OutputStreamWriter(outputStream, StandardCharsets.UTF_8));
             java.util.concurrent.atomic.AtomicBoolean cleanedUp =
                     new java.util.concurrent.atomic.AtomicBoolean();
             Runnable cleanup = () -> {
@@ -344,34 +342,51 @@ public class SseReplayHandler implements SmartLifecycle {
                 }
             };
             try {
-                FollowHooks<T> hooks = new FollowHooks<>() {
-                    @Override public Duration heartbeatInterval() { return heartbeat; }
-                    @Override public void onHistoricalEnd() {
-                        writeLine(writer, "{\"event\":\"follow\"}");
-                    }
-                    @Override public void onHeartbeat() {
-                        writeLine(writer, "{\"event\":\"heartbeat\",\"ts\":\""
-                                + Instant.now() + "\"}");
-                    }
-                    @Override public void onOverflow() {
-                        writeLine(writer, "{\"event\":\"overflow\",\"reason\":\"buffer overflow\"}");
-                    }
-                };
-                streamer.stream(record -> {
-                    try {
-                        writer.write(objectMapper.writeValueAsString(record));
-                        writer.newLine();
-                        writer.flush();
-                    } catch (JacksonException e) {
-                        throw new java.io.UncheckedIOException(new IOException(e));
-                    } catch (IOException e) {
-                        throw new java.io.UncheckedIOException(e);
-                    }
-                }, hooks);
-            } catch (java.io.UncheckedIOException e) {
-                writeNdjsonError(writer, e.getCause());
-            } catch (SQLException | RuntimeException e) {
-                writeNdjsonError(writer, e);
+                try {
+                    Scopes.<Void>supervised(scope -> {
+                        Flow<NdjsonLine> flow = Flows.usingEmit(emit -> {
+                            FollowHooks<T> hooks = new FollowHooks<>() {
+                                @Override public Duration heartbeatInterval() { return heartbeat; }
+                                @Override public void onHistoricalEnd() {
+                                    try {
+                                        emit.apply(new NdjsonLine.ControlEvent(Map.of("event", "follow")));
+                                    } catch (Exception e) { throw new RuntimeException(e); }
+                                }
+                                @Override public void onHeartbeat() {
+                                    try {
+                                        emit.apply(new NdjsonLine.ControlEvent(Map.of(
+                                                "event", "heartbeat", "ts", Instant.now().toString())));
+                                    } catch (Exception e) { throw new RuntimeException(e); }
+                                }
+                                @Override public void onOverflow() {
+                                    try {
+                                        emit.apply(new NdjsonLine.ControlEvent(Map.of(
+                                                "event", "overflow", "reason", "buffer overflow")));
+                                    } catch (Exception e) { throw new RuntimeException(e); }
+                                }
+                            };
+                            try {
+                                streamer.stream(record -> {
+                                    try {
+                                        emit.apply(new NdjsonLine.RecordLine<>(record));
+                                    } catch (Exception e) {
+                                        if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+                                        throw new RuntimeException(e);
+                                    }
+                                }, hooks);
+                            } catch (SQLException | RuntimeException e) {
+                                logStreamFailure("Mid-stream NDJSON replay failure", e);
+                                emit.apply(new NdjsonLine.ErrorFrame(Map.of("_error", problemPayload(e))));
+                            }
+                        });
+                        renderAndWrite(outputStream, flow);
+                        return null;
+                    });
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                } catch (Exception e) {
+                    log.debug("NDJSON follow stream terminated abnormally: {}", e.getMessage());
+                }
             } finally {
                 cleanup.run();
             }
