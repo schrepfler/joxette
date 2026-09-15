@@ -349,18 +349,18 @@ public class SseReplayHandler implements SmartLifecycle {
                                 @Override public Duration heartbeatInterval() { return heartbeat; }
                                 @Override public void onHistoricalEnd() {
                                     try {
-                                        emit.apply(new NdjsonLine.ControlEvent(Map.of("event", "follow")));
+                                        emit.apply(new NdjsonLine.ControlEvent(orderedMap("event", "follow")));
                                     } catch (Exception e) { throw new RuntimeException(e); }
                                 }
                                 @Override public void onHeartbeat() {
                                     try {
-                                        emit.apply(new NdjsonLine.ControlEvent(Map.of(
+                                        emit.apply(new NdjsonLine.ControlEvent(orderedMap(
                                                 "event", "heartbeat", "ts", Instant.now().toString())));
                                     } catch (Exception e) { throw new RuntimeException(e); }
                                 }
                                 @Override public void onOverflow() {
                                     try {
-                                        emit.apply(new NdjsonLine.ControlEvent(Map.of(
+                                        emit.apply(new NdjsonLine.ControlEvent(orderedMap(
                                                 "event", "overflow", "reason", "buffer overflow")));
                                     } catch (Exception e) { throw new RuntimeException(e); }
                                 }
@@ -401,6 +401,21 @@ public class SseReplayHandler implements SmartLifecycle {
         } catch (IOException e) {
             throw new java.io.UncheckedIOException(e);
         }
+    }
+
+    /**
+     * Builds a key-ordered map for {@link NdjsonLine.ControlEvent} payloads.
+     * {@code Map.of(...)} does not preserve insertion order, which would make
+     * multi-key control lines render with a nondeterministic key order; this
+     * guarantees the same order every time, matching the hand-built JSON
+     * strings this migration replaces.
+     */
+    private static Map<String, Object> orderedMap(Object... keysAndValues) {
+        Map<String, Object> map = new LinkedHashMap<>();
+        for (int i = 0; i < keysAndValues.length; i += 2) {
+            map.put((String) keysAndValues[i], keysAndValues[i + 1]);
+        }
+        return map;
     }
 
     /**
@@ -505,47 +520,51 @@ public class SseReplayHandler implements SmartLifecycle {
             ScheduledReplayService schedService,
             RecordStreamer<T> streamer) {
         return outputStream -> {
-            var writer = new BufferedWriter(
-                    new OutputStreamWriter(outputStream, StandardCharsets.UTF_8));
             try {
-                String scheduledJson = objectMapper.writeValueAsString(
-                        Map.of("event", "scheduled", "id", id, "scheduledAt", scheduledAt.toString()));
-                writer.write(scheduledJson);
-                writer.newLine();
-                writer.flush();
+                Scopes.<Void>supervised(scope -> {
+                    Flow<NdjsonLine> flow = Flows.usingEmit(emit -> {
+                        emit.apply(new NdjsonLine.ControlEvent(orderedMap(
+                                "event", "scheduled", "id", id, "scheduledAt", scheduledAt.toString())));
 
-                long delayMs = Math.max(0L, scheduledAt.toEpochMilli() - Instant.now().toEpochMilli());
-                boolean proceed = schedService.awaitStart(id, delayMs);
-                if (!proceed) {
-                    writer.write("{\"event\":\"cancelled\",\"id\":\"" + id + "\"}");
-                    writer.newLine();
-                    writer.flush();
-                    return;
-                }
+                        long delayMs = Math.max(0L, scheduledAt.toEpochMilli() - Instant.now().toEpochMilli());
+                        boolean proceed;
+                        try {
+                            proceed = schedService.awaitStart(id, delayMs);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            schedService.markFailed(id);
+                            emit.apply(new NdjsonLine.ErrorFrame(Map.of("_error", problemPayload(e))));
+                            return;
+                        }
+                        if (!proceed) {
+                            emit.apply(new NdjsonLine.ControlEvent(orderedMap("event", "cancelled", "id", id)));
+                            return;
+                        }
 
-                schedService.markStreaming(id);
-                streamer.stream(record -> {
-                    try {
-                        writer.write(objectMapper.writeValueAsString(record));
-                        writer.newLine();
-                        writer.flush();
-                    } catch (JacksonException e) {
-                        throw new java.io.UncheckedIOException(new IOException(e));
-                    } catch (IOException e) {
-                        throw new java.io.UncheckedIOException(e);
-                    }
+                        schedService.markStreaming(id);
+                        try {
+                            streamer.stream(record -> {
+                                try {
+                                    emit.apply(new NdjsonLine.RecordLine<>(record));
+                                } catch (Exception e) {
+                                    if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+                                    throw new RuntimeException(e);
+                                }
+                            });
+                            schedService.markCompleted(id);
+                        } catch (SQLException | RuntimeException e) {
+                            schedService.markFailed(id);
+                            logStreamFailure("Mid-stream NDJSON replay failure", e);
+                            emit.apply(new NdjsonLine.ErrorFrame(Map.of("_error", problemPayload(e))));
+                        }
+                    });
+                    renderAndWrite(outputStream, flow);
+                    return null;
                 });
-                schedService.markCompleted(id);
-            } catch (java.io.UncheckedIOException e) {
-                schedService.markFailed(id);
-                writeNdjsonError(writer, e.getCause());
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
-                schedService.markFailed(id);
-                writeNdjsonError(writer, e);
-            } catch (SQLException | RuntimeException e) {
-                schedService.markFailed(id);
-                writeNdjsonError(writer, e);
+            } catch (Exception e) {
+                log.debug("NDJSON scheduled stream terminated abnormally: {}", e.getMessage());
             }
         };
     }
