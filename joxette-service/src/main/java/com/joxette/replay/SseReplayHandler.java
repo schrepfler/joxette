@@ -1,5 +1,9 @@
 package com.joxette.replay;
 
+import com.softwaremill.jox.flows.Flow;
+import com.softwaremill.jox.flows.Flows;
+import com.softwaremill.jox.json.JsonFlow;
+import com.softwaremill.jox.structured.Scopes;
 import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 import com.joxette.api.error.ErrorCodes;
@@ -180,29 +184,42 @@ public class SseReplayHandler implements SmartLifecycle {
      */
     public <T> StreamingResponseBody streamNdjson(String preambleLine, RecordStreamer<T> streamer) {
         return outputStream -> {
-            var writer = new BufferedWriter(
-                    new OutputStreamWriter(outputStream, StandardCharsets.UTF_8));
+            // preambleLine arrives pre-serialised (built by the caller via
+            // objectMapper.writeValueAsString already) -- write it directly rather
+            // than round-tripping it back through Jackson.
+            if (preambleLine != null) {
+                outputStream.write(preambleLine.getBytes(StandardCharsets.UTF_8));
+                outputStream.write('\n');
+                outputStream.flush();
+            }
             try {
-                if (preambleLine != null) {
-                    writer.write(preambleLine);
-                    writer.newLine();
-                    writer.flush();
-                }
-                streamer.stream(record -> {
-                    try {
-                        writer.write(objectMapper.writeValueAsString(record));
-                        writer.newLine();
-                        writer.flush();
-                    } catch (JacksonException e) {
-                        throw new java.io.UncheckedIOException(new IOException(e));
-                    } catch (IOException e) {
-                        throw new java.io.UncheckedIOException(e);
-                    }
+                Scopes.<Void>supervised(scope -> {
+                    Flow<NdjsonLine> flow = Flows.usingEmit(emit -> {
+                        try {
+                            streamer.stream(record -> {
+                                try {
+                                    emit.apply(new NdjsonLine.RecordLine<>(record));
+                                } catch (Exception e) {
+                                    if (e instanceof InterruptedException) Thread.currentThread().interrupt();
+                                    throw new RuntimeException(e);
+                                }
+                            });
+                        } catch (SQLException | RuntimeException e) {
+                            logStreamFailure("Mid-stream NDJSON replay failure", e);
+                            emit.apply(new NdjsonLine.ErrorFrame(Map.of("_error", problemPayload(e))));
+                        }
+                    });
+                    renderAndWrite(outputStream, flow);
+                    return null;
                 });
-            } catch (java.io.UncheckedIOException e) {
-                writeNdjsonError(writer, e.getCause());
-            } catch (SQLException | RuntimeException e) {
-                writeNdjsonError(writer, e);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (Exception e) {
+                // The error frame itself failed to reach the client (e.g. broken pipe
+                // surfaced only once we tried to write it) or the Flow machinery hit
+                // an unexpected failure. Already logged via logStreamFailure in the
+                // common case above; nothing more we can do to a dead connection.
+                log.debug("NDJSON stream terminated abnormally: {}", e.getMessage());
             }
         };
     }
@@ -369,6 +386,21 @@ public class SseReplayHandler implements SmartLifecycle {
         } catch (IOException e) {
             throw new java.io.UncheckedIOException(e);
         }
+    }
+
+    /**
+     * Renders {@code flow} as NDJSON and writes each resulting chunk directly to
+     * {@code outputStream}, flushing after every chunk. Deliberately not
+     * {@code ByteFlow.runToOutputStream} — that closes the stream on any exception
+     * (which would fire before an error already emitted into the flow gets written)
+     * and never flushes between chunks (which would delay live/follow-mode output).
+     */
+    private void renderAndWrite(java.io.OutputStream outputStream, Flow<NdjsonLine> flow) throws Exception {
+        JsonFlow.renderNdjson(flow, objectMapper.writerFor(NdjsonLine.class))
+                .runForeach(chunk -> {
+                    outputStream.write(chunk.toArray());
+                    outputStream.flush();
+                });
     }
 
     /**
