@@ -4,7 +4,6 @@ import com.softwaremill.jox.flows.Flow;
 import com.softwaremill.jox.flows.Flows;
 import com.softwaremill.jox.json.JsonFlow;
 import com.softwaremill.jox.structured.Scopes;
-import tools.jackson.core.JacksonException;
 import tools.jackson.databind.ObjectMapper;
 import com.joxette.api.error.ErrorCodes;
 import com.joxette.api.error.ErrorTypes;
@@ -18,9 +17,7 @@ import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBo
 
 import org.springframework.context.SmartLifecycle;
 
-import java.io.BufferedWriter;
 import java.io.IOException;
-import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.sql.SQLException;
 import java.time.Duration;
@@ -393,16 +390,6 @@ public class SseReplayHandler implements SmartLifecycle {
         };
     }
 
-    private static void writeLine(BufferedWriter writer, String line) {
-        try {
-            writer.write(line);
-            writer.newLine();
-            writer.flush();
-        } catch (IOException e) {
-            throw new java.io.UncheckedIOException(e);
-        }
-    }
-
     /**
      * Builds a key-ordered map for {@link NdjsonLine.ControlEvent} payloads.
      * {@code Map.of(...)} does not preserve insertion order, which would make
@@ -709,24 +696,5 @@ public class SseReplayHandler implements SmartLifecycle {
             }
         }
         try { emitter.complete(); } catch (Exception ignored) {}
-    }
-
-    /**
-     * Writes a terminal {@code {"_error":{…}}} NDJSON line carrying a
-     * ProblemDetail-shaped payload, flushes, and returns. Logs the underlying
-     * cause at ERROR. Swallows any write failure (the client may have
-     * disconnected mid-stream).
-     */
-    private void writeNdjsonError(BufferedWriter writer, Throwable cause) {
-        logStreamFailure("Mid-stream NDJSON replay failure", cause);
-        try {
-            Map<String, Object> wrapper = new LinkedHashMap<>();
-            wrapper.put("_error", problemPayload(cause));
-            writer.write(objectMapper.writeValueAsString(wrapper));
-            writer.newLine();
-            writer.flush();
-        } catch (Exception ignored) {
-            // Client may have disconnected; nothing we can do.
-        }
     }
 }
