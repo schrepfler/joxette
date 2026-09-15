@@ -1,12 +1,13 @@
 package com.joxette.config;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
+import com.joxette.replay.transform.TransformStepJacksonModule;
 import io.swagger.v3.oas.models.OpenAPI;
 import io.swagger.v3.oas.models.info.Info;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
+import tools.jackson.databind.cfg.DateTimeFeature;
+import tools.jackson.databind.json.JsonMapper;
 
 @Configuration
 public class OpenApiConfig {
@@ -20,10 +21,18 @@ public class OpenApiConfig {
                         .description("Kafka topic cassette recorder backed by DuckLake"));
     }
 
+    /**
+     * Shared Jackson 3 mapper for the whole application. Java-time (de)serialization
+     * is built into jackson-databind in Jackson 3 (no JavaTimeModule needed);
+     * {@code WRITE_DATES_AS_TIMESTAMPS} is disabled so dates render as ISO-8601
+     * strings, matching the documented Replay Message Format.
+     */
     @Bean
-    public ObjectMapper objectMapper() {
-        return new ObjectMapper()
-                .registerModule(new JavaTimeModule())
-                .configure(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS, false);
+    @Primary
+    public JsonMapper jsonMapper() {
+        return JsonMapper.builder()
+                .disable(DateTimeFeature.WRITE_DATES_AS_TIMESTAMPS)
+                .addModule(new TransformStepJacksonModule())
+                .build();
     }
 }

@@ -1,12 +1,9 @@
 package com.joxette.replay.transform;
 
-import com.fasterxml.jackson.core.JsonGenerator;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.SerializerProvider;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.fasterxml.jackson.databind.ser.std.StdSerializer;
-
-import java.io.IOException;
+import tools.jackson.core.JsonGenerator;
+import tools.jackson.databind.SerializationContext;
+import tools.jackson.databind.node.ObjectNode;
+import tools.jackson.databind.ser.std.StdSerializer;
 
 /**
  * Jackson serializer for {@link GuardedStep}.
@@ -36,13 +33,11 @@ public class GuardedStepSerializer extends StdSerializer<GuardedStep> {
     }
 
     @Override
-    public void serialize(GuardedStep value, JsonGenerator gen, SerializerProvider provider)
-            throws IOException {
-        ObjectMapper mapper = (ObjectMapper) gen.getCodec();
+    public void serialize(GuardedStep value, JsonGenerator gen, SerializationContext provider) {
         // Serialize the delegate step — picks up @JsonTypeInfo and adds "type" field
-        ObjectNode node = mapper.valueToTree(value.delegate());
+        ObjectNode node = (ObjectNode) provider.valueToTree(value.delegate());
         // Inject the 'when' predicate into the same object
-        node.set("when", mapper.valueToTree(value.when()));
-        mapper.writeTree(gen, node);
+        node.set("when", provider.valueToTree(value.when()));
+        provider.writeTree(gen, node);
     }
 }

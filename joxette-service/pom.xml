@@ -171,7 +171,16 @@
             <artifactId>pekko-lease-kubernetes_2.13</artifactId>
         </dependency>
 
-        <!-- Jackson for JSON handling in REST API -->
+        <!-- Jackson 3 for JSON handling in REST API (migration in progress: see
+             docs/superpowers/plans/2026-09-15-jackson3-migration.md) -->
+        <dependency>
+            <groupId>tools.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+        </dependency>
+
+        <!-- Jackson 2, kept temporarily during the Jackson 3 migration for classes
+             not yet repointed. Removed once every joxette-service source file
+             uses tools.jackson.* instead. -->
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-databind</artifactId>

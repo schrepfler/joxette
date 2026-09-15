@@ -1,6 +1,6 @@
 package com.joxette.replay.transform;
 
-import com.fasterxml.jackson.databind.module.SimpleModule;
+import tools.jackson.databind.module.SimpleModule;
 
 /**
  * Jackson {@link SimpleModule} that registers {@link TransformStepDeserializer}
@@ -12,12 +12,12 @@ import com.fasterxml.jackson.databind.module.SimpleModule;
  * deserializing a concrete step class directly (e.g. {@code om.readValue(json, RedactStep.class)})
  * uses the normal Jackson mechanism rather than triggering {@link TransformStepDeserializer}.
  *
- * <p>Register this module in the application's Jackson configuration:
+ * <p>Register this module on the {@code JsonMapper} builder in the application's
+ * Jackson configuration:
  * <pre>{@code
- *   @Bean
- *   public Module transformStepJacksonModule() {
- *       return new TransformStepJacksonModule();
- *   }
+ *   JsonMapper.builder()
+ *       .addModule(new TransformStepJacksonModule())
+ *       .build();
  * }</pre>
  */
 public class TransformStepJacksonModule extends SimpleModule {

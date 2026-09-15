@@ -1,7 +1,7 @@
 package com.joxette.replay.transform;
 
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
-import com.fasterxml.jackson.databind.annotation.JsonSerialize;
+import tools.jackson.databind.annotation.JsonSerialize;
 
 /**
  * Transparent wrapper that pairs a {@link TransformStep} with an optional

@@ -1,10 +1,10 @@
 package com.joxette.replay.transform;
 
-import com.fasterxml.jackson.core.JsonParser;
-import com.fasterxml.jackson.databind.DeserializationContext;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.deser.std.StdDeserializer;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+import tools.jackson.core.JsonParser;
+import tools.jackson.databind.DeserializationContext;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.deser.std.StdDeserializer;
+import tools.jackson.databind.node.ObjectNode;
 import com.joxette.replay.transform.steps.AddComputedFieldStep;
 import com.joxette.replay.transform.steps.AddHeaderStep;
 import com.joxette.replay.transform.steps.CoalesceStep;
@@ -31,7 +31,6 @@ import com.joxette.replay.transform.steps.TimeFreezeStep;
 import com.joxette.replay.transform.steps.TimeShiftStep;
 import com.joxette.replay.transform.steps.WallTimeStep;
 
-import java.io.IOException;
 import java.util.Map;
 
 /**
@@ -96,7 +95,7 @@ public class TransformStepDeserializer extends StdDeserializer<TransformStep> {
     }
 
     @Override
-    public TransformStep deserialize(JsonParser p, DeserializationContext ctxt) throws IOException {
+    public TransformStep deserialize(JsonParser p, DeserializationContext ctxt) {
         ObjectNode node = p.readValueAsTree();
 
         // Peek at the 'when' guard before delegating to the concrete type.
@@ -119,11 +118,11 @@ public class TransformStepDeserializer extends StdDeserializer<TransformStep> {
 
         // Deserialize the concrete step. The 'type' field remains in the node but concrete
         // classes don't declare a 'type' component/property, so it is silently ignored.
-        TransformStep step = p.getCodec().treeToValue(node, concreteClass);
+        TransformStep step = ctxt.readTreeAsValue(node, concreteClass);
 
         // Wrap in GuardedStep when a 'when' predicate was present
         if (whenNode != null && !whenNode.isNull() && !whenNode.isMissingNode()) {
-            Predicate guard = p.getCodec().treeToValue(whenNode, Predicate.class);
+            Predicate guard = ctxt.readTreeAsValue(whenNode, Predicate.class);
             return new GuardedStep(guard, step);
         }
         return step;

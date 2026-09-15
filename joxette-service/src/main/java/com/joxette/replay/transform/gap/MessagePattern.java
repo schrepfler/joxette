@@ -2,14 +2,12 @@ package com.joxette.replay.transform.gap;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonValue;
-import com.fasterxml.jackson.core.JsonParser;
-import com.fasterxml.jackson.databind.DeserializationContext;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
-import com.fasterxml.jackson.databind.deser.std.StdDeserializer;
+import tools.jackson.core.JsonParser;
+import tools.jackson.databind.DeserializationContext;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.annotation.JsonDeserialize;
+import tools.jackson.databind.deser.std.StdDeserializer;
 import com.joxette.replay.transform.Predicate;
-
-import java.io.IOException;
 
 /**
  * Identifies a message occurrence by predicate match and a quantifier specifying
@@ -121,14 +119,15 @@ public record MessagePattern(
         }
 
         @Override
-        public Quantifier deserialize(JsonParser p, DeserializationContext ctx) throws IOException {
-            JsonNode node = p.getCodec().readTree(p);
+        public Quantifier deserialize(JsonParser p, DeserializationContext ctx) {
+            JsonNode node = p.readValueAsTree();
             if (node.isTextual()) {
                 return switch (node.textValue()) {
                     case "first" -> Quantifier.First.INSTANCE;
                     case "last"  -> Quantifier.Last.INSTANCE;
                     case "any"   -> Quantifier.Any.INSTANCE;
-                    default -> throw new IOException("Unknown quantifier string: " + node.textValue());
+                    default -> ctx.reportInputMismatch(Quantifier.class,
+                            "Unknown quantifier string: %s", node.textValue());
                 };
             }
             if (node.isObject()) {
@@ -136,12 +135,14 @@ public record MessagePattern(
                     return new Quantifier.Nth(node.get("nth").intValue());
                 }
                 if (node.has("first_after")) {
-                    MessagePattern after = p.getCodec().treeToValue(node.get("first_after"), MessagePattern.class);
+                    MessagePattern after = ctx.readTreeAsValue(node.get("first_after"), MessagePattern.class);
                     return new Quantifier.FirstAfter(after);
                 }
-                throw new IOException("Unknown quantifier object shape (expected 'nth' or 'first_after'): " + node);
+                return ctx.reportInputMismatch(Quantifier.class,
+                        "Unknown quantifier object shape (expected 'nth' or 'first_after'): %s", node);
             }
-            throw new IOException("Expected string or object for Quantifier, got: " + node.getNodeType());
+            return ctx.reportInputMismatch(Quantifier.class,
+                    "Expected string or object for Quantifier, got: %s", node.getNodeType());
         }
     }
 }
