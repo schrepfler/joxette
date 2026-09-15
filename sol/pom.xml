@@ -15,7 +15,7 @@
     <description>SOL — Sequence Operations Language engine. Zero coupling to Joxette; extractable as a standalone library.</description>
 
     <!--
-        sol is intentionally dependency-free beyond slf4j and Jackson-databind.
+        sol is intentionally dependency-free beyond slf4j.
         No Joxette modules, no Spring, no DuckDB, no Kafka.
     -->
 
@@ -23,10 +23,6 @@
         <dependency>
             <groupId>org.slf4j</groupId>
             <artifactId>slf4j-api</artifactId>
-        </dependency>
-        <dependency>
-            <groupId>com.fasterxml.jackson.core</groupId>
-            <artifactId>jackson-databind</artifactId>
         </dependency>
 
         <dependency>
