@@ -101,6 +101,13 @@
             <version>${jox.flows.version}</version>
         </dependency>
 
+        <!-- Jox JSON: lazy, backpressured NDJSON rendering over Flow/ByteFlow -->
+        <dependency>
+            <groupId>com.softwaremill.jox</groupId>
+            <artifactId>json</artifactId>
+            <version>${jox.flows.version}</version>
+        </dependency>
+
         <!-- DuckDB JDBC driver -->
         <dependency>
             <groupId>org.duckdb</groupId>
