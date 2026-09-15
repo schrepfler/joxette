@@ -1,7 +1,7 @@
 package com.joxette.replay;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.ObjectMapper;
 import com.jayway.jsonpath.InvalidPathException;
 import com.jayway.jsonpath.JsonPath;
 import com.joxette.api.error.ConflictException;
@@ -2829,8 +2829,8 @@ public class CassetteController {
     private static String extractTypeFromValue(String base64Value, String fieldPath) {
         try {
             byte[] bytes = java.util.Base64.getUrlDecoder().decode(base64Value);
-            com.fasterxml.jackson.databind.JsonNode node =
-                    new com.fasterxml.jackson.databind.ObjectMapper().readTree(bytes);
+            tools.jackson.databind.JsonNode node =
+                    new tools.jackson.databind.ObjectMapper().readTree(bytes);
             for (String part : fieldPath.split("\\.")) {
                 if (node == null || !node.isObject()) return null;
                 node = node.get(part);
@@ -2950,7 +2950,7 @@ public class CassetteController {
             return objectMapper.readValue(json,
                     objectMapper.getTypeFactory()
                             .constructCollectionType(List.class, TransformStep.class));
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             throw new ValidationException("Invalid transform steps: " + e.getOriginalMessage());
         }
     }
@@ -3085,7 +3085,7 @@ public class CassetteController {
         if (presetName != null) payload.put("presetName", presetName);
         try {
             return objectMapper.writeValueAsString(payload);
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             return "{\"stepCount\":" + steps.size() + "}";
         }
     }
@@ -3093,7 +3093,7 @@ public class CassetteController {
     private String toJson(Object value) {
         try {
             return objectMapper.writeValueAsString(value);
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             return "{}";
         }
     }
@@ -3109,7 +3109,7 @@ public class CassetteController {
         if (presetName != null) payload.put("presetName", presetName);
         try {
             return objectMapper.writeValueAsString(payload);
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             return "{\"event\":\"transform\",\"stepCount\":" + steps.size() + "}";
         }
     }

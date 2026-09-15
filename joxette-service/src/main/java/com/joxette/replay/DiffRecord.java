@@ -1,7 +1,7 @@
 package com.joxette.replay;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+import tools.jackson.databind.node.ObjectNode;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.util.List;

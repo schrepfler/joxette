@@ -1,6 +1,6 @@
 package com.joxette.exports;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import com.joxette.api.error.ResourceNotFoundException;
 import com.joxette.db.DuckDbErrors;
 import com.joxette.api.error.ValidationException;

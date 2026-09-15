@@ -1,7 +1,7 @@
 package com.joxette.replay.transform.steps;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.ObjectNode;
 import com.joxette.replay.transform.TransformContext;
 import com.joxette.replay.transform.TransformStep;
 import com.joxette.replay.transform.ReplayMessage;
@@ -80,7 +80,7 @@ public record MergePatchStep(String target, JsonNode patch) implements Transform
 
         // Collect entries to avoid concurrent modification
         List<Map.Entry<String, JsonNode>> entries = new ArrayList<>();
-        patchNode.fields().forEachRemaining(entries::add);
+        patchNode.properties().forEach(entries::add);
 
         for (Map.Entry<String, JsonNode> entry : entries) {
             String  key  = entry.getKey();

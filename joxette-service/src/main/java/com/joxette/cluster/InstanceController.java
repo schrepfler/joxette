@@ -1,7 +1,7 @@
 package com.joxette.cluster;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.ObjectMapper;
 import com.joxette.config.JoxetteProperties;
 import com.joxette.lifecycle.BackgroundTaskRegistry;
 import com.joxette.recording.RecorderStatus;
@@ -149,7 +149,7 @@ public class InstanceController {
                     String json;
                     try {
                         json = objectMapper.writeValueAsString(snapshot);
-                    } catch (JsonProcessingException e) {
+                    } catch (JacksonException e) {
                         emitter.completeWithError(e);
                         return;
                     }

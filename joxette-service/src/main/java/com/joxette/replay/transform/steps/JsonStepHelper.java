@@ -1,9 +1,9 @@
 package com.joxette.replay.transform.steps;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ObjectNode;
 import com.joxette.replay.transform.ReplayMessage;
 
 import java.nio.charset.StandardCharsets;
@@ -105,7 +105,7 @@ final class JsonStepHelper {
         } else {
             try {
                 msg.value = ENC.encodeToString(MAPPER.writeValueAsBytes(valueNode));
-            } catch (JsonProcessingException e) {
+            } catch (JacksonException e) {
                 throw new IllegalStateException(
                         "Failed to re-encode value after transformation", e);
             }

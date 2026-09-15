@@ -1,7 +1,7 @@
 package com.joxette.replay.transform;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.ObjectMapper;
 import com.joxette.api.error.ConflictException;
 import com.joxette.api.error.ResourceNotFoundException;
 import com.joxette.api.error.ValidationException;
@@ -123,7 +123,7 @@ public class TransformPresetRepository {
     private String serializeSteps(List<TransformStep> steps) {
         try {
             return objectMapper.writeValueAsString(steps);
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             throw new ValidationException("Transform steps could not be serialised: " + e.getOriginalMessage());
         }
     }
@@ -152,7 +152,7 @@ public class TransformPresetRepository {
             steps = objectMapper.readValue(stepsJson,
                     objectMapper.getTypeFactory()
                             .constructCollectionType(List.class, TransformStep.class));
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             steps = List.of();
         }
         String fragmentsJson = r.get(F_FRAGMENTS);
@@ -163,7 +163,7 @@ public class TransformPresetRepository {
                             objectMapper.getTypeFactory()
                                     .constructCollectionType(List.class, FragmentDefinition.class))
                     : List.of();
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             fragments = List.of();
         }
         OffsetDateTime created = r.get(F_CREATED);

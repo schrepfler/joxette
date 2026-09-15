@@ -1,6 +1,6 @@
 package com.joxette.replay.transform.steps;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import tools.jackson.databind.JsonNode;
 import com.joxette.replay.transform.MessageJsonPath;
 import com.joxette.replay.transform.ReplayMessage;
 import com.joxette.replay.transform.TransformStep;

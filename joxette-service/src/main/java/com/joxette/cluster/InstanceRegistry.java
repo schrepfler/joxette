@@ -1,8 +1,8 @@
 package com.joxette.cluster;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.JacksonException;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.ObjectMapper;
 import com.joxette.config.JoxetteProperties;
 import com.joxette.db.DuckLakeManager;
 import com.joxette.recording.RecordingCoordinator;
@@ -289,7 +289,7 @@ public class InstanceRegistry {
         activeTopics.stream().sorted().forEach(t -> assignments.put(t, List.of()));
         try {
             return objectMapper.writeValueAsString(assignments);
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             log.debug("Could not serialise kafka_assignments: {}", e.getMessage());
             return "{}";
         }

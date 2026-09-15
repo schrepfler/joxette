@@ -1,7 +1,7 @@
 package com.joxette.streams;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.ObjectMapper;
 import com.joxette.api.error.ConflictException;
 import com.joxette.api.error.ResourceNotFoundException;
 import com.joxette.api.error.ValidationException;
@@ -199,7 +199,7 @@ public class StreamDefinitionRepository {
                     stored.transform(), stored.output(), stored.stateFold(),
                     createdAt != null ? createdAt.toInstant() : null,
                     updatedAt != null ? updatedAt.toInstant() : null);
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             // Return a minimal shell so the list endpoint doesn't explode on a corrupt row.
             OffsetDateTime createdAt = r.get(F_CREATED_AT);
             OffsetDateTime updatedAt = r.get(F_UPDATED_AT);
@@ -214,7 +214,7 @@ public class StreamDefinitionRepository {
     private String serialize(StreamDefinition def) {
         try {
             return objectMapper.writeValueAsString(def);
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             throw new ValidationException("Stream definition could not be serialised: " + e.getOriginalMessage());
         }
     }

@@ -1,6 +1,6 @@
 package com.joxette.reconciliation;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import com.joxette.compaction.CompactionLockManager;
 import com.joxette.compaction.RunStatus;
 import com.joxette.compaction.TriggerSource;

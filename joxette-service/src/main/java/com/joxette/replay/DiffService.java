@@ -1,13 +1,12 @@
 package com.joxette.replay;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ObjectNode;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.Base64;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 
@@ -72,9 +71,7 @@ public class DiffService {
             List<String> changedFields = new ArrayList<>();
             ObjectNode before = objectMapper.createObjectNode();
 
-            Iterator<Map.Entry<String, JsonNode>> it = patchObj.fields();
-            while (it.hasNext()) {
-                Map.Entry<String, JsonNode> entry = it.next();
+            for (Map.Entry<String, JsonNode> entry : patchObj.properties()) {
                 String key = entry.getKey();
                 JsonNode newVal = entry.getValue();
                 JsonNode oldVal = state.get(key);
@@ -110,7 +107,7 @@ public class DiffService {
      * Null values in {@code patch} remove the corresponding key.
      */
     private static void applyMergePatch(ObjectNode target, ObjectNode patch) {
-        patch.fields().forEachRemaining(entry -> {
+        patch.properties().forEach(entry -> {
             String key = entry.getKey();
             JsonNode val = entry.getValue();
             if (val.isNull()) {

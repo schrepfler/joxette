@@ -1,6 +1,6 @@
 package com.joxette.config;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import com.joxette.api.error.ProblemDetailSupport;
 import com.joxette.api.error.UnauthorizedException;
 import jakarta.servlet.FilterChain;

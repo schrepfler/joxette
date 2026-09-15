@@ -1,8 +1,8 @@
 package com.joxette.replay;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.JacksonException;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.ObjectMapper;
 import com.joxette.config.JoxetteProperties;
 import com.joxette.management.ConfigRepository;
 import com.joxette.recording.RecordingCoordinator;
@@ -336,7 +336,7 @@ public class CassetteLifecycleService {
     private String serializeRowCounts(Map<String, Long> rowCounts) {
         try {
             return objectMapper.writeValueAsString(rowCounts);
-        } catch (JsonProcessingException e) {
+        } catch (JacksonException e) {
             log.warn("Could not serialise snapshot row counts ({}); restore verification will be skipped", e.getMessage());
             return null;
         }
@@ -442,7 +442,7 @@ public class CassetteLifecycleService {
                     if (json == null || json.isBlank()) return Map.of();
                     try {
                         return objectMapper.readValue(json, new TypeReference<Map<String, Long>>() {});
-                    } catch (JsonProcessingException e) {
+                    } catch (JacksonException e) {
                         log.warn("Restore '{}': could not parse stored row_counts ({}); skipping verification",
                                 name, e.getMessage());
                         return Map.of();

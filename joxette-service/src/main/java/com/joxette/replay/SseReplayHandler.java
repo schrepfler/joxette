@@ -1,7 +1,7 @@
 package com.joxette.replay;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.ObjectMapper;
 import com.joxette.api.error.ErrorCodes;
 import com.joxette.api.error.ErrorTypes;
 import com.joxette.api.error.JoxetteException;
@@ -193,7 +193,7 @@ public class SseReplayHandler implements SmartLifecycle {
                         writer.write(objectMapper.writeValueAsString(record));
                         writer.newLine();
                         writer.flush();
-                    } catch (JsonProcessingException e) {
+                    } catch (JacksonException e) {
                         throw new java.io.UncheckedIOException(new IOException(e));
                     } catch (IOException e) {
                         throw new java.io.UncheckedIOException(e);
@@ -345,7 +345,7 @@ public class SseReplayHandler implements SmartLifecycle {
                         writer.write(objectMapper.writeValueAsString(record));
                         writer.newLine();
                         writer.flush();
-                    } catch (JsonProcessingException e) {
+                    } catch (JacksonException e) {
                         throw new java.io.UncheckedIOException(new IOException(e));
                     } catch (IOException e) {
                         throw new java.io.UncheckedIOException(e);
@@ -482,7 +482,7 @@ public class SseReplayHandler implements SmartLifecycle {
                         writer.write(objectMapper.writeValueAsString(record));
                         writer.newLine();
                         writer.flush();
-                    } catch (JsonProcessingException e) {
+                    } catch (JacksonException e) {
                         throw new java.io.UncheckedIOException(new IOException(e));
                     } catch (IOException e) {
                         throw new java.io.UncheckedIOException(e);

@@ -1,7 +1,7 @@
 package com.joxette.replay.transform.steps;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.node.ObjectNode;
 import com.joxette.replay.transform.TransformContext;
 import com.joxette.replay.transform.TransformStep;
 import com.joxette.replay.transform.ReplayMessage;
@@ -53,7 +53,7 @@ public record FlattenFieldStep(String source, String prefix) implements Transfor
 
             // Collect entries first to avoid concurrent-modification on the iterator
             List<Map.Entry<String, JsonNode>> entries = new ArrayList<>();
-            nested.fields().forEachRemaining(entries::add);
+            nested.properties().forEach(entries::add);
 
             entries.forEach(e -> parent.set(pfx + e.getKey(), e.getValue()));
             parent.remove(leafKey);

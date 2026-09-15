@@ -1,8 +1,8 @@
 package com.joxette.replay;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.node.ObjectNode;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ObjectNode;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -88,7 +88,7 @@ public class StateFoldService {
      * Null values in {@code patch} remove the corresponding key from {@code target}.
      */
     private static void mergePatch(ObjectNode target, ObjectNode patch) {
-        patch.fields().forEachRemaining(entry -> {
+        patch.properties().forEach(entry -> {
             String key = entry.getKey();
             JsonNode val = entry.getValue();
             if (val.isNull()) {
