@@ -29,11 +29,11 @@
         <compiler.release>25</compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <jox.channels.version>1.1.2</jox.channels.version>
-        <jox.flows.version>0.5.3</jox.flows.version>
-        <duckdb.version>1.5.4.0</duckdb.version>
-        <jooq.version>3.21.5</jooq.version>
-        <springdoc-openapi-starter-webmvc-ui.version>3.0.3</springdoc-openapi-starter-webmvc-ui.version>
-        <aws.sdk.version>2.46.6</aws.sdk.version>
+        <jox.flows.version>0.6.0</jox.flows.version>
+        <duckdb.version>1.5.5.1</duckdb.version>
+        <jooq.version>3.21.8</jooq.version>
+        <springdoc-openapi-starter-webmvc-ui.version>3.1.0</springdoc-openapi-starter-webmvc-ui.version>
+        <aws.sdk.version>2.54.12</aws.sdk.version>
         <maven-enforcer-plugin.version>3.6.3</maven-enforcer-plugin.version>
         <maven-compiler-plugin.version>3.15.0</maven-compiler-plugin.version>
         <maven-surefire-plugin.version>3.5.6</maven-surefire-plugin.version>
@@ -42,14 +42,14 @@
         <maven-jar-plugin.version>3.5.0</maven-jar-plugin.version>
         <maven-clean-plugin.version>3.5.0</maven-clean-plugin.version>
         <maven-install-plugin.version>3.1.4</maven-install-plugin.version>
-        <spring-boot-dependencies.version>4.0.6</spring-boot-dependencies.version>
-        <plantuml.version>1.2026.2</plantuml.version>
-        <swagger-annotations.version>2.2.50</swagger-annotations.version>
+        <spring-boot-dependencies.version>4.1.1</spring-boot-dependencies.version>
+        <plantuml.version>1.2026.6</plantuml.version>
+        <swagger-annotations.version>2.2.55</swagger-annotations.version>
         <!-- Kubernetes operator (joxette-operator module). The JOSDK Spring Boot
              starter 6.4.x line targets Spring Boot 4; 6.4.2's parent pins Boot 4.0.6,
              JOSDK 5.3.4, and Fabric8 7.7.0. crd-generator versions track Fabric8. -->
-        <josdk-starter.version>6.4.2</josdk-starter.version>
-        <fabric8.version>7.7.0</fabric8.version>
+        <josdk-starter.version>6.7.0</josdk-starter.version>
+        <fabric8.version>7.9.0</fabric8.version>
         <!-- Pekko core. Pinned to 2.0.0-M1 to match the Pekko Management / Pekko HTTP
              lines, which only ship 2.0.0-M1 (no M2/M3 exist for management or http).
              Cluster Bootstrap + kubernetes-api discovery (Track B clustering) require
