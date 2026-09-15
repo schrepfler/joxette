@@ -1,6 +1,8 @@
 package com.joxette.exports;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.cfg.DateTimeFeature;
+import tools.jackson.databind.json.JsonMapper;
 import com.joxette.api.error.GlobalExceptionHandler;
 import com.joxette.api.error.ResourceNotFoundException;
 import com.joxette.api.error.ValidationException;
@@ -38,9 +40,9 @@ class ExportControllerTest {
 
     @BeforeEach
     void setUp() {
-        mapper = new ObjectMapper();
-        mapper.registerModule(new com.fasterxml.jackson.datatype.jsr310.JavaTimeModule());
-        mapper.disable(com.fasterxml.jackson.databind.SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+        mapper = JsonMapper.builder()
+                .disable(DateTimeFeature.WRITE_DATES_AS_TIMESTAMPS)
+                .build();
 
         mvc = MockMvcBuilders.standaloneSetup(new ExportController(service))
                 .setControllerAdvice(new GlobalExceptionHandler())

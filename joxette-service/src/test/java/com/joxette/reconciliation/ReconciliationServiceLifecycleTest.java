@@ -11,7 +11,7 @@ import com.joxette.config.JoxetteProperties;
 import com.joxette.metrics.JoxetteMetrics;
 import com.joxette.support.DuckDBTestSupport;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

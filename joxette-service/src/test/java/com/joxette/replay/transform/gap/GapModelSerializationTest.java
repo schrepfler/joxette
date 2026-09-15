@@ -1,6 +1,7 @@
 package com.joxette.replay.transform.gap;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.json.JsonMapper;
 import com.joxette.replay.transform.Predicate;
 import com.joxette.replay.transform.TransformStep;
 import com.joxette.replay.transform.TransformStepJacksonModule;
@@ -24,8 +25,9 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class GapModelSerializationTest {
 
-    private static final ObjectMapper OM = new ObjectMapper()
-            .registerModule(new TransformStepJacksonModule());
+    private static final ObjectMapper OM = JsonMapper.builder()
+            .addModule(new TransformStepJacksonModule())
+            .build();
 
     private static final Predicate ORDER_CREATED = new Predicate.Leaf(
             "$.value.type", Predicate.Operator.EQ, "OrderCreated");

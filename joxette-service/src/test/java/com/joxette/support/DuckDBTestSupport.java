@@ -442,7 +442,7 @@ public final class DuckDBTestSupport {
      */
     public static com.joxette.cluster.InstanceRegistry newInstanceRegistry(Connection conn) {
         return new com.joxette.cluster.InstanceRegistry(
-                conn, null, null, null, new com.fasterxml.jackson.databind.ObjectMapper());
+                conn, null, null, null, new tools.jackson.databind.ObjectMapper());
     }
 
     /**

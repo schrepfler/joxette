@@ -1,6 +1,6 @@
 package com.joxette.replay.transform;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import com.joxette.support.DuckDBTestSupport;
 import org.jooq.SQLDialect;
 import org.jooq.impl.DSL;

@@ -1,6 +1,6 @@
 package com.joxette.replay;
 
-import com.fasterxml.jackson.databind.node.TextNode;
+import tools.jackson.databind.node.StringNode;
 import com.joxette.replay.transform.GuardedStep;
 import com.joxette.replay.transform.Predicate;
 import com.joxette.replay.transform.ReplayMetadataInjector;
@@ -178,7 +178,7 @@ class TopicReplayServiceTransformTest {
         DuckDBTestSupport.insertCassetteRow(duckDB, TOPIC, 0, 0L, ts, Instant.now(), "k0", value);
         DuckDBTestSupport.insertCassetteRow(duckDB, TOPIC, 1, 0L, ts, Instant.now(), "k1", value);
 
-        var setStep     = new SetConstantStep("$.value.env", TextNode.valueOf("staging"));
+        var setStep     = new SetConstantStep("$.value.env", StringNode.valueOf("staging"));
         var guardedStep = new GuardedStep(new Predicate.Leaf("$.partition", EQ, 0), setStep);
         var pipeline    = new TransformPipeline(List.of(guardedStep), null);
 

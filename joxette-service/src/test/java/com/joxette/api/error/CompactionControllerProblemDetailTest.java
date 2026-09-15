@@ -1,6 +1,6 @@
 package com.joxette.api.error;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import com.joxette.compaction.CompactionController;
 import com.joxette.compaction.CompactionRun;
 import com.joxette.compaction.RunStatus;

@@ -1,6 +1,6 @@
 package com.joxette.replay.transform;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import com.joxette.replay.CassetteRecord;
 import com.joxette.replay.transform.steps.AddComputedFieldStep;
 import com.joxette.replay.transform.steps.AddHeaderStep;

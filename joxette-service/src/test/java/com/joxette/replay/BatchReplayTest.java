@@ -1,6 +1,8 @@
 package com.joxette.replay;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.cfg.DateTimeFeature;
+import tools.jackson.databind.json.JsonMapper;
 import com.joxette.api.error.GlobalExceptionHandler;
 import com.joxette.config.JoxetteProperties;
 import com.joxette.management.ConfigRepository;
@@ -81,9 +83,9 @@ class BatchReplayTest {
         conn = DuckDBTestSupport.newConnection();
         DuckDBTestSupport.createEntityTable(conn, ENTITY_TYPE);
 
-        objectMapper = new ObjectMapper();
-        objectMapper.registerModule(new com.fasterxml.jackson.datatype.jsr310.JavaTimeModule());
-        objectMapper.disable(com.fasterxml.jackson.databind.SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
+        objectMapper = JsonMapper.builder()
+                .disable(DateTimeFeature.WRITE_DATES_AS_TIMESTAMPS)
+                .build();
 
         EntityReplayService entityService =
                 new EntityReplayService(DSL.using(conn, SQLDialect.DUCKDB), conn, new com.joxette.config.JoxetteProperties());

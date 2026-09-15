@@ -1,6 +1,6 @@
 package com.joxette.replay;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import com.joxette.api.error.SnapshotVerificationException;
 import com.joxette.config.JoxetteProperties;
 import com.joxette.management.ConfigRepository;

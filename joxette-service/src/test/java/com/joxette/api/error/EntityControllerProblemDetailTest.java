@@ -1,6 +1,6 @@
 package com.joxette.api.error;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import com.joxette.db.SchemaManager;
 import com.joxette.management.ConfigRepository;
 import com.joxette.management.EntityController;

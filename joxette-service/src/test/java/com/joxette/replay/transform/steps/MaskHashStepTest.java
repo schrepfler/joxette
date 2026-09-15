@@ -1,6 +1,6 @@
 package com.joxette.replay.transform.steps;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.databind.ObjectMapper;
 import com.joxette.replay.CassetteRecord;
 import com.joxette.replay.transform.ReplayMessage;
 import org.junit.jupiter.api.Test;
