@@ -1,7 +1,7 @@
 package com.joxette.sol;
 
-import com.fasterxml.jackson.core.type.TypeReference;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import tools.jackson.core.type.TypeReference;
+import tools.jackson.databind.ObjectMapper;
 import com.joxette.replay.EntityRecord;
 import com.sol.model.Event;
 import com.sol.model.Sequence;
