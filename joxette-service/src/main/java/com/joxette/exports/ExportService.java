@@ -206,9 +206,10 @@ public class ExportService {
         return records.size();
     }
 
-    private long exportNdjson(String jobId, String entityType, List<String> entityIds,
-                              Instant from, Instant to, List<String> messageTypes,
-                              String outputPath) throws Exception {
+    // Package-private so ExportServiceNdjsonTest can exercise it directly.
+    long exportNdjson(String jobId, String entityType, List<String> entityIds,
+                      Instant from, Instant to, List<String> messageTypes,
+                      String outputPath) throws Exception {
         List<EntityRecord> records = loadAll(entityType, entityIds, from, to, messageTypes);
         if (records.isEmpty()) {
             return 0L;
