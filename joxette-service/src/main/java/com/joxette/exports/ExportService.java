@@ -10,6 +10,8 @@ import com.joxette.replay.EntityRecord;
 import com.joxette.replay.EntityReplayService;
 import com.joxette.replay.Order;
 import com.joxette.replay.transform.TransformPipeline;
+import org.duckdb.DuckDBAppender;
+import org.duckdb.DuckDBConnection;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -210,34 +212,58 @@ public class ExportService {
     long exportNdjson(String jobId, String entityType, List<String> entityIds,
                       Instant from, Instant to, List<String> messageTypes,
                       String outputPath) throws Exception {
-        List<EntityRecord> records = loadAll(entityType, entityIds, from, to, messageTypes);
-        if (records.isEmpty()) {
-            return 0L;
-        }
-        // Write NDJSON to a local/S3 path by building the content and writing via DuckDB.
-        // For local paths write through a DuckDB COPY; for remote paths use the same COPY
-        // path since DuckDB httpfs handles s3:// writes transparently.
+        // Stream records straight into a DuckDB temp table via the native Appender --
+        // ~150x faster than a JDBC PreparedStatement batch INSERT at this row count
+        // (see docs/superpowers/specs/2026-09-15-export-ndjson-appender-design.md) --
+        // then COPY that table out. For remote paths the same COPY path is used since
+        // DuckDB httpfs handles s3:// writes transparently.
+        //
+        // A temp table is scoped to whichever connection creates it, so the whole
+        // operation runs on one duplicated connection end to end, independent of the
+        // shared duckDB connection -- mirrors CassetteBatchWriter's per-writer
+        // connection and sidesteps needing synchronized(duckDB) for this operation.
+        DuckDBConnection duckConn = duckDB.unwrap(DuckDBConnection.class);
         String tmpTable = "export_tmp_ndjson_" + jobId.replace("-", "_");
-        try (Statement st = duckDB.createStatement()) {
-            st.execute("""
-                    CREATE TEMP TABLE %s (line VARCHAR)
-                    """.formatted(tmpTable));
-
-            try (PreparedStatement ps = duckDB.prepareStatement(
-                    "INSERT INTO " + tmpTable + " VALUES (?)")) {
-                for (EntityRecord r : records) {
-                    ps.setString(1, objectMapper.writeValueAsString(r));
-                    ps.addBatch();
-                }
-                ps.executeBatch();
+        try (DuckDBConnection conn = duckConn.duplicate()) {
+            try (Statement st = conn.createStatement()) {
+                st.execute("""
+                        CREATE TEMP TABLE %s (line VARCHAR)
+                        """.formatted(tmpTable));
             }
 
-            // DuckDB COPY … TO with FORMAT CSV and no separator/header gives one line per row.
-            st.execute("COPY (SELECT line FROM " + tmpTable + ") TO '" + outputPath
-                       + "' (FORMAT CSV, HEADER false, QUOTE '', DELIMITER '')");
-            st.execute("DROP TABLE IF EXISTS " + tmpTable);
+            long[] count = {0L};
+            try (DuckDBAppender appender =
+                    conn.createAppender(DuckDBConnection.DEFAULT_SCHEMA, tmpTable)) {
+                for (String entityId : entityIds) {
+                    entityReplayService.streamEntityEvents(
+                            entityType, entityId, from, to,
+                            record -> {
+                                try {
+                                    appender.beginRow();
+                                    appender.append(objectMapper.writeValueAsString(record));
+                                    appender.endRow();
+                                    count[0]++;
+                                } catch (Exception e) {
+                                    throw new RuntimeException(e);
+                                }
+                            },
+                            TransformPipeline.IDENTITY, "",
+                            Order.ASC, null, null, messageTypes);
+                }
+            }
+
+            try (Statement st = conn.createStatement()) {
+                if (count[0] == 0L) {
+                    st.execute("DROP TABLE IF EXISTS " + tmpTable);
+                    return 0L;
+                }
+                // DuckDB COPY … TO with FORMAT CSV and no separator/header gives one line per row.
+                st.execute("COPY (SELECT line FROM " + tmpTable + ") TO '" + outputPath
+                           + "' (FORMAT CSV, HEADER false, QUOTE '', DELIMITER '')");
+                st.execute("DROP TABLE IF EXISTS " + tmpTable);
+            }
+            return count[0];
         }
-        return records.size();
     }
 
     private List<EntityRecord> loadAll(String entityType, List<String> entityIds,
