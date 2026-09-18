@@ -1,15 +1,15 @@
 import { createFileRoute, useNavigate, Link } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  useReactTable,
-  getCoreRowModel,
+  useTable,
+  tableFeatures,
   flexRender,
   createColumnHelper,
 } from '@tanstack/react-table'
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { JsonView } from '../../../components/JsonView'
 import { ValueCell } from '../../../components/ValueCell'
-import { cassettesApi, entityOutputApi, entitiesApi, compactionApi, streamEntityRecords, type EntityRecord, type Order, type StreamMode, type EntityStreamParams, type PortraitResult } from '../../../api/client'
+import { cassettesApi, entityOutputApi, entitiesApi, streamEntityRecords, type EntityRecord, type Order, type StreamMode, type EntityStreamParams, type PortraitResult } from '../../../api/client'
 import { Layout } from '../../../components/Layout'
 import { LoadingSpinner } from '../../../components/LoadingSpinner'
 import { ErrorMessage } from '../../../components/ErrorMessage'
@@ -95,7 +95,8 @@ function PortraitPanel({ portrait }: { portrait: PortraitResult }) {
   )
 }
 
-const colHelper = createColumnHelper<EntityRecord>()
+const features = tableFeatures({})
+const colHelper = createColumnHelper<typeof features, EntityRecord>()
 
 const trunc = (s: string | null, n: number) =>
   s == null ? '—' : s.length > n ? s.slice(0, n) + '…' : s
@@ -205,17 +206,6 @@ function EntityInstancePage() {
     onError: (e: Error) => addToast(e.message, 'error'),
   })
 
-  const compactMutation = useMutation({
-    // Bare entity type name, no "entity:" prefix -- that prefix is only the
-    // internal compaction-lock naming convention, not part of the /compaction
-    // /trigger targets contract (see CompactionRun.targets()'s own schema
-    // example). Sending it prefixed here previously crashed the whole
-    // compaction run for every other entity type too.
-    mutationFn: () => compactionApi.trigger({ targets: [entityType] }),
-    onSuccess: () => addToast(`Compaction triggered for entity type "${entityType}"`, 'success'),
-    onError: (e: Error) => addToast(e.message, 'error'),
-  })
-
   function stopStream() {
     abortRef.current?.abort()
     abortRef.current = null
@@ -311,7 +301,7 @@ function EntityInstancePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [order])
 
-  const columns = [
+  const columns = colHelper.columns([
     colHelper.accessor('timestamp', {
       header: 'Timestamp',
       cell: i => i.getValue().slice(0, 19).replace('T', ' '),
@@ -334,11 +324,11 @@ function EntityInstancePage() {
       header: 'Recorded At',
       cell: i => i.getValue().slice(0, 19).replace('T', ' '),
     }),
-  ]
+  ])
 
   const tableData = streamMode === 'json' ? (recordsQuery.data?.data ?? []) : streamedRecords
 
-  const table = useReactTable({ data: tableData, columns, getCoreRowModel: getCoreRowModel() })
+  const table = useTable({ features, data: tableData, columns })
 
   function nextPage() {
     if (recordsQuery.data?.nextCursor) {
@@ -372,16 +362,6 @@ function EntityInstancePage() {
             <span aria-hidden="true">⏱</span> Timeline
           </Link>
           <button
-            data-testid="btn-compact-entity-type"
-            aria-label={`Compact all "${entityType}" entities`}
-            title={`Merges small Parquet files for the entire "${entityType}" entity type, not just ${entityId}`}
-            disabled={compactMutation.isPending}
-            style={{ padding: '0.45rem 1rem', background: '#edf2f7', color: '#2d3748', border: '1px solid #cbd5e0', borderRadius: 4, cursor: compactMutation.isPending ? 'default' : 'pointer', fontSize: 14 }}
-            onClick={() => compactMutation.mutate()}
-          >
-            {compactMutation.isPending ? 'Compacting…' : `Compact "${entityType}" Entities`}
-          </button>
-          <button
             data-testid="btn-delete-entity"
             aria-label={`Delete all data for entity ${entityId}`}
             style={{ padding: '0.45rem 1rem', background: '#e53e3e', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 14 }}
@@ -413,8 +393,20 @@ function EntityInstancePage() {
             <div style={{ background: '#f7fafc', border: '1px solid #e2e8f0', borderRadius: 6, padding: '0.5rem 0.85rem', minWidth: 140 }}>
               <div style={{ fontSize: 11, color: '#718096', marginBottom: 2 }}>Object Store Files</div>
               <div style={{ fontSize: 14, fontWeight: 600 }}>
-                {storageQuery.isLoading ? '…' : (storageQuery.data?.fileCount.toLocaleString() ?? '—')}
+                {storageQuery.isLoading
+                  ? '…'
+                  : storageQuery.data
+                    ? `${storageQuery.data.filesUnavailable > 0 ? '≥' : ''}${storageQuery.data.fileCount.toLocaleString()}`
+                    : '—'}
               </div>
+              {!storageQuery.isLoading && storageQuery.data && storageQuery.data.filesUnavailable > 0 && (
+                <div
+                  style={{ fontSize: 11, color: '#c05621', marginTop: 2 }}
+                  title="Some of this entity's Parquet files could not be read (object store degraded) and are excluded from the count above."
+                >
+                  {storageQuery.data.filesUnavailable} unreachable
+                </div>
+              )}
             </div>
           </div>
           {storageQuery.isLoading ? (
@@ -492,6 +484,7 @@ function EntityInstancePage() {
             entityId={entityId}
             from={from || undefined}
             to={to || undefined}
+            highlightMessageType={summarySelection?.dimension === 'messageType' ? summarySelection.value : null}
           />
         </div>
       )}
@@ -779,7 +772,7 @@ function EntityInstancePage() {
               <tbody>
                 {table.getRowModel().rows.map((row, rowIdx) => (
                   <tr key={row.id} data-testid={`record-row-${rowIdx}`}>
-                    {row.getVisibleCells().map(cell => <td key={cell.id} style={tdStyle}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}
+                    {row.getAllCells().map(cell => <td key={cell.id} style={tdStyle}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}
                   </tr>
                 ))}
               </tbody>

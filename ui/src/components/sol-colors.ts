@@ -47,6 +47,18 @@ export function buildTagColors(orderedTags: string[]): Record<string, SolTagColo
 }
 
 /**
+ * Resolves the tag order to feed {@link buildTagColors}: prefers the
+ * authoritative order from an already-executed result's own tag names, so a
+ * displayed result's colours stay correct even if the query text is edited
+ * afterward without re-running. Falls back to a client-side parse of the
+ * query text when there is no result yet (or the result has no user tags).
+ */
+export function resolveTagOrder(query: string, resultTagNames: string[] | undefined): string[] {
+  if (resultTagNames && resultTagNames.length > 0) return resultTagNames
+  return extractPatternTags(query)
+}
+
+/**
  * Client-side extraction of the taggable element names from the first MATCH
  * clause, in pattern order — used to colour editor tokens before the first run.
  * `Tag(event)` yields the tag name; a bare event name yields itself (the engine

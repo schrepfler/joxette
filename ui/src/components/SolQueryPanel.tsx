@@ -1,11 +1,13 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { cassettesApi, type EntityRecord } from '../api/client'
 import { JsonView } from './JsonView'
 import { SolEditor } from './SolEditor'
+import { SolResultSequence } from './SolResultSequence'
 import { SolSequenceInspector } from './SolSequenceInspector'
 import { SolToolbar } from './SolToolbar'
+import { buildTagColors, resolveTagOrder } from './sol-colors'
 import { decodeB64, tryParseValue } from '../lib/encoding'
 
 interface Props {
@@ -15,9 +17,13 @@ interface Props {
   topic?: string
   from?: string
   to?: string
+  /** From the entity page's "By message type" sidebar — dims non-matching sequence chips. */
+  highlightMessageType?: string | null
 }
 
 // ── Colour helpers ─────────────────────────────────────────────────────────────
+
+const IMPLICIT_TAGS = new Set(['SEQ', 'MATCHED', 'PREFIX', 'SUFFIX'])
 
 /** Stable hue from a string via djb2 — same event type always gets same colour */
 function eventHue(name: string): number {
@@ -41,7 +47,7 @@ function eventPill(name: string): React.CSSProperties {
 
 // ── Main component ─────────────────────────────────────────────────────────────
 
-export function SolQueryPanel({ mode, entityType, entityId, topic, from, to }: Props) {
+export function SolQueryPanel({ mode, entityType, entityId, topic, from, to, highlightMessageType }: Props) {
   const [query, setQuery] = useState(
     'match A(event_name) >> * >> B(other_event)\nif duration(A, B) < 5min',
   )
@@ -101,6 +107,24 @@ export function SolQueryPanel({ mode, entityType, entityId, topic, from, to }: P
   const result = mutation.data
   const hasResult = !!result
 
+  const [popupIdx, setPopupIdx] = useState<number | null>(null)
+  function navigatePopup(delta: number) {
+    if (popupIdx === null || !result) return
+    setPopupIdx(Math.max(0, Math.min(result.records.length - 1, popupIdx + delta)))
+  }
+
+  // Tag → colour, in pattern order. Before the first run the order comes from
+  // a client-side parse of the match clause; once a result exists, from the
+  // result's own tag names — so editing the query afterward without re-running
+  // can't desync the displayed result's colours from a still-executed run's.
+  const resultTagNames = result?.tags
+    ? Object.keys(result.tags).filter(name => !IMPLICIT_TAGS.has(name))
+    : undefined
+  const tagColors = useMemo(
+    () => buildTagColors(resolveTagOrder(query, resultTagNames)),
+    [query, resultTagNames],
+  )
+
   // Build an index set of which record positions are covered by selected tags
   const filteredRecords = (() => {
     if (!result || selectedTags.size === 0 || !result.tags) return result?.records ?? []
@@ -155,17 +179,6 @@ export function SolQueryPanel({ mode, entityType, entityId, topic, from, to }: P
         )}
       </SolToolbar>
 
-      {/* ── CodeMirror SOL editor ─────────────────────────────────────── */}
-      <SolEditor
-        value={query}
-        onChange={setQuery}
-        onRun={() => mutation.mutate()}
-        messageTypes={messageTypes}
-        fieldPaths={fieldPaths}
-        minHeight={120}
-        disabled={mutation.isPending}
-      />
-
       {/* ── Error ─────────────────────────────────────────────────────── */}
       {mutation.error && (
         <div style={{ padding: '8px 12px', background: 'color-mix(in oklab, var(--signal-error) 10%, transparent)', border: '1px solid color-mix(in oklab, var(--signal-error) 30%, transparent)', borderRadius: 'var(--radius-sm)', fontSize: 'var(--type-body-sm-size)', color: 'var(--signal-error)', fontFamily: 'var(--font-mono)' }}>
@@ -173,43 +186,82 @@ export function SolQueryPanel({ mode, entityType, entityId, topic, from, to }: P
         </div>
       )}
 
-      {/* ── Result ────────────────────────────────────────────────────── */}
-      {hasResult && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+      {/* ── Editor + coverage stats | matched events ─────────────────── */}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: hasResult ? 'minmax(340px, 480px) 1fr' : '1fr',
+          gap: 16,
+          alignItems: 'start',
+        }}
+      >
+        <div style={{ minWidth: 0, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <SolEditor
+            value={query}
+            onChange={setQuery}
+            onRun={() => mutation.mutate()}
+            messageTypes={messageTypes}
+            fieldPaths={fieldPaths}
+            tagColors={tagColors}
+            minHeight={120}
+            disabled={mutation.isPending}
+          />
 
-          {/* Status bar */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '6px 12px', background: 'var(--surface-raised)', border: '1px solid var(--rule)', borderRadius: 'var(--radius-sm)', fontSize: 'var(--type-body-sm-size)' }}>
-            <span style={{ fontWeight: 600, color: result.matched ? 'var(--signal-success)' : 'var(--ink-tertiary)' }}>
-              {result.matched ? '✓ Matched' : '○ No match'}
-            </span>
-            <span style={{ color: 'var(--ink-secondary)' }}>
-              {selectedTags.size > 0
-                ? <>{filteredRecords.length.toLocaleString()} <span style={{ color: 'var(--ink-tertiary)' }}>/ {result.records.length.toLocaleString()}</span> event{result.records.length !== 1 ? 's' : ''}</>
-                : <>{result.records.length.toLocaleString()} event{result.records.length !== 1 ? 's' : ''}</>
-              }
-            </span>
-            {result.unexpectedNulls.length > 0 && (
-              <span title={result.unexpectedNulls.join('\n')} style={{ color: 'var(--signal-warn-ink)', cursor: 'help' }}>
-                ⚠ {result.unexpectedNulls.length} null{result.unexpectedNulls.length !== 1 ? 's' : ''}
-              </span>
-            )}
-          </div>
+          {hasResult && (
+            <>
+              {/* Status bar */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '6px 12px', background: 'var(--surface-raised)', border: '1px solid var(--rule)', borderRadius: 'var(--radius-sm)', fontSize: 'var(--type-body-sm-size)' }}>
+                <span style={{ fontWeight: 600, color: result.matched ? 'var(--signal-success)' : 'var(--ink-tertiary)' }}>
+                  {result.matched ? '✓ Matched' : '○ No match'}
+                </span>
+                <span style={{ color: 'var(--ink-secondary)' }}>
+                  {selectedTags.size > 0
+                    ? <>{filteredRecords.length.toLocaleString()} <span style={{ color: 'var(--ink-tertiary)' }}>/ {result.records.length.toLocaleString()}</span> event{result.records.length !== 1 ? 's' : ''}</>
+                    : <>{result.records.length.toLocaleString()} event{result.records.length !== 1 ? 's' : ''}</>
+                  }
+                </span>
+                {result.unexpectedNulls.length > 0 && (
+                  <span title={result.unexpectedNulls.join('\n')} style={{ color: 'var(--signal-warn-ink)', cursor: 'help' }}>
+                    ⚠ {result.unexpectedNulls.length} null{result.unexpectedNulls.length !== 1 ? 's' : ''}
+                  </span>
+                )}
+              </div>
 
-          {/* Sequence inspector — tag coverage bars */}
-          {result.tags && result.sequenceLength > 0 && Object.keys(result.tags).length > 0 && (
-            <SolSequenceInspector
-              tags={result.tags}
-              sequenceLength={result.sequenceLength}
-              selectedTags={selectedTags}
-              onTagToggle={toggleTag}
-            />
-          )}
-
-          {/* Matched events table */}
-          {filteredRecords.length > 0 && (
-            <SolResultTable records={filteredRecords} />
+              {/* Sequence inspector — tag coverage bars */}
+              {result.tags && result.sequenceLength > 0 && Object.keys(result.tags).length > 0 && (
+                <SolSequenceInspector
+                  tags={result.tags}
+                  sequenceLength={result.sequenceLength}
+                  tagColors={tagColors}
+                  selectedTags={selectedTags}
+                  onTagToggle={toggleTag}
+                />
+              )}
+            </>
           )}
         </div>
+
+        {/* Matched events — the sequence timeline, alongside the editor rather than below it */}
+        {hasResult && result.records.length > 0 && (
+          <div style={{ minWidth: 0 }}>
+            <SolResultSequence
+              records={result.records}
+              tags={result.tags}
+              tagColors={tagColors}
+              onOpenEvent={setPopupIdx}
+              highlightMessageType={highlightMessageType}
+            />
+          </div>
+        )}
+      </div>
+
+      {hasResult && popupIdx !== null && (
+        <MessagePopup
+          records={result.records}
+          index={popupIdx}
+          onNavigate={navigatePopup}
+          onClose={() => setPopupIdx(null)}
+        />
       )}
     </div>
   )
@@ -385,117 +437,3 @@ function popupNavBtn(disabled: boolean): React.CSSProperties {
   }
 }
 
-// ── Result table ───────────────────────────────────────────────────────────────
-
-function SolResultTable({ records }: { records: EntityRecord[] }) {
-  const [popupIdx, setPopupIdx] = useState<number | null>(null)
-  const [focusedIdx, setFocusedIdx] = useState<number | null>(null)
-  const rowRefs = useRef<(HTMLTableRowElement | null)[]>([])
-
-  function navigateRow(delta: number) {
-    const n = records.length
-    if (n === 0) return
-    const next = focusedIdx === null
-      ? (delta > 0 ? 0 : n - 1)
-      : Math.max(0, Math.min(n - 1, focusedIdx + delta))
-    setFocusedIdx(next)
-    rowRefs.current[next]?.focus()
-    rowRefs.current[next]?.scrollIntoView({ block: 'nearest' })
-  }
-
-  function openPopup(i: number) {
-    setPopupIdx(i)
-    setFocusedIdx(i)
-  }
-
-  function navigatePopup(delta: number) {
-    if (popupIdx === null) return
-    const next = Math.max(0, Math.min(records.length - 1, popupIdx + delta))
-    setPopupIdx(next)
-    setFocusedIdx(next)
-  }
-
-  return (
-    <>
-      <div
-        style={{ border: '1px solid var(--rule)', borderRadius: 'var(--radius-sm)', overflow: 'hidden' }}
-        onKeyDown={e => {
-          if (e.key === 'ArrowDown') { e.preventDefault(); navigateRow(1) }
-          else if (e.key === 'ArrowUp') { e.preventDefault(); navigateRow(-1) }
-        }}
-      >
-        <table aria-label="SOL query results" style={{ width: '100%', borderCollapse: 'collapse', fontSize: 'var(--type-body-sm-size)' }}>
-          <thead>
-            <tr style={{ background: 'var(--surface-raised)' }}>
-              {['Timestamp', 'Type', 'Topic', 'Partition / Offset', ''].map((h, i) => (
-                <th key={i} style={thSt}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {records.map((r, i) => {
-              const isFocused = focusedIdx === i
-              return (
-                <tr
-                  key={`${r.partition}-${r.offset}`}
-                  ref={el => { rowRefs.current[i] = el }}
-                  tabIndex={0}
-                  style={{
-                    cursor: 'pointer',
-                    background: isFocused ? 'color-mix(in oklab, var(--accent) 8%, transparent)' : undefined,
-                    outline: isFocused ? '2px solid color-mix(in oklab, var(--accent) 35%, transparent)' : 'none',
-                    outlineOffset: '-2px',
-                  }}
-                  onClick={() => openPopup(i)}
-                  onFocus={() => setFocusedIdx(i)}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPopup(i) }
-                    else if (e.key === 'ArrowDown') { e.preventDefault(); navigateRow(1) }
-                    else if (e.key === 'ArrowUp') { e.preventDefault(); navigateRow(-1) }
-                  }}
-                  onMouseEnter={e => { if (!isFocused) e.currentTarget.style.background = 'var(--surface-raised)' }}
-                  onMouseLeave={e => { if (!isFocused) e.currentTarget.style.background = '' }}
-                >
-                  <td style={tdSt}><span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--type-caption-size)' }}>{r.timestamp.slice(0, 19).replace('T', ' ')}</span></td>
-                  <td style={tdSt}>{r.messageType ? <span style={eventPill(r.messageType)}>{r.messageType}</span> : <span style={{ color: 'var(--ink-tertiary)' }}>—</span>}</td>
-                  <td style={tdSt}><span style={{ color: 'var(--ink-secondary)' }}>{r.topic}</span></td>
-                  <td style={tdSt}><span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)' }}>{r.partition} / {r.offset}</span></td>
-                  <td style={{ ...tdSt, color: 'var(--accent)', fontSize: 'var(--type-caption-size)', textAlign: 'right' }}>▸</td>
-                </tr>
-              )
-            })}
-          </tbody>
-        </table>
-        <div style={{ padding: '5px 12px', background: 'var(--surface-raised)', borderTop: '1px solid var(--rule)', fontSize: 'var(--type-caption-size)', color: 'var(--ink-tertiary)' }}>
-          ↑↓ navigate · Enter / click to inspect
-        </div>
-      </div>
-
-      {popupIdx !== null && (
-        <MessagePopup
-          records={records}
-          index={popupIdx}
-          onNavigate={navigatePopup}
-          onClose={() => {
-            setPopupIdx(null)
-            rowRefs.current[focusedIdx ?? 0]?.focus()
-          }}
-        />
-      )}
-    </>
-  )
-}
-
-// ── Micro styles ───────────────────────────────────────────────────────────────
-
-const thSt: React.CSSProperties = {
-  textAlign: 'left', padding: '8px 12px',
-  fontSize: 'var(--type-micro-size)', fontWeight: 700,
-  letterSpacing: 'var(--type-micro-tracking)', textTransform: 'uppercase',
-  color: 'var(--ink-tertiary)', borderBottom: '1px solid var(--rule)',
-}
-
-const tdSt: React.CSSProperties = {
-  padding: '8px 12px', borderBottom: '1px solid var(--rule)',
-  verticalAlign: 'middle',
-}

@@ -15,10 +15,13 @@
  */
 
 import type { SolTagSpan } from '../api/client'
+import { SOL_NEUTRAL, type SolTagColor } from './sol-colors'
 
 interface Props {
   tags: Record<string, SolTagSpan>
   sequenceLength: number
+  /** Tag → colour, shared with the query editor's token decorations (see sol-colors.ts). */
+  tagColors: Record<string, SolTagColor>
   /** Currently selected tag names. When non-empty the table is filtered to those spans. */
   selectedTags?: Set<string>
   /** Called when the user clicks a tag row to toggle its selection. */
@@ -27,21 +30,17 @@ interface Props {
 
 // ── Colour helpers ─────────────────────────────────────────────────────────────
 
-function djb2(s: string): number {
-  let h = 5381
-  for (let i = 0; i < s.length; i++) h = (h * 33) ^ s.charCodeAt(i)
-  return Math.abs(h)
-}
-
 const IMPLICIT = new Set(['SEQ', 'MATCHED', 'PREFIX', 'SUFFIX'])
 
-function tagColour(name: string): string {
+/**
+ * MATCHED keeps its own accent colour — it marks the overall matched span, not
+ * a pattern term, so it isn't part of the shared tag palette. Every other tag
+ * (named or implicit) comes from `tagColors`, the same map driving the editor's
+ * token decorations, so a term's colour is identical everywhere it appears.
+ */
+function tagColour(name: string, tagColors: Record<string, SolTagColor>): string {
   if (name === 'MATCHED') return 'var(--accent)'
-  if (name === 'PREFIX')  return 'hsl(200, 40%, 65%)'
-  if (name === 'SUFFIX')  return 'hsl(200, 30%, 75%)'
-  if (name === 'SEQ')     return 'hsl(0, 0%, 60%)'
-  const hue = (djb2(name) * 137.508) % 360
-  return `hsl(${hue.toFixed(0)}, 60%, 62%)`
+  return (tagColors[name] ?? SOL_NEUTRAL).strong
 }
 
 function tagBg(name: string): string {
@@ -51,7 +50,7 @@ function tagBg(name: string): string {
 
 // ── Component ──────────────────────────────────────────────────────────────────
 
-export function SolSequenceInspector({ tags, sequenceLength, selectedTags, onTagToggle }: Props) {
+export function SolSequenceInspector({ tags, sequenceLength, tagColors, selectedTags, onTagToggle }: Props) {
   if (sequenceLength === 0 || Object.keys(tags).length === 0) return null
   const isFilterable = !!onTagToggle
   const hasSelection = selectedTags && selectedTags.size > 0
@@ -129,7 +128,7 @@ export function SolSequenceInspector({ tags, sequenceLength, selectedTags, onTag
         const len   = span.to - span.from
         const pct   = sequenceLength > 0 ? (len / sequenceLength) * 100 : 0
         const isImplicit = IMPLICIT.has(name)
-        const colour = tagColour(name)
+        const colour = tagColour(name, tagColors)
         const isSelected = selectedTags?.has(name) ?? false
 
         return (

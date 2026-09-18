@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildTagColors, extractPatternTags, SOL_NEUTRAL, SOL_TAG_PALETTE } from './sol-colors'
+import { buildTagColors, extractPatternTags, resolveTagOrder, SOL_NEUTRAL, SOL_TAG_PALETTE } from './sol-colors'
 
 describe('extractPatternTags', () => {
   it('extracts bare event names in pattern order', () => {
@@ -49,5 +49,29 @@ describe('buildTagColors', () => {
     const tags = Array.from({ length: SOL_TAG_PALETTE.length + 1 }, (_, i) => `t${i}`)
     const colors = buildTagColors(tags)
     expect(colors[`t${SOL_TAG_PALETTE.length}`]).toBe(SOL_TAG_PALETTE[0])
+  })
+})
+
+describe('resolveTagOrder', () => {
+  it('uses the authoritative result tag names when a result exists', () => {
+    expect(resolveTagOrder('match C(event_c) >> * >> D(event_d)', ['A', 'B']))
+      .toEqual(['A', 'B'])
+  })
+
+  it('falls back to parsing the live query text when there is no result yet', () => {
+    expect(resolveTagOrder('match A(event_a) >> * >> B(event_b)', undefined))
+      .toEqual(['A', 'B'])
+  })
+
+  it('falls back to parsing the query when the result has no user tags', () => {
+    expect(resolveTagOrder('match A(event_a) >> * >> B(event_b)', []))
+      .toEqual(['A', 'B'])
+  })
+
+  it('keeps the result order even after the query text is edited without re-running', () => {
+    // Simulates: ran with A/B, then the user renamed B to C in the box but hasn't re-run yet.
+    // The displayed result still has A/B spans, so colors must stay pinned to A/B.
+    expect(resolveTagOrder('match A(event_a) >> * >> C(event_c)', ['A', 'B']))
+      .toEqual(['A', 'B'])
   })
 })

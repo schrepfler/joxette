@@ -1,8 +1,8 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  useReactTable,
-  getCoreRowModel,
+  useTable,
+  tableFeatures,
   flexRender,
   createColumnHelper,
 } from '@tanstack/react-table'
@@ -11,6 +11,7 @@ import { useState, useMemo } from 'react'
 import {
   entitiesApi,
   cassettesApi,
+  compactionApi,
   type EntitySourceConfig,
   type MatcherConfig,
   type EntityInfo,
@@ -39,7 +40,8 @@ export const Route = createFileRoute('/entities/$entityType/')({
   component: EntityTypeDetailPage,
 })
 
-const entityColHelper = createColumnHelper<EntityInfo>()
+const features = tableFeatures({})
+const entityColHelper = createColumnHelper<typeof features, EntityInfo>()
 
 // ---- AddSourceModal ----
 
@@ -350,6 +352,17 @@ function EntityTypeDetailPage() {
     onError: (e: Error) => addToast(e.message, 'error'),
   })
 
+  const compactMutation = useMutation({
+    // Bare entity type name, no "entity:" prefix -- that prefix is only the
+    // internal compaction-lock naming convention, not part of the /compaction
+    // /trigger targets contract (see CompactionRun.targets()'s own schema
+    // example). Sending it prefixed here previously crashed the whole
+    // compaction run for every other entity type too.
+    mutationFn: () => compactionApi.trigger({ targets: [entityType] }),
+    onSuccess: () => addToast(`Compaction triggered for entity type "${entityType}"`, 'success'),
+    onError: (e: Error) => addToast(e.message, 'error'),
+  })
+
   const form = useForm({
     defaultValues: { buckets: String(entityQuery.data?.buckets ?? '') },
     onSubmit: async ({ value }) => updateMutation.mutate(Number(value.buckets)),
@@ -360,7 +373,7 @@ function EntityTypeDetailPage() {
     onSubmit: async ({ value }) => retentionMutation.mutate(value.retentionDays),
   })
 
-  const entityColumns = [
+  const entityColumns = entityColHelper.columns([
     entityColHelper.accessor('entityId', { header: 'Entity ID' }),
     entityColHelper.accessor('messageCount', {
       header: 'Messages',
@@ -393,9 +406,9 @@ function EntityTypeDetailPage() {
       },
     }),
     entityColHelper.accessor('firstSeen', { header: 'First Seen', cell: i => <span style={{ fontSize: 12, color: '#718096' }}>{i.getValue().slice(0, 10)}</span> }),
-  ]
+  ])
 
-  const entityTable = useReactTable({ data: entitiesQuery.data?.data ?? [], columns: entityColumns, getCoreRowModel: getCoreRowModel() })
+  const entityTable = useTable({ features, data: entitiesQuery.data?.data ?? [], columns: entityColumns })
 
   function nextPage() {
     if (entitiesQuery.data?.nextCursor) {
@@ -417,9 +430,21 @@ function EntityTypeDetailPage() {
         <>
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.5rem' }}>
             <h1 style={{ margin: 0, fontSize: 22, fontWeight: 700 }}>{entityType}</h1>
-            <button style={{ ...primaryBtnStyle, background: '#e53e3e' }} onClick={() => setShowTruncateDialog(true)}>
-              Truncate
-            </button>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <button
+                data-testid="btn-compact-entity-type"
+                aria-label={`Compact all "${entityType}" entities`}
+                title={`Merges small Parquet files across the entire "${entityType}" entity type`}
+                disabled={compactMutation.isPending}
+                style={{ padding: '0.45rem 1rem', background: '#edf2f7', color: '#2d3748', border: '1px solid #cbd5e0', borderRadius: 4, cursor: compactMutation.isPending ? 'default' : 'pointer', fontSize: 14 }}
+                onClick={() => compactMutation.mutate()}
+              >
+                {compactMutation.isPending ? 'Compacting…' : 'Compact Entities'}
+              </button>
+              <button style={{ ...primaryBtnStyle, background: '#e53e3e' }} onClick={() => setShowTruncateDialog(true)}>
+                Truncate
+              </button>
+            </div>
           </div>
 
           {/* Edit form */}
@@ -553,7 +578,7 @@ function EntityTypeDetailPage() {
                         onMouseEnter={e => (e.currentTarget.style.background = '#ebf8ff')}
                         onMouseLeave={e => (e.currentTarget.style.background = '')}
                       >
-                        {row.getVisibleCells().map(cell => <td key={cell.id} style={tdStyle}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}
+                        {row.getAllCells().map(cell => <td key={cell.id} style={tdStyle}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}
                       </tr>
                     ))}
                   </tbody>

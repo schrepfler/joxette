@@ -18,6 +18,7 @@ import { useQuery } from '@tanstack/react-query'
 import { cassettesApi, type EntityRecord, type SolSequenceExample } from '../api/client'
 import { JsonView } from './JsonView'
 import { SOL_NEUTRAL, type SolTagColor } from './sol-colors'
+import { segmentSequence, type SolSequenceSegment } from './sol-sequence-segments'
 import { decodeB64, tryParseValue } from '../lib/encoding'
 
 interface Props {
@@ -28,31 +29,8 @@ interface Props {
   tagColors: Record<string, SolTagColor>
 }
 
-/** A contiguous run of events covered by the same tag (or by none). */
-interface Segment {
-  tag: string | null
-  from: number
-  to: number
-}
-
-function segment(example: SolSequenceExample): Segment[] {
-  const n = example.events.length
-  const cover: (string | null)[] = new Array(n).fill(null)
-  for (const [name, span] of Object.entries(example.tags)) {
-    if (name === 'PREFIX') continue
-    for (let i = span.from; i < Math.min(span.to, n); i++) {
-      if (cover[i] === null || cover[i] === 'SUFFIX') cover[i] = name
-    }
-  }
-  const segs: Segment[] = []
-  let start = 0
-  for (let i = 1; i <= n; i++) {
-    if (i === n || cover[i] !== cover[start]) {
-      segs.push({ tag: cover[start], from: start, to: i })
-      start = i
-    }
-  }
-  return segs
+function segment(example: SolSequenceExample): SolSequenceSegment[] {
+  return segmentSequence(example.events.length, example.tags)
 }
 
 const IMPLICIT_TAGS = new Set(['SEQ', 'MATCHED', 'PREFIX', 'SUFFIX'])
@@ -64,9 +42,9 @@ function tagsAtIndex(example: SolSequenceExample, i: number): string[] {
     .map(([name]) => name)
 }
 
-const HEADER_H = 20
+export const HEADER_H = 20
 
-function SpanHeader({ tag, color }: { tag: string | null; color?: SolTagColor }) {
+export function SpanHeader({ tag, color }: { tag: string | null; color?: SolTagColor }) {
   if (!tag || !color) return <div style={{ height: HEADER_H }} />
   const label = tag === 'SUFFIX' ? 'Suffix' : tag
   return (
@@ -84,7 +62,7 @@ function SpanHeader({ tag, color }: { tag: string | null; color?: SolTagColor })
   )
 }
 
-function GapHeader() {
+export function GapHeader() {
   return (
     <div style={{ height: HEADER_H, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end' }}>
       <div style={{ height: 3, background: SOL_NEUTRAL.strong, opacity: 0.55, borderRadius: 2 }} />
@@ -94,7 +72,7 @@ function GapHeader() {
 
 // ── Event chip (button) ────────────────────────────────────────────────────────
 
-function EventChip({
+export function EventChip({
   name, wash, focused, chipRef, onClick, onKeyDown,
 }: {
   name: string

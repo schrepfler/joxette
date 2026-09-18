@@ -119,17 +119,23 @@ const solStreamLanguage = StreamLanguage.define<{ inString: boolean }>({
 
 type CursorCtx =
   | 'match-pattern'   // after match / >> / | — wants event type names
+  | 'event-type'      // inside a tag's binding parens, e.g. `B(` — wants only event types
   | 'tag-field'       // after Tag. or SEQ. etc. — wants bare field names
   | 'expression'      // after if/filter/set/=/operator — wants field paths + functions
   | 'general'         // anywhere else
 
-function detectContext(beforeCursor: string): CursorCtx {
+export function detectContext(beforeCursor: string): CursorCtx {
   // Strip trailing partial word being typed
   const text = beforeCursor.trimEnd()
 
   // Dot after an implicit tag or capitalised tag name → field access
   if (/(?:SEQ|MATCHED|PREFIX|SUFFIX|[A-Z][A-Za-z0-9_]*)\s*(?:\[.*?\])?\s*\.$/.test(text)) {
     return 'tag-field'
+  }
+
+  // Inside a tag's binding parens — e.g. `B(` or `B(foot` — wants only event types
+  if (/(?:>>|\||match(?:\s+split)?)\s+[A-Za-z_][A-Za-z0-9_]*\(\s*[\w]*$/.test(text)) {
+    return 'event-type'
   }
 
   // After >> or | — inside a MATCH pattern
@@ -157,6 +163,49 @@ const FUNCTION_COMPLETIONS: Completion[] = FUNCTIONS.map(f => ({
 const TAG_COMPLETIONS: Completion[] = IMPLICIT_TAGS.map(t => ({
   label: t, type: 'constant', detail: 'implicit tag', boost: 2,
 }))
+
+// Symbolic operators from the SOL spec (docs/sol-specification.md, "Functions &
+// Operators Reference" + the MATCH pattern/quantifier tables). These have no
+// word boundary for CodeMirror's default word-matcher to key off of, so unlike
+// keywords/functions they were previously invisible in the completion popup —
+// listed explicitly here, one entry per unique symbol, so every meaning of an
+// overloaded symbol (e.g. `*` is both a quantifier and multiplication) shows
+// up in a single place rather than two easily-confused near-duplicate entries.
+export const OPERATOR_COMPLETIONS: Completion[] = [
+  // Match-pattern connectives and quantifiers
+  { label: '>>', type: 'keyword', detail: 'followed by',
+    info: 'p1 >> p2 — p1 immediately followed by p2. Chain with a wildcard for "followed eventually by": p1 >> * >> p2.' },
+  { label: '*', type: 'keyword', detail: 'zero or more / wildcard / multiplication',
+    info: 'Quantifier: zero or more, e.g. Tag(event)*. Between two >> it is a wildcard matching any events in between. In an expression it is multiplication.' },
+  { label: '+', type: 'keyword', detail: 'one or more / addition',
+    info: 'Quantifier: one or more, e.g. Tag(event)+. In an expression it is addition.' },
+  { label: '?', type: 'keyword', detail: 'zero or one',
+    info: 'Optional: zero or one occurrence, e.g. Tag(event)?.' },
+  { label: '|', type: 'keyword', detail: 'or (alternation)',
+    info: 'Match any of the listed events, e.g. Tag(event1 | event2).' },
+  { label: '^', type: 'keyword', detail: 'exclusion / exponentiation',
+    info: 'Inside a binding, e.g. Tag(^event1, event2): match any event NOT in the list. In an expression it is exponentiation.' },
+  { label: '{n}', type: 'keyword', detail: 'exactly n',
+    info: 'Exactly n occurrences, e.g. Tag(event){3}.' },
+  { label: '{n,}', type: 'keyword', detail: 'at least n',
+    info: 'At least n occurrences, e.g. Tag(event){2,}.' },
+  { label: '{,m}', type: 'keyword', detail: 'at most m',
+    info: 'At most m occurrences, e.g. Tag(event){,5}.' },
+  { label: '{n,m}', type: 'keyword', detail: 'between n and m',
+    info: 'Between n and m occurrences (inclusive), e.g. Tag(event){1,3}.' },
+  // Relational
+  { label: '=', type: 'keyword', detail: 'equals', info: 'Equality comparison.' },
+  { label: '!=', type: 'keyword', detail: 'not equal', info: 'Inequality comparison.' },
+  { label: '<', type: 'keyword', detail: 'less than', info: 'Less-than comparison.' },
+  { label: '>', type: 'keyword', detail: 'greater than', info: 'Greater-than comparison.' },
+  { label: '<=', type: 'keyword', detail: 'less than or equal', info: 'Less-than-or-equal comparison.' },
+  { label: '>=', type: 'keyword', detail: 'greater than or equal', info: 'Greater-than-or-equal comparison.' },
+  { label: 'between', type: 'keyword', detail: 'range test', info: 'v between a and b — inclusive range test.' },
+  { label: 'in', type: 'keyword', detail: 'array membership', info: 'v in array — true if v equals one of the array’s elements.' },
+  // Arithmetic (symbols not already covered above)
+  { label: '-', type: 'keyword', detail: 'subtraction', info: 'Subtraction.' },
+  { label: '/', type: 'keyword', detail: 'division', info: 'Division.' },
+]
 
 const RECIPE_SNIPPETS: Completion[] = [
   { label: 'match A >> * >> B',      type: 'text', detail: 'funnel pattern',   apply: 'match A(event_a) >> * >> B(event_b)' },
@@ -199,13 +248,16 @@ function makeCompletionProvider(messageTypes: string[], fieldPaths: string[]) {
     let pool: Completion[]
     switch (ctxKind) {
       case 'match-pattern':
-        pool = [...typeCompletions, ...TAG_COMPLETIONS]
+        pool = [...typeCompletions, ...TAG_COMPLETIONS, ...OPERATOR_COMPLETIONS]
+        break
+      case 'event-type':
+        pool = typeCompletions
         break
       case 'tag-field':
         pool = [...bareFieldCompletions, ...fieldPathCompletions]
         break
       case 'expression':
-        pool = [...fieldPathCompletions, ...FUNCTION_COMPLETIONS, ...TAG_COMPLETIONS]
+        pool = [...fieldPathCompletions, ...FUNCTION_COMPLETIONS, ...TAG_COMPLETIONS, ...OPERATOR_COMPLETIONS]
         break
       case 'general':
       default:
@@ -214,6 +266,7 @@ function makeCompletionProvider(messageTypes: string[], fieldPaths: string[]) {
           ...typeCompletions,
           ...KEYWORD_COMPLETIONS,
           ...FUNCTION_COMPLETIONS,
+          ...OPERATOR_COMPLETIONS,
           ...RECIPE_SNIPPETS,
           ...fieldPathCompletions,
         ]
