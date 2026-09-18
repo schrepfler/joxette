@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { draggable, dropTargetForElements } from '@atlaskit/pragmatic-drag-and-drop/element/adapter'
-import { attachClosestEdge, extractClosestEdge, type Edge } from '@atlaskit/pragmatic-drag-and-drop-hitbox/closest-edge'
+import { draggable, dropTargetForElements } from '@atlaskit/pragmatic-drag-and-drop/adapter/element-adapter'
+import { attachClosestEdge } from '@atlaskit/pragmatic-drag-and-drop-hitbox/closest-edge/attach-closest-edge'
+import { extractClosestEdge } from '@atlaskit/pragmatic-drag-and-drop-hitbox/closest-edge/extract-closest-edge'
+import type { Edge } from '@atlaskit/pragmatic-drag-and-drop-hitbox/types'
 import type { MatchStep, Predicate } from '#/transforms/types'
 import { PredicateBuilder } from '../transforms/PredicateBuilder'
 

@@ -1,8 +1,8 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  useReactTable,
-  getCoreRowModel,
+  useTable,
+  tableFeatures,
   flexRender,
   createColumnHelper,
 } from '@tanstack/react-table'
@@ -23,7 +23,8 @@ export const Route = createFileRoute('/topics/')({
   component: TopicsPage,
 })
 
-const colHelper = createColumnHelper<TopicConfig>()
+const features = tableFeatures({})
+const colHelper = createColumnHelper<typeof features, TopicConfig>()
 
 function TopicsPage() {
   const navigate = useNavigate()
@@ -55,7 +56,7 @@ function TopicsPage() {
     onError: (e: Error) => addToast(e.message, 'error'),
   })
 
-  const columns = [
+  const columns = colHelper.columns([
     colHelper.accessor('topic', { header: 'Topic' }),
     colHelper.accessor('mode', {
       header: 'Mode',
@@ -104,9 +105,9 @@ function TopicsPage() {
         )
       },
     }),
-  ]
+  ])
 
-  const table = useReactTable({ data: data ?? [], columns, getCoreRowModel: getCoreRowModel() })
+  const table = useTable({ features, columns, data: data ?? [] })
 
   return (
     <Layout>
@@ -140,7 +141,7 @@ function TopicsPage() {
                   onMouseLeave={e => (e.currentTarget.style.background = '')}
                   style={{ cursor: 'pointer' }}
                 >
-                  {row.getVisibleCells().map(cell => (
+                  {row.getAllCells().map(cell => (
                     <td key={cell.id} style={tdStyle}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>
                   ))}
                 </tr>

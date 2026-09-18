@@ -1,8 +1,8 @@
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  useReactTable,
-  getCoreRowModel,
+  useTable,
+  tableFeatures,
   flexRender,
   createColumnHelper,
 } from '@tanstack/react-table'
@@ -21,8 +21,9 @@ export const Route = createFileRoute('/brokers/$brokerId')({
   component: BrokerDetailPage,
 })
 
-const topicColHelper = createColumnHelper<TopicConfig>()
-const brokerTopicColHelper = createColumnHelper<BrokerTopicInfo>()
+const features = tableFeatures({})
+const topicColHelper = createColumnHelper<typeof features, TopicConfig>()
+const brokerTopicColHelper = createColumnHelper<typeof features, BrokerTopicInfo>()
 
 const SASL_PROTOCOLS = new Set(['SASL_PLAINTEXT', 'SASL_SSL'])
 const SSL_PROTOCOLS = new Set(['SASL_SSL', 'SSL'])
@@ -254,7 +255,7 @@ function BrokerDetailPage() {
     },
   })
 
-  const topicColumns = [
+  const topicColumns = topicColHelper.columns([
     topicColHelper.accessor('topic', {
       header: 'Topic',
       cell: info => <strong>{info.getValue()}</strong>,
@@ -284,15 +285,15 @@ function BrokerDetailPage() {
         </span>
       ),
     }),
-  ]
+  ])
 
-  const topicTable = useReactTable({
+  const topicTable = useTable({
+    features,
     data: topicsForBroker,
     columns: topicColumns,
-    getCoreRowModel: getCoreRowModel(),
   })
 
-  const brokerTopicColumns = [
+  const brokerTopicColumns = brokerTopicColHelper.columns([
     brokerTopicColHelper.accessor('topicName', {
       header: 'Topic Name',
       cell: info => <strong style={{ fontFamily: 'monospace' }}>{info.getValue()}</strong>,
@@ -349,12 +350,12 @@ function BrokerDetailPage() {
         )
       },
     }),
-  ]
+  ])
 
-  const brokerTopicTable = useReactTable({
+  const brokerTopicTable = useTable({
+    features,
     data: filteredTopics,
     columns: brokerTopicColumns,
-    getCoreRowModel: getCoreRowModel(),
   })
 
   return (
@@ -426,7 +427,7 @@ function BrokerDetailPage() {
                         onMouseEnter={e => (e.currentTarget.style.background = '#ebf8ff')}
                         onMouseLeave={e => (e.currentTarget.style.background = '')}
                       >
-                        {row.getVisibleCells().map(cell => (
+                        {row.getAllCells().map(cell => (
                           <td key={cell.id} style={tdStyle}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>
                         ))}
                       </tr>
@@ -467,7 +468,7 @@ function BrokerDetailPage() {
                       onMouseEnter={e => (e.currentTarget.style.background = '#ebf8ff')}
                       onMouseLeave={e => (e.currentTarget.style.background = '')}
                     >
-                      {row.getVisibleCells().map(cell => (
+                      {row.getAllCells().map(cell => (
                         <td key={cell.id} style={tdStyle}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>
                       ))}
                     </tr>

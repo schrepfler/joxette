@@ -1,8 +1,8 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  useReactTable,
-  getCoreRowModel,
+  useTable,
+  tableFeatures,
   flexRender,
   createColumnHelper,
 } from '@tanstack/react-table'
@@ -24,7 +24,8 @@ export const Route = createFileRoute('/entities/')({
   component: EntitiesPage,
 })
 
-const colHelper = createColumnHelper<EntityTypeConfig>()
+const features = tableFeatures({})
+const colHelper = createColumnHelper<typeof features, EntityTypeConfig>()
 
 function AddEntityModal({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient()
@@ -166,14 +167,14 @@ function EntitiesPage() {
     onError: (e: Error) => addToast(e.message, 'error'),
   })
 
-  const columns = [
+  const columns = colHelper.columns([
     colHelper.accessor('entityType', { header: 'Entity Type' }),
     colHelper.accessor('buckets', { header: 'Buckets' }),
     colHelper.accessor('retentionDays', { header: 'Retention Days' }),
     colHelper.display({ id: 'actions', header: 'Actions' }),
-  ]
+  ])
 
-  const table = useReactTable({ data: data ?? [], columns, getCoreRowModel: getCoreRowModel() })
+  const table = useTable({ features, columns, data: data ?? [] })
 
   return (
     <Layout>

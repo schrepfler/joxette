@@ -1,8 +1,8 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  useReactTable,
-  getCoreRowModel,
+  useTable,
+  tableFeatures,
   flexRender,
   createColumnHelper,
 } from '@tanstack/react-table'
@@ -20,7 +20,8 @@ export const Route = createFileRoute('/compaction/')({
   component: CompactionPage,
 })
 
-const colHelper = createColumnHelper<CompactionRun>()
+const features = tableFeatures({})
+const colHelper = createColumnHelper<typeof features, CompactionRun>()
 
 function CompactionPage() {
   const qc = useQueryClient()
@@ -58,7 +59,7 @@ function CompactionPage() {
     onError: (e: Error) => addToast(e.message, 'error'),
   })
 
-  const columns = [
+  const columns = colHelper.columns([
     colHelper.accessor('id', { header: 'ID' }),
     colHelper.accessor('startedAt', { header: 'Started', cell: i => <span style={monoCell}>{i.getValue().slice(0, 19).replace('T', ' ')}</span> }),
     colHelper.accessor('completedAt', { header: 'Completed', cell: i => <span style={monoCell}>{i.getValue()?.slice(0, 19).replace('T', ' ') ?? '—'}</span> }),
@@ -74,9 +75,9 @@ function CompactionPage() {
     colHelper.accessor('targets', { header: 'Targets', cell: i => i.getValue()?.join(', ') ?? '—' }),
     colHelper.accessor('entityBucketsCompacted', { header: 'Entity Buckets' }),
     colHelper.accessor('generalPartitionsCompacted', { header: 'Partitions' }),
-  ]
+  ])
 
-  const table = useReactTable({ data: historyQuery.data ?? [], columns, getCoreRowModel: getCoreRowModel() })
+  const table = useTable({ features, columns, data: historyQuery.data ?? [] })
   const status = statusQuery.data
 
   const prevRunningRef = useRef<boolean | undefined>(undefined)
@@ -163,7 +164,7 @@ function CompactionPage() {
             <tbody>
               {table.getRowModel().rows.map(row => (
                 <tr key={row.id}>
-                  {row.getVisibleCells().map(cell => <td key={cell.id} style={tdStyle}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}
+                  {row.getAllCells().map(cell => <td key={cell.id} style={tdStyle}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}
                 </tr>
               ))}
             </tbody>

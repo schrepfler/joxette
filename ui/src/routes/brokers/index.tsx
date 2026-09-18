@@ -1,8 +1,8 @@
 import { createFileRoute, useNavigate } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  useReactTable,
-  getCoreRowModel,
+  useTable,
+  tableFeatures,
   flexRender,
   createColumnHelper,
 } from '@tanstack/react-table'
@@ -24,7 +24,8 @@ export const Route = createFileRoute('/brokers/')({
   component: BrokersPage,
 })
 
-const colHelper = createColumnHelper<BrokerConfig>()
+const features = tableFeatures({})
+const colHelper = createColumnHelper<typeof features, BrokerConfig>()
 
 const PROTOCOL_TONE: Record<string, string> = {
   PLAINTEXT:      'jx-badge-default',
@@ -241,7 +242,7 @@ function BrokersPage() {
     },
   })
 
-  const columns = [
+  const columns = colHelper.columns([
     colHelper.accessor('brokerId', { header: 'Broker ID', cell: info => <span style={{ fontFamily: 'var(--font-mono)', fontSize: 'var(--type-mono-size)', fontWeight: 600 }}>{info.getValue()}</span> }),
     colHelper.accessor('bootstrapServers', { header: 'Bootstrap Servers' }),
     colHelper.accessor('securityProtocol', { header: 'Protocol', cell: info => <ProtocolBadge protocol={info.getValue()} /> }),
@@ -259,9 +260,9 @@ function BrokersPage() {
         )
       },
     }),
-  ]
+  ])
 
-  const table = useReactTable({ data: data ?? [], columns, getCoreRowModel: getCoreRowModel() })
+  const table = useTable({ features, columns, data: data ?? [] })
 
   return (
     <Layout>
@@ -292,7 +293,7 @@ function BrokersPage() {
                   onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface-raised)')}
                   onMouseLeave={e => (e.currentTarget.style.background = '')}
                 >
-                  {row.getVisibleCells().map(cell => <td key={cell.id} style={tdStyle}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}
+                  {row.getAllCells().map(cell => <td key={cell.id} style={tdStyle}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}
                 </tr>
               ))}
             </tbody>

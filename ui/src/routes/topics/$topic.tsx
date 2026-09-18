@@ -1,8 +1,8 @@
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  useReactTable,
-  getCoreRowModel,
+  useTable,
+  tableFeatures,
   flexRender,
   createColumnHelper,
 } from '@tanstack/react-table'
@@ -55,8 +55,9 @@ export const Route = createFileRoute('/topics/$topic')({
   },
 })
 
-const colHelper = createColumnHelper<CassetteRecord>()
-const matcherColHelper = createColumnHelper<TopicMatcherConfig>()
+const features = tableFeatures({})
+const colHelper = createColumnHelper<typeof features, CassetteRecord>()
+const matcherColHelper = createColumnHelper<typeof features, TopicMatcherConfig>()
 
 export function AddMatcherModal({ topic, onClose }: { topic: string; onClose: () => void }) {
   const qc = useQueryClient()
@@ -392,7 +393,7 @@ function TopicDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [order])
 
-  const matcherColumns = [
+  const matcherColumns = matcherColHelper.columns([
     matcherColHelper.accessor('messageType', {
       header: 'Message type',
       cell: i => <span style={{ color: 'var(--ink-primary)', fontWeight: 500 }}>{i.getValue()}</span>,
@@ -414,15 +415,15 @@ function TopicDetailPage() {
         </Button>
       ),
     }),
-  ]
+  ])
 
-  const matcherTable = useReactTable({
+  const matcherTable = useTable({
+    features,
     data: matchersQuery.data ?? [],
     columns: matcherColumns,
-    getCoreRowModel: getCoreRowModel(),
   })
 
-  const columns = [
+  const columns = colHelper.columns([
     colHelper.accessor('timestamp', {
       header: 'Timestamp',
       cell: i => <Tabular>{i.getValue().slice(0, 19).replace('T', ' ')}</Tabular>,
@@ -451,14 +452,14 @@ function TopicDetailPage() {
       header: 'Recorded',
       cell: i => <Tabular muted>{i.getValue().slice(0, 19).replace('T', ' ')}</Tabular>,
     }),
-  ]
+  ])
 
   const tableData = streamMode === 'json' ? (recordsQuery.data?.data ?? []) : streamedRecords
 
-  const table = useReactTable({
+  const table = useTable({
+    features,
     data: tableData,
     columns,
-    getCoreRowModel: getCoreRowModel(),
   })
 
   function nextPage() {
@@ -1142,7 +1143,7 @@ function RuledTable({ table, density = 'regular', ariaLabel }: { table: any; den
                 ref={rowVirtualizer.measureElement}
                 style={{ borderBottom: '1px solid var(--rule)' }}
               >
-                {row.getVisibleCells().map((cell: any) => (
+                {row.getAllCells().map((cell: any) => (
                   <td
                     key={cell.id}
                     style={{

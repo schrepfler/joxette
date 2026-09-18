@@ -1,8 +1,8 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  useReactTable,
-  getCoreRowModel,
+  useTable,
+  tableFeatures,
   flexRender,
   createColumnHelper,
 } from '@tanstack/react-table'
@@ -24,7 +24,8 @@ export const Route = createFileRoute('/snapshots/')({
   component: SnapshotsPage,
 })
 
-const colHelper = createColumnHelper<SnapshotInfo>()
+const features = tableFeatures({})
+const colHelper = createColumnHelper<typeof features, SnapshotInfo>()
 
 function formatBytes(b: number) {
   if (b < 1024) return `${b} B`
@@ -128,7 +129,7 @@ function SnapshotsPage() {
     onError: (e: Error) => addToast(e.message, 'error'),
   })
 
-  const columns = [
+  const columns = colHelper.columns([
     colHelper.accessor('name', { header: 'Name' }),
     colHelper.accessor('createdAt', { header: 'Created At', cell: i => <span style={monoCell}>{i.getValue().slice(0, 19).replace('T', ' ')}</span> }),
     colHelper.accessor('sizeBytes', { header: 'Size', cell: i => <span style={monoCell}>{formatBytes(i.getValue())}</span> }),
@@ -139,9 +140,9 @@ function SnapshotsPage() {
         <button style={primaryBtnSmall} onClick={() => setConfirmRestore(row.original.name)}>Restore</button>
       ),
     }),
-  ]
+  ])
 
-  const table = useReactTable({ data: data ?? [], columns, getCoreRowModel: getCoreRowModel() })
+  const table = useTable({ features, columns, data: data ?? [] })
 
   return (
     <Layout>
@@ -169,7 +170,7 @@ function SnapshotsPage() {
             <tbody>
               {table.getRowModel().rows.map(row => (
                 <tr key={row.id}>
-                  {row.getVisibleCells().map(cell => <td key={cell.id} style={tdStyle}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}
+                  {row.getAllCells().map(cell => <td key={cell.id} style={tdStyle}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}
                 </tr>
               ))}
             </tbody>

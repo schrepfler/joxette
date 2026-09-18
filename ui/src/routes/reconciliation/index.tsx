@@ -1,8 +1,8 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  useReactTable,
-  getCoreRowModel,
+  useTable,
+  tableFeatures,
   flexRender,
   createColumnHelper,
 } from '@tanstack/react-table'
@@ -20,7 +20,8 @@ export const Route = createFileRoute('/reconciliation/')({
   component: ReconciliationPage,
 })
 
-const colHelper = createColumnHelper<ReconciliationRun>()
+const features = tableFeatures({})
+const colHelper = createColumnHelper<typeof features, ReconciliationRun>()
 
 function formatBytes(b: number) {
   if (b < 0) return 'N/A'
@@ -74,7 +75,7 @@ function ReconciliationPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status?.running])
 
-  const columns = [
+  const columns = colHelper.columns([
     colHelper.accessor('id', { header: 'ID' }),
     colHelper.accessor('startedAt', { header: 'Started', cell: i => <span style={monoCell}>{i.getValue().slice(0, 19).replace('T', ' ')}</span> }),
     colHelper.accessor('status', {
@@ -89,9 +90,9 @@ function ReconciliationPage() {
     colHelper.accessor('orphanedFiles', { header: 'Orphaned' }),
     colHelper.accessor('missingFiles', { header: 'Missing' }),
     colHelper.accessor('recoveredFiles', { header: 'Recovered', cell: i => i.getValue() || '—' }),
-  ]
+  ])
 
-  const table = useReactTable({ data: historyQuery.data ?? [], columns, getCoreRowModel: getCoreRowModel() })
+  const table = useTable({ features, columns, data: historyQuery.data ?? [] })
 
   return (
     <Layout>
@@ -186,7 +187,7 @@ function ReconciliationPage() {
             <tbody>
               {table.getRowModel().rows.map(row => (
                 <tr key={row.id}>
-                  {row.getVisibleCells().map(cell => <td key={cell.id} style={tdStyle}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}
+                  {row.getAllCells().map(cell => <td key={cell.id} style={tdStyle}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}
                 </tr>
               ))}
             </tbody>

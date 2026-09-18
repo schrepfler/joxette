@@ -1,8 +1,8 @@
 import { createFileRoute } from '@tanstack/react-router'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import {
-  useReactTable,
-  getCoreRowModel,
+  useTable,
+  tableFeatures,
   flexRender,
   createColumnHelper,
 } from '@tanstack/react-table'
@@ -20,7 +20,8 @@ export const Route = createFileRoute('/retention/')({
   component: RetentionPage,
 })
 
-const colHelper = createColumnHelper<RetentionRun>()
+const features = tableFeatures({})
+const colHelper = createColumnHelper<typeof features, RetentionRun>()
 
 function RetentionPage() {
   const qc = useQueryClient()
@@ -63,7 +64,7 @@ function RetentionPage() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status?.running])
 
-  const columns = [
+  const columns = colHelper.columns([
     colHelper.accessor('id', { header: 'ID' }),
     colHelper.accessor('startedAt', {
       header: 'Started',
@@ -91,9 +92,9 @@ function RetentionPage() {
         ? <span style={{ color: 'var(--signal-error)', fontFamily: 'var(--font-mono)', fontSize: 12 }}>{i.getValue()}</span>
         : '—',
     }),
-  ]
+  ])
 
-  const table = useReactTable({ data: historyQuery.data ?? [], columns, getCoreRowModel: getCoreRowModel() })
+  const table = useTable({ features, columns, data: historyQuery.data ?? [] })
 
   return (
     <Layout>
@@ -161,7 +162,7 @@ function RetentionPage() {
             <tbody>
               {table.getRowModel().rows.map(row => (
                 <tr key={row.id}>
-                  {row.getVisibleCells().map(cell => <td key={cell.id} style={tdStyle}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}
+                  {row.getAllCells().map(cell => <td key={cell.id} style={tdStyle}>{flexRender(cell.column.columnDef.cell, cell.getContext())}</td>)}
                 </tr>
               ))}
             </tbody>
