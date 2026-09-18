@@ -2,6 +2,7 @@ package com.joxette.exports;
 
 import com.joxette.config.JoxetteProperties;
 import com.joxette.replay.EntityReplayService;
+import com.joxette.replay.MessageRouter;
 import com.joxette.support.DuckDBTestSupport;
 import org.jooq.SQLDialect;
 import org.jooq.impl.DSL;
@@ -57,15 +58,15 @@ class ExportServiceNdjsonTest {
 
     @Test
     void exportsAllRecordsAcrossMultipleEntities() throws Exception {
-        DuckDBTestSupport.insertEntityRow(conn, ENTITY_TYPE, "entity-1", 0, "created",
+        DuckDBTestSupport.insertEntityRow(conn, ENTITY_TYPE, "entity-1", bucketOf("entity-1"), "created",
                 "orders.events", 0, 0L, Instant.parse("2026-01-01T00:00:00Z"),
                 Instant.parse("2026-01-01T00:00:00.100Z"), "key-1",
                 "{\"amount\":10}".getBytes(StandardCharsets.UTF_8));
-        DuckDBTestSupport.insertEntityRow(conn, ENTITY_TYPE, "entity-1", 0, "updated",
+        DuckDBTestSupport.insertEntityRow(conn, ENTITY_TYPE, "entity-1", bucketOf("entity-1"), "updated",
                 "orders.events", 0, 1L, Instant.parse("2026-01-01T00:01:00Z"),
                 Instant.parse("2026-01-01T00:01:00.100Z"), "key-1",
                 "{\"amount\":20}".getBytes(StandardCharsets.UTF_8));
-        DuckDBTestSupport.insertEntityRow(conn, ENTITY_TYPE, "entity-2", 0, "created",
+        DuckDBTestSupport.insertEntityRow(conn, ENTITY_TYPE, "entity-2", bucketOf("entity-2"), "created",
                 "orders.events", 0, 2L, Instant.parse("2026-01-01T00:02:00Z"),
                 Instant.parse("2026-01-01T00:02:00.100Z"), "key-2",
                 "{\"amount\":30}".getBytes(StandardCharsets.UTF_8));
@@ -96,5 +97,14 @@ class ExportServiceNdjsonTest {
 
         assertThat(count).isEqualTo(0L);
         assertThat(Files.exists(java.nio.file.Path.of(outputPath))).isFalse();
+    }
+
+    /**
+     * Entity tables are {@code SET PARTITIONED BY (bucket)} and every per-entity read
+     * prunes to that partition, so test rows must be written at the bucket the recorder
+     * would have chosen. Derived, never hard-coded.
+     */
+    private static int bucketOf(String entityId) {
+        return MessageRouter.computeBucket(ENTITY_TYPE, entityId, 256);
     }
 }

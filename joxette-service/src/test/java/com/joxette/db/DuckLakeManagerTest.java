@@ -104,6 +104,15 @@ class DuckLakeManagerTest {
         }
     }
 
+    /** Reads a global DuckDB setting's current value via {@code duckdb_settings()}. */
+    private String readDuckDbSetting(String name) throws SQLException {
+        try (Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(
+                     "SELECT value FROM duckdb_settings() WHERE name = '" + name + "'")) {
+            return rs.next() ? rs.getString("value") : null;
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Log-capture helpers (Logback ListAppender)
     // -------------------------------------------------------------------------
@@ -379,6 +388,52 @@ class DuckLakeManagerTest {
             } finally {
                 detachListAppender(DuckLakeManager.class, appender);
             }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // S3 secret configuration — http_keep_alive
+    // -------------------------------------------------------------------------
+
+    @Nested
+    class S3HttpKeepAliveTests {
+
+        private JoxetteProperties propertiesWithS3Endpoint() {
+            var props = memoryCatalogProperties();
+            props.getS3().setEndpoint("http://localhost:9000");
+            props.getS3().setAccessKey("test");
+            props.getS3().setSecretKey("test");
+            return props;
+        }
+
+        @Test
+        void initialize_withS3Endpoint_leavesHttpKeepAliveAtHttpfsDefault() throws Exception {
+            new DuckLakeManager(conn, propertiesWithS3Endpoint()).initialize();
+
+            assertThat(readDuckDbSetting("http_keep_alive"))
+                    .as("""
+                        http_keep_alive must be left at httpfs' own default (true). It does NOT \
+                        control connection reuse — httpfs_connection_caching is false by default, \
+                        so httpfs opens exactly one socket per request either way (measured: \
+                        1.00 sockets/request in both modes). All it changes is that httpfs sends \
+                        'Connection: close' and half-closes the socket after writing the request, \
+                        which races the server's handler: the server aborts before responding and \
+                        httpfs reports 'Server returned nothing (no headers, no data)'. Measured \
+                        against RustFS over a ~7000-file scan, 3 trials each: keep_alive=true gave \
+                        0/7351 failed requests, keep_alive=false gave ~50 failures and a failed \
+                        query every single trial. Disabling it does not mitigate stale connections \
+                        (there are none to reuse); it manufactures the exact error it was meant \
+                        to prevent.""")
+                    .isEqualTo("true");
+        }
+
+        @Test
+        void initialize_withoutS3Endpoint_httpfsNeverLoaded() throws Exception {
+            // No S3 endpoint configured (default in-memory catalog properties) — configureS3Secret()
+            // returns early without loading httpfs, so the setting doesn't exist at all.
+            new DuckLakeManager(conn, memoryCatalogProperties()).initialize();
+
+            assertThat(readDuckDbSetting("http_keep_alive")).isNull();
         }
     }
 

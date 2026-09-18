@@ -1178,7 +1178,7 @@ public class CassetteController {
         operationId = "getEntitySummary",
         summary = "Entity cassette dimension summary",
         description = "Returns a deduplicated dimension-cardinality breakdown (by source topic and message type) "
-                     + "for the entity type's cassette, optionally scoped to a time window. Each dimension is "
+                     + "for this entity's events, optionally scoped to a time window. Each dimension is "
                      + "capped at the top 20 values by count, with the remainder folded into an \"__other__\" entry."
     )
     @ApiResponses({
@@ -1205,14 +1205,14 @@ public class CassetteController {
     public CassetteSummary getEntitySummary(
             @Parameter(description = "Entity type name (must match `[a-z][a-z0-9_]*`)", required = true, example = "customer")
             @PathVariable String entityType,
-            @Parameter(description = "Entity identifier (unused — summary is per-type, not per-instance; present for URL symmetry with sibling endpoints)", required = true, example = "cust-042")
+            @Parameter(description = "Entity identifier — the summary covers only this entity's events", required = true, example = "cust-042")
             @PathVariable String entityId,
             @Parameter(description = "Include only records with timestamp >= this value (ISO-8601 instant)")
             @RequestParam(required = false) Instant from,
             @Parameter(description = "Include only records with timestamp <= this value (ISO-8601 instant)")
             @RequestParam(required = false) Instant to
     ) throws SQLException {
-        return entityService.getEntitySummary(entityType, from, to);
+        return entityService.getEntitySummary(entityType, entityId, from, to);
     }
 
     @Operation(

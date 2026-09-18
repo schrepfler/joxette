@@ -1,5 +1,6 @@
 package com.joxette.recording;
 
+import com.joxette.db.DuckDbSession;
 import com.joxette.replay.EntityRoute;
 import com.joxette.replay.KafkaMessage;
 import org.duckdb.DuckDBConnection;
@@ -115,6 +116,12 @@ public class EntityCassetteBatchWriter implements AutoCloseable {
                 ps.setBytes(idx++, msg.value());
             }
             ps.executeUpdate();
+        } catch (SQLException e) {
+            // Same rationale as CassetteBatchWriter.writeBatch: this writer's connection
+            // is cached and reused for every later batch, so a failure must not leave a
+            // transaction open on it.
+            DuckDbSession.rollbackQuietly(conn, "entity cassette write for entity_" + entityType);
+            throw e;
         }
         log.debug("Wrote {} entity row(s) to entity_{}", rows.size(), entityType);
     }

@@ -201,6 +201,8 @@ export interface EntityStats {
 
 export interface EntityFileLocation {
   fileCount: number
+  /** Candidate files DuckLake's catalog expected but couldn't read (transient object-store I/O failure). fileCount excludes these — a non-zero value here means fileCount may be an undercount. */
+  filesUnavailable: number
   objectStoreDirectory: string | null
   storageConsoleUrl: string | null
 }

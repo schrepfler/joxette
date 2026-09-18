@@ -3,6 +3,7 @@ package com.joxette.exports;
 import tools.jackson.databind.ObjectMapper;
 import com.joxette.api.error.ResourceNotFoundException;
 import com.joxette.db.DuckDbErrors;
+import com.joxette.db.DuckDbSession;
 import com.joxette.api.error.ValidationException;
 import com.joxette.config.JoxetteProperties;
 import com.joxette.lifecycle.BackgroundTaskRegistry;
@@ -23,6 +24,7 @@ import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -203,7 +205,20 @@ public class ExportService {
             }
 
             st.execute("COPY " + tmpTable + " TO '" + outputPath + "' (FORMAT PARQUET)");
-            st.execute("DROP TABLE IF EXISTS " + tmpTable);
+        } catch (SQLException e) {
+            // The temp table and any transaction the failure left behind live on the
+            // shared connection, so both have to go: otherwise the retry's CREATE TEMP
+            // TABLE fails with a (non-transient) Catalog Error and every other component
+            // inherits an aborted transaction.
+            DuckDbSession.rollbackQuietly(duckDB, "exportParquet " + jobId);
+            throw e;
+        } finally {
+            try (Statement st = duckDB.createStatement()) {
+                st.execute("DROP TABLE IF EXISTS " + tmpTable);
+            } catch (SQLException e) {
+                log.debug("Could not drop {} after export {}: {}", tmpTable, jobId, e.getMessage());
+                DuckDbSession.rollbackQuietly(duckDB, "exportParquet cleanup " + jobId);
+            }
         }
         return records.size();
     }

@@ -1,5 +1,6 @@
 package com.joxette.replay;
 
+import com.joxette.db.DuckDbSession;
 import org.jooq.DSLContext;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -107,6 +108,14 @@ public class KnownEntitiesRepository {
                 ps.executeBatch();
                 consecutiveFailures.set(0);
             } catch (SQLException e) {
+                // executeBatch() is not an ordinary statement: the JDBC driver wraps it in
+                // its own BEGIN TRANSACTION … COMMIT. If that BEGIN collides with a
+                // transaction somebody else leaked, DuckDB invalidates the transaction and
+                // then refuses every statement on the shared connection — from every
+                // thread, reads included — until an explicit ROLLBACK. Swallowing the
+                // error without rolling back is what let one bad batch here wedge the
+                // replay API and the rest of the write pipeline until restart.
+                DuckDbSession.rollbackQuietly(duckDB, "known_entities upsert");
                 int failures = consecutiveFailures.incrementAndGet();
                 if (failures >= ERROR_THRESHOLD) {
                     log.error("known_entities upsert has failed {} consecutive times — registry is drifting from reality: {}",
@@ -142,6 +151,9 @@ public class KnownEntitiesRepository {
                 try (ResultSet rs = ps.executeQuery()) {
                     return rs.next() ? rs.getLong(1) : 0L;
                 }
+            } catch (SQLException e) {
+                DuckDbSession.rollbackQuietly(duckDB, "known_entities countByType");
+                throw e;
             }
         }
     }

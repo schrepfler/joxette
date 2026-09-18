@@ -78,8 +78,8 @@ class CompactionLockRaceTest {
         CountDownLatch loserAttempted = new CountDownLatch(1);
         CompactionLockManager lockA = deterministicLockManager(duckDB, "node-a:1001", instanceRegistry, loserAttempted);
         CompactionLockManager lockB = deterministicLockManager(duckDB, "node-b:2002", instanceRegistry, loserAttempted);
-        serviceA = new CompactionService(duckDB, props, configRepo, TEST_METRICS, lockA);
-        serviceB = new CompactionService(duckDB, props, configRepo, TEST_METRICS, lockB);
+        serviceA = new CompactionService(duckDB, new com.joxette.db.DuckDbSession(duckDB), props, configRepo, TEST_METRICS, lockA);
+        serviceB = new CompactionService(duckDB, new com.joxette.db.DuckDbSession(duckDB), props, configRepo, TEST_METRICS, lockB);
     }
 
     /**

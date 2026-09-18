@@ -1,6 +1,7 @@
 package com.joxette.management;
 
 import com.joxette.api.error.CatalogQueryException;
+import com.joxette.db.DuckDbSession;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.media.Content;
 import io.swagger.v3.oas.annotations.media.ExampleObject;
@@ -110,6 +111,15 @@ public class CatalogQueryController {
         try {
             synchronized (duckDB) {
                 try (Statement stmt = duckDB.createStatement()) {
+                    // NOTE: this endpoint runs whatever SQL it is handed on the *shared*
+                    // connection, so it is also the easiest way to wedge the whole
+                    // process: a bare "BEGIN" (or any failed statement inside one) leaves
+                    // an open transaction that the next failure anywhere invalidates,
+                    // after which every statement from every thread is refused with
+                    // "Current transaction is aborted". The finally block below closes
+                    // that hole by rolling back on the way out, whatever happened — under
+                    // autocommit each statement has already committed by then, so the
+                    // rollback only ever discards a transaction left open by this request.
                     boolean hasResultSet = stmt.execute(request.sql());
                     long durationMs = System.currentTimeMillis() - start;
 
@@ -147,6 +157,8 @@ public class CatalogQueryController {
             }
         } catch (SQLException e) {
             throw new CatalogQueryException(e.getMessage(), e);
+        } finally {
+            DuckDbSession.rollbackQuietly(duckDB, "POST /catalog/query");
         }
     }
 

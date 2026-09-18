@@ -462,6 +462,10 @@ public class HealthController {
                 return rs.next() ? rs.getLong("total") : 0;
             }
         } catch (SQLException e) {
+            // Swallowing the error is fine (the field is reported as -1), leaving the
+            // connection dirty is not: a failure here must not become the next caller's
+            // "Current transaction is aborted".
+            com.joxette.db.DuckDbSession.rollbackQuietly(duckDB, "health: inlinedDataSizeBytes");
             return -1;
         }
     }
@@ -495,6 +499,7 @@ public class HealthController {
             }
             return total;
         } catch (SQLException e) {
+            com.joxette.db.DuckDbSession.rollbackQuietly(duckDB, "health: flushedDataSizeBytes");
             return -1;
         }
     }

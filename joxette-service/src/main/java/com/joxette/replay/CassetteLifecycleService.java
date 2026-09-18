@@ -4,6 +4,7 @@ import tools.jackson.core.JacksonException;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
 import com.joxette.config.JoxetteProperties;
+import com.joxette.db.DuckDbSession;
 import com.joxette.management.ConfigRepository;
 import com.joxette.recording.RecordingCoordinator;
 import org.slf4j.Logger;
@@ -200,11 +201,20 @@ public class CassetteLifecycleService {
             try (Statement st = duckDB.createStatement()) {
                 st.execute("CALL ducklake_flush_inlined_data('lake')");
             } catch (SQLException e) {
-                // Log but don't abort — fall through to CHECKPOINT
+                // Log but don't abort — fall through to CHECKPOINT. The rollback is not
+                // optional though: a swallowed failure must not leave a transaction open
+                // on the shared connection, or the next statement from any thread gets
+                // "Current transaction is aborted" for the rest of the process's life
+                // (and CHECKPOINT below would fail too, since it needs no active
+                // transaction). Mirrors CompactionService.checkpoint().
                 log.warn("ducklake_flush failed ({}); data may remain inlined", e.getMessage());
+                DuckDbSession.rollbackQuietly(duckDB, "compactTopicCassette: ducklake_flush_inlined_data");
             }
             try (Statement st = duckDB.createStatement()) {
                 st.execute("CHECKPOINT");
+            } catch (SQLException e) {
+                DuckDbSession.rollbackQuietly(duckDB, "compactTopicCassette: CHECKPOINT");
+                throw e;
             }
         }
     }
@@ -776,9 +786,16 @@ public class CassetteLifecycleService {
                 // Log and continue so the rebuild proceeds with whatever is visible.
                 log.warn("rebuildKnownEntities: ducklake_flush_inlined_data failed ({}); " +
                          "proceeding – inline data should still be readable", e.getMessage());
+                // Mandatory before continuing: the rest of this method keeps issuing
+                // statements on the shared connection, and would otherwise run them
+                // inside the transaction the failure left open and aborted.
+                DuckDbSession.rollbackQuietly(duckDB, "rebuildKnownEntities: ducklake_flush_inlined_data");
             }
             try (Statement st = duckDB.createStatement()) {
                 st.execute("CHECKPOINT");
+            } catch (SQLException e) {
+                DuckDbSession.rollbackQuietly(duckDB, "rebuildKnownEntities: CHECKPOINT");
+                throw e;
             }
 
             // Wipe the registry first so stale (deleted) entries are removed

@@ -208,8 +208,14 @@ public class MessageRouter {
 
     /**
      * Stable bucket assignment: {@code floorMod(hash(entityType, entityId), buckets)}.
+     *
+     * <p>Public because it is a read/write contract, not just a routing detail:
+     * {@code bucket} is the entity table's DuckLake partition key, so every
+     * per-entity read prunes to the partition this function names
+     * (see {@code EntityReplayService.bucketPruningCondition}). Reader and writer
+     * must derive the bucket the same way or reads silently miss rows.
      */
-    static int computeBucket(String entityType, String entityId, int buckets) {
+    public static int computeBucket(String entityType, String entityId, int buckets) {
         int hash = 31 * entityType.hashCode() + entityId.hashCode();
         return Math.floorMod(hash, buckets);
     }

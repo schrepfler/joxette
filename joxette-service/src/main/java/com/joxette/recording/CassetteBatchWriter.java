@@ -1,5 +1,6 @@
 package com.joxette.recording;
 
+import com.joxette.db.DuckDbSession;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.common.header.Header;
 import org.duckdb.DuckDBConnection;
@@ -108,6 +109,13 @@ public class CassetteBatchWriter implements AutoCloseable {
                 ps.setString(idx++, (String) row[6]);
             }
             ps.executeUpdate();
+        } catch (SQLException e) {
+            // This writer's connection is long-lived and reused for every later batch of
+            // this topic, so a failure that leaves a transaction open on it would wedge
+            // the topic permanently (and be retried forever as "transient"). Roll back on
+            // the way out so the next batch starts from a clean connection.
+            DuckDbSession.rollbackQuietly(conn, "general cassette write for topic '" + topic + "'");
+            throw e;
         }
 
         log.debug("Wrote batch of {} records to {}", batch.size(), qualifiedTable);

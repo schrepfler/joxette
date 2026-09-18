@@ -2,6 +2,7 @@ package com.joxette.replay;
 
 import com.joxette.api.error.UpstreamUnavailableException;
 import org.jooq.exception.DataAccessException;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.sql.SQLException;
@@ -20,12 +21,22 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
  */
 class TopicReplayServiceObjectStoreRetryTest {
 
+    @BeforeEach
+    void resetCircuit() {
+        TopicReplayService.resetObjectStoreCircuitForTests();
+    }
+
     private static DataAccessException ioError(String detail) {
         return new DataAccessException("SQL [...]", new SQLException("IO Error: " + detail));
     }
 
     private static DataAccessException nonIoError(String detail) {
         return new DataAccessException("SQL [...]", new SQLException("Binder Error: " + detail));
+    }
+
+    private static DataAccessException abortedTransaction() {
+        return new DataAccessException("SQL [...]", new SQLException(
+                "TransactionContext Error: Current transaction is aborted (please ROLLBACK)"));
     }
 
     @Test
@@ -109,5 +120,92 @@ class TopicReplayServiceObjectStoreRetryTest {
 
         assertThat(result).isEqualTo("ok");
         assertThat(calls.get()).isEqualTo(TopicReplayService.OBJECT_STORE_RETRY_ATTEMPTS);
+    }
+
+    @Test
+    void exhaustingRetries_opensCircuit_soNextCallFailsFastWithoutInvokingSupplier() {
+        DataAccessException lastError = ioError("Server returned nothing (no headers, no data)");
+        assertThatThrownBy(() -> TopicReplayService.withObjectStoreRetry("first-call", () -> {
+            throw lastError;
+        }, 0)).isInstanceOf(UpstreamUnavailableException.class);
+
+        AtomicInteger secondCallSupplierInvocations = new AtomicInteger();
+        assertThatThrownBy(() -> TopicReplayService.withObjectStoreRetry("second-call", () -> {
+            secondCallSupplierInvocations.incrementAndGet();
+            return "should never get here";
+        }, 0)).isInstanceOf(UpstreamUnavailableException.class);
+
+        assertThat(secondCallSupplierInvocations.get())
+                .as("circuit should be open from the first call's exhaustion — second call must fail fast")
+                .isZero();
+    }
+
+    @Test
+    void successAfterCircuitReset_closesCircuitAgain() {
+        DataAccessException lastError = ioError("Connection timed out");
+        assertThatThrownBy(() -> TopicReplayService.withObjectStoreRetry("first-call", () -> {
+            throw lastError;
+        }, 0)).isInstanceOf(UpstreamUnavailableException.class);
+
+        // Simulate the cooldown having elapsed (the test seam used by @BeforeEach in
+        // every other test) rather than sleeping for the real cooldown duration.
+        TopicReplayService.resetObjectStoreCircuitForTests();
+
+        AtomicInteger calls = new AtomicInteger();
+        String result = TopicReplayService.withObjectStoreRetry("second-call", () -> {
+            calls.incrementAndGet();
+            return "ok";
+        }, 0);
+
+        assertThat(result).isEqualTo("ok");
+        assertThat(calls.get()).isEqualTo(1);
+    }
+
+    /**
+     * The failure mode that turned a transient hiccup into an unhandled 500: attempt 1
+     * failed with a real {@code IO Error}, that failure aborted a transaction somebody
+     * had left open on the shared connection, and attempt 2 then failed with
+     * {@code "Current transaction is aborted"} — which did not look like an object-store
+     * error, so it was rethrown as a bug instead of retried, and the circuit breaker
+     * never got to open.  {@code DuckDbSession} now rolls the aborted transaction back on
+     * the way out of attempt 1, so attempt 2 has a clean connection to retry on — but
+     * only if the retry loop recognises the message and keeps going.
+     */
+    @Test
+    void retriesAbortedTransaction_becauseTheConnectionIsRolledBackBetweenAttempts() {
+        AtomicInteger calls = new AtomicInteger();
+        String result = TopicReplayService.withObjectStoreRetry("queryEntityEvents:fixture", () -> {
+            int attempt = calls.incrementAndGet();
+            if (attempt == 1) throw ioError("Server returned nothing (no headers, no data)");
+            if (attempt == 2) throw abortedTransaction();
+            return "ok";
+        }, 0);
+
+        assertThat(result).isEqualTo("ok");
+        assertThat(calls.get()).isEqualTo(3);
+    }
+
+    @Test
+    void abortedTransactionAloneIsRetried_ratherThanRethrownAsABug() {
+        AtomicInteger calls = new AtomicInteger();
+        String result = TopicReplayService.withObjectStoreRetry("test", () -> {
+            if (calls.incrementAndGet() < 2) throw abortedTransaction();
+            return "ok";
+        }, 0);
+
+        assertThat(result).isEqualTo("ok");
+        assertThat(calls.get()).isEqualTo(2);
+    }
+
+    @Test
+    void retryAttempts_and_backoff_giveAboutThreeAndAHalfSecondsOfPatience() {
+        // Locks in the "more patience" tuning: 4 attempts, exponential backoff
+        // 500ms / 1s / 2s between them (~3.5s total) instead of the old
+        // 3-attempt / ~0.9s-total budget — interactive reads can afford to wait a
+        // few seconds longer than they used to before giving up.
+        assertThat(TopicReplayService.OBJECT_STORE_RETRY_ATTEMPTS).isEqualTo(4);
+        assertThat(TopicReplayService.computeBackoffMs(500, 1)).isEqualTo(500);
+        assertThat(TopicReplayService.computeBackoffMs(500, 2)).isEqualTo(1000);
+        assertThat(TopicReplayService.computeBackoffMs(500, 3)).isEqualTo(2000);
     }
 }

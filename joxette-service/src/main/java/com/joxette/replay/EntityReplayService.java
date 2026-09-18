@@ -11,6 +11,7 @@ import org.jooq.impl.SQLDataType;
 import org.springframework.stereotype.Service;
 
 import com.joxette.config.JoxetteProperties;
+import com.joxette.db.DuckDbErrors;
 import com.joxette.db.SchemaManager;
 import com.joxette.replay.transform.ReplayMessage;
 import com.joxette.replay.transform.TransformContext;
@@ -78,6 +79,7 @@ public class EntityReplayService implements EntityCassetteSource {
     // -------------------------------------------------------------------------
 
     private static final Field<String>         F_ENTITY_ID    = DSL.field(DSL.name("entity_id"),       String.class);
+    private static final Field<Integer>        F_BUCKET       = DSL.field(DSL.name("bucket"),           Integer.class);
     private static final Field<String>         F_MESSAGE_TYPE = DSL.field(DSL.name("message_type"),    String.class);
     private static final Field<String>         F_TOPIC        = DSL.field(DSL.name("topic"),           String.class);
     private static final Field<Integer>        F_PARTITION    = DSL.field(DSL.name("kafka_partition"),  Integer.class);
@@ -238,7 +240,8 @@ public class EntityReplayService implements EntityCassetteSource {
 
         Table<?> entityTable = entityTable(entityType);
 
-        Condition cond = pushdown.pushdownCondition().and(F_ENTITY_ID.eq(entityId));
+        Condition cond = pushdown.pushdownCondition().and(F_ENTITY_ID.eq(entityId))
+                .and(bucketPruningCondition(entityType, entityId));
         if (messageTypes != null && !messageTypes.isEmpty())
             cond = cond.and(F_MESSAGE_TYPE.in(messageTypes));
         final Condition finalCond = cond;
@@ -650,11 +653,16 @@ public class EntityReplayService implements EntityCassetteSource {
         // catalog backend (embedded DuckDB, Quack, PostgreSQL).
         // entityType is validated above ([a-z][a-z0-9_]*); entityId is a bind param.
         String tableName = "lake.main.entity_" + entityType;
+        // bucket is the table's partition key, so this predicate is what confines the
+        // scan to one of N partition directories — see bucketPruningCondition() for why
+        // entity_id alone prunes nothing. Rendered inline (an int derived from
+        // computeBucket, never user input) since this CTE is raw SQL text.
+        String bucketPredicate = renderBucketPredicate(entityType, entityId);
         String dedupCte =
                 "WITH deduped AS ("
                 + "  SELECT kafka_timestamp AS ts, topic"
                 + "  FROM " + tableName
-                + "  WHERE entity_id = {0}"
+                + "  WHERE entity_id = {0}" + bucketPredicate
                 + "  QUALIFY ROW_NUMBER() OVER"
                 + "    (PARTITION BY topic, kafka_partition, kafka_offset"
                 + "     ORDER BY recorded_at DESC) = 1"
@@ -724,21 +732,83 @@ public class EntityReplayService implements EntityCassetteSource {
     private static final int SUMMARY_TOP_N = 20;
 
     /**
+     * Restricts a per-entity query to the single partition directory that entity's
+     * rows live in, as {@code bucket = computeBucket(entityType, entityId)}.
+     *
+     * <p>Entity tables are {@code SET PARTITIONED BY (bucket)}
+     * (see {@code SchemaManager}), so this predicate is what lets DuckLake skip
+     * 255 of 256 partitions. An {@code entity_id} predicate on its own prunes
+     * nothing: rows are written in Kafka arrival order, so every one of the (many,
+     * small) Parquet files holds an arbitrary spread of entity ids and every file's
+     * entity_id min/max range spans the id being looked for. Zone maps can exclude
+     * none of them, and the query degenerates into reading the entire table —
+     * which, at 184k files of ~9 KB, is ~370k object-store requests and a
+     * guaranteed transient failure somewhere in the middle.
+     *
+     * <p>Returns {@link DSL#noCondition()} if the entity type's bucket count cannot
+     * be read — correct but unpruned beats pruning on a guessed modulus, which
+     * would silently hide rows.
+     */
+    private Condition bucketPruningCondition(String entityType, String entityId) {
+        Integer bucket = resolveBucket(entityType, entityId);
+        return bucket == null ? DSL.noCondition() : F_BUCKET.eq(bucket);
+    }
+
+    /**
+     * Raw-SQL form of {@link #bucketPruningCondition} — {@code " AND bucket = N"},
+     * or the empty string when the bucket can't be resolved. Safe to interpolate:
+     * the value is an {@code int} from {@link MessageRouter#computeBucket}, never
+     * caller-supplied text.
+     */
+    private String renderBucketPredicate(String entityType, String entityId) {
+        Integer bucket = resolveBucket(entityType, entityId);
+        return bucket == null ? "" : " AND bucket = " + bucket;
+    }
+
+    /** The partition bucket holding {@code entityId}'s rows, or {@code null} if unknown. */
+    private Integer resolveBucket(String entityType, String entityId) {
+        try {
+            return MessageRouter.computeBucket(entityType, entityId, lookupBucketCount(entityType));
+        } catch (SQLException e) {
+            log.debug("resolveBucket: bucket count unavailable for entity type '{}' ({}); " +
+                    "querying without partition pruning", entityType, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
      * Returns a dimension-cardinality breakdown (by source topic and message
-     * type) for this entity type's cassette, optionally scoped to a time
-     * window. Deduplicates the same way {@link #getEntityStats} does (QUALIFY
+     * type) for a single entity's events, optionally scoped to a time window.
+     * Deduplicates the same way {@link #getEntityStats} does (QUALIFY
      * {@code ROW_NUMBER()} over {@code (topic, kafka_partition, kafka_offset)},
      * keeping the most recently recorded row) before counting.
+     *
+     * <p><strong>Scoped to {@code entityId} on purpose.</strong> This drives the
+     * summary panel beside one entity's event list, whose facets filter
+     * <em>that</em> entity's events — so type-wide counts were simply the wrong
+     * numbers, and they also made the query unrunnable. An entity type's cassette
+     * can hold six figures of small Parquet files (184k, ~9 KB each, in the
+     * incident that surfaced this), and an unscoped aggregate has to touch every
+     * one of them: ~370k object-store requests for a panel that renders two short
+     * lists. At that volume a transient per-request failure is a certainty rather
+     * than a risk, and since {@code read_parquet} over a file list is
+     * all-or-nothing, one failure fails the request — then
+     * {@link TopicReplayService#withObjectStoreRetry} re-runs the whole 370k-request
+     * scan, which fails again, until the budget is gone and the caller gets a 503.
+     * Filtering on {@code entity_id} lets DuckLake's per-file zone maps prune the
+     * scan to the few files that actually contain this entity, which is both correct
+     * and bounded.
      */
-    public CassetteSummary getEntitySummary(String entityType, Instant from, Instant to) throws SQLException {
+    public CassetteSummary getEntitySummary(String entityType, String entityId, Instant from, Instant to)
+            throws SQLException {
         validateEntityType(entityType);
         Table<?> table = entityTable(entityType);
-        Condition cond = DSL.noCondition();
+        Condition cond = F_ENTITY_ID.eq(entityId).and(bucketPruningCondition(entityType, entityId));
         if (from != null) cond = cond.and(F_TIMESTAMP.ge(from.atOffset(ZoneOffset.UTC)));
         if (to != null)   cond = cond.and(F_TIMESTAMP.le(to.atOffset(ZoneOffset.UTC)));
         final Condition finalCond = cond;
 
-        return TopicReplayService.withObjectStoreRetry("entitySummary:" + entityType, () -> {
+        return TopicReplayService.withObjectStoreRetry("entitySummary:" + entityType + ":" + entityId, () -> {
             synchronized (duckDB) {
                 var deduped = dsl.select(F_TOPIC, F_MESSAGE_TYPE)
                         .from(table)
@@ -781,7 +851,7 @@ public class EntityReplayService implements EntityCassetteSource {
         validateEntityType(entityType);
         String bareTable = "entity_" + entityType;
 
-        int fileCount = TopicReplayService.withObjectStoreRetry(
+        FileVerificationResult verification = TopicReplayService.withObjectStoreRetry(
                 "getEntityFileLocation:" + entityType, () -> {
             synchronized (duckDB) {
                 try {
@@ -794,7 +864,8 @@ public class EntityReplayService implements EntityCassetteSource {
 
         String objectStoreDirectory = computeObjectStoreDirectory(bareTable);
         String storageConsoleUrl = computeStorageConsoleUrl(bareTable);
-        return new EntityFileLocation(fileCount, objectStoreDirectory, storageConsoleUrl);
+        return new EntityFileLocation(verification.matchedFileCount(), verification.unavailableFileCount(),
+                objectStoreDirectory, storageConsoleUrl);
     }
 
     // -------------------------------------------------------------------------
@@ -838,14 +909,22 @@ public class EntityReplayService implements EntityCassetteSource {
      * app-facing API); reports 0 if DuckLake's own {@code ducklake_list_files}
      * is unavailable at all (e.g. not a real DuckLake-backed catalog).
      */
-    private int countEntityFiles(String table, String entityType, String entityId) throws SQLException {
+    private FileVerificationResult countEntityFiles(String table, String entityType, String entityId) throws SQLException {
         String objectStoragePath = props.getCatalog().getObjectStoragePath();
-        if (objectStoragePath == null || objectStoragePath.isBlank()) return 0;
+        if (objectStoragePath == null || objectStoragePath.isBlank()) return new FileVerificationResult(0, 0);
 
         List<String> candidates = pruneCandidateFiles(table, entityType, entityId);
-        if (candidates.isEmpty()) return 0;
+        if (candidates.isEmpty()) return new FileVerificationResult(0, 0);
         return verifyCandidates(candidates, entityId);
     }
+
+    /**
+     * Result of verifying a list of catalog-pruned candidate files against
+     * {@code entity_id}: how many actually matched, out of how many candidates
+     * could not be read at all (excluded from {@code matchedFileCount}, not
+     * silently treated as non-matching).
+     */
+    private record FileVerificationResult(int matchedFileCount, int unavailableFileCount) {}
 
     private List<String> pruneCandidateFiles(String table, String entityType, String entityId) {
         try {
@@ -965,8 +1044,40 @@ public class EntityReplayService implements EntityCassetteSource {
         return filenames;
     }
 
-    /** Exact count: reads only {@code candidates}, filtered to real entity_id matches. */
-    private int verifyCandidates(List<String> candidates, String entityId) throws SQLException {
+    /**
+     * Exact count: reads only {@code candidates}, filtered to real entity_id matches.
+     *
+     * <p>{@code read_parquet([...])} over the combined list is all-or-nothing — DuckDB
+     * has no "skip files that fail to read" option, so one candidate file going
+     * unreachable (transient object-store I/O failure) would otherwise fail the whole
+     * count. On that specific failure mode, falls back to verifying each candidate
+     * file one at a time and excludes the ones that stay unreachable from the count
+     * instead of failing the request outright — see {@link FileVerificationResult}.
+     */
+    private FileVerificationResult verifyCandidates(List<String> candidates, String entityId) throws SQLException {
+        try {
+            return new FileVerificationResult(verifyCandidatesCombined(candidates, entityId), 0);
+        } catch (SQLException e) {
+            if (!DuckDbErrors.isTransient(e)) throw e;
+            log.warn("verifyCandidates: combined read of {} candidate file(s) failed transiently ({}); " +
+                    "falling back to verifying each file individually", candidates.size(), e.getMessage());
+            int matched = 0;
+            int unavailable = 0;
+            for (String file : candidates) {
+                try {
+                    matched += verifyCandidatesCombined(List.of(file), entityId);
+                } catch (SQLException fileError) {
+                    if (!DuckDbErrors.isTransient(fileError)) throw fileError;
+                    unavailable++;
+                    log.warn("verifyCandidates: file '{}' unreachable, excluding from count: {}",
+                            file, fileError.getMessage());
+                }
+            }
+            return new FileVerificationResult(matched, unavailable);
+        }
+    }
+
+    private int verifyCandidatesCombined(List<String> candidates, String entityId) throws SQLException {
         String filesLiteral = candidates.stream()
                 .map(p -> "'" + p.replace("'", "''") + "'")
                 .collect(java.util.stream.Collectors.joining(", "));

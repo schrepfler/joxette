@@ -384,6 +384,26 @@ public class DuckLakeManager {
             stmt.execute(sql);
             log.info("DuckDB S3 secret 'joxette_s3' configured (endpoint: {})", s3.getEndpoint());
         }
+
+        // Deliberately NOT setting http_keep_alive = false here, despite its description
+        // ("Setting this to false can help when running into connection failures") reading like
+        // a fix for the "Server returned nothing (no headers, no data)" errors we saw. It is the
+        // opposite — measured against RustFS with duckdb_jdbc 1.5.5.1:
+        //
+        //   * It does not control connection reuse. httpfs_connection_caching defaults to false,
+        //     so httpfs already opens exactly one socket per request. Measured socket churn was
+        //     1.00 sockets/request with keep-alive both on and off — identical.
+        //   * All it changes is that httpfs sends "Connection: close" and half-closes the socket
+        //     after writing the request. That races the server's handler: the server sees the
+        //     write-half shutdown, abandons the request before responding (it logs nothing at
+        //     all), and httpfs surfaces the empty read as "Server returned nothing".
+        //   * A/B over a ~7000-file scan, 3 trials each: keep_alive=true → 0/7351 requests failed
+        //     and the query succeeded every trial; keep_alive=false → ~50 failed requests and a
+        //     failed query every trial. httpfs' own 3 retries do not help, because they re-fire
+        //     the same request the same way ~100ms/400ms later and fail identically.
+        //
+        // So there are no stale pooled connections to avoid (nothing is pooled), and turning this
+        // off manufactures the very error it advertises fixing. Leave it at the httpfs default.
     }
 
     /**

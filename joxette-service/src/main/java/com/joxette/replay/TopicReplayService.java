@@ -24,6 +24,8 @@ import java.time.Instant;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import com.joxette.api.error.UpstreamUnavailableException;
+import com.joxette.db.DuckDbErrors;
+import com.joxette.db.DuckDbSession;
 import com.joxette.replay.transform.ReplayMessage;
 import com.joxette.replay.transform.TransformContext;
 import com.joxette.replay.transform.TransformPipeline;
@@ -102,6 +104,9 @@ public class TopicReplayService implements CassetteSource {
     public TopicReplayService(DSLContext dsl, Connection duckDB) {
         this.dsl = dsl;
         this.duckDB = duckDB;
+        // Publish the shared connection for the static retry helper — see
+        // #sharedConnection for why this is process-wide state rather than a field.
+        sharedConnection = duckDB;
     }
 
     /**
@@ -548,8 +553,60 @@ public class TopicReplayService implements CassetteSource {
     // Package-visible helpers (used by EntityReplayService)
     // -------------------------------------------------------------------------
 
-    static final int OBJECT_STORE_RETRY_ATTEMPTS = 3;
-    private static final long OBJECT_STORE_RETRY_BASE_DELAY_MS = 300;
+    static final int OBJECT_STORE_RETRY_ATTEMPTS = 4;
+    private static final long OBJECT_STORE_RETRY_BASE_DELAY_MS = 500;
+
+    /**
+     * Fail-fast gate shared by every {@code withObjectStoreRetry} call: opened once a
+     * call exhausts its retry budget, so concurrent callers (e.g. the several REST
+     * calls one entity-detail page fires) don't each independently retry-and-fail
+     * against the same confirmed outage. See {@link ObjectStoreCircuitBreaker}'s
+     * javadoc for the full rationale. 5s cooldown: long enough to collapse a page
+     * load's simultaneous calls into one failure, short enough that the very next
+     * unrelated request re-checks reality rather than staying stuck on stale state.
+     */
+    private static final ObjectStoreCircuitBreaker OBJECT_STORE_CIRCUIT =
+            new ObjectStoreCircuitBreaker(Duration.ofSeconds(5));
+
+    /** Test seam: force-closes the shared circuit breaker between tests. */
+    static void resetObjectStoreCircuitForTests() {
+        OBJECT_STORE_CIRCUIT.resetForTests();
+    }
+
+    /**
+     * The process-wide shared DuckDB connection, published by this bean's constructor so
+     * that the static {@link #withObjectStoreRetry} can roll it back between attempts.
+     *
+     * <p>Static for the same reason {@link #OBJECT_STORE_CIRCUIT} is: there is exactly
+     * one shared connection per process by design (see "DuckDB Connection Model" in
+     * {@code CLAUDE.md}), and both {@code TopicReplayService} and
+     * {@code EntityReplayService} feed the same static retry helper. {@code null} in
+     * unit tests that exercise the retry logic without a database, where there is no
+     * connection to heal.
+     */
+    private static volatile Connection sharedConnection;
+
+    /**
+     * Rolls back any transaction a failed attempt left open on the shared connection.
+     *
+     * <p>This is the choke point that makes every read path safe: without it, attempt 1's
+     * genuine {@code IO Error} could abort a transaction that was open on the shared
+     * connection, and from then on every statement — this retry's next attempt, the
+     * recording pipeline's {@code known_entities} upsert on a completely different
+     * thread, the next HTTP request — failed with "Current transaction is aborted" until
+     * the process was restarted.
+     *
+     * <p>Runs after the failing attempt has released the connection monitor, and
+     * re-acquires it, so it can never roll back a transaction another thread is still
+     * inside: every transaction in this application is opened and closed while holding
+     * that same monitor.
+     */
+    private static void healSharedConnection(String description) {
+        Connection conn = sharedConnection;
+        if (conn != null) {
+            DuckDbSession.rollbackQuietly(conn, description);
+        }
+    }
 
     /**
      * Runs {@code query} (a jOOQ fetch/fetchOne call, typically wrapping its own
@@ -566,7 +623,8 @@ public class TopicReplayService implements CassetteSource {
      * <p>If every attempt fails with a transient I/O error, throws
      * {@link UpstreamUnavailableException} (503, typed) instead of leaking the raw
      * {@link DataAccessException} up to {@code GlobalExceptionHandler}'s generic
-     * 500 fallback.
+     * 500 fallback — and opens {@link #OBJECT_STORE_CIRCUIT} so the next caller
+     * doesn't pay the same retry budget again while the outage is still fresh.
      */
     static <T> T withObjectStoreRetry(String description, Supplier<T> query) {
         return withObjectStoreRetry(description, query, OBJECT_STORE_RETRY_BASE_DELAY_MS);
@@ -574,29 +632,65 @@ public class TopicReplayService implements CassetteSource {
 
     /** Test seam: {@code baseDelayMs} lets tests skip the real backoff wait. */
     static <T> T withObjectStoreRetry(String description, Supplier<T> query, long baseDelayMs) {
+        if (OBJECT_STORE_CIRCUIT.isOpen()) {
+            Throwable cause = OBJECT_STORE_CIRCUIT.lastFailure();
+            log.warn("{}: object-store circuit is open (recent confirmed outage), failing fast without retrying",
+                    description);
+            throw UpstreamUnavailableException.objectStore(description + " (circuit open)", cause);
+        }
         DataAccessException lastError = null;
         for (int attempt = 1; attempt <= OBJECT_STORE_RETRY_ATTEMPTS; attempt++) {
             try {
-                return query.get();
+                T result = query.get();
+                OBJECT_STORE_CIRCUIT.recordSuccess();
+                return result;
             } catch (DataAccessException e) {
+                // Always heal first, even when we are about to rethrow: a failure that
+                // is a real bug can leave the connection just as wedged as a transient
+                // one, and the next caller has no way to recover it.
+                healSharedConnection(description);
                 if (!isTransientObjectStoreError(e)) throw e;
                 lastError = e;
                 if (attempt < OBJECT_STORE_RETRY_ATTEMPTS) {
                     log.warn("{}: transient object-store I/O error on attempt {}/{}, retrying: {}",
                             description, attempt, OBJECT_STORE_RETRY_ATTEMPTS, e.getMessage());
-                    sleepBackoff(baseDelayMs * attempt);
+                    sleepBackoff(computeBackoffMs(baseDelayMs, attempt));
                 }
             }
         }
+        OBJECT_STORE_CIRCUIT.recordFailure(lastError);
         throw UpstreamUnavailableException.objectStore(description, lastError);
     }
 
+    /**
+     * Exponential backoff delay before retry attempt {@code attempt + 1}:
+     * {@code baseDelayMs * 2^(attempt-1)} — e.g. with the default 500ms base,
+     * 500ms / 1s / 2s between the 4 attempts (~3.5s of total patience).
+     */
+    static long computeBackoffMs(long baseDelayMs, int attempt) {
+        return baseDelayMs * (1L << (attempt - 1));
+    }
+
+    /**
+     * A failure worth another attempt: a genuine object-store I/O error, or the
+     * knock-on {@code "Current transaction is aborted"} that a previous failure left on
+     * the shared connection.
+     *
+     * <p>The second case is what turned a momentary RustFS hiccup into an unhandled
+     * 500: attempt 1 failed with a real {@code IO Error} and aborted a transaction that
+     * had been leaked on the shared connection, so attempt 2 failed with
+     * {@code "Current transaction is aborted"} — which matched no known object-store
+     * pattern and was therefore rethrown as a bug, unretried, with the circuit breaker
+     * never getting a chance to open.  {@link com.joxette.db.DuckDbSession} now rolls
+     * that transaction back on the way out of the failing attempt, so retrying is both
+     * safe and the right thing to do.
+     */
     private static boolean isTransientObjectStoreError(Throwable e) {
         for (Throwable t = e; t != null; t = t.getCause()) {
             String msg = t.getMessage();
             if (msg != null && msg.contains("IO Error")) return true;
         }
-        return false;
+        return DuckDbErrors.isAbortedTransaction(e);
     }
 
     private static void sleepBackoff(long delayMs) {

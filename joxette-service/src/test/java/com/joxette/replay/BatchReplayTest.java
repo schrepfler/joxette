@@ -156,9 +156,9 @@ class BatchReplayTest {
     @Test
     void batch_twoEntities_streamsEnvelopedEvents() throws Exception {
         Instant ts = Instant.parse("2024-06-01T10:00:00Z");
-        DuckDBTestSupport.insertEntityRow(conn, ENTITY_TYPE, "ORD-1", 1, "OrderCreated",
+        DuckDBTestSupport.insertEntityRow(conn, ENTITY_TYPE, "ORD-1", bucketOf("ORD-1"), "OrderCreated",
                 "orders.events", 0, 0L, ts, ts, "ORD-1", null);
-        DuckDBTestSupport.insertEntityRow(conn, ENTITY_TYPE, "ORD-2", 2, "OrderPaid",
+        DuckDBTestSupport.insertEntityRow(conn, ENTITY_TYPE, "ORD-2", bucketOf("ORD-2"), "OrderPaid",
                 "orders.events", 0, 1L, ts.plusSeconds(1), ts.plusSeconds(1), "ORD-2", null);
 
         MvcResult asyncResult = mvc.perform(post("/cassettes/entities/order/batch")
@@ -180,7 +180,7 @@ class BatchReplayTest {
     @Test
     void batch_emptyEntity_streamsNoLinesForThatEntity() throws Exception {
         Instant ts = Instant.parse("2024-06-01T10:00:00Z");
-        DuckDBTestSupport.insertEntityRow(conn, ENTITY_TYPE, "ORD-1", 1, "OrderCreated",
+        DuckDBTestSupport.insertEntityRow(conn, ENTITY_TYPE, "ORD-1", bucketOf("ORD-1"), "OrderCreated",
                 "orders.events", 0, 0L, ts, ts, "ORD-1", null);
 
         MvcResult asyncResult = mvc.perform(post("/cassettes/entities/order/batch")
@@ -207,9 +207,9 @@ class BatchReplayTest {
         Instant ts = Instant.parse("2024-06-01T10:00:00Z");
         byte[] val1 = Base64.encodeValue("{\"status\":\"pending\"}");
         byte[] val2 = Base64.encodeValue("{\"status\":\"paid\"}");
-        DuckDBTestSupport.insertEntityRow(conn, ENTITY_TYPE, "ORD-A", 1, "OrderCreated",
+        DuckDBTestSupport.insertEntityRow(conn, ENTITY_TYPE, "ORD-A", bucketOf("ORD-A"), "OrderCreated",
                 "orders.events", 0, 0L, ts, ts, "ORD-A", val1);
-        DuckDBTestSupport.insertEntityRow(conn, ENTITY_TYPE, "ORD-B", 2, "OrderPaid",
+        DuckDBTestSupport.insertEntityRow(conn, ENTITY_TYPE, "ORD-B", bucketOf("ORD-B"), "OrderPaid",
                 "orders.events", 0, 1L, ts, ts, "ORD-B", val2);
 
         MvcResult asyncResult = mvc.perform(post("/cassettes/entities/order/batch")
@@ -235,5 +235,14 @@ class BatchReplayTest {
         static byte[] encodeValue(String json) {
             return json.getBytes(java.nio.charset.StandardCharsets.UTF_8);
         }
+    }
+
+    /**
+     * Entity tables are {@code SET PARTITIONED BY (bucket)} and every per-entity read
+     * prunes to that partition, so test rows must be written at the bucket the recorder
+     * would have chosen. Derived, never hard-coded.
+     */
+    private static int bucketOf(String entityId) {
+        return MessageRouter.computeBucket(ENTITY_TYPE, entityId, 256);
     }
 }

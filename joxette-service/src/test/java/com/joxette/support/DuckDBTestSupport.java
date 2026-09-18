@@ -27,11 +27,12 @@ import java.time.Instant;
  * <ul>
  *   <li>{@code headers} is {@code STRUCT(key VARCHAR, value VARCHAR)[]} — UTF-8 strings,
  *       matching the production write path in {@code CassetteBatchWriter}.</li>
- *   <li>{@code kafka_value} / {@code kafka_key} are {@code BLOB} / {@code VARCHAR} as
- *       in production.</li>
+ *   <li>{@code kafka_value} and {@code kafka_key} are both {@code BLOB}, matching
+ *       {@code SchemaManager}. Kafka keys are decoded as UTF-8 bytes on write and
+ *       read back verbatim.</li>
  * </ul>
  *
-+nor * <p>Each call to {@link #newConnection()} returns a fresh, isolated pair of
+ * <p>Each call to {@link #newConnection()} returns a fresh, isolated pair of
  * in-memory databases.  Close the connection in {@code @AfterEach} to release resources.
  */
 public final class DuckDBTestSupport {
@@ -314,7 +315,7 @@ public final class DuckDBTestSupport {
                         kafka_offset    BIGINT      NOT NULL,
                         kafka_partition INTEGER     NOT NULL,
                         kafka_timestamp TIMESTAMPTZ NOT NULL,
-                        kafka_key       VARCHAR,
+                        kafka_key       BLOB,
                         kafka_value     BLOB,
                         metadata        VARCHAR,
                         headers         STRUCT(key VARCHAR, value VARCHAR)[],
@@ -341,7 +342,7 @@ public final class DuckDBTestSupport {
                         kafka_offset    BIGINT      NOT NULL,
                         kafka_partition INTEGER     NOT NULL,
                         kafka_timestamp TIMESTAMPTZ NOT NULL,
-                        kafka_key       VARCHAR,
+                        kafka_key       BLOB,
                         kafka_value     BLOB,
                         metadata        VARCHAR,
                         headers         STRUCT(key VARCHAR, value VARCHAR)[]
@@ -383,7 +384,7 @@ public final class DuckDBTestSupport {
             ps.setLong(2, offset);
             ps.setInt(3, partition);
             ps.setTimestamp(4, Timestamp.from(timestamp));
-            ps.setString(5, key);
+            ps.setBytes(5, key == null ? null : key.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             ps.setBytes(6, value);
             ps.setString(7, messageType);
             ps.executeUpdate();
@@ -413,7 +414,7 @@ public final class DuckDBTestSupport {
             ps.setLong(6, offset);
             ps.setInt(7, partition);
             ps.setTimestamp(8, Timestamp.from(timestamp));
-            ps.setString(9, key);
+            ps.setBytes(9, key == null ? null : key.getBytes(java.nio.charset.StandardCharsets.UTF_8));
             ps.setBytes(10, value);
             ps.executeUpdate();
         }

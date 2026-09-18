@@ -50,7 +50,7 @@ class EntityReplayServiceConcurrencyTest {
         DuckDBTestSupport.createEntityTable(duckDB, ENTITY_TYPE);
         Instant base = Instant.parse("2025-01-01T00:00:00Z");
         for (int i = 0; i < ROWS_PER_ENTITY; i++) {
-            DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, "cust-1", 0, "OrderCreated",
+            DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, "cust-1", bucketOf("cust-1"), "OrderCreated",
                     "orders.events", 0, i, base.plusSeconds(i), base.plusSeconds(i),
                     "cust-1", ("{\"seq\":" + i + "}").getBytes());
         }
@@ -93,5 +93,14 @@ class EntityReplayServiceConcurrencyTest {
         assertThat(failures).as("no thread should observe an exception from the shared DuckDB connection").isEmpty();
         assertThat(rowCounts).as("every concurrent query must see the full, uncorrupted row set")
                 .allMatch(count -> count == ROWS_PER_ENTITY);
+    }
+
+    /**
+     * Entity tables are {@code SET PARTITIONED BY (bucket)} and every per-entity read
+     * prunes to that partition, so test rows must be written at the bucket the recorder
+     * would have chosen. Derived, never hard-coded.
+     */
+    private static int bucketOf(String entityId) {
+        return MessageRouter.computeBucket(ENTITY_TYPE, entityId, 256);
     }
 }

@@ -66,8 +66,8 @@ class EntityReplayServiceTest {
     @Test
     void queryEntityEvents_returnsEventsForEntityId() throws Exception {
         Instant ts = Instant.parse("2024-05-01T10:00:00Z");
-        insertEntityRow("ORD-1", 42, "orders.events", 0, 0L, ts, b("{\"order_id\":\"ORD-1\"}"));
-        insertEntityRow("ORD-2", 43, "orders.events", 0, 1L, ts.plusSeconds(1), b("{}"));
+        insertEntityRow("ORD-1", "orders.events", 0, 0L, ts, b("{\"order_id\":\"ORD-1\"}"));
+        insertEntityRow("ORD-2", "orders.events", 0, 1L, ts.plusSeconds(1), b("{}"));
 
         PagedResponse<EntityRecord> page =
                 service.queryEntityEvents(ENTITY_TYPE, "ORD-1", null, null, 50, null);
@@ -102,9 +102,9 @@ class EntityReplayServiceTest {
         Instant t3 = Instant.parse("2024-01-01T11:00:00Z");
 
         // Insert from two different topics, out of chronological order
-        insertEntityRow(entity, 10, "payments.events", 0, 5L, t2, b("{\"type\":\"payment\"}"));
-        insertEntityRow(entity, 10, "orders.events",   0, 3L, t1, b("{\"type\":\"order\"}"));
-        insertEntityRow(entity, 10, "audit.log",       0, 1L, t3, b("{\"type\":\"audit\"}"));
+        insertEntityRow(entity, "payments.events", 0, 5L, t2, b("{\"type\":\"payment\"}"));
+        insertEntityRow(entity, "orders.events",   0, 3L, t1, b("{\"type\":\"order\"}"));
+        insertEntityRow(entity, "audit.log",       0, 1L, t3, b("{\"type\":\"audit\"}"));
 
         PagedResponse<EntityRecord> page =
                 service.queryEntityEvents(ENTITY_TYPE, entity, null, null, 50, null);
@@ -125,7 +125,7 @@ class EntityReplayServiceTest {
     void queryEntityEvents_paginatesWithCursor() throws Exception {
         Instant base = Instant.parse("2024-04-01T00:00:00Z");
         for (int i = 0; i < 5; i++) {
-            insertEntityRow("ORD-P", 7, "orders.events", 0, i, base.plusSeconds(i), b("v" + i));
+            insertEntityRow("ORD-P", "orders.events", 0, i, base.plusSeconds(i), b("v" + i));
         }
 
         PagedResponse<EntityRecord> page1 =
@@ -157,8 +157,8 @@ class EntityReplayServiceTest {
         Instant recordedNew = Instant.parse("2024-02-01T08:00:10Z");
 
         // Same (topic, partition, offset) — two writes with different recorded_at.
-        insertEntityRowAt("ORD-D", 5, "orders.events", 0, 0L, ts, recordedOld, b("first"));
-        insertEntityRowAt("ORD-D", 5, "orders.events", 0, 0L, ts, recordedNew, b("second"));
+        insertEntityRowAt("ORD-D", "orders.events", 0, 0L, ts, recordedOld, b("first"));
+        insertEntityRowAt("ORD-D", "orders.events", 0, 0L, ts, recordedNew, b("second"));
 
         PagedResponse<EntityRecord> page =
                 service.queryEntityEvents(ENTITY_TYPE, "ORD-D", null, null, 50, null);
@@ -178,9 +178,9 @@ class EntityReplayServiceTest {
         Instant t2 = Instant.parse("2024-01-01T12:00:00Z");
         Instant t3 = Instant.parse("2024-01-01T16:00:00Z");
 
-        insertEntityRow("ORD-F", 1, "orders.events", 0, 0L, t1, null);
-        insertEntityRow("ORD-F", 1, "orders.events", 0, 1L, t2, null);
-        insertEntityRow("ORD-F", 1, "orders.events", 0, 2L, t3, null);
+        insertEntityRow("ORD-F", "orders.events", 0, 0L, t1, null);
+        insertEntityRow("ORD-F", "orders.events", 0, 1L, t2, null);
+        insertEntityRow("ORD-F", "orders.events", 0, 2L, t3, null);
 
         PagedResponse<EntityRecord> page =
                 service.queryEntityEvents(ENTITY_TYPE, "ORD-F",
@@ -312,9 +312,9 @@ class EntityReplayServiceTest {
         Instant t2 = Instant.parse("2024-03-01T11:00:00Z");
         Instant t3 = Instant.parse("2024-03-01T12:00:00Z");
 
-        insertEntityRow("ORD-S", 9, "orders.events",   0, 0L, t1, b("e1"));
-        insertEntityRow("ORD-S", 9, "orders.events",   0, 1L, t2, b("e2"));
-        insertEntityRow("ORD-S", 9, "payments.events", 0, 0L, t3, b("e3"));
+        insertEntityRow("ORD-S", "orders.events",   0, 0L, t1, b("e1"));
+        insertEntityRow("ORD-S", "orders.events",   0, 1L, t2, b("e2"));
+        insertEntityRow("ORD-S", "payments.events", 0, 0L, t3, b("e3"));
 
         insertKnownEntity("order", "ORD-S", 9, t1.toString());
 
@@ -358,8 +358,8 @@ class EntityReplayServiceTest {
     @Test
     void getEntityStats_countsOnlyForRequestedEntity() throws Exception {
         Instant ts = Instant.parse("2024-01-01T00:00:00Z");
-        insertEntityRow("ORD-1", 1, "orders.events", 0, 0L, ts, null);
-        insertEntityRow("ORD-2", 2, "orders.events", 0, 1L, ts, null);
+        insertEntityRow("ORD-1", "orders.events", 0, 0L, ts, null);
+        insertEntityRow("ORD-2", "orders.events", 0, 1L, ts, null);
 
         insertKnownEntity("order", "ORD-1", 1, ts.toString());
         insertKnownEntity("order", "ORD-2", 2, ts.toString());
@@ -375,7 +375,7 @@ class EntityReplayServiceTest {
     void getEntityStats_concurrentCallsDoNotCollide() throws Exception {
         Instant ts = Instant.parse("2024-06-01T00:00:00Z");
         for (int i = 1; i <= 4; i++) {
-            insertEntityRow("E-" + i, i, "orders.events", 0, (long) i, ts, null);
+            insertEntityRow("E-" + i, "orders.events", 0, (long) i, ts, null);
             insertKnownEntity("order", "E-" + i, i, ts.toString());
         }
 
@@ -407,7 +407,7 @@ class EntityReplayServiceTest {
 
     @Test
     void getEntityFileLocation_fileCountIsZero_whenObjectStoragePathNotConfigured() throws Exception {
-        insertEntityRow("ORD-FL1", 1, "orders.events", 0, 0L,
+        insertEntityRow("ORD-FL1", "orders.events", 0, 0L,
                 Instant.parse("2024-05-01T10:00:00Z"), b("{}"));
 
         EntityFileLocation location = service.getEntityFileLocation(ENTITY_TYPE, "ORD-FL1");
@@ -425,7 +425,7 @@ class EntityReplayServiceTest {
         EntityReplayService configuredService =
                 new EntityReplayService(DSL.using(duckDB, SQLDialect.DUCKDB), duckDB, props);
 
-        insertEntityRow("ORD-FL2", 2, "orders.events", 0, 0L,
+        insertEntityRow("ORD-FL2", "orders.events", 0, 0L,
                 Instant.parse("2024-05-01T10:00:00Z"), b("{}"));
 
         EntityFileLocation location = configuredService.getEntityFileLocation(ENTITY_TYPE, "ORD-FL2");
@@ -448,7 +448,7 @@ class EntityReplayServiceTest {
         Instant base = Instant.parse("2026-01-01T00:00:00Z");
         int total = 5;
         for (int i = 0; i < total; i++) {
-            insertEntityRow("ORD-O", 7, "orders.events", 0, i, base.plusSeconds(i), b("v" + i));
+            insertEntityRow("ORD-O", "orders.events", 0, i, base.plusSeconds(i), b("v" + i));
         }
 
         PagedResponse<EntityRecord> page = service.queryEntityEvents(
@@ -470,7 +470,7 @@ class EntityReplayServiceTest {
         Instant base = Instant.parse("2026-02-01T00:00:00Z");
         int total = 6;
         for (int i = 0; i < total; i++) {
-            insertEntityRow("ORD-P2", 4, "orders.events", 0, i, base.plusSeconds(i), b("v" + i));
+            insertEntityRow("ORD-P2", "orders.events", 0, i, base.plusSeconds(i), b("v" + i));
         }
 
         List<Long> collected = new ArrayList<>();
@@ -511,7 +511,7 @@ class EntityReplayServiceTest {
     void queryEntityEvents_lastN_returnsLastNInChronologicalOrder() throws Exception {
         Instant base = Instant.parse("2026-03-01T00:00:00Z");
         for (int i = 0; i < 8; i++) {
-            insertEntityRow("ORD-LN", 1, "orders.events", 0, i, base.plusSeconds(i), b("v" + i));
+            insertEntityRow("ORD-LN", "orders.events", 0, i, base.plusSeconds(i), b("v" + i));
         }
 
         PagedResponse<EntityRecord> page = service.queryEntityEvents(
@@ -530,7 +530,7 @@ class EntityReplayServiceTest {
     void queryEntityEvents_lastN_greaterThanTotal_returnsAllInOrder() throws Exception {
         Instant base = Instant.parse("2026-03-02T00:00:00Z");
         for (int i = 0; i < 3; i++) {
-            insertEntityRow("ORD-LN2", 2, "orders.events", 0, i, base.plusSeconds(i), b("v" + i));
+            insertEntityRow("ORD-LN2", "orders.events", 0, i, base.plusSeconds(i), b("v" + i));
         }
 
         PagedResponse<EntityRecord> page = service.queryEntityEvents(
@@ -550,9 +550,9 @@ class EntityReplayServiceTest {
     void queryEntityEvents_dedupNone_exposesAllDuplicates() throws Exception {
         Instant ts = Instant.parse("2026-03-03T10:00:00Z");
         // same (topic, partition, offset) recorded twice — two separate recorded_at values
-        insertEntityRowAt("ORD-DDP", 3, "orders.events", 0, 0L, ts,
+        insertEntityRowAt("ORD-DDP", "orders.events", 0, 0L, ts,
                 ts.minusSeconds(2), b("{\"v\":1}"));
-        insertEntityRowAt("ORD-DDP", 3, "orders.events", 0, 0L, ts,
+        insertEntityRowAt("ORD-DDP", "orders.events", 0, 0L, ts,
                 ts.minusSeconds(1), b("{\"v\":2}"));
 
         PagedResponse<EntityRecord> page = service.queryEntityEvents(
@@ -565,12 +565,12 @@ class EntityReplayServiceTest {
     @Test
     void queryEntityEvents_dedupOffset_deduplicatesByTopicPartitionOffset() throws Exception {
         Instant ts = Instant.parse("2026-03-04T10:00:00Z");
-        insertEntityRowAt("ORD-DDP2", 4, "orders.events", 0, 0L, ts,
+        insertEntityRowAt("ORD-DDP2", "orders.events", 0, 0L, ts,
                 ts.minusSeconds(2), b("{\"v\":1}"));
-        insertEntityRowAt("ORD-DDP2", 4, "orders.events", 0, 0L, ts,
+        insertEntityRowAt("ORD-DDP2", "orders.events", 0, 0L, ts,
                 ts.minusSeconds(1), b("{\"v\":2}"));
         // different offset — not a duplicate
-        insertEntityRowAt("ORD-DDP2", 4, "orders.events", 0, 1L, ts.plusSeconds(1),
+        insertEntityRowAt("ORD-DDP2", "orders.events", 0, 1L, ts.plusSeconds(1),
                 ts, b("{\"v\":3}"));
 
         PagedResponse<EntityRecord> page = service.queryEntityEvents(
@@ -584,15 +584,22 @@ class EntityReplayServiceTest {
     // Helpers
     // -------------------------------------------------------------------------
 
-    private void insertEntityRow(String entityId, int bucket, String topic,
+    /**
+     * Inserts a row the way the recorder would: at {@code bucket =
+     * computeBucket(entityType, entityId)}. Entity tables are
+     * {@code SET PARTITIONED BY (bucket)} and every per-entity read prunes to that
+     * one partition, so a test row written to any other bucket is invisible to
+     * reads — these helpers derive the bucket rather than letting callers pick one.
+     */
+    private void insertEntityRow(String entityId, String topic,
             int partition, long offset, Instant timestamp, byte[] value) throws Exception {
-        insertEntityRowAt(entityId, bucket, topic, partition, offset, timestamp, Instant.now(), value);
+        insertEntityRowAt(entityId, topic, partition, offset, timestamp, Instant.now(), value);
     }
 
-    private void insertEntityRowAt(String entityId, int bucket, String topic,
+    private void insertEntityRowAt(String entityId, String topic,
             int partition, long offset, Instant timestamp, Instant recordedAt, byte[] value)
             throws Exception {
-        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, entityId, bucket, "testEvent",
+        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, entityId, bucketOf(entityId), "testEvent",
                 topic, partition, offset, timestamp, recordedAt, entityId, value);
     }
 
@@ -873,41 +880,145 @@ class EntityReplayServiceTest {
     // getEntitySummary
     // -------------------------------------------------------------------------
 
+    /**
+     * Entity tables are {@code SET PARTITIONED BY (bucket)}, so every row this
+     * service reads back must be inserted at the same bucket the writer would have
+     * chosen — {@link MessageRouter#computeBucket}. Tests share this helper so they
+     * exercise the same partition layout production does.
+     */
+    private int bucketOf(String entityId) {
+        return MessageRouter.computeBucket(ENTITY_TYPE, entityId, 256);
+    }
+
     @Test
     void getEntitySummary_breaksDownBySourceTopicAndMessageType() throws Exception {
         Instant ts = Instant.parse("2024-01-01T10:00:00Z");
-        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, "order-1", 0, "Created",
+        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, "order-1", bucketOf("order-1"), "Created",
                 "orders.events", 0, 0L, ts, Instant.now(), "k0", b("v0"));
-        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, "order-1", 0, "Paid",
+        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, "order-1", bucketOf("order-1"), "Paid",
                 "payments.events", 0, 0L, ts.plusSeconds(1), Instant.now(), "k1", b("v1"));
-        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, "order-2", 0, "Created",
+        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, "order-2", bucketOf("order-2"), "Created",
                 "orders.events", 0, 1L, ts.plusSeconds(2), Instant.now(), "k2", b("v2"));
 
-        CassetteSummary summary = service.getEntitySummary(ENTITY_TYPE, null, null);
+        CassetteSummary summary = service.getEntitySummary(ENTITY_TYPE, "order-1", null, null);
 
-        assertThat(summary.totalRecords()).isEqualTo(3);
+        assertThat(summary.totalRecords()).isEqualTo(2);
         assertThat(summary.dimensions().get("sourceTopic"))
-                .containsExactlyInAnyOrder(new ValueCount("orders.events", 2), new ValueCount("payments.events", 1));
+                .containsExactlyInAnyOrder(new ValueCount("orders.events", 1), new ValueCount("payments.events", 1));
         assertThat(summary.dimensions().get("messageType"))
-                .containsExactlyInAnyOrder(new ValueCount("Created", 2), new ValueCount("Paid", 1));
+                .containsExactlyInAnyOrder(new ValueCount("Created", 1), new ValueCount("Paid", 1));
+    }
+
+    /**
+     * The summary panel sits next to one entity's event list and its facets filter
+     * <em>that</em> entity's events, so its counts must come from that entity's rows
+     * only. Counting the whole entity type was both wrong (facet counts that don't
+     * match what selecting the facet produces) and the cause of a production outage:
+     * with 184k small Parquet files under one entity type, the unscoped count had to
+     * touch every one of them, and no retry budget survives that.
+     */
+    @Test
+    void getEntitySummary_excludesOtherEntitiesOfTheSameType() throws Exception {
+        Instant ts = Instant.parse("2024-01-01T10:00:00Z");
+        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, "order-1", bucketOf("order-1"), "Created",
+                "orders.events", 0, 0L, ts, Instant.now(), "k0", b("v0"));
+        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, "order-2", bucketOf("order-2"), "Refunded",
+                "refunds.events", 0, 1L, ts.plusSeconds(1), Instant.now(), "k1", b("v1"));
+
+        CassetteSummary summary = service.getEntitySummary(ENTITY_TYPE, "order-1", null, null);
+
+        assertThat(summary.totalRecords()).isEqualTo(1);
+        assertThat(summary.dimensions().get("sourceTopic"))
+                .containsExactly(new ValueCount("orders.events", 1));
+        assertThat(summary.dimensions().get("messageType"))
+                .containsExactly(new ValueCount("Created", 1));
+    }
+
+    /**
+     * {@code entity_id} alone prunes nothing. Rows land in arrival order, so each of
+     * the (many, small) Parquet files holds an arbitrary spread of ids and every
+     * file's entity_id min/max range covers the id being asked for — DuckLake's zone
+     * maps can exclude none of them. The {@code bucket} predicate is what actually
+     * prunes, because {@code bucket} is the table's partition key: it restricts the
+     * scan to one of 256 partition directories, which is the difference between
+     * ~184k file reads and ~1k.
+     *
+     * <p>Asserted here by writing the same {@code entity_id} into a bucket the writer
+     * would never have chosen and requiring it to be excluded: reading only the
+     * entity's own partition is the deliberate trade-off, so a mis-bucketed row is
+     * invisible to reads. That is sound because reader and writer derive the bucket
+     * from the same {@link MessageRouter#computeBucket} call.
+     */
+    @Test
+    void getEntitySummary_readsOnlyTheEntitysOwnPartitionBucket() throws Exception {
+        Instant ts = Instant.parse("2024-01-01T10:00:00Z");
+        int correctBucket = bucketOf("order-1");
+        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, "order-1", correctBucket, "Created",
+                "orders.events", 0, 0L, ts, Instant.now(), "k0", b("v0"));
+        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, "order-1", (correctBucket + 1) % 256, "Paid",
+                "payments.events", 0, 1L, ts.plusSeconds(1), Instant.now(), "k1", b("v1"));
+
+        CassetteSummary summary = service.getEntitySummary(ENTITY_TYPE, "order-1", null, null);
+
+        assertThat(summary.totalRecords()).isEqualTo(1);
+        assertThat(summary.dimensions().get("messageType"))
+                .containsExactly(new ValueCount("Created", 1));
     }
 
     @Test
     void getEntitySummary_dedupesSameSourceOffsetRecordedTwice() throws Exception {
         Instant ts = Instant.parse("2024-01-01T10:00:00Z");
-        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, "order-1", 0, "Created",
+        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, "order-1", bucketOf("order-1"), "Created",
                 "orders.events", 0, 0L, ts, Instant.now().minusSeconds(10), "k0", b("v0"));
-        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, "order-1", 0, "Created",
+        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, "order-1", bucketOf("order-1"), "Created",
                 "orders.events", 0, 0L, ts, Instant.now(), "k0", b("v0"));
 
-        CassetteSummary summary = service.getEntitySummary(ENTITY_TYPE, null, null);
+        CassetteSummary summary = service.getEntitySummary(ENTITY_TYPE, "order-1", null, null);
 
         assertThat(summary.totalRecords()).isEqualTo(1);
     }
 
+    /**
+     * Same partition-pruning contract as
+     * {@link #getEntitySummary_readsOnlyTheEntitysOwnPartitionBucket()}, for the two
+     * other per-entity read paths. Both used to scan every partition of the entity
+     * type, which is what turned one entity-detail page load into a ~370k-request
+     * object-store scan.
+     */
+    @Test
+    void queryEntityEvents_readsOnlyTheEntitysOwnPartitionBucket() throws Exception {
+        Instant ts = Instant.parse("2024-01-01T10:00:00Z");
+        int correctBucket = bucketOf("ORD-B");
+        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, "ORD-B", correctBucket, "testEvent",
+                "orders.events", 0, 0L, ts, Instant.now(), "k0", b("in-partition"));
+        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, "ORD-B", (correctBucket + 1) % 256, "testEvent",
+                "orders.events", 0, 1L, ts.plusSeconds(1), Instant.now(), "k1", b("out-of-partition"));
+
+        PagedResponse<EntityRecord> page =
+                service.queryEntityEvents(ENTITY_TYPE, "ORD-B", null, null, 50, null);
+
+        assertThat(page.data()).hasSize(1);
+        assertThat(Base64.getUrlDecoder().decode(page.data().get(0).value()))
+                .isEqualTo(b("in-partition"));
+    }
+
+    @Test
+    void getEntityStats_readsOnlyTheEntitysOwnPartitionBucket() throws Exception {
+        Instant ts = Instant.parse("2024-01-01T10:00:00Z");
+        int correctBucket = bucketOf("ORD-C");
+        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, "ORD-C", correctBucket, "testEvent",
+                "orders.events", 0, 0L, ts, Instant.now(), "k0", b("v0"));
+        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, "ORD-C", (correctBucket + 1) % 256, "testEvent",
+                "orders.events", 0, 1L, ts.plusSeconds(1), Instant.now(), "k1", b("v1"));
+
+        EntityStats stats = service.getEntityStats(ENTITY_TYPE, "ORD-C");
+
+        assertThat(stats.messageCount()).isEqualTo(1);
+    }
+
     @Test
     void getEntitySummary_rejectsInvalidEntityType() {
-        assertThatThrownBy(() -> service.getEntitySummary("Not Valid!", null, null))
+        assertThatThrownBy(() -> service.getEntitySummary("Not Valid!", "order-1", null, null))
                 .isInstanceOf(com.joxette.api.error.ValidationException.class);
     }
 

@@ -5,6 +5,7 @@ import com.joxette.compaction.CompactionLockManager;
 import com.joxette.compaction.RunStatus;
 import com.joxette.compaction.TriggerSource;
 import com.joxette.config.JoxetteProperties;
+import com.joxette.db.DuckDbSession;
 import com.joxette.metrics.JoxetteMetrics;
 import org.duckdb.DuckDBPreparedStatement;
 import org.duckdb.QueryProgress;
@@ -528,6 +529,11 @@ public class ReconciliationService {
                 } catch (SQLException e) {
                     log.warn("recoverOrphans: failed to register '{}' into table '{}': {}",
                             orphan.path(), orphan.tableName(), e.getMessage());
+                    // ducklake_add_data_files mutates the catalog; a swallowed failure
+                    // must not leave a transaction open on the shared connection, or the
+                    // remaining orphans (and everything else) fail with
+                    // "Current transaction is aborted".
+                    DuckDbSession.rollbackQuietly(duckDB, "recoverOrphans:" + orphan.tableName());
                 }
             }
         }

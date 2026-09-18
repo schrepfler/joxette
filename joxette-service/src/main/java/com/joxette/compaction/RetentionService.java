@@ -2,6 +2,7 @@ package com.joxette.compaction;
 
 import com.joxette.config.JoxetteProperties;
 import com.joxette.db.DuckDbErrors;
+import com.joxette.db.DuckDbSession;
 import com.joxette.db.SchemaManager;
 import com.joxette.metrics.JoxetteMetrics;
 import io.micrometer.core.instrument.Counter;
@@ -258,6 +259,7 @@ public class RetentionService {
                 // entity type does not cause the entire run to fail and restart from scratch.
                 log.warn("Retention: skipping entity type '{}' due to error (will retry next schedule): {}",
                         type, e.getMessage());
+                DuckDbSession.rollbackQuietly(duckDB, "retention: entity type " + type);
             }
         }
         return new long[]{entityRows, knownEntitiesRows};
@@ -323,6 +325,10 @@ public class RetentionService {
             } else {
                 log.warn("ducklake_rewrite_data_files failed for {}: {}", label, e.getMessage());
             }
+            // Non-fatal for this table, but the shared connection must not inherit the
+            // failure: without this, the next statement from any thread would fail with
+            // "Current transaction is aborted".
+            DuckDbSession.rollbackQuietly(duckDB, "retention: ducklake_rewrite_data_files for " + label);
         }
     }
 
