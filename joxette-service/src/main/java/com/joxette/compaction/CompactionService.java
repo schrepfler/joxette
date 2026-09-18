@@ -2,6 +2,7 @@ package com.joxette.compaction;
 
 import com.joxette.config.JoxetteProperties;
 import com.joxette.db.DuckDbErrors;
+import com.joxette.db.DuckDbSession;
 import com.joxette.management.ConfigRepository;
 import com.joxette.metrics.JoxetteMetrics;
 import io.micrometer.core.instrument.Timer;
@@ -9,6 +10,7 @@ import com.joxette.management.TopicMode;
 import com.joxette.db.SchemaManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.DependsOn;
 import org.springframework.scheduling.support.CronExpression;
 import org.springframework.stereotype.Service;
@@ -48,10 +50,13 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * call from {@link RetentionService} after bulk-deleting entity rows (e.g. GDPR wipes).
  *
  * <h2>Compaction strategy</h2>
- * <p>One {@code CALL ducklake_merge_adjacent_files} is issued per entity type and per
- * general-cassette topic.  DuckLake internally determines which files need merging based
- * on file-size thresholds ({@code max_file_size} from {@code target-file-size-mb} config).
- * Files already at or above the target size are left untouched.
+ * <p>For entity types, repeated bounded {@code CALL ducklake_merge_adjacent_files} calls
+ * are issued per entity type — see {@link #mergeInBatches} — until nothing is left to
+ * compact or a safety cap is hit. General-cassette topics still use one unbounded call;
+ * see {@link #doCompactGeneralTopic}. DuckLake internally determines which files need
+ * merging based on file-size thresholds ({@code max_file_size} from
+ * {@code target-file-size-mb} config). Files already at or above the target size are
+ * left untouched.
  *
  * <h2>Run tracking</h2>
  * <p>Every run is recorded in {@code compaction_history}.  An
@@ -70,20 +75,24 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * {@code expires_at} every {@link CompactionLockManager#HEARTBEAT_INTERVAL_MINUTES}
  * minutes from a dedicated virtual thread while the merge is in progress.
  *
- * <p><b>Known limitation:</b> the heartbeat's {@link CompactionLockManager#refresh}
- * call and the merge's own {@code executeQuery} both run under {@code synchronized(duckDB)}
- * on this instance's single shared connection, so a heartbeat tick that fires while the
- * merge statement is still executing simply blocks until the merge's synchronized block
- * exits — it cannot land concurrently with an in-flight merge. In practice this means the
- * heartbeat protects the common case (merges that finish well inside one TTL window, where
- * it is a no-op) but does not, by itself, prevent a cross-instance lock steal for a single
- * {@code ducklake_merge_adjacent_files} call that runs longer than {@code lockTtlMinutes}
- * end-to-end — closing that residual gap would need lock heartbeat I/O moved off the main
- * compaction connection (e.g. a small dedicated connection for {@code compaction_locks}
- * only). The documented mitigation in the meantime is the deployment guidance in
- * {@code docs/clustering-deployment.md} / {@code docs/operator-design.md}: run exactly one
- * compaction-enabled replica, which is what actually prevents the two-instance race this
- * whole mechanism exists as a backstop for.
+ * <p>{@link CompactionLockManager} runs its {@code tryAcquire}/{@code refresh}/{@code release}
+ * queries on the main shared connection, not {@link #duckDB} — see "Connection isolation"
+ * below — so a heartbeat tick can now execute concurrently with an in-flight merge instead
+ * of blocking behind it for the merge's whole duration.
+ *
+ * <h2>Connection isolation</h2>
+ * <p>{@link #duckDB} and {@link #session} are <strong>not</strong> the connection every
+ * other DB-touching class serialises on via {@code synchronized(duckDB)}; they are
+ * {@code compactionDuckDbConnection} / {@code compactionDuckDbSession} from
+ * {@link com.joxette.config.DuckDBConfig} — a separate connection to the same DuckDB
+ * instance, obtained via {@code DuckDBConnection#duplicate()}. This exists because
+ * {@code CALL ducklake_merge_adjacent_files(...)} can block for a very long time deep
+ * inside an httpfs retry against a non-responding object store, and neither
+ * {@code Statement.cancel()} nor interrupting the calling thread unblocks it (verified
+ * against duckdb_jdbc 1.5.5.1 with a standalone spike: both simply hang alongside the
+ * stuck statement). Before this connection existed, that hang held the monitor every
+ * other read and write path depends on, wedging the entire application until restart.
+ * Now it can only ever wedge compaction itself.
  */
 @Service
 @DependsOn("dbSchemaManager")
@@ -91,7 +100,10 @@ public class CompactionService {
 
     private static final Logger log = LoggerFactory.getLogger(CompactionService.class);
 
+    /** Compaction's dedicated connection — see the class-level "Connection isolation" javadoc. */
     private final Connection           duckDB;
+    /** Same connection as {@link #duckDB}, wrapped so failures cannot leave it wedged. */
+    private final DuckDbSession        session;
     private final JoxetteProperties    props;
     private final ConfigRepository     configRepo;
     private final AtomicBoolean        running = new AtomicBoolean(false);
@@ -100,9 +112,12 @@ public class CompactionService {
     private final Timer compactionTimer;
     private final CompactionLockManager lockManager;
 
-    public CompactionService(Connection duckDB, JoxetteProperties props, ConfigRepository configRepo,
+    public CompactionService(@Qualifier("compactionDuckDbConnection") Connection duckDB,
+                              @Qualifier("compactionDuckDbSession") DuckDbSession session,
+                              JoxetteProperties props, ConfigRepository configRepo,
                               JoxetteMetrics joxetteMetrics, CompactionLockManager lockManager) {
         this.duckDB                = duckDB;
+        this.session               = session;
         this.props                 = props;
         this.configRepo            = configRepo;
         this.filesProcessedCounter = joxetteMetrics.compactionFilesProcessed();
@@ -300,11 +315,9 @@ public class CompactionService {
      * <p>Caller must {@link LockHeartbeat#stop()} it once the merge finishes, in the same
      * {@code finally} block that calls {@link CompactionLockManager#release}.
      *
-     * <p>See the class-level "Distributed locking" javadoc for a known limitation: each
-     * {@link CompactionLockManager#refresh} tick shares {@code synchronized(duckDB)} with
-     * the merge statement it is meant to protect, so it cannot execute while that
-     * statement is still running — it is a best-effort backstop, not a guarantee, for
-     * merges that individually outlive one TTL window.
+     * <p>Runs on {@link CompactionLockManager}'s own connection (the main shared one, not
+     * {@link #duckDB} — see the class-level "Connection isolation" javadoc), so a tick can
+     * land while a merge statement is still executing instead of queuing behind it.
      */
     private LockHeartbeat startHeartbeat(String target) {
         return new LockHeartbeat(lockManager, target,
@@ -440,15 +453,29 @@ public class CompactionService {
             return;
         }
         log.info("Migrating legacy unpartitioned files for entity_type='{}' into bucket layout", entityType);
-        try (Statement st = duckDB.createStatement()) {
-            st.execute("BEGIN TRANSACTION");
-            st.execute("CREATE TEMP TABLE tmp_migrate_" + entityType
-                    + " AS SELECT * FROM lake.main." + table);
-            st.execute("DELETE FROM lake.main." + table);
-            st.execute("INSERT INTO lake.main." + table
-                    + " SELECT * FROM tmp_migrate_" + entityType);
-            st.execute("COMMIT");
-            try (ResultSet rs = st.executeQuery(
+        String tmpTable = "tmp_migrate_" + entityType;
+        String description = "compaction: legacy partition migration of " + table;
+        // This is the only multi-statement transaction in the application, and it used to
+        // be what wedged the whole process: the swallowed catch below left its raw
+        // BEGIN TRANSACTION open on the *shared* connection, and the next failed statement
+        // anywhere — a transient object-store read, or any executeBatch() whose
+        // driver-issued BEGIN then collided with it — invalidated the transaction, after
+        // which every statement from every thread failed with "Current transaction is
+        // aborted" until the process was restarted. DuckDbSession.inTransaction guarantees
+        // the rollback that was missing; the finally block guarantees the temp-table
+        // cleanup that was missing too.
+        try {
+            session.inTransaction(description, conn -> {
+                try (Statement st = conn.createStatement()) {
+                    st.execute("CREATE TEMP TABLE " + tmpTable
+                            + " AS SELECT * FROM lake.main." + table);
+                    st.execute("DELETE FROM lake.main." + table);
+                    st.execute("INSERT INTO lake.main." + table
+                            + " SELECT * FROM " + tmpTable);
+                }
+            });
+            try (Statement st = duckDB.createStatement();
+                 ResultSet rs = st.executeQuery(
                     "SELECT * FROM ducklake_rewrite_data_files('lake', '" + table + "')")) {
                 // No rows needed — this call's effect (marking the now-fully-deleted
                 // flat file superseded) is what matters, not its return value.
@@ -457,6 +484,16 @@ public class CompactionService {
         } catch (SQLException e) {
             log.warn("Legacy file migration failed for entity_type='{}' ({}); will retry next run",
                     entityType, e.getMessage());
+            DuckDbSession.rollbackQuietly(duckDB, description);
+        } finally {
+            // Without this the next run's CREATE TEMP TABLE fails with a Catalog Error,
+            // which is classified non-transient — migration would stay broken forever.
+            try (Statement st = duckDB.createStatement()) {
+                st.execute("DROP TABLE IF EXISTS " + tmpTable);
+            } catch (SQLException e) {
+                log.debug("Could not drop {} after legacy migration: {}", tmpTable, e.getMessage());
+                DuckDbSession.rollbackQuietly(duckDB, "compaction: dropping " + tmpTable);
+            }
         }
     }
 
@@ -474,6 +511,18 @@ public class CompactionService {
      * The SET is issued inside the same {@code synchronized(duckDB)} block as the merge
      * and is wrapped in its own try/catch: a failure (e.g. DuckDB version &lt; 1.5.3)
      * is logged at DEBUG and never prevents the merge from running.
+     *
+     * <h2>Bounded batches, not one call over the whole table</h2>
+     * <p>A single {@code CALL} with no {@code max_compacted_files} cap scans essentially
+     * every file in the table. Verified directly against production data (~184K files):
+     * even a low per-request httpfs failure rate against a flaky object store becomes
+     * near-certain to hit <em>somewhere</em> across that many reads, and the whole call's
+     * progress — every group it had already merged — is discarded on the first failure.
+     * {@link #mergeInBatches} instead issues repeated {@code CALL}s bounded by
+     * {@code max-compacted-files-per-batch}, so one bad read only costs one small batch's
+     * worth of work, and retries that one batch (transient failures only — a real bug like
+     * a missing table is retried zero times) before giving up and keeping whatever earlier
+     * batches already produced.
      *
      * <p>Idempotent — errors are logged at WARN and the caller receives
      * {@link CompactionResult#NONE}, consistent with the non-fatal compaction error policy.
@@ -497,9 +546,10 @@ public class CompactionService {
         try {
             long maxFileSizeBytes = (long) props.getCompaction().getEntity().getTargetFileSizeMb() * 1024L * 1024L;
             int rowGroupMemoryLimitMb = props.getCompaction().getEntity().getRowGroupMemoryLimitMb();
-            String sql = "CALL ducklake_merge_adjacent_files('lake', 'entity_" + entityType + "',"
-                       + " max_file_size => " + maxFileSizeBytes + ")";
-            log.debug("Merging adjacent files for entity_type='{}'", entityType);
+            int batchSize = props.getCompaction().getEntity().getMaxCompactedFilesPerBatch();
+            int maxBatches = props.getCompaction().getEntity().getMaxBatchesPerRun();
+            log.debug("Merging adjacent files for entity_type='{}' in batches of up to {} compacted file(s)",
+                    entityType, batchSize);
             synchronized (duckDB) {
                 migrateLegacyPartitionFiles(entityType);
 
@@ -517,31 +567,129 @@ public class CompactionService {
                                 + "(DuckDB < 1.5.3?): {}", entityType, setEx.getMessage());
                     }
                 }
-                try (Statement st = duckDB.createStatement();
-                     ResultSet rs = st.executeQuery(sql)) {
-                    FileStats stats = FileStats.EMPTY;
-                    while (rs.next()) {
-                        stats = stats.add(new FileStats(
-                                rs.getLong("files_processed"),
-                                rs.getLong("files_created")));
-                    }
-                    log.debug("Merged adjacent files for entity_{}: files_processed={} files_created={}",
-                            entityType, stats.filesProcessed(), stats.filesCreated());
-                    return new CompactionResult(stats.filesProcessed() > 0 ? 1 : 0, stats);
-                }
+                // mergeInBatches never throws — every batch failure (transient or not) is
+                // logged and swallowed internally so earlier batches' progress is always
+                // returned instead of being discarded by a catch here.
+                FileStats stats = mergeInBatches(
+                        () -> executeMergeBatch(entityType, maxFileSizeBytes, batchSize),
+                        maxBatches, MERGE_BATCH_RETRY_ATTEMPTS, MERGE_BATCH_RETRY_BASE_DELAY_MS);
+                log.debug("Merged adjacent files for entity_{}: files_processed={} files_created={}",
+                        entityType, stats.filesProcessed(), stats.filesCreated());
+                return new CompactionResult(stats.filesProcessed() > 0 ? 1 : 0, stats);
             }
-        } catch (SQLException e) {
-            if (DuckDbErrors.isTransient(e)) {
-                log.warn("ducklake_merge_adjacent_files transient S3 failure for entity_type='{}' (will retry next run): {}",
-                        entityType, e.getMessage());
-            } else {
-                log.warn("ducklake_merge_adjacent_files failed for entity_type='{}': {}", entityType, e.getMessage());
-            }
-            return CompactionResult.NONE;
         } finally {
             heartbeat.stop();
             lockManager.release(lockTarget);
         }
+    }
+
+    // =========================================================================
+    // Bounded-batch merge with retry
+    // =========================================================================
+
+    /** How many times a single batch is retried after a transient failure, backing off each time. */
+    private static final int MERGE_BATCH_RETRY_ATTEMPTS = 3;
+    private static final long MERGE_BATCH_RETRY_BASE_DELAY_MS = 500;
+
+    /**
+     * Runs {@code attempt} repeatedly, each call bounded to at most a handful of merged
+     * files, accumulating stats across calls until either nothing is left to compact
+     * ({@code files_processed == 0}) or {@code maxBatches} is reached — a safety cap
+     * against an unbounded loop, not a throttle operators are expected to tune.
+     *
+     * <p>A transient failure (see {@link DuckDbErrors#isTransient}) retries the same
+     * batch up to {@code maxRetriesPerBatch} times with linear backoff; a non-transient
+     * one (a real bug — bad SQL, missing table) is never retried. Either way, once a
+     * batch's retry budget is exhausted the loop stops and returns whatever earlier
+     * batches already produced — a later failure never discards earlier, already
+     * -committed progress.
+     *
+     * <p>Package-private so tests can drive the orchestration with a fake
+     * {@link MergeBatchAttempt} — {@code ducklake_merge_adjacent_files} itself is
+     * unavailable in the unit-test environment (no DuckLake catalog attached), so this
+     * is the only way to exercise the retry/accumulation logic directly. Mirrors the
+     * {@code baseDelayMs} test seam already used by {@code TopicReplayService
+     * .withObjectStoreRetry}.
+     */
+    FileStats mergeInBatches(MergeBatchAttempt attempt, int maxBatches, int maxRetriesPerBatch, long baseDelayMs) {
+        FileStats total = FileStats.EMPTY;
+        for (int batch = 1; batch <= maxBatches; batch++) {
+            FileStats batchStats = runOneBatchWithRetry(attempt, maxRetriesPerBatch, baseDelayMs);
+            if (batchStats == null) {
+                break; // retries exhausted, or a non-transient failure — stop, keep what we have
+            }
+            total = total.add(batchStats);
+            if (batchStats.filesProcessed() == 0) {
+                break; // nothing left to compact
+            }
+        }
+        return total;
+    }
+
+    /** Returns {@code null} once retries are exhausted (or the failure was never retryable). */
+    private FileStats runOneBatchWithRetry(MergeBatchAttempt attempt, int maxRetriesPerBatch, long baseDelayMs) {
+        SQLException lastError = null;
+        for (int i = 1; i <= maxRetriesPerBatch; i++) {
+            try {
+                return attempt.run();
+            } catch (SQLException e) {
+                lastError = e;
+                if (!DuckDbErrors.isTransient(e)) {
+                    log.warn("Compaction batch failed with a non-retryable error: {}", e.getMessage());
+                    return null;
+                }
+                if (i < maxRetriesPerBatch) {
+                    sleepBackoff(i, baseDelayMs);
+                }
+            }
+        }
+        log.warn("Compaction batch still failing after {} attempt(s), giving up for this run: {}",
+                maxRetriesPerBatch, lastError.getMessage());
+        return null;
+    }
+
+    private static void sleepBackoff(int attempt, long baseDelayMs) {
+        if (baseDelayMs <= 0) return;
+        try {
+            Thread.sleep(baseDelayMs * attempt);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    /**
+     * Runs one bounded {@code ducklake_merge_adjacent_files} call, capped to at most
+     * {@code batchSize} compacted-file operations via {@code max_compacted_files}.
+     *
+     * <p>Heals the connection on failure: {@code CALL ducklake_merge_adjacent_files}
+     * can leave an aborted transaction behind exactly like any other statement (see
+     * {@link DuckDbSession}'s class javadoc), and a retry against a still-wedged
+     * connection would fail immediately regardless of whether the underlying I/O issue
+     * was transient — defeating the retry this exists to support.
+     */
+    private FileStats executeMergeBatch(String entityType, long maxFileSizeBytes, int batchSize) throws SQLException {
+        String sql = "CALL ducklake_merge_adjacent_files('lake', 'entity_" + entityType + "',"
+                   + " max_compacted_files => " + batchSize
+                   + ", max_file_size => " + maxFileSizeBytes + ")";
+        try (Statement st = duckDB.createStatement();
+             ResultSet rs = st.executeQuery(sql)) {
+            FileStats stats = FileStats.EMPTY;
+            while (rs.next()) {
+                stats = stats.add(new FileStats(
+                        rs.getLong("files_processed"),
+                        rs.getLong("files_created")));
+            }
+            return stats;
+        } catch (SQLException e) {
+            DuckDbSession.rollbackQuietly(duckDB, "ducklake_merge_adjacent_files batch for entity_" + entityType);
+            throw e;
+        }
+    }
+
+    /** A single bounded merge attempt — production wires this to {@link #executeMergeBatch}. */
+    @FunctionalInterface
+    interface MergeBatchAttempt {
+        FileStats run() throws SQLException;
     }
 
     // =========================================================================
@@ -858,7 +1006,8 @@ public class CompactionService {
      * {@code files_processed BIGINT} (input files merged), {@code files_created BIGINT}
      * (output files written).
      */
-    private record FileStats(long filesProcessed, long filesCreated) {
+    /** Package-private (not {@code private}) so {@link MergeBatchAttempt} test doubles can return it. */
+    record FileStats(long filesProcessed, long filesCreated) {
         static final FileStats EMPTY = new FileStats(0, 0);
 
         FileStats add(FileStats other) {

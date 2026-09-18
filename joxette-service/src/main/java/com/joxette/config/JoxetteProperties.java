@@ -247,19 +247,17 @@ public class JoxetteProperties {
          * Time-to-live for a distributed compaction lock, in minutes.
          *
          * <p>A background heartbeat calls {@code CompactionLockManager.refresh} every
-         * {@code CompactionLockManager.HEARTBEAT_INTERVAL_MINUTES} (10 min), but that
-         * call shares {@code synchronized(duckDB)} with the merge SQL it is meant to
-         * protect — on the single embedded-mode JDBC connection, a heartbeat tick that
-         * fires while a merge is still executing simply blocks until the merge's
-         * synchronized block exits, so it cannot land <em>during</em> an in-progress
-         * merge. The heartbeat is therefore only an opportunistic top-up between merges,
-         * not a guarantee. <b>This TTL — not the heartbeat — is the real safety margin</b>
-         * against a merge outliving its lock and being stolen by another instance
-         * mid-merge: it must comfortably exceed the worst-case end-to-end duration of a
-         * single {@code ducklake_merge_adjacent_files} call for your data volumes.
-         * 4 hours (240 min) is the default, sized for entity buckets that have
-         * accumulated a backlog (compaction runs once daily with a 30-day lookback and
-         * no cap on files merged per call).
+         * {@code CompactionLockManager.HEARTBEAT_INTERVAL_MINUTES} (10 min) on the main
+         * shared connection, which is a different connection object from the one entity
+         * compaction merges run on (see {@code CompactionService}'s "Connection isolation"
+         * javadoc), so a tick can land while a merge is still executing rather than
+         * queuing behind it. <b>This TTL is still the real safety margin</b> against a
+         * run outliving its lock and being stolen by another instance mid-run: it must
+         * comfortably exceed the worst-case end-to-end duration of one entity type's
+         * <em>whole</em> compaction run — every bounded batch {@code CompactionService
+         * .mergeInBatches} issues back-to-back, not just one call — for your data
+         * volumes. 4 hours (240 min) is the default, sized for entity buckets that have
+         * accumulated a backlog (compaction runs once daily with a 30-day lookback).
          *
          * <p>Set lower only when compaction targets are reliably fast and you want
          * stale locks from crashed instances to be reclaimed sooner. Set higher if your
@@ -277,15 +275,17 @@ public class JoxetteProperties {
          * Those thresholds exist for a different purpose: giving {@code GET /instances}
          * a human-facing "is this dashboard row fresh" signal and reaping long-dead rows
          * at startup. They are tuned for the ~30-second heartbeat cadence and have no
-         * awareness of how long a compaction merge can legitimately hold the shared
-         * {@code synchronized(duckDB)} monitor — {@code InstanceRegistry.sendHeartbeat()}
-         * and {@code ducklake_merge_adjacent_files} both execute under that same lock on
-         * the single embedded-mode JDBC connection, so a merge that runs for minutes
-         * blocks the heartbeat thread for exactly as long. Reusing the 90-second
-         * "alive" threshold for lock reclamation would let one instance steal another's
-         * lock — and corrupt the merge — the moment a legitimate long merge blocked its
-         * own heartbeat past 90 seconds, which is routine (see {@link #lockTtlMinutes}'s
-         * default of 240 minutes for how long a real merge can run).
+         * awareness of how long a compaction run can legitimately take — entity
+         * compaction now runs on its own dedicated connection (see
+         * {@code CompactionService}'s "Connection isolation" javadoc) so
+         * {@code InstanceRegistry.sendHeartbeat()} on the main connection is no longer
+         * blocked by an in-progress merge the way it once was, but a whole compaction
+         * run (many bounded batches back-to-back, see {@code CompactionService
+         * .mergeInBatches}) can still legitimately take minutes to hours against a large
+         * backlog. Reusing the 90-second "alive" threshold for lock reclamation would let
+         * one instance steal another's lock — and corrupt the merge — the moment a
+         * legitimate long run happened to straddle it, which is routine (see
+         * {@link #lockTtlMinutes}'s default of 240 minutes for how long a real run can take).
          *
          * <p>This threshold must instead be generous enough that it is never crossed by
          * a live instance's heartbeat gap alone — only by an instance that has actually
@@ -333,6 +333,31 @@ public class JoxetteProperties {
              */
             private int rowGroupMemoryLimitMb = 256;
 
+            /**
+             * Caps a single {@code ducklake_merge_adjacent_files} call to at most this many
+             * compacted-file operations, via the function's own {@code max_compacted_files}
+             * parameter.
+             *
+             * <p>Exists to bound the blast radius of a transient object-store read failure.
+             * A call with no cap scans essentially every file in the table — verified against
+             * ~184K real production files, even a low per-request httpfs failure rate becomes
+             * near-certain to hit <em>somewhere</em> across that many reads, and the entire
+             * call's progress is lost on the first failure, every single run. Bounding each
+             * call to a handful of compacted files means one bad read costs one small batch,
+             * not the whole table, and {@code CompactionService} retries just that batch
+             * before moving on. See {@code CompactionService.mergeInBatches}.
+             */
+            private int maxCompactedFilesPerBatch = 8;
+
+            /**
+             * Safety cap on how many bounded batches (see {@link #maxCompactedFilesPerBatch})
+             * one compaction run will issue for a single entity type, in case
+             * {@code files_processed} never reaches zero. Not a throttle operators are
+             * expected to tune day-to-day — a run that hits this cap simply leaves the rest
+             * for the next scheduled or triggered run.
+             */
+            private int maxBatchesPerRun = 1000;
+
             public int getMinFilesPerBucket() { return minFilesPerBucket; }
             public void setMinFilesPerBucket(int minFilesPerBucket) { this.minFilesPerBucket = minFilesPerBucket; }
 
@@ -346,6 +371,14 @@ public class JoxetteProperties {
             public void setRowGroupMemoryLimitMb(int rowGroupMemoryLimitMb) {
                 this.rowGroupMemoryLimitMb = rowGroupMemoryLimitMb;
             }
+
+            public int getMaxCompactedFilesPerBatch() { return maxCompactedFilesPerBatch; }
+            public void setMaxCompactedFilesPerBatch(int maxCompactedFilesPerBatch) {
+                this.maxCompactedFilesPerBatch = maxCompactedFilesPerBatch;
+            }
+
+            public int getMaxBatchesPerRun() { return maxBatchesPerRun; }
+            public void setMaxBatchesPerRun(int maxBatchesPerRun) { this.maxBatchesPerRun = maxBatchesPerRun; }
         }
 
         public static class General {

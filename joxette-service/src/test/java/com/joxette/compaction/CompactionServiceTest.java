@@ -4,6 +4,7 @@ import ch.qos.logback.classic.Level;
 import ch.qos.logback.classic.spi.ILoggingEvent;
 import ch.qos.logback.core.read.ListAppender;
 import com.joxette.cluster.InstanceRegistry;
+import com.joxette.compaction.CompactionService.FileStats;
 import com.joxette.config.JoxetteProperties;
 import com.joxette.management.ConfigRepository;
 import com.joxette.metrics.JoxetteMetrics;
@@ -18,8 +19,12 @@ import org.slf4j.LoggerFactory;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
+import java.sql.SQLException;
 import java.time.Instant;
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -79,7 +84,7 @@ class CompactionServiceTest {
         // never treats this test's own in-flight lock as belonging to a dead instance.
         instanceRegistry = DuckDBTestSupport.newInstanceRegistry(duckDB);
         DuckDBTestSupport.registerLiveInstance(duckDB, TEST_INSTANCE_ID);
-        service = new CompactionService(duckDB, props, configRepo, TEST_METRICS, newLockManager());
+        service = new CompactionService(duckDB, new com.joxette.db.DuckDbSession(duckDB), props, configRepo, TEST_METRICS, newLockManager());
     }
 
     @AfterEach
@@ -552,6 +557,106 @@ class CompactionServiceTest {
     }
 
     // -------------------------------------------------------------------------
+    // mergeInBatches: bounded blast radius + retry on transient failure
+    //
+    // A full-table ducklake_merge_adjacent_files call over ~184K files was proven
+    // (against real RustFS in production) to be near-guaranteed to hit at least one
+    // transient I/O error, and any single failure discarded the whole call's progress.
+    // mergeInBatches runs the merge as a sequence of bounded-size attempts, retrying a
+    // transient failure within the same batch and keeping whatever earlier batches
+    // already produced even if a later one gives up.
+    //
+    // These exercise the orchestration in isolation via a fake MergeBatchAttempt —
+    // ducklake_merge_adjacent_files itself is unavailable in this DuckLake-less test
+    // environment (see the "ducklake_merge_adjacent_files results written to
+    // compaction_history" tests above), so the real SQL path can only be exercised
+    // against its immediate, non-transient "function does not exist" failure.
+    // -------------------------------------------------------------------------
+
+    @Test
+    void mergeInBatches_accumulatesAcrossSuccessfulBatches_untilZeroProcessed() throws Exception {
+        Deque<FileStats> results = new ArrayDeque<>(List.of(
+                new FileStats(5, 1),
+                new FileStats(3, 1),
+                new FileStats(0, 0))); // nothing left to compact
+        AtomicInteger calls = new AtomicInteger();
+        CompactionService.MergeBatchAttempt attempt = () -> {
+            calls.incrementAndGet();
+            return results.poll();
+        };
+
+        FileStats total = service.mergeInBatches(attempt, /*maxBatches*/ 10, /*maxRetriesPerBatch*/ 3, /*baseDelayMs*/ 0);
+
+        assertThat(total).isEqualTo(new FileStats(8, 2));
+        assertThat(calls.get()).isEqualTo(3);
+    }
+
+    @Test
+    void mergeInBatches_stopsAtMaxBatches_evenIfMoreWorkRemains() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        CompactionService.MergeBatchAttempt attempt = () -> {
+            calls.incrementAndGet();
+            return new FileStats(5, 1); // always more to do
+        };
+
+        FileStats total = service.mergeInBatches(attempt, /*maxBatches*/ 3, /*maxRetriesPerBatch*/ 3, /*baseDelayMs*/ 0);
+
+        assertThat(total).isEqualTo(new FileStats(15, 3));
+        assertThat(calls.get()).isEqualTo(3);
+    }
+
+    @Test
+    void mergeInBatches_retriesTransientFailure_thenSucceedsWithinTheSameBatch() throws Exception {
+        Deque<Object> results = new ArrayDeque<>(List.of(
+                new SQLException("IO Error: Server returned nothing (no headers, no data)"),
+                new FileStats(4, 1),
+                new FileStats(0, 0)));
+        AtomicInteger calls = new AtomicInteger();
+        CompactionService.MergeBatchAttempt attempt = () -> {
+            calls.incrementAndGet();
+            Object next = results.poll();
+            if (next instanceof SQLException e) throw e;
+            return (FileStats) next;
+        };
+
+        FileStats total = service.mergeInBatches(attempt, 10, /*maxRetriesPerBatch*/ 3, /*baseDelayMs*/ 0);
+
+        assertThat(total).isEqualTo(new FileStats(4, 1));
+        assertThat(calls.get()).isEqualTo(3);
+    }
+
+    @Test
+    void mergeInBatches_stopsWithPartialCredit_whenRetriesExhausted() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        CompactionService.MergeBatchAttempt attempt = () -> {
+            int n = calls.incrementAndGet();
+            if (n == 1) return new FileStats(5, 1); // first batch: real progress
+            throw new SQLException("IO Error: Timeout was reached"); // every later attempt fails
+        };
+
+        FileStats total = service.mergeInBatches(attempt, 10, /*maxRetriesPerBatch*/ 2, /*baseDelayMs*/ 0);
+
+        // Batch 1 succeeds (5,1). Batch 2 exhausts its 2 retry attempts and the run
+        // stops there, but the first batch's real progress must not be discarded.
+        assertThat(total).isEqualTo(new FileStats(5, 1));
+        assertThat(calls.get()).isEqualTo(3); // 1 success + 2 failed attempts on batch 2
+    }
+
+    @Test
+    void mergeInBatches_nonTransientFailure_stopsImmediatelyWithoutRetrying() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        CompactionService.MergeBatchAttempt attempt = () -> {
+            calls.incrementAndGet();
+            throw new SQLException("Catalog Error: Table with name entity_fixture does not exist!");
+        };
+
+        FileStats total = service.mergeInBatches(attempt, 10, /*maxRetriesPerBatch*/ 3, /*baseDelayMs*/ 0);
+
+        assertThat(total).isEqualTo(FileStats.EMPTY);
+        assertThat(calls.get()).isEqualTo(1); // a real bug — retrying it is pointless
+    }
+
+    // -------------------------------------------------------------------------
     // write_buffer_row_group_memory_limit (DuckDB 1.5.3)
     // -------------------------------------------------------------------------
 
@@ -576,7 +681,7 @@ class CompactionServiceTest {
 
         JoxetteProperties props = testProperties();
         props.getCompaction().getEntity().setRowGroupMemoryLimitMb(limitMb);
-        CompactionService svc = new CompactionService(duckDB, props, configRepo, TEST_METRICS,
+        CompactionService svc = new CompactionService(duckDB, new com.joxette.db.DuckDbSession(duckDB), props, configRepo, TEST_METRICS,
                 newLockManager());
 
         ch.qos.logback.classic.Logger logger =

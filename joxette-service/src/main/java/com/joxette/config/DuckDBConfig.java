@@ -1,13 +1,17 @@
 package com.joxette.config;
 
 import com.joxette.db.CatalogBackend;
+import com.joxette.db.DuckDbSession;
+import org.duckdb.DuckDBConnection;
 import org.jooq.DSLContext;
 import org.jooq.SQLDialect;
 import org.jooq.impl.DSL;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 
 import java.nio.file.Path;
 import java.sql.Connection;
@@ -72,6 +76,7 @@ public class DuckDBConfig {
      * <p>The connection is closed by Spring's {@code @Bean(destroyMethod)} on
      * application shutdown, giving DuckDB a chance to flush WAL data.
      */
+    @Primary
     @Bean(destroyMethod = "close")
     public Connection duckDbConnection(JoxetteProperties properties) throws SQLException {
         String catalogPath = properties.getCatalog().getPath();
@@ -94,6 +99,38 @@ public class DuckDBConfig {
         }
 
         return DriverManager.getConnection("jdbc:duckdb:" + mainDbPath);
+    }
+
+    /**
+     * Compaction's own connection to the same DuckDB database instance as
+     * {@link #duckDbConnection}, obtained via {@link DuckDBConnection#duplicate()}.
+     *
+     * <p>ATTACHed catalogs, loaded extensions, and secrets ({@code CREATE SECRET}) are
+     * instance-level state in DuckDB, so this connection sees the {@code lake} DuckLake
+     * catalog and the {@code joxette_s3} secret exactly as the main connection does —
+     * {@code duplicate()} exists precisely to open an additional connection to the same
+     * instance without re-reading configuration.
+     *
+     * <p>The reason this exists at all: {@code CALL ducklake_merge_adjacent_files(...)}
+     * can block for a very long time deep inside an httpfs retry against a
+     * non-responding object store, and neither {@code Statement.cancel()} nor
+     * interrupting the calling thread unblocks it (verified with a standalone spike
+     * against duckdb_jdbc 1.5.5.1 — both simply hang alongside the stuck statement).
+     * Every other DB-touching class serialises on {@code synchronized(duckDB)} against
+     * the <em>main</em> connection object; giving {@link com.joxette.compaction.CompactionService}
+     * a different connection object means a hang inside a merge call can only ever hold
+     * <em>this</em> monitor, never the one recording, replay, and health checks depend on.
+     */
+    @Bean(destroyMethod = "close")
+    public Connection compactionDuckDbConnection(Connection duckDbConnection) throws SQLException {
+        return ((DuckDBConnection) duckDbConnection).duplicate();
+    }
+
+    /** {@link DuckDbSession} wrapping {@link #compactionDuckDbConnection}. */
+    @Bean
+    public DuckDbSession compactionDuckDbSession(
+            @Qualifier("compactionDuckDbConnection") Connection compactionDuckDbConnection) {
+        return new DuckDbSession(compactionDuckDbConnection);
     }
 
     /**
