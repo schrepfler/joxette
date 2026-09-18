@@ -117,17 +117,11 @@ joxette:
     #   Deliberately independent of InstanceRegistry's own 90s/2min alive/stale thresholds,
     #   which exist for GET /instances dashboard freshness, not lock-stealing safety — a
     #   merge can legitimately block the heartbeat thread past 90s (see docs/clustering-deployment.md §4.2).
-    snapshot-retention-hours: 0  # TEMP: was the 24h default — set to 0 to force-reclaim disk
-    #   space on the next compaction run instead of waiting out the window. Put back to 24
-    #   (or remove this line) once you're done, or every snapshot becomes cleanup-eligible
-    #   immediately, including ones you might want to /cassettes/snapshots/{id}/restore.
+    snapshot-retention-hours: 24
     entity:
       min-files-per-bucket: 10
       target-file-size-mb: 256
-      lookback-days: 0  # TEMP: was the 30-day default — set to 0 so compaction will actually
-      #   touch tonight's freshly re-recorded data instead of skipping it all as "too hot."
-      #   Put back to 30 once you're done testing, or compaction will keep rewriting
-      #   actively-written buckets in production, which the lookback exists to prevent.
+      lookback-days: 30
       max-compacted-files-per-batch: 8  # bounds one ducklake_merge_adjacent_files call's
       #   blast radius (its own max_compacted_files param). An unbounded call scans
       #   essentially the whole table — verified against ~184K real files, a single
