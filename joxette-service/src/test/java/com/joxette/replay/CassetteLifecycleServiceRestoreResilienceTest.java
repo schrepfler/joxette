@@ -11,14 +11,17 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.sql.Connection;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
 import java.time.Instant;
 import java.util.Optional;
 import java.util.Set;
 
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doThrow;
@@ -115,6 +118,21 @@ class CassetteLifecycleServiceRestoreResilienceTest {
     }
 
     @Test
+    void restoreSnapshot_whenReloadingALakeTableFails_existingRowsAreNotWiped() throws Exception {
+        // The per-table restore is DELETE then INSERT … SELECT * FROM read_parquet(…).
+        // Corrupting the snapshot's Parquet file makes the INSERT fail after the DELETE
+        // has run; that DELETE must not be allowed to commit on its own.
+        Path parquet = tempDir.resolve("snapshots").resolve(SNAPSHOT_NAME)
+                .resolve("lake").resolve("general_seed_topic.parquet");
+        Files.writeString(parquet, "not a parquet file");
+
+        assertThatThrownBy(() -> service.restoreSnapshot(SNAPSHOT_NAME))
+                .isInstanceOf(SQLException.class);
+
+        assertThat(countRows("general_seed_topic")).isEqualTo(1L);
+    }
+
+    @Test
     void restoreSnapshot_whenResumeFailsAfterVerificationFailure_originalExceptionSurvives() throws SQLException {
         // Corrupt the stored row_counts so verifyRestoredRowCounts() detects a
         // mismatch and throws SnapshotVerificationException from the try block.
@@ -132,6 +150,14 @@ class CassetteLifecycleServiceRestoreResilienceTest {
 
         for (String topic : PAUSED_TOPICS) {
             verify(recordingCoordinator, times(1)).restartTopic(topic);
+        }
+    }
+
+    private long countRows(String table) throws SQLException {
+        try (Statement st = duckDB.createStatement();
+             ResultSet rs = st.executeQuery("SELECT COUNT(*) FROM lake.main." + table)) {
+            rs.next();
+            return rs.getLong(1);
         }
     }
 }

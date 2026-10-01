@@ -59,6 +59,8 @@ public class CassetteLifecycleService {
     private static final Pattern SNAPSHOT_NAME = Pattern.compile("[a-zA-Z0-9_-]+");
 
     private final Connection duckDB;
+    /** Wraps {@link #duckDB}; same monitor, so it nests inside {@code synchronized(duckDB)}. */
+    private final DuckDbSession session;
     private final Path snapshotsBase;
     /** Object-storage root, e.g. {@code s3://joxette-data/} — used for DuckLake DATA_PATH. */
     private final String objectStoragePath;
@@ -72,6 +74,7 @@ public class CassetteLifecycleService {
                                     ConfigRepository configRepo, Optional<S3Client> s3Client,
                                     @Lazy RecordingCoordinator recordingCoordinator, ObjectMapper objectMapper) {
         this.duckDB               = duckDB;
+        this.session              = new DuckDbSession(duckDB);
         this.configRepo           = configRepo;
         this.properties           = properties;
         this.s3Client             = s3Client.orElse(null);
@@ -572,9 +575,9 @@ public class CassetteLifecycleService {
      * {@link #exportLakeTables(Path)} during snapshot creation.
      *
      * <p>Each {@code lake/<table>.parquet} file found in the snapshot is loaded via
-     * {@code DELETE FROM} + {@code INSERT INTO … SELECT * FROM read_parquet(…)},
-     * which replaces the table contents atomically without dropping the table
-     * (preserving the DuckLake schema metadata).
+     * {@code DELETE FROM} + {@code INSERT INTO … SELECT * FROM read_parquet(…)} in a
+     * single transaction per table, which replaces the table contents atomically
+     * without dropping the table (preserving the DuckLake schema metadata).
      *
      * <p>Must be called inside {@code synchronized(duckDB)}.
      */
@@ -610,13 +613,15 @@ public class CassetteLifecycleService {
                 log.warn("Restore: lake table {} not found in current schema — skipping", tableName);
                 continue;
             }
-            try (Statement st = duckDB.createStatement()) {
-                st.execute("DELETE FROM lake.main." + tableName);
-            }
-            try (Statement st = duckDB.createStatement()) {
-                st.execute("INSERT INTO lake.main." + tableName +
-                           " SELECT * FROM read_parquet('" + parquet + "')");
-            }
+            // One transaction per table: under autocommit the DELETE would commit on its
+            // own, so an INSERT failing on a transient read left the table empty.
+            session.inTransaction("restore: reload lake table " + tableName, conn -> {
+                try (Statement st = conn.createStatement()) {
+                    st.execute("DELETE FROM lake.main." + tableName);
+                    st.execute("INSERT INTO lake.main." + tableName +
+                               " SELECT * FROM read_parquet('" + parquet + "')");
+                }
+            });
             log.debug("Restore: reloaded lake table {} from {}", tableName, parquet);
         }
         log.info("Restore: reloaded {} lake table(s) from {}", parquetFiles.size(), lakeDir);
