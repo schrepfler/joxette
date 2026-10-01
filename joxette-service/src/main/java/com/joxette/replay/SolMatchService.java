@@ -73,25 +73,26 @@ public class SolMatchService {
         Sequence sequence = EntityRecordAdapter.toSequence(entityId, records);
         SolResult result  = SolEngine.execute(ops, sequence);
 
-        List<EntityRecord> matched = SolResultMapper.toEntityRecords(result, records);
-
-        // Build tag span map — keeps insertion order so implicit tags (SEQ, MATCHED,
-        // PREFIX, SUFFIX) appear first, followed by named tags in match order.
-        Map<String, TagSpan> tagSpans = new LinkedHashMap<>();
-        for (Map.Entry<String, Tag> entry : result.tags().entrySet()) {
-            Tag t = entry.getValue();
-            tagSpans.put(entry.getKey(), new TagSpan(t.from(), t.to()));
-        }
+        // Spans are re-based onto the returned records (see SolResultMapper.map) so a client
+        // can draw them over `records` by index, and the coverage denominator matches.
+        SolResultMapper.Mapped mapped = SolResultMapper.map(result, records);
 
         return new SolMatchResult(
-                matched,
+                mapped.records(),
                 result.matched(),
                 result.unexpectedNulls().stream()
                       .map(u -> u.location() + ": " + u.reason())
                       .toList(),
-                tagSpans,
-                sequence.size()
+                toSpans(mapped.tags()),
+                mapped.records().size()
         );
+    }
+
+    /** Keeps the engine's insertion order: implicit tags (SEQ, MATCHED, …) first, then named tags. */
+    static Map<String, TagSpan> toSpans(Map<String, Tag> tags) {
+        Map<String, TagSpan> spans = new LinkedHashMap<>();
+        tags.forEach((name, t) -> spans.put(name, new TagSpan(t.from(), t.to())));
+        return spans;
     }
 
     /**
@@ -347,9 +348,9 @@ public class SolMatchService {
             List<EntityRecord> records,
             boolean matched,
             List<String> unexpectedNulls,
-            /** Tag name → span within the original sequence. */
+            /** Tag name → half-open span over {@code records} (indices into that list). */
             Map<String, TagSpan> tags,
-            /** Total number of events in the sequence (denominator for coverage bars). */
+            /** {@code records.size()} — the denominator for coverage bars. */
             int sequenceLength
     ) {}
 }

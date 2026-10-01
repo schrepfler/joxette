@@ -19,7 +19,7 @@
  * based against the original sequence, so removing events would desync both.
  */
 
-import { useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import type { EntityRecord, SolTagSpan } from '../api/client'
 import { EventChip, SpanHeader, GapHeader, HEADER_H } from './SolExamplesPane'
@@ -42,9 +42,13 @@ export function SolResultSequence({ records, tags, tagColors, onOpenEvent, highl
   const [mode, setMode] = useState<'all' | 'tagged-only'>('all')
   const [focusedPos, setFocusedPos] = useState<number | null>(null)
 
-  const events = records.map(r => r.messageType ?? '—')
-  const segments = segmentSequence(events.length, tags)
-  const items = flattenSequence(events, segments, mode)
+  // Memoized: the parent re-renders on every keystroke in the SOL editor, and these
+  // walk the whole (possibly thousands-long) sequence.
+  const events = useMemo(() => records.map(r => r.messageType ?? '—'), [records])
+  const items = useMemo(
+    () => flattenSequence(events, segmentSequence(events.length, tags), mode),
+    [events, tags, mode],
+  )
 
   const scrollRef = useRef<HTMLDivElement>(null)
   const virtualizer = useVirtualizer({

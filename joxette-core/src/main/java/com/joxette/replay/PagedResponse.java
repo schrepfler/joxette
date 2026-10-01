@@ -46,8 +46,9 @@ public record PagedResponse<T>(
      * Metadata returned alongside event records when a SOL query was applied.
      *
      * @param matched        whether the last MATCH found at least one occurrence
-     * @param tags           tag name → half-open index range in the original sequence
-     * @param sequenceLength total events in the pre-SOL sequence (denominator for coverage)
+     * @param tags           tag name → half-open index range; for {@code sol_output=events} it indexes
+     *                       the returned records, for {@code annotated} the original sequence
+     * @param sequenceLength length of the list the spans index (denominator for coverage)
      * @param unexpectedNulls expressions that were null-cast during evaluation
      */
     public record SolSummary(

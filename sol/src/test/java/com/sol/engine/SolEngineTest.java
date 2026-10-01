@@ -115,6 +115,32 @@ class SolEngineTest {
                             assertEquals(2, m.to(),   "M.to after multi-replace");
                         }),
 
+                Arguments.of("replace shifts tags after the range and stretches tags around it",
+                        seq("u1", ev("a", T0), ev("b", T1), ev("b", T2), ev("c", T3)),
+                        "match A(a) >> B(b)+ >> C(c)\nreplace B with X(x)",
+                        (Consumer<SolResult>) result -> {
+                            // output: [a, x, c] — B shrank from 2 events to 1
+                            assertEquals("c", result.sequence().get(2).name());
+                            Tag a = result.tags().get("A");
+                            assertEquals(0, a.from(), "A (before the range) is untouched");
+                            assertEquals(1, a.to());
+                            Tag c = result.tags().get("C");
+                            assertEquals(2, c.from(), "C.from shifted left by one");
+                            assertEquals(3, c.to(),   "C.to shifted left by one");
+                            Tag matched = result.tags().get("MATCHED");
+                            assertEquals(0, matched.from(), "MATCHED spans the replaced range");
+                            assertEquals(3, matched.to(),   "MATCHED.to shrinks with it");
+                        }),
+
+                Arguments.of("replacing every matched event with null still reports the match",
+                        seq("u1", ev("keep", T0), ev("drop", T1)),
+                        "match D(drop)\nreplace D with null",
+                        (Consumer<SolResult>) result -> {
+                            assertEquals(1, result.sequence().size());
+                            assertEquals(0, result.tags().get("MATCHED").length(), "MATCHED shrank to nothing");
+                            assertTrue(result.matched(), "the match itself still happened");
+                        }),
+
                 Arguments.of("replace with null removes tagged events from sequence",
                         seq("u1", ev("keep", T0), ev("drop", T1), ev("keep", T2)),
                         "match K1(keep) >> D(drop) >> K2(keep)\nreplace D with null",

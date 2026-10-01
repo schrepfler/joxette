@@ -190,9 +190,10 @@ class SolMatchIT {
 
             Arguments.of(
                 "replace MATCHED with null — removes matched events from sequence",
-                // match login → MATCHED=[0,1); replace empties it → tag becomes [0,0) → matched=false
+                // match login → MATCHED=[0,1); replace empties the tag to [0,0), but `matched`
+                // reports whether the MATCH found an occurrence, which it did
                 "match L(login)\nreplace MATCHED with null",
-                false,  // MATCHED tag becomes empty after replace → matched=false
+                true,
                 3
             ),
 
@@ -429,13 +430,14 @@ class SolMatchIT {
     @Test
     void replace_withNull_removesTargetTag() throws Exception {
         // match login → MATCHED=[0,1); replace MATCHED with null removes login.
-        // MATCHED tag becomes empty [0,0) → engine reports matched=false.
+        // MATCHED tag becomes empty [0,0), yet the match itself happened.
         // Remaining sequence: browse(0) purchase(1) logout(2) — 3 events.
         String query = "match L(login)\nreplace MATCHED with null";
 
         SolMatchResponse result = post(query);
 
-        assertThat(result.matched()).isFalse(); // MATCHED tag emptied by replace
+        assertThat(result.matched()).isTrue();
+        assertThat(result.tags().get("MATCHED").length()).isZero();
         assertThat(result.records()).hasSize(3);
         assertThat(result.records().stream().map(r -> r.messageType()).toList())
                 .containsExactly("browse", "purchase", "logout");
@@ -446,7 +448,7 @@ class SolMatchIT {
         // match purchase → P=[2,3), MATCHED=[2,3).
         // replace P with null removes purchase.
         // After replacement: 3 events — login(0) browse(1) logout(2).
-        // No tag spans reported (MATCHED cleared by replace updating P to empty range).
+        // P and MATCHED shrink to empty ranges, but the match still happened.
         String query = "match P(purchase)\nreplace P with null";
 
         SolMatchResponse result = post(query);

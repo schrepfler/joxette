@@ -2649,17 +2649,13 @@ public class CassetteController {
         com.sol.model.Sequence sequence = EntityRecordAdapter.toSequence(topic, records);
         com.sol.engine.SolResult result = com.sol.engine.SolEngine.execute(
                 com.sol.parser.SolParser.parse(req.query()), sequence);
-        List<EntityRecord> matched = SolResultMapper.toEntityRecords(result, records);
-        // Build tag spans from the sol result for the topic path
-        java.util.Map<String, SolMatchService.TagSpan> tagSpans = new java.util.LinkedHashMap<>();
-        result.tags().forEach((name, tag) ->
-                tagSpans.put(name, new SolMatchService.TagSpan(tag.from(), tag.to())));
+        SolResultMapper.Mapped mapped = SolResultMapper.map(result, records);
         return new SolMatchResponse(
-                matched,
+                mapped.records(),
                 result.matched(),
                 result.unexpectedNulls().stream().map(u -> u.location() + ": " + u.reason()).toList(),
-                tagSpans,
-                sequence.size());
+                SolMatchService.toSpans(mapped.tags()),
+                mapped.records().size());
     }
 
     /** Request body for the batch SOL examples endpoint. */

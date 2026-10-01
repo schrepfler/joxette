@@ -25,6 +25,9 @@ public final class SolEngine {
 
     public static SolResult execute(List<SolOperation> operations, Sequence input) {
         State state = new State(List.of(input), Map.of(), new ArrayList<>());
+        // Captured right after each MATCH rather than read off the final MATCHED tag:
+        // a later REPLACE can shrink MATCHED to nothing without undoing the match.
+        boolean matched = false;
 
         for (SolOperation op : operations) {
             state = switch (op) {
@@ -35,6 +38,9 @@ public final class SolEngine {
                 case ReplaceOp r    -> applyReplace(r, state);
                 case CombineOp c    -> applyCombine(c, state);
             };
+            if (op instanceof MatchOp || op instanceof MatchSplitOp) {
+                matched = state.tags().containsKey("MATCHED") && !state.tags().get("MATCHED").isEmpty();
+            }
             // Drop sequences that were filtered to null
             state = new State(
                     state.sequences().stream().filter(Objects::nonNull).toList(),
@@ -54,9 +60,6 @@ public final class SolEngine {
                     : input.dims();
             finalSeq = mergeTo(input.id(), state.sequences(), finalDims);
         }
-
-        boolean matched = state.tags().containsKey("MATCHED")
-                && !state.tags().get("MATCHED").isEmpty();
 
         return new SolResult(finalSeq, state.tags(), matched, List.copyOf(state.nulls()));
     }
@@ -218,7 +221,19 @@ public final class SolEngine {
                 applySetTarget(entry.getKey(), v, newSeq, newTags);
             }
             out.add(newSeq);
-            // Update tag positions (simplified: only update the replaced tag)
+            int delta = replacement.size() - tag.length();
+            if (delta != 0) {
+                // Keep every other tag pointing at the same events: tags after the replaced
+                // range move by delta, and tags enclosing it grow or shrink with it.
+                for (var entry : newTags.entrySet()) {
+                    Tag t = entry.getValue();
+                    if (t.from() >= tag.to()) {
+                        entry.setValue(new Tag(t.name(), t.from() + delta, t.to() + delta));
+                    } else if (t.from() <= tag.from() && t.to() >= tag.to()) {
+                        entry.setValue(new Tag(t.name(), t.from(), t.to() + delta));
+                    }
+                }
+            }
             newTags.put(op.tagName(), new Tag(op.tagName(), tag.from(), tag.from() + replacement.size()));
         }
         return new State(out, newTags, state.nulls());

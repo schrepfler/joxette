@@ -91,6 +91,7 @@ export function SolQueryPanel({ mode, entityType, entityId, topic, from, to, hig
   })
   const messageTypes = messageTypesQuery.data ?? []
 
+  const [popupIdx, setPopupIdx] = useState<number | null>(null)
   const mutation = useMutation({
     mutationFn: () => {
       if (mode === 'entity' && entityType && entityId) {
@@ -101,13 +102,16 @@ export function SolQueryPanel({ mode, entityType, entityId, topic, from, to, hig
       }
       return Promise.reject(new Error('Missing entity/topic params'))
     },
-    onSuccess: () => setSelectedTags(new Set()),
+    onSuccess: () => {
+      setSelectedTags(new Set())
+      // The open event's index belongs to the previous result's records.
+      setPopupIdx(null)
+    },
   })
 
   const result = mutation.data
   const hasResult = !!result
 
-  const [popupIdx, setPopupIdx] = useState<number | null>(null)
   function navigatePopup(delta: number) {
     if (popupIdx === null || !result) return
     setPopupIdx(Math.max(0, Math.min(result.records.length - 1, popupIdx + delta)))
@@ -126,7 +130,7 @@ export function SolQueryPanel({ mode, entityType, entityId, topic, from, to, hig
   )
 
   // Build an index set of which record positions are covered by selected tags
-  const filteredRecords = (() => {
+  const filteredRecords = useMemo(() => {
     if (!result || selectedTags.size === 0 || !result.tags) return result?.records ?? []
     const covered = new Set<number>()
     for (const name of selectedTags) {
@@ -136,7 +140,7 @@ export function SolQueryPanel({ mode, entityType, entityId, topic, from, to, hig
       }
     }
     return result.records.filter((_, i) => covered.has(i))
-  })()
+  }, [result, selectedTags])
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
