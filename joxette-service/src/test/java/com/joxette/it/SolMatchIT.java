@@ -505,7 +505,7 @@ class SolMatchIT {
                 .encodeToString(("{\"event\":\"" + messageType + "\"}").getBytes(StandardCharsets.UTF_8));
         DuckDBTestSupport.insertEntityRow(
                 duckDB,
-                ENTITY_TYPE, ENTITY_ID, 0, messageType,
+                ENTITY_TYPE, ENTITY_ID, DuckDBTestSupport.bucketOf(duckDB, ENTITY_TYPE, ENTITY_ID), messageType,
                 "orders.events", 0, offset,
                 ts, ts,
                 ENTITY_ID, ("{\"event\":\"" + messageType + "\"}").getBytes(StandardCharsets.UTF_8));

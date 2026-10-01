@@ -172,9 +172,9 @@ class SnapshotTruncateRestoreIT {
                 DuckDBTestSupport.createEntityTable(duckDB, e.entityType());
                 clearEntityTable(e.entityType());
                 DuckDBTestSupport.insertEntityRow(duckDB, e.entityType(), e.entityId(),
-                        1, "ev", e.topic(), 0, 0L, ts, Instant.now(), "pre-ek1", bytes("pre-ev1"));
+                        DuckDBTestSupport.bucketOf(duckDB, e.entityType(), e.entityId()), "ev", e.topic(), 0, 0L, ts, Instant.now(), "pre-ek1", bytes("pre-ev1"));
                 DuckDBTestSupport.insertEntityRow(duckDB, e.entityType(), e.entityId(),
-                        1, "ev", e.topic(), 0, 1L, ts.plusSeconds(1), Instant.now(), "pre-ek2", bytes("pre-ev2"));
+                        DuckDBTestSupport.bucketOf(duckDB, e.entityType(), e.entityId()), "ev", e.topic(), 0, 1L, ts.plusSeconds(1), Instant.now(), "pre-ek2", bytes("pre-ev2"));
             }
         }
     }
@@ -190,9 +190,9 @@ class SnapshotTruncateRestoreIT {
             }
             case EntityCassetteCase e -> {
                 DuckDBTestSupport.insertEntityRow(duckDB, e.entityType(), e.entityId(),
-                        1, "ev", e.topic(), 0, 2L, ts, Instant.now(), "post-ek3", bytes("post-ev3"));
+                        DuckDBTestSupport.bucketOf(duckDB, e.entityType(), e.entityId()), "ev", e.topic(), 0, 2L, ts, Instant.now(), "post-ek3", bytes("post-ev3"));
                 DuckDBTestSupport.insertEntityRow(duckDB, e.entityType(), e.entityId(),
-                        1, "ev", e.topic(), 0, 3L, ts.plusSeconds(1), Instant.now(), "post-ek4", bytes("post-ev4"));
+                        DuckDBTestSupport.bucketOf(duckDB, e.entityType(), e.entityId()), "ev", e.topic(), 0, 3L, ts.plusSeconds(1), Instant.now(), "post-ek4", bytes("post-ev4"));
             }
         }
     }

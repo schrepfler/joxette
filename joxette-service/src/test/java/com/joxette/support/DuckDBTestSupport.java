@@ -392,6 +392,24 @@ public final class DuckDBTestSupport {
     }
 
     /**
+     * The bucket the recorder would have assigned {@code entityId}, using the same
+     * {@code entity_type_configs.bucket_count} lookup (default 256) the replay path uses.
+     * Per-entity reads prune to this bucket, so a row inserted at any other bucket is
+     * invisible to them.
+     */
+    public static int bucketOf(Connection conn, String entityType, String entityId) throws SQLException {
+        int buckets = 256;
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT bucket_count FROM entity_type_configs WHERE entity_type = ?")) {
+            ps.setString(1, entityType);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) buckets = rs.getInt(1);
+            }
+        }
+        return com.joxette.replay.MessageRouter.computeBucket(entityType, entityId, buckets);
+    }
+
+    /**
      * Inserts a row into {@code lake.main.entity_{type}}.
      */
     public static void insertEntityRow(Connection conn,

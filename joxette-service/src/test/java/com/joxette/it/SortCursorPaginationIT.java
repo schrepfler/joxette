@@ -93,17 +93,17 @@ class SortCursorPaginationIT {
         }
 
         // 6 entity rows: same timestamp tie pattern; source_offset 0–5, same-timestamp group is 1–4
-        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, ENTITY_ID, 1, "evt",
+        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, ENTITY_ID, DuckDBTestSupport.bucketOf(duckDB, ENTITY_TYPE, ENTITY_ID), "evt",
                 ENTITY_TOPIC, 0, 0L, T0,    now, "ek0", bytes("ev0"));
-        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, ENTITY_ID, 1, "evt",
+        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, ENTITY_ID, DuckDBTestSupport.bucketOf(duckDB, ENTITY_TYPE, ENTITY_ID), "evt",
                 ENTITY_TOPIC, 0, 1L, T_TIE, now, "ek1", bytes("ev1"));
-        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, ENTITY_ID, 1, "evt",
+        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, ENTITY_ID, DuckDBTestSupport.bucketOf(duckDB, ENTITY_TYPE, ENTITY_ID), "evt",
                 ENTITY_TOPIC, 0, 2L, T_TIE, now, "ek2", bytes("ev2"));
-        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, ENTITY_ID, 1, "evt",
+        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, ENTITY_ID, DuckDBTestSupport.bucketOf(duckDB, ENTITY_TYPE, ENTITY_ID), "evt",
                 ENTITY_TOPIC, 0, 3L, T_TIE, now, "ek3", bytes("ev3"));
-        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, ENTITY_ID, 1, "evt",
+        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, ENTITY_ID, DuckDBTestSupport.bucketOf(duckDB, ENTITY_TYPE, ENTITY_ID), "evt",
                 ENTITY_TOPIC, 0, 4L, T_TIE, now, "ek4", bytes("ev4"));
-        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, ENTITY_ID, 1, "evt",
+        DuckDBTestSupport.insertEntityRow(duckDB, ENTITY_TYPE, ENTITY_ID, DuckDBTestSupport.bucketOf(duckDB, ENTITY_TYPE, ENTITY_ID), "evt",
                 ENTITY_TOPIC, 0, 5L, T2,    now, "ek5", bytes("ev5"));
     }
 

@@ -145,9 +145,14 @@ class EntityReplayRoundTripIT {
         } catch (HttpClientErrorException ignored) { /* 409 Conflict — topic already registered */ }
 
         // Wipe data written by any previous test run sharing this JVM context.
-        try (Statement st = duckDB.createStatement()) {
-            st.execute("DELETE FROM lake.main.entity_" + ENTITY_TYPE);
-            st.execute("DELETE FROM known_entities WHERE entity_type = '" + ENTITY_TYPE + "'");
+        // Under the app's own monitor: the recorder registered just above is already
+        // using this shared connection, and unsynchronized statements on one native
+        // handle intermittently fail with "unsuccessful or closed pending query result".
+        synchronized (duckDB) {
+            try (Statement st = duckDB.createStatement()) {
+                st.execute("DELETE FROM lake.main.entity_" + ENTITY_TYPE);
+                st.execute("DELETE FROM known_entities WHERE entity_type = '" + ENTITY_TYPE + "'");
+            }
         }
     }
 

@@ -139,7 +139,7 @@ class TimestampSerializationIT {
             st.execute("DELETE FROM lake.main.entity_" + ENTITY_TYPE);
         }
         DuckDBTestSupport.insertEntityRow(
-                duckDB, ENTITY_TYPE, ENTITY_ID, 0, null,
+                duckDB, ENTITY_TYPE, ENTITY_ID, DuckDBTestSupport.bucketOf(duckDB, ENTITY_TYPE, ENTITY_ID), null,
                 TOPIC, 0, 0L,
                 KNOWN_TIMESTAMP, KNOWN_RECORDED_AT,
                 "ts-key", "{\"event\":\"ts-probe\"}".getBytes(StandardCharsets.UTF_8));
