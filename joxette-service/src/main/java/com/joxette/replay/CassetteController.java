@@ -1700,6 +1700,8 @@ public class CassetteController {
             content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
                 schema = @Schema(type = "object"),
                 examples = @ExampleObject(name = "result", value = "{\"deleted\": 42000}"))),
+        @ApiResponse(responseCode = "409", description = "Compaction is currently in progress on this topic's cassette (ERR_CONFLICT) — nothing was deleted; retry shortly.",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(type = "object"))),
         @ApiResponse(responseCode = "500", description = "Database error",
             content = @Content(schema = @Schema(type = "string")))
     })
@@ -1726,6 +1728,8 @@ public class CassetteController {
                 examples = @ExampleObject(name = "result", value = "{\"deleted\": 17000}"))),
         @ApiResponse(responseCode = "400", description = "Invalid entity type name",
             content = @Content(schema = @Schema(type = "string"))),
+        @ApiResponse(responseCode = "409", description = "Compaction is currently in progress on this entity type's cassette (ERR_CONFLICT) — nothing was deleted; retry shortly.",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(type = "object"))),
         @ApiResponse(responseCode = "500", description = "Database error",
             content = @Content(schema = @Schema(type = "string")))
     })
@@ -1761,6 +1765,8 @@ public class CassetteController {
                 examples = @ExampleObject(name = "result", value = "{\"deleted\": 17}"))),
         @ApiResponse(responseCode = "400", description = "Invalid entity type name",
             content = @Content(schema = @Schema(type = "string"))),
+        @ApiResponse(responseCode = "409", description = "Compaction is currently in progress on this entity type's cassette (ERR_CONFLICT) — nothing was deleted; retry shortly.",
+            content = @Content(mediaType = "application/problem+json", schema = @Schema(type = "object"))),
         @ApiResponse(responseCode = "500", description = "Database error",
             content = @Content(schema = @Schema(type = "string")))
     })
@@ -1889,7 +1895,9 @@ public class CassetteController {
     @ApiResponses({
         @ApiResponse(responseCode = "200", description = "Snapshot restored successfully"),
         @ApiResponse(responseCode = "404", description = "Snapshot not found"),
-        @ApiResponse(responseCode = "409", description = "Restored row counts did not match the snapshot's stored metadata " +
+        @ApiResponse(responseCode = "409", description = "Either compaction is currently in progress on one of the " +
+            "cassette tables (ERR_CONFLICT) — refused up front, before any recorder is paused or data replaced; " +
+            "retry shortly — or restored row counts did not match the snapshot's stored metadata " +
             "(ERR_SNAPSHOT_VERIFICATION_FAILED) — the backing Parquet file(s) may be corrupted or truncated. " +
             "By the time this is detected, IMPORT DATABASE has already replaced the current catalog contents " +
             "with the (unverified) snapshot data; there is no automatic rollback to the pre-restore state.",

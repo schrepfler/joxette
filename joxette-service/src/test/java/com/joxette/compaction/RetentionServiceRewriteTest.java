@@ -31,6 +31,7 @@ class RetentionServiceRewriteTest {
     private static final String TOPIC = "orders.events";
 
     private Connection duckDB;
+    private CompactionLockManager lockManager;
     private RetentionService service;
 
     @BeforeEach
@@ -55,7 +56,9 @@ class RetentionServiceRewriteTest {
 
         JoxetteProperties props = new JoxetteProperties();
         ConfigRepository configRepo = new ConfigRepository(duckDB, props);
-        service = new RetentionService(duckDB, configRepo, props, TEST_METRICS);
+        lockManager = new CompactionLockManager(duckDB, 120, "test-instance",
+                DuckDBTestSupport.newInstanceRegistry(duckDB));
+        service = new RetentionService(duckDB, configRepo, props, TEST_METRICS, lockManager);
     }
 
     @AfterEach
@@ -94,6 +97,40 @@ class RetentionServiceRewriteTest {
                     .isFalse();
         } finally {
             detachAppender(appender);
+        }
+    }
+
+    @Test
+    void executeRun_skipsAnEntityTypeWhileCompactionHoldsIt_andReleasesItsLocksAfterwards() throws Exception {
+        insertOldEntityRows(5);
+        String target = CompactionLockManager.targetForEntityType(ENTITY_TYPE);
+        assertThat(lockManager.tryAcquireExclusive(target)).isTrue();   // a merge is in flight
+        try {
+            RetentionRun run = service.beginRun(TriggerSource.MANUAL);
+            service.executeRun(run.id());
+
+            assertThat(service.getRunById(run.id()).status()).isEqualTo(RunStatus.COMPLETED);
+            assertThat(countEntityRows()).as("rows must be left for the next run, not deleted mid-merge")
+                    .isEqualTo(5L);
+        } finally {
+            lockManager.releaseExclusive(target);
+        }
+
+        RetentionRun second = service.beginRun(TriggerSource.MANUAL);
+        service.executeRun(second.id());
+        assertThat(countEntityRows()).isZero();
+        for (String t : new String[]{target,
+                CompactionLockManager.targetForLakeTable("general_orders_events").orElseThrow()}) {
+            assertThat(lockManager.tryAcquireExclusive(t)).as(t).isTrue();
+            lockManager.releaseExclusive(t);
+        }
+    }
+
+    private long countEntityRows() throws Exception {
+        try (var st = duckDB.createStatement();
+             var rs = st.executeQuery("SELECT COUNT(*) FROM lake.main.entity_" + ENTITY_TYPE)) {
+            rs.next();
+            return rs.getLong(1);
         }
     }
 

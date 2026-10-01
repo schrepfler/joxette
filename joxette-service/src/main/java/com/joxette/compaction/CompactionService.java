@@ -70,7 +70,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * therefore guarded by a row in {@code compaction_locks} via {@link CompactionLockManager}.
  *
  * <p>Lock acquisition, heartbeating, and release are transparent to the caller —
- * targets whose lock is held by another instance are silently skipped and counted
+ * targets whose lock is held by another instance (or by a truncate, GDPR delete, restore
+ * or retention pass in this one) are silently skipped and counted
  * as skipped in the run result.  A {@link LockHeartbeat} refreshes the lock's
  * {@code expires_at} every {@link CompactionLockManager#HEARTBEAT_INTERVAL_MINUTES}
  * minutes from a dedicated virtual thread while the merge is in progress.
@@ -529,16 +530,16 @@ public class CompactionService {
      */
     private CompactionResult doCompactEntityType(String entityType) {
         SchemaManager.validateEntityType(entityType);
-        String lockTarget = "entity:" + entityType;
+        String lockTarget = CompactionLockManager.targetForEntityType(entityType);
         boolean acquired;
         try {
-            acquired = lockManager.tryAcquire(lockTarget);
+            acquired = lockManager.tryAcquireExclusive(lockTarget);
         } catch (SQLException e) {
             log.warn("Could not acquire compaction lock '{}' ({}); skipping this run", lockTarget, e.getMessage());
             return CompactionResult.NONE;
         }
         if (!acquired) {
-            log.info("Compaction lock '{}' held by another instance — skipping (will retry next scheduled run)",
+            log.info("Compaction lock '{}' held by another instance or operation — skipping (will retry next scheduled run)",
                     lockTarget);
             return CompactionResult.NONE;
         }
@@ -579,7 +580,7 @@ public class CompactionService {
             }
         } finally {
             heartbeat.stop();
-            lockManager.release(lockTarget);
+            lockManager.releaseExclusive(lockTarget);
         }
     }
 
@@ -728,16 +729,16 @@ public class CompactionService {
      */
     private CompactionResult doCompactGeneralTopic(String topic) {
         String tableName = "general_" + normalizeTopicName(topic);
-        String lockTarget = "topic:" + tableName;
+        String lockTarget = CompactionLockManager.targetForLakeTable(tableName).orElseThrow();
         boolean acquired;
         try {
-            acquired = lockManager.tryAcquire(lockTarget);
+            acquired = lockManager.tryAcquireExclusive(lockTarget);
         } catch (SQLException e) {
             log.warn("Could not acquire compaction lock '{}' ({}); skipping this run", lockTarget, e.getMessage());
             return CompactionResult.NONE;
         }
         if (!acquired) {
-            log.info("Compaction lock '{}' held by another instance — skipping (will retry next scheduled run)",
+            log.info("Compaction lock '{}' held by another instance or operation — skipping (will retry next scheduled run)",
                     lockTarget);
             return CompactionResult.NONE;
         }
@@ -773,7 +774,7 @@ public class CompactionService {
             return CompactionResult.NONE;
         } finally {
             heartbeat.stop();
-            lockManager.release(lockTarget);
+            lockManager.releaseExclusive(lockTarget);
         }
     }
 

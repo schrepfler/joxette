@@ -79,7 +79,9 @@ class CassetteLifecycleServiceRestoreResilienceTest {
 
         service = new CassetteLifecycleService(
                 duckDB, properties, configRepo, Optional.empty(),
-                recordingCoordinator, new ObjectMapper());
+                recordingCoordinator, new ObjectMapper(),
+                new com.joxette.compaction.CompactionLockManager(duckDB, properties,
+                        DuckDBTestSupport.newInstanceRegistry(duckDB)));
 
         service.createSnapshot(SNAPSHOT_NAME);
     }

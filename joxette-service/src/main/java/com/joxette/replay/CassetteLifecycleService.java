@@ -3,6 +3,7 @@ package com.joxette.replay;
 import tools.jackson.core.JacksonException;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.ObjectMapper;
+import com.joxette.compaction.CompactionLockManager;
 import com.joxette.config.JoxetteProperties;
 import com.joxette.db.DuckDbSession;
 import com.joxette.management.ConfigRepository;
@@ -69,11 +70,15 @@ public class CassetteLifecycleService {
     private final S3Client s3Client;
     private final RecordingCoordinator recordingCoordinator;
     private final ObjectMapper objectMapper;
+    /** Keeps whole-table rewrites apart from compaction, which runs on its own connection. */
+    private final CompactionLockManager compactionLocks;
 
     public CassetteLifecycleService(Connection duckDB, JoxetteProperties properties,
                                     ConfigRepository configRepo, Optional<S3Client> s3Client,
-                                    @Lazy RecordingCoordinator recordingCoordinator, ObjectMapper objectMapper) {
+                                    @Lazy RecordingCoordinator recordingCoordinator, ObjectMapper objectMapper,
+                                    CompactionLockManager compactionLocks) {
         this.duckDB               = duckDB;
+        this.compactionLocks      = compactionLocks;
         this.session              = new DuckDbSession(duckDB);
         this.configRepo           = configRepo;
         this.properties           = properties;
@@ -233,16 +238,19 @@ public class CassetteLifecycleService {
      * @return number of rows deleted
      */
     public long truncateTopicCassette(String topic) throws SQLException {
-        String qualifiedTable = "lake.main.general_" + normalizeTopicName(topic);
+        String tableName = "general_" + normalizeTopicName(topic);
+        String qualifiedTable = "lake.main." + tableName;
         log.info("Truncating general cassette for topic '{}'", topic);
-        synchronized (duckDB) {
-            try (Statement st = duckDB.createStatement()) {
-                // DELETE FROM with no WHERE clause truncates the entire table.
-                long deleted = st.executeUpdate("DELETE FROM " + qualifiedTable);
-                log.info("Truncated general cassette for topic '{}': {} rows deleted", topic, deleted);
-                return deleted;
+        return excludingCompaction(CompactionLockManager.targetForLakeTable(tableName).orElseThrow(), conn -> {
+            synchronized (duckDB) {
+                try (Statement st = duckDB.createStatement()) {
+                    // DELETE FROM with no WHERE clause truncates the entire table.
+                    long deleted = st.executeUpdate("DELETE FROM " + qualifiedTable);
+                    log.info("Truncated general cassette for topic '{}': {} rows deleted", topic, deleted);
+                    return deleted;
+                }
             }
-        }
+        });
     }
 
     /**
@@ -255,13 +263,15 @@ public class CassetteLifecycleService {
         com.joxette.db.SchemaManager.validateEntityType(entityType);
         String qualifiedTable = "lake.main.entity_" + entityType;
         log.info("Truncating entity cassette for type '{}'", entityType);
-        synchronized (duckDB) {
-            try (Statement st = duckDB.createStatement()) {
-                long deleted = st.executeUpdate("DELETE FROM " + qualifiedTable);
-                log.info("Truncated entity cassette for type '{}': {} rows deleted", entityType, deleted);
-                return deleted;
+        return excludingCompaction(CompactionLockManager.targetForEntityType(entityType), conn -> {
+            synchronized (duckDB) {
+                try (Statement st = duckDB.createStatement()) {
+                    long deleted = st.executeUpdate("DELETE FROM " + qualifiedTable);
+                    log.info("Truncated entity cassette for type '{}': {} rows deleted", entityType, deleted);
+                    return deleted;
+                }
             }
-        }
+        });
     }
 
     // -------------------------------------------------------------------------
@@ -278,23 +288,43 @@ public class CassetteLifecycleService {
         com.joxette.db.SchemaManager.validateEntityType(entityType);
         log.info("GDPR delete: removing entity type='{}' id='{}' from cassette and known_entities",
                 entityType, entityId);
-        long deleted = 0;
-        synchronized (duckDB) {
-            try (PreparedStatement ps = duckDB.prepareStatement(
-                    "DELETE FROM lake.main.entity_" + entityType + " WHERE entity_id = ?")) {
-                ps.setString(1, entityId);
-                deleted += ps.executeUpdate();
+        long deleted = excludingCompaction(CompactionLockManager.targetForEntityType(entityType), conn -> {
+            long rows = 0;
+            synchronized (duckDB) {
+                try (PreparedStatement ps = duckDB.prepareStatement(
+                        "DELETE FROM lake.main.entity_" + entityType + " WHERE entity_id = ?")) {
+                    ps.setString(1, entityId);
+                    rows += ps.executeUpdate();
+                }
+                // known_entities is plain DuckDB (main schema), not DuckLake
+                try (PreparedStatement ps = duckDB.prepareStatement(
+                        "DELETE FROM known_entities WHERE entity_type = ? AND entity_id = ?")) {
+                    ps.setString(1, entityType);
+                    ps.setString(2, entityId);
+                    rows += ps.executeUpdate();
+                }
             }
-            // known_entities is plain DuckDB (main schema), not DuckLake
-            try (PreparedStatement ps = duckDB.prepareStatement(
-                    "DELETE FROM known_entities WHERE entity_type = ? AND entity_id = ?")) {
-                ps.setString(1, entityType);
-                ps.setString(2, entityId);
-                deleted += ps.executeUpdate();
-            }
-        }
+            return rows;
+        });
         log.info("GDPR delete complete: type='{}' id='{}' — {} total rows removed", entityType, entityId, deleted);
         return deleted;
+    }
+
+    /**
+     * Runs {@code body} holding compaction's lock for {@code target}, refusing with 409
+     * if compaction currently holds it. Compaction runs on its own connection, so
+     * {@code synchronized(duckDB)} alone no longer keeps a whole-table rewrite from
+     * racing an in-flight merge.
+     */
+    private <T> T excludingCompaction(String target, DuckDbSession.SqlQuery<T> body) throws SQLException {
+        if (!compactionLocks.tryAcquireExclusive(target)) {
+            throw com.joxette.api.error.ConflictException.compactionInProgress(target);
+        }
+        try {
+            return body.run(duckDB);
+        } finally {
+            compactionLocks.releaseExclusive(target);
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -395,6 +425,49 @@ public class CassetteLifecycleService {
             throw com.joxette.api.error.ResourceNotFoundException.snapshot(name);
         }
         Map<String, Long> expectedRowCounts = loadStoredRowCounts(name);
+        // Taken before pausing any recorder, so a refusal leaves everything running.
+        List<String> heldTargets = acquireEveryCompactionTarget();
+        try {
+            restoreSnapshotExcludingCompaction(name, snapshotDir, expectedRowCounts);
+        } finally {
+            heldTargets.forEach(compactionLocks::releaseExclusive);
+        }
+    }
+
+    /**
+     * Takes compaction's lock for every cassette table in {@code lake.main}, or none:
+     * a restore rewrites all of them, so it must not overlap a merge on any.
+     *
+     * <p>{@code IMPORT DATABASE} replaces {@code compaction_locks} with the snapshot's
+     * copy, so the catalog rows taken here don't survive the restore — the in-process
+     * claim {@link CompactionLockManager#tryAcquireExclusive} records is what keeps this
+     * instance's compaction out for the duration.
+     */
+    private List<String> acquireEveryCompactionTarget() throws SQLException {
+        List<String> targets = new ArrayList<>();
+        synchronized (duckDB) {
+            try (Statement st = duckDB.createStatement();
+                 ResultSet rs = st.executeQuery(
+                         "SELECT table_name FROM duckdb_tables()" +
+                         " WHERE database_name = 'lake' AND schema_name = 'main' ORDER BY table_name")) {
+                while (rs.next()) {
+                    CompactionLockManager.targetForLakeTable(rs.getString("table_name")).ifPresent(targets::add);
+                }
+            }
+        }
+        List<String> held = new ArrayList<>();
+        for (String target : targets) {
+            if (!compactionLocks.tryAcquireExclusive(target)) {
+                held.forEach(compactionLocks::releaseExclusive);
+                throw com.joxette.api.error.ConflictException.compactionInProgress(target);
+            }
+            held.add(target);
+        }
+        return held;
+    }
+
+    private void restoreSnapshotExcludingCompaction(String name, Path snapshotDir,
+                                                    Map<String, Long> expectedRowCounts) throws SQLException {
         log.warn("Restoring snapshot '{}' from {} — all existing tables will be replaced", name, snapshotDir);
 
         // Captured before any stop attempt so the finally block below always knows

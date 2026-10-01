@@ -60,10 +60,13 @@ public class RetentionService {
     private final Counter generalRowsCounter;
     private final Counter knownEntitiesRowsCounter;
     private final Timer retentionTimer;
+    /** Keeps retention's deletes/rewrites apart from compaction, which runs on its own connection. */
+    private final CompactionLockManager compactionLocks;
 
     public RetentionService(Connection duckDB, ConfigRepository configRepo, JoxetteProperties props,
-                             JoxetteMetrics joxetteMetrics) {
+                             JoxetteMetrics joxetteMetrics, CompactionLockManager compactionLocks) {
         this.duckDB                    = duckDB;
+        this.compactionLocks           = compactionLocks;
         this.configRepo                = configRepo;
         this.props                     = props;
         this.entityRowsCounter         = joxetteMetrics.retentionRowsDeleted("entity");
@@ -201,6 +204,13 @@ public class RetentionService {
             if (tc.retentionDays() == null) continue;
             // Only general-mode topics have a cassette table; entity_only topics skip this
             if (tc.mode() == TopicMode.ENTITY_ONLY) continue;
+            String target = CompactionLockManager.targetForLakeTable(
+                    "general_" + SchemaManager.normalize(tc.topic())).orElseThrow();
+            if (!compactionLocks.tryAcquireExclusive(target)) {
+                log.info("Retention: skipping topic '{}' — compaction is in progress on it (will retry next run)",
+                        tc.topic());
+                continue;
+            }
             try {
                 long deleted = deleteFromGeneralCassette(tc.topic(), tc.retentionDays());
                 if (deleted > 0) {
@@ -212,6 +222,8 @@ public class RetentionService {
             } catch (Exception e) {
                 log.warn("Retention: skipping topic '{}' due to error: {}", tc.topic(), e.getMessage());
                 // Continue with remaining topics rather than aborting the entire run
+            } finally {
+                compactionLocks.releaseExclusive(target);
             }
         }
         return total;
@@ -242,6 +254,12 @@ public class RetentionService {
             int days    = etc.retentionDays();
             String type = etc.entityType();
             SchemaManager.validateEntityType(type);
+            String target = CompactionLockManager.targetForEntityType(type);
+            if (!compactionLocks.tryAcquireExclusive(target)) {
+                log.info("Retention: skipping entity type '{}' — compaction is in progress on it (will retry next run)",
+                        type);
+                continue;
+            }
             try {
                 long cassDeleted = deleteFromEntityCassette(type, days);
                 long keDeleted   = deleteFromKnownEntities(type, days);
@@ -260,6 +278,8 @@ public class RetentionService {
                 log.warn("Retention: skipping entity type '{}' due to error (will retry next schedule): {}",
                         type, e.getMessage());
                 DuckDbSession.rollbackQuietly(duckDB, "retention: entity type " + type);
+            } finally {
+                compactionLocks.releaseExclusive(target);
             }
         }
         return new long[]{entityRows, knownEntitiesRows};

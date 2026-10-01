@@ -117,6 +117,48 @@ class CompactionDistributedLockTest {
     }
 
     // -------------------------------------------------------------------------
+    // Exclusive acquisition (also excludes other callers in the same instance)
+    // -------------------------------------------------------------------------
+
+    @Test
+    void tryAcquireExclusive_refusesASecondCallerInTheSameInstance() throws Exception {
+        assertThat(lockA.tryAcquireExclusive(LOCK_TARGET)).isTrue();
+
+        assertThat(lockA.tryAcquireExclusive(LOCK_TARGET))
+                .as("unlike tryAcquire, a second holder in the same process must be refused")
+                .isFalse();
+
+        lockA.releaseExclusive(LOCK_TARGET);
+    }
+
+    @Test
+    void tryAcquireExclusive_succeedsAgainAfterRelease() throws Exception {
+        assertThat(lockA.tryAcquireExclusive(LOCK_TARGET)).isTrue();
+        lockA.releaseExclusive(LOCK_TARGET);
+
+        assertThat(lockA.tryAcquireExclusive(LOCK_TARGET)).isTrue();
+        lockA.releaseExclusive(LOCK_TARGET);
+    }
+
+    @Test
+    void tryAcquireExclusive_stillRefusedWhileAnotherInstanceHoldsTheLock() throws Exception {
+        assertThat(lockB.tryAcquire(LOCK_TARGET)).isTrue();
+
+        assertThat(lockA.tryAcquireExclusive(LOCK_TARGET)).isFalse();
+        // A refused attempt must not leave a local claim behind.
+        lockB.release(LOCK_TARGET);
+        assertThat(lockA.tryAcquireExclusive(LOCK_TARGET)).isTrue();
+        lockA.releaseExclusive(LOCK_TARGET);
+    }
+
+    @Test
+    void lakeTableTargets_matchCompactionsOwnLockNames() {
+        assertThat(CompactionLockManager.targetForLakeTable("entity_fixture")).contains("entity:fixture");
+        assertThat(CompactionLockManager.targetForLakeTable("general_orders_events")).contains("topic:general_orders_events");
+        assertThat(CompactionLockManager.targetForLakeTable("known_entities")).isEmpty();
+    }
+
+    // -------------------------------------------------------------------------
     // Release safety
     // -------------------------------------------------------------------------
 

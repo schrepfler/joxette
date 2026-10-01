@@ -82,6 +82,8 @@ public class CompactionLockManager {
     private final String           instanceId;
     private final InstanceRegistry instanceRegistry;
     private final int              deadInstanceThresholdMinutes;
+    /** Targets held via {@link #tryAcquireExclusive} by some caller in this process. */
+    private final Set<String>      exclusiveHolders = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     // -------------------------------------------------------------------------
     // Construction
@@ -280,6 +282,57 @@ public class CompactionLockManager {
                 }
             }
         }
+    }
+
+    /**
+     * Like {@link #tryAcquire}, but also refuses when another caller in <em>this</em>
+     * process already holds {@code target} — {@code tryAcquire} alone is re-entrant per
+     * instance, so it only excludes other instances.
+     *
+     * <p>This is what keeps compaction apart from same-process operations that rewrite a
+     * whole cassette table (truncate, GDPR delete, snapshot restore, retention). They used
+     * to be kept apart implicitly by sharing {@code synchronized(duckDB)}; compaction now
+     * runs on its own connection, so that monitor no longer does it.
+     *
+     * <p>Pair every {@code true} result with {@link #releaseExclusive}.
+     */
+    public boolean tryAcquireExclusive(String target) throws SQLException {
+        if (!exclusiveHolders.add(target)) return false;
+        boolean acquired = false;
+        try {
+            acquired = tryAcquire(target);
+            return acquired;
+        } finally {
+            if (!acquired) exclusiveHolders.remove(target);
+        }
+    }
+
+    /** Releases a lock taken with {@link #tryAcquireExclusive}. */
+    public void releaseExclusive(String target) {
+        try {
+            release(target);
+        } finally {
+            exclusiveHolders.remove(target);
+        }
+    }
+
+    /** Lock key compaction uses for an entity cassette table. */
+    public static String targetForEntityType(String entityType) {
+        return "entity:" + entityType;
+    }
+
+    /**
+     * Lock key compaction uses for a {@code lake.main} cassette table, or empty for a
+     * table compaction never touches (e.g. {@code known_entities}).
+     */
+    public static java.util.Optional<String> targetForLakeTable(String lakeTable) {
+        if (lakeTable.startsWith("entity_")) {
+            return java.util.Optional.of(targetForEntityType(lakeTable.substring("entity_".length())));
+        }
+        if (lakeTable.startsWith("general_")) {
+            return java.util.Optional.of("topic:" + lakeTable);
+        }
+        return java.util.Optional.empty();
     }
 
     /**

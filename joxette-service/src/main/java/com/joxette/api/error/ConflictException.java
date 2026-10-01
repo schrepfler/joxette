@@ -32,6 +32,10 @@ public class ConflictException extends JoxetteException {
         return new ConflictException("Compaction already in progress");
     }
 
+    public static ConflictException compactionInProgress(String target) {
+        return new ConflictException("Compaction is in progress for '" + target + "' — retry shortly");
+    }
+
     public static ConflictException retentionAlreadyRunning() {
         return new ConflictException("Retention run already in progress");
     }

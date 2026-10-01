@@ -557,6 +557,31 @@ class CompactionServiceTest {
     }
 
     // -------------------------------------------------------------------------
+    // Exclusion against same-instance lifecycle operations (truncate, GDPR delete,
+    // restore, retention) now that compaction no longer shares their connection.
+    // -------------------------------------------------------------------------
+
+    @Test
+    void executeRun_skipsATargetHeldByAnotherCallerInThisInstance_andLeavesItsLockAlone() throws Exception {
+        CompactionLockManager lockManager = newLockManager();
+        CompactionService svc = new CompactionService(duckDB, new com.joxette.db.DuckDbSession(duckDB),
+                testProperties(), configRepo, TEST_METRICS, lockManager);
+        String target = CompactionLockManager.targetForEntityType(ENTITY_TYPE);
+        assertThat(lockManager.tryAcquireExclusive(target)).isTrue();   // e.g. an in-flight truncate
+        try {
+            CompactionRun run = svc.beginRun(TriggerSource.MANUAL, List.of(ENTITY_TYPE));
+            svc.executeRun(run.id(), List.of(ENTITY_TYPE));
+
+            assertThat(lockManager.listActiveLocks())
+                    .as("compaction must neither run on nor release a lock another caller holds")
+                    .extracting(CompactionLockInfo::target)
+                    .contains(target);
+        } finally {
+            lockManager.releaseExclusive(target);
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // mergeInBatches: bounded blast radius + retry on transient failure
     //
     // A full-table ducklake_merge_adjacent_files call over ~184K files was proven
