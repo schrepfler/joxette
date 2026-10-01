@@ -158,6 +158,11 @@ public class HealthController {
     private final RecordingCoordinator   coordinator;
     private final JoxetteProperties      properties;
     private final com.joxette.config.BrokerConnectionFactory brokerConnectionFactory;
+    /**
+     * Health/metrics connection ({@code DuckDBConfig#healthDuckDbConnection}), not the shared
+     * one: every probe here locks only other probes, so a long write elsewhere can't make
+     * {@code /health} or a Prometheus scrape time out.
+     */
     private final Connection             duckDB;
     private final PrometheusMeterRegistry metricsRegistry;
     private final InstanceRegistry       instanceRegistry;
@@ -185,7 +190,7 @@ public class HealthController {
             @Lazy RecordingCoordinator coordinator,
             JoxetteProperties properties,
             com.joxette.config.BrokerConnectionFactory brokerConnectionFactory,
-            Connection duckDB,
+            @org.springframework.beans.factory.annotation.Qualifier("healthDuckDbConnection") Connection duckDB,
             PrometheusMeterRegistry metricsRegistry,
             InstanceRegistry instanceRegistry,
             BackgroundTaskRegistry taskRegistry,
@@ -233,8 +238,6 @@ public class HealthController {
     private void registerDuckDbMemoryGauges() {
         // Discover the full set of tags by running duckdb_memory() once at startup,
         // then register one gauge per tag (supplier re-queries on every scrape).
-        // Unlike inlinedDataSizeBytes(), duckdb_memory() reads live allocator state,
-        // not stored statistics — it must go through the normal write-serialisation lock.
         Set<String> tags = new LinkedHashSet<>();
         synchronized (duckDB) {
             try (Statement st = duckDB.createStatement();
@@ -447,26 +450,25 @@ public class HealthController {
      *
      * <p>{@code duckdb_tables()} is a catalog introspection function that reads
      * stored statistics — it does not scan data and completes in sub-millisecond
-     * time regardless of how much data is inlined.  It is therefore safe to run
-     * without the write-serialisation lock: DuckDB allows concurrent reads via
-     * separate {@code Statement} objects, and holding {@code synchronized(duckDB)}
-     * here would block if compaction held the lock, stalling the health endpoint.
+     * time regardless of how much data is inlined.
      */
     private long inlinedDataSizeBytes() {
-        try {
-            try (Statement st = duckDB.createStatement();
-                 ResultSet rs = st.executeQuery(
-                         "SELECT COALESCE(SUM(estimated_size), 0) AS total " +
-                         "FROM duckdb_tables() WHERE database_name = '" + com.joxette.db.DuckLakeManager.CATALOG_NAME + "' " +
-                         "AND schema_name = 'main'")) {
-                return rs.next() ? rs.getLong("total") : 0;
+        synchronized (duckDB) {
+            try {
+                try (Statement st = duckDB.createStatement();
+                     ResultSet rs = st.executeQuery(
+                             "SELECT COALESCE(SUM(estimated_size), 0) AS total " +
+                             "FROM duckdb_tables() WHERE database_name = '" + com.joxette.db.DuckLakeManager.CATALOG_NAME + "' " +
+                             "AND schema_name = 'main'")) {
+                    return rs.next() ? rs.getLong("total") : 0;
+                }
+            } catch (SQLException e) {
+                // Swallowing the error is fine (the field is reported as -1), leaving the
+                // connection dirty is not: a failure here must not become the next caller's
+                // "Current transaction is aborted".
+                com.joxette.db.DuckDbSession.rollbackQuietly(duckDB, "health: inlinedDataSizeBytes");
+                return -1;
             }
-        } catch (SQLException e) {
-            // Swallowing the error is fine (the field is reported as -1), leaving the
-            // connection dirty is not: a failure here must not become the next caller's
-            // "Current transaction is aborted".
-            com.joxette.db.DuckDbSession.rollbackQuietly(duckDB, "health: inlinedDataSizeBytes");
-            return -1;
         }
     }
 
@@ -476,11 +478,8 @@ public class HealthController {
      * i.e. bytes actually flushed to Parquet in object storage, as opposed to
      * {@link #inlinedDataSizeBytes()}'s not-yet-flushed catalog-buffered portion.
      *
-     * <p>Unlike {@code inlinedDataSizeBytes()}, this reads DuckLake's file manifest
-     * via a table function rather than stored {@code duckdb_tables()} statistics, so
-     * it is wrapped in {@code synchronized(duckDB)} — there is no equivalent proof
-     * that {@code ducklake_list_files} is safe for concurrent unlocked reads the way
-     * {@code duckdb_tables()} is documented to be.
+     * <p>Reads DuckLake's file manifest via a table function rather than stored
+     * {@code duckdb_tables()} statistics.
      */
     private long flushedDataSizeBytes() {
         try {

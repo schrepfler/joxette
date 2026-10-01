@@ -15,6 +15,8 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.slf4j.LoggerFactory;
 
+import org.duckdb.DuckDBConnection;
+
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
@@ -36,6 +38,8 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 class ReconciliationServiceWatchdogTest {
 
     private Connection duckDB;
+    /** Reconciliation's own connection — where its object-storage calls and timeout override live. */
+    private Connection lake;
     private ReconciliationService service;
 
     @BeforeEach
@@ -45,17 +49,23 @@ class ReconciliationServiceWatchdogTest {
         JoxetteProperties props = new JoxetteProperties();
         props.getReconciliation().setObjectStorageTimeoutSeconds(7);
         CompactionLockManager lockManager = new CompactionLockManager(duckDB, props, instanceRegistry);
-        service = new ReconciliationService(duckDB, props, lockManager,
+        lake = ((DuckDBConnection) duckDB).duplicate();
+        service = new ReconciliationService(duckDB, lake, props, lockManager,
                 new JoxetteMetrics(new SimpleMeterRegistry()), new ObjectMapper());
     }
 
     @AfterEach
     void tearDown() throws Exception {
+        if (lake != null && !lake.isClosed()) lake.close();
         if (duckDB != null && !duckDB.isClosed()) duckDB.close();
     }
 
     private int currentHttpTimeoutSeconds() throws SQLException {
-        try (Statement st = duckDB.createStatement();
+        return httpTimeoutSecondsOn(lake);
+    }
+
+    private static int httpTimeoutSecondsOn(Connection conn) throws SQLException {
+        try (Statement st = conn.createStatement();
              ResultSet rs = st.executeQuery("SELECT current_setting('http_timeout')")) {
             rs.next();
             return rs.getInt(1);
@@ -64,7 +74,7 @@ class ReconciliationServiceWatchdogTest {
 
     @Test
     void withObjectStorageWatchdog_setsConfiguredHttpTimeoutDuringTheCall() throws Exception {
-        try (Statement st = duckDB.createStatement()) {
+        try (Statement st = lake.createStatement()) {
             int[] observed = new int[1];
             service.withObjectStorageWatchdog("test-call", st, () -> {
                 observed[0] = currentHttpTimeoutSeconds();
@@ -75,9 +85,26 @@ class ReconciliationServiceWatchdogTest {
         }
     }
 
+    /**
+     * {@code SET http_timeout} is per-connection; issued on the shared connection it would
+     * also cap replay and recording reads for the length of every reconciliation call.
+     */
+    @Test
+    void withObjectStorageWatchdog_leavesTheSharedConnectionsHttpTimeoutAlone() throws Exception {
+        try (Statement st = lake.createStatement()) {
+            int[] observedOnShared = new int[1];
+            service.withObjectStorageWatchdog("test-call", st, () -> {
+                observedOnShared[0] = httpTimeoutSecondsOn(duckDB);
+                return null;
+            }, 10_000, 10_000);
+
+            assertThat(observedOnShared[0]).isEqualTo(ReconciliationService.DEFAULT_HTTP_TIMEOUT_SECONDS);
+        }
+    }
+
     @Test
     void withObjectStorageWatchdog_restoresDefaultHttpTimeoutAfterTheCall() throws Exception {
-        try (Statement st = duckDB.createStatement()) {
+        try (Statement st = lake.createStatement()) {
             service.withObjectStorageWatchdog("test-call", st, () -> null, 10_000, 10_000);
         }
 
@@ -86,7 +113,7 @@ class ReconciliationServiceWatchdogTest {
 
     @Test
     void withObjectStorageWatchdog_restoresDefaultHttpTimeoutEvenWhenActionThrows() throws Exception {
-        try (Statement st = duckDB.createStatement()) {
+        try (Statement st = lake.createStatement()) {
             assertThatThrownBy(() -> service.withObjectStorageWatchdog("test-call", st, () -> {
                 throw new SQLException("boom");
             }, 10_000, 10_000)).isInstanceOf(SQLException.class).hasMessageContaining("boom");
@@ -97,7 +124,7 @@ class ReconciliationServiceWatchdogTest {
 
     @Test
     void withObjectStorageWatchdog_returnsTheActionsResult() throws Exception {
-        try (Statement st = duckDB.createStatement()) {
+        try (Statement st = lake.createStatement()) {
             String result = service.withObjectStorageWatchdog("test-call", st, () -> "hello", 10_000, 10_000);
 
             assertThat(result).isEqualTo("hello");
@@ -113,7 +140,7 @@ class ReconciliationServiceWatchdogTest {
         Level savedLevel = logger.getLevel();
         logger.setLevel(Level.DEBUG);
         logger.addAppender(appender);
-        try (Statement st = duckDB.createStatement()) {
+        try (Statement st = lake.createStatement()) {
             // Threshold/interval of 50ms each — the action itself just sleeps past that,
             // exercising the real watchdog timing logic without a slow 10s+ test.
             service.withObjectStorageWatchdog("slow-test-call", st, () -> {
@@ -142,7 +169,7 @@ class ReconciliationServiceWatchdogTest {
         Level savedLevel = logger.getLevel();
         logger.setLevel(Level.DEBUG);
         logger.addAppender(appender);
-        try (Statement st = duckDB.createStatement()) {
+        try (Statement st = lake.createStatement()) {
             service.withObjectStorageWatchdog("fast-test-call", st, () -> null, 10_000, 10_000);
 
             List<String> messages = appender.list.stream().map(ILoggingEvent::getFormattedMessage).toList();

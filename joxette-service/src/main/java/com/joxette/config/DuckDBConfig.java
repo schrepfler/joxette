@@ -126,6 +126,40 @@ public class DuckDBConfig {
         return ((DuckDBConnection) duckDbConnection).duplicate();
     }
 
+    /**
+     * Retention's own connection to the same instance, for the same reason as
+     * {@link #compactionDuckDbConnection}: its lake DELETEs, {@code ducklake_rewrite_data_files}
+     * and {@code CHECKPOINT} reach object storage and must not hold the shared monitor.
+     * Separate from compaction's so a merge stuck in httpfs doesn't stall retention too.
+     */
+    @Bean(destroyMethod = "close")
+    public Connection retentionDuckDbConnection(Connection duckDbConnection) throws SQLException {
+        return ((DuckDBConnection) duckDbConnection).duplicate();
+    }
+
+    /**
+     * Reconciliation's own connection: its bucket-wide orphan scan, {@code glob()} listings,
+     * {@code parquet_file_metadata} sizing and {@code ducklake_add_data_files} all reach
+     * object storage. As a bonus, {@code SET http_timeout} is per-connection, so its
+     * temporary timeout override no longer applies to anything else.
+     */
+    @Bean(destroyMethod = "close")
+    public Connection reconciliationDuckDbConnection(Connection duckDbConnection) throws SQLException {
+        return ((DuckDBConnection) duckDbConnection).duplicate();
+    }
+
+    /**
+     * Connection for health checks and catalog metrics ({@code /health}, the catalog
+     * health indicator, Prometheus gauges). On the shared connection they either raced
+     * other statements on the one native handle (when run unlocked to avoid stalling) or
+     * waited behind whatever held its monitor — so a long write made liveness probes and
+     * scrapes time out. Here they lock only each other.
+     */
+    @Bean(destroyMethod = "close")
+    public Connection healthDuckDbConnection(Connection duckDbConnection) throws SQLException {
+        return ((DuckDBConnection) duckDbConnection).duplicate();
+    }
+
     /** {@link DuckDbSession} wrapping {@link #compactionDuckDbConnection}. */
     @Bean
     public DuckDbSession compactionDuckDbSession(

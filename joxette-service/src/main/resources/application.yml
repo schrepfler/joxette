@@ -140,6 +140,8 @@ joxette:
       min-files-per-partition: 20
       target-file-size-mb: 256
       lookback-days: 30
+      # max-compacted-files-per-batch: 8  # same meaning as under entity:, per general table
+      # max-batches-per-run: 1000
 
   kafka:
     bootstrap-servers: "localhost:9092"

@@ -13,6 +13,7 @@ import com.joxette.management.TopicConfig;
 import com.joxette.management.TopicMode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.DependsOn;
 import org.springframework.scheduling.support.CronExpression;
 import org.springframework.stereotype.Service;
@@ -53,6 +54,15 @@ public class RetentionService {
     private static final Logger log = LoggerFactory.getLogger(RetentionService.class);
 
     private final Connection duckDB;
+    /**
+     * Retention's own connection for the work that reaches object storage — lake DELETEs,
+     * {@code ducklake_rewrite_data_files}, {@code CHECKPOINT} — synchronised on itself.
+     * A slow or wedged S3 call can then only hold this monitor, never the shared
+     * {@link #duckDB} one that recording, replay and health checks depend on (same
+     * reasoning as {@code DuckDBConfig#compactionDuckDbConnection}). Run bookkeeping in
+     * {@code retention_history} is local and quick, so it stays on {@link #duckDB}.
+     */
+    private final Connection lake;
     private final ConfigRepository configRepo;
     private final JoxetteProperties props;
     private final AtomicBoolean running = new AtomicBoolean(false);
@@ -63,9 +73,12 @@ public class RetentionService {
     /** Keeps retention's deletes/rewrites apart from compaction, which runs on its own connection. */
     private final CompactionLockManager compactionLocks;
 
-    public RetentionService(Connection duckDB, ConfigRepository configRepo, JoxetteProperties props,
+    public RetentionService(Connection duckDB,
+                             @Qualifier("retentionDuckDbConnection") Connection lake,
+                             ConfigRepository configRepo, JoxetteProperties props,
                              JoxetteMetrics joxetteMetrics, CompactionLockManager compactionLocks) {
         this.duckDB                    = duckDB;
+        this.lake                      = lake;
         this.compactionLocks           = compactionLocks;
         this.configRepo                = configRepo;
         this.props                     = props;
@@ -232,8 +245,8 @@ public class RetentionService {
     private long deleteFromGeneralCassette(String topic, int retentionDays) throws SQLException {
         String tableName = "lake.main.general_" + SchemaManager.normalize(topic);
         String cutoff    = "CURRENT_TIMESTAMP - INTERVAL '" + retentionDays + " days'";
-        synchronized (duckDB) {
-            try (Statement st = duckDB.createStatement()) {
+        synchronized (lake) {
+            try (Statement st = lake.createStatement()) {
                 return st.executeUpdate(
                         "DELETE FROM " + tableName + " WHERE recorded_at < " + cutoff);
             } catch (SQLException e) {
@@ -277,7 +290,8 @@ public class RetentionService {
                 // entity type does not cause the entire run to fail and restart from scratch.
                 log.warn("Retention: skipping entity type '{}' due to error (will retry next schedule): {}",
                         type, e.getMessage());
-                DuckDbSession.rollbackQuietly(duckDB, "retention: entity type " + type);
+                DuckDbSession.rollbackQuietly(lake, "retention: entity type " + type);
+                DuckDbSession.rollbackQuietly(duckDB, "retention: known_entities for " + type);
             } finally {
                 compactionLocks.releaseExclusive(target);
             }
@@ -287,8 +301,8 @@ public class RetentionService {
 
     private long deleteFromEntityCassette(String type, int retentionDays) throws SQLException {
         String cutoff = "CURRENT_TIMESTAMP - INTERVAL '" + retentionDays + " days'";
-        synchronized (duckDB) {
-            try (Statement st = duckDB.createStatement()) {
+        synchronized (lake) {
+            try (Statement st = lake.createStatement()) {
                 return st.executeUpdate(
                         "DELETE FROM lake.main.entity_" + type + " WHERE recorded_at < " + cutoff);
             }
@@ -332,8 +346,8 @@ public class RetentionService {
                    + " delete_threshold => " + deleteThreshold + ")";
         log.debug("Rewriting delete-heavy files for {} ({})", label, tableName);
         try {
-            synchronized (duckDB) {
-                try (Statement st = duckDB.createStatement()) {
+            synchronized (lake) {
+                try (Statement st = lake.createStatement()) {
                     st.execute(sql);
                 }
             }
@@ -345,10 +359,9 @@ public class RetentionService {
             } else {
                 log.warn("ducklake_rewrite_data_files failed for {}: {}", label, e.getMessage());
             }
-            // Non-fatal for this table, but the shared connection must not inherit the
-            // failure: without this, the next statement from any thread would fail with
-            // "Current transaction is aborted".
-            DuckDbSession.rollbackQuietly(duckDB, "retention: ducklake_rewrite_data_files for " + label);
+            // Non-fatal for this table, but the connection must not inherit the failure:
+            // without this, its next statement would fail with "Current transaction is aborted".
+            DuckDbSession.rollbackQuietly(lake, "retention: ducklake_rewrite_data_files for " + label);
         }
     }
 
@@ -357,16 +370,16 @@ public class RetentionService {
     // =========================================================================
 
     private void checkpoint() throws SQLException {
-        synchronized (duckDB) {
+        synchronized (lake) {
             // Commit any open transaction from the DELETE statements before checkpointing.
             // CHECKPOINT requires no active transaction; skipping this causes the WAL to
             // grow unbounded in native memory.
             try {
-                duckDB.commit();
+                lake.commit();
             } catch (SQLException e) {
                 log.debug("commit before retention CHECKPOINT: {} (may be auto-commit mode)", e.getMessage());
             }
-            try (Statement st = duckDB.createStatement()) {
+            try (Statement st = lake.createStatement()) {
                 st.execute("CHECKPOINT");
                 log.debug("Retention checkpoint complete");
             } catch (SQLException e) {

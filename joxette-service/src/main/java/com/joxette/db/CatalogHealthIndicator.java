@@ -1,9 +1,11 @@
 package com.joxette.db;
 
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.health.contributor.Health;
 import org.springframework.boot.health.contributor.HealthIndicator;
 import org.springframework.stereotype.Component;
 
+import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -52,9 +54,13 @@ import java.sql.Statement;
 public class CatalogHealthIndicator implements HealthIndicator {
 
     private final DuckLakeManager duckLakeManager;
+    /** See {@code DuckDBConfig#healthDuckDbConnection}. */
+    private final Connection healthConn;
 
-    public CatalogHealthIndicator(DuckLakeManager duckLakeManager) {
+    public CatalogHealthIndicator(DuckLakeManager duckLakeManager,
+                                  @Qualifier("healthDuckDbConnection") Connection healthConn) {
         this.duckLakeManager = duckLakeManager;
+        this.healthConn = healthConn;
     }
 
     /**
@@ -73,29 +79,32 @@ public class CatalogHealthIndicator implements HealthIndicator {
         CatalogBackend catalogBackend = duckLakeManager.getBackend();
         String backendName = catalogBackend != null ? catalogBackend.name() : "UNKNOWN";
 
-        try (Statement stmt = duckLakeManager.getConnection().createStatement();
-             ResultSet rs = stmt.executeQuery(
-                 "SELECT * FROM ducklake_settings('" + DuckLakeManager.CATALOG_NAME + "')")) {
+        synchronized (healthConn) {
+            try (Statement stmt = healthConn.createStatement();
+                 ResultSet rs = stmt.executeQuery(
+                     "SELECT * FROM ducklake_settings('" + DuckLakeManager.CATALOG_NAME + "')")) {
 
-            if (!rs.next()) {
+                if (!rs.next()) {
+                    return Health.down()
+                        .withDetail("backend", backendName)
+                        .withDetail("reason", "ducklake_settings() returned no rows — catalog may not be attached")
+                        .build();
+                }
+
+                return Health.up()
+                    .withDetail("backend", backendName)
+                    .withDetail("catalogType", rs.getString("catalog_type"))
+                    .withDetail("extensionVersion", rs.getString("extension_version"))
+                    .withDetail("dataPath", rs.getString("data_path"))
+                    .build();
+
+            } catch (SQLException e) {
+                DuckDbSession.rollbackQuietly(healthConn, "catalog health check");
                 return Health.down()
                     .withDetail("backend", backendName)
-                    .withDetail("reason", "ducklake_settings() returned no rows — catalog may not be attached")
+                    .withException(e)
                     .build();
             }
-
-            return Health.up()
-                .withDetail("backend", backendName)
-                .withDetail("catalogType", rs.getString("catalog_type"))
-                .withDetail("extensionVersion", rs.getString("extension_version"))
-                .withDetail("dataPath", rs.getString("data_path"))
-                .build();
-
-        } catch (SQLException e) {
-            return Health.down()
-                .withDetail("backend", backendName)
-                .withException(e)
-                .build();
         }
     }
 }

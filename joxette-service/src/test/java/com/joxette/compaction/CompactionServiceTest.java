@@ -9,6 +9,7 @@ import com.joxette.config.JoxetteProperties;
 import com.joxette.management.ConfigRepository;
 import com.joxette.metrics.JoxetteMetrics;
 import com.joxette.support.DuckDBTestSupport;
+import com.joxette.support.SqlRecordingConnection;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -813,6 +814,33 @@ class CompactionServiceTest {
             ps.setTimestamp(4, java.sql.Timestamp.from(pastExpiry));
             ps.executeUpdate();
         }
+    }
+
+    /**
+     * A single uncapped ducklake_merge_adjacent_files call over a large general cassette
+     * table is near-certain to hit a transient object-store error somewhere and lose all
+     * of its progress — the same failure that motivated batching entity merges.
+     */
+    @Test
+    void executeRun_mergesAGeneralCassetteTopicInBoundedBatches() throws Exception {
+        try (PreparedStatement ps = duckDB.prepareStatement(
+                "INSERT INTO topic_configs (topic, mode) VALUES ('orders.events', 'general')")) {
+            ps.executeUpdate();
+        }
+        JoxetteProperties props = testProperties();
+        props.getCompaction().getGeneral().setEnabled(true);
+        props.getCompaction().getGeneral().setMaxCompactedFilesPerBatch(5);
+        SqlRecordingConnection conn = SqlRecordingConnection.wrap(duckDB);
+        CompactionService svc = new CompactionService(conn.connection(),
+                new com.joxette.db.DuckDbSession(conn.connection()), props, configRepo, TEST_METRICS, newLockManager());
+
+        CompactionRun run = svc.beginRun(TriggerSource.MANUAL, List.of("general"));
+        svc.executeRun(run.id(), List.of("general"));
+
+        assertThat(conn.sql())
+                .filteredOn(sql -> sql.contains("ducklake_merge_adjacent_files('lake', 'general_orders_events'"))
+                .isNotEmpty()
+                .allMatch(sql -> sql.contains("max_compacted_files => 5"));
     }
 
     private JoxetteProperties testProperties() {

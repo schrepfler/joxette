@@ -386,6 +386,10 @@ public class JoxetteProperties {
             private int minFilesPerPartition = 20;
             private int targetFileSizeMb = 256;
             private int lookbackDays = 30;
+            /** As {@link Entity#maxCompactedFilesPerBatch}, for general cassette tables. */
+            private int maxCompactedFilesPerBatch = 8;
+            /** As {@link Entity#maxBatchesPerRun}, per general cassette topic. */
+            private int maxBatchesPerRun = 1000;
 
             public boolean isEnabled() { return enabled; }
             public void setEnabled(boolean enabled) { this.enabled = enabled; }
@@ -398,6 +402,14 @@ public class JoxetteProperties {
 
             public int getLookbackDays() { return lookbackDays; }
             public void setLookbackDays(int lookbackDays) { this.lookbackDays = lookbackDays; }
+
+            public int getMaxCompactedFilesPerBatch() { return maxCompactedFilesPerBatch; }
+            public void setMaxCompactedFilesPerBatch(int maxCompactedFilesPerBatch) {
+                this.maxCompactedFilesPerBatch = maxCompactedFilesPerBatch;
+            }
+
+            public int getMaxBatchesPerRun() { return maxBatchesPerRun; }
+            public void setMaxBatchesPerRun(int maxBatchesPerRun) { this.maxBatchesPerRun = maxBatchesPerRun; }
         }
 
         public boolean isEnabled() { return enabled; }

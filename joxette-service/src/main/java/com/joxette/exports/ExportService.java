@@ -3,7 +3,6 @@ package com.joxette.exports;
 import tools.jackson.databind.ObjectMapper;
 import com.joxette.api.error.ResourceNotFoundException;
 import com.joxette.db.DuckDbErrors;
-import com.joxette.db.DuckDbSession;
 import com.joxette.api.error.ValidationException;
 import com.joxette.config.JoxetteProperties;
 import com.joxette.lifecycle.BackgroundTaskRegistry;
@@ -162,7 +161,8 @@ public class ExportService {
     }
 
 
-    private long exportParquet(String jobId, String entityType, List<String> entityIds,
+    // Package-private so ExportServiceParquetTest can exercise it directly.
+    long exportParquet(String jobId, String entityType, List<String> entityIds,
                                Instant from, Instant to, List<String> messageTypes,
                                String outputPath) throws Exception {
         List<EntityRecord> records = loadAll(entityType, entityIds, from, to, messageTypes);
@@ -171,7 +171,13 @@ public class ExportService {
         }
 
         String tmpTable = "export_tmp_" + jobId.replace("-", "_");
-        try (Statement st = duckDB.createStatement()) {
+        // Runs end to end on its own duplicated connection, like exportNdjson: the temp table
+        // is scoped to the connection that creates it, and the COPY (possibly to s3://)
+        // must not tie up — or race, unlocked — the shared connection's native handle.
+        // Closing the connection drops the temp table and discards any open transaction,
+        // so a failure leaves nothing behind for the retry or anyone else.
+        try (DuckDBConnection conn = duckDB.unwrap(DuckDBConnection.class).duplicate();
+             Statement st = conn.createStatement()) {
             st.execute("""
                     CREATE TEMP TABLE %s (
                         entity_id       VARCHAR,
@@ -185,7 +191,7 @@ public class ExportService {
                         kafka_value_b64 VARCHAR
                     )""".formatted(tmpTable));
 
-            try (PreparedStatement ps = duckDB.prepareStatement(
+            try (PreparedStatement ps = conn.prepareStatement(
                     "INSERT INTO " + tmpTable + " VALUES (?,?,?,?,?,?,?,?,?)")) {
                 for (EntityRecord r : records) {
                     ps.setString(1, r.entityId());
@@ -205,20 +211,6 @@ public class ExportService {
             }
 
             st.execute("COPY " + tmpTable + " TO '" + outputPath + "' (FORMAT PARQUET)");
-        } catch (SQLException e) {
-            // The temp table and any transaction the failure left behind live on the
-            // shared connection, so both have to go: otherwise the retry's CREATE TEMP
-            // TABLE fails with a (non-transient) Catalog Error and every other component
-            // inherits an aborted transaction.
-            DuckDbSession.rollbackQuietly(duckDB, "exportParquet " + jobId);
-            throw e;
-        } finally {
-            try (Statement st = duckDB.createStatement()) {
-                st.execute("DROP TABLE IF EXISTS " + tmpTable);
-            } catch (SQLException e) {
-                log.debug("Could not drop {} after export {}: {}", tmpTable, jobId, e.getMessage());
-                DuckDbSession.rollbackQuietly(duckDB, "exportParquet cleanup " + jobId);
-            }
         }
         return records.size();
     }

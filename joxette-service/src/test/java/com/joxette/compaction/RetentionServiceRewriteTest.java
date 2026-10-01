@@ -7,6 +7,8 @@ import com.joxette.config.JoxetteProperties;
 import com.joxette.management.ConfigRepository;
 import com.joxette.metrics.JoxetteMetrics;
 import com.joxette.support.DuckDBTestSupport;
+import com.joxette.support.SqlRecordingConnection;
+import org.duckdb.DuckDBConnection;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -31,6 +33,8 @@ class RetentionServiceRewriteTest {
     private static final String TOPIC = "orders.events";
 
     private Connection duckDB;
+    private Connection retentionConn;
+    private SqlRecordingConnection shared;
     private CompactionLockManager lockManager;
     private RetentionService service;
 
@@ -58,11 +62,14 @@ class RetentionServiceRewriteTest {
         ConfigRepository configRepo = new ConfigRepository(duckDB, props);
         lockManager = new CompactionLockManager(duckDB, 120, "test-instance",
                 DuckDBTestSupport.newInstanceRegistry(duckDB));
-        service = new RetentionService(duckDB, configRepo, props, TEST_METRICS, lockManager);
+        retentionConn = ((DuckDBConnection) duckDB).duplicate();
+        shared = SqlRecordingConnection.wrap(duckDB);
+        service = new RetentionService(shared.connection(), retentionConn, configRepo, props, TEST_METRICS, lockManager);
     }
 
     @AfterEach
     void tearDown() throws Exception {
+        if (retentionConn != null && !retentionConn.isClosed()) retentionConn.close();
         if (duckDB != null && !duckDB.isClosed()) duckDB.close();
     }
 
@@ -124,6 +131,30 @@ class RetentionServiceRewriteTest {
             assertThat(lockManager.tryAcquireExclusive(t)).as(t).isTrue();
             lockManager.releaseExclusive(t);
         }
+    }
+
+    /**
+     * Retention's lake DELETEs, ducklake_rewrite_data_files and CHECKPOINT all reach object
+     * storage. Run on the shared connection, a slow or wedged S3 call there held the monitor
+     * that recording, replay and health checks all wait on.
+     */
+    @Test
+    void executeRun_keepsObjectStorageWorkOffTheSharedConnection() throws Exception {
+        insertOldEntityRows(5);
+        Instant old = Instant.parse("2000-01-01T00:00:00Z");
+        DuckDBTestSupport.insertCassetteRow(duckDB, TOPIC, 0, 0, old, old, "k", "v".getBytes());
+
+        RetentionRun run = service.beginRun(TriggerSource.MANUAL);
+        service.executeRun(run.id());
+
+        assertThat(service.getRunById(run.id()).status()).isEqualTo(RunStatus.COMPLETED);
+        assertThat(countEntityRows()).isZero();
+        assertThat(DuckDBTestSupport.countRows(duckDB, "lake.main.general_orders_events")).isZero();
+        assertThat(shared.sql())
+                .as("SQL issued on the shared connection")
+                .noneMatch(sql -> sql.contains("DELETE FROM lake.")
+                        || sql.contains("ducklake_rewrite_data_files")
+                        || sql.contains("CHECKPOINT"));
     }
 
     private long countEntityRows() throws Exception {

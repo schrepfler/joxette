@@ -572,7 +572,7 @@ public class CompactionService {
                 // logged and swallowed internally so earlier batches' progress is always
                 // returned instead of being discarded by a catch here.
                 FileStats stats = mergeInBatches(
-                        () -> executeMergeBatch(entityType, maxFileSizeBytes, batchSize),
+                        () -> executeMergeBatch("entity_" + entityType, maxFileSizeBytes, batchSize),
                         maxBatches, MERGE_BATCH_RETRY_ATTEMPTS, MERGE_BATCH_RETRY_BASE_DELAY_MS);
                 log.debug("Merged adjacent files for entity_{}: files_processed={} files_created={}",
                         entityType, stats.filesProcessed(), stats.filesCreated());
@@ -668,8 +668,8 @@ public class CompactionService {
      * connection would fail immediately regardless of whether the underlying I/O issue
      * was transient — defeating the retry this exists to support.
      */
-    private FileStats executeMergeBatch(String entityType, long maxFileSizeBytes, int batchSize) throws SQLException {
-        String sql = "CALL ducklake_merge_adjacent_files('lake', 'entity_" + entityType + "',"
+    private FileStats executeMergeBatch(String tableName, long maxFileSizeBytes, int batchSize) throws SQLException {
+        String sql = "CALL ducklake_merge_adjacent_files('lake', '" + tableName + "',"
                    + " max_compacted_files => " + batchSize
                    + ", max_file_size => " + maxFileSizeBytes + ")";
         try (Statement st = duckDB.createStatement();
@@ -682,7 +682,7 @@ public class CompactionService {
             }
             return stats;
         } catch (SQLException e) {
-            DuckDbSession.rollbackQuietly(duckDB, "ducklake_merge_adjacent_files batch for entity_" + entityType);
+            DuckDbSession.rollbackQuietly(duckDB, "ducklake_merge_adjacent_files batch for " + tableName);
             throw e;
         }
     }
@@ -744,34 +744,21 @@ public class CompactionService {
         }
         LockHeartbeat heartbeat = startHeartbeat(lockTarget);
         try {
-            long maxFileSizeBytes = (long) props.getCompaction().getGeneral().getTargetFileSizeMb() * 1024L * 1024L;
-            String sql = "CALL ducklake_merge_adjacent_files('lake', '" + tableName + "',"
-                       + " max_file_size => " + maxFileSizeBytes + ")";
-            log.debug("Merging adjacent files for general cassette topic='{}'", topic);
+            var general = props.getCompaction().getGeneral();
+            long maxFileSizeBytes = (long) general.getTargetFileSizeMb() * 1024L * 1024L;
+            int batchSize = general.getMaxCompactedFilesPerBatch();
+            log.debug("Merging adjacent files for general cassette topic='{}' in batches of up to {} compacted file(s)",
+                    topic, batchSize);
             synchronized (duckDB) {
-                try (Statement st = duckDB.createStatement();
-                     ResultSet rs = st.executeQuery(sql)) {
-                    FileStats stats = FileStats.EMPTY;
-                    while (rs.next()) {
-                        stats = stats.add(new FileStats(
-                                rs.getLong("files_processed"),
-                                rs.getLong("files_created")));
-                    }
-                    log.debug("Merged adjacent files for general cassette topic='{}': "
-                                    + "files_processed={} files_created={}",
-                            topic, stats.filesProcessed(), stats.filesCreated());
-                    return new CompactionResult(stats.filesProcessed() > 0 ? 1 : 0, stats);
-                }
+                // Bounded and retried per batch, for the reasons given on doCompactEntityType.
+                // mergeInBatches never throws; failures are logged there and earlier batches kept.
+                FileStats stats = mergeInBatches(
+                        () -> executeMergeBatch(tableName, maxFileSizeBytes, batchSize),
+                        general.getMaxBatchesPerRun(), MERGE_BATCH_RETRY_ATTEMPTS, MERGE_BATCH_RETRY_BASE_DELAY_MS);
+                log.debug("Merged adjacent files for general cassette topic='{}': files_processed={} files_created={}",
+                        topic, stats.filesProcessed(), stats.filesCreated());
+                return new CompactionResult(stats.filesProcessed() > 0 ? 1 : 0, stats);
             }
-        } catch (SQLException e) {
-            if (DuckDbErrors.isTransient(e)) {
-                log.warn("ducklake_merge_adjacent_files transient S3 failure for general cassette topic='{}' (will retry next run): {}",
-                        topic, e.getMessage());
-            } else {
-                log.warn("ducklake_merge_adjacent_files failed for general cassette topic='{}': {}",
-                        topic, e.getMessage());
-            }
-            return CompactionResult.NONE;
         } finally {
             heartbeat.stop();
             lockManager.releaseExclusive(lockTarget);

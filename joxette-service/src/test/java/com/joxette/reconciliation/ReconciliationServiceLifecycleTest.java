@@ -43,7 +43,7 @@ class ReconciliationServiceLifecycleTest {
         // cleanLocksForDeadInstances().
         CompactionLockManager lockManager = new CompactionLockManager(duckDB, props, instanceRegistry);
 
-        service = new ReconciliationService(duckDB, props, lockManager,
+        service = new ReconciliationService(duckDB, ((org.duckdb.DuckDBConnection) duckDB).duplicate(), props, lockManager,
                 new JoxetteMetrics(new SimpleMeterRegistry()), new ObjectMapper());
     }
 
