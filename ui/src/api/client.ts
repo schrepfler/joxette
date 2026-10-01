@@ -771,6 +771,7 @@ export type EntityStreamParams = {
   from?: string
   to?: string
   order?: Order
+  messageTypes?: string[]
 }
 
 export async function streamLines(
@@ -941,8 +942,9 @@ export function streamEntityRecords(
   params: EntityStreamParams & { follow?: boolean },
   callbacks: RecordStreamCallbacks<EntityRecord>,
 ): AbortController {
-  const { follow, ...rest } = params
-  const query = buildQuery(follow ? { ...rest, follow: 'true' } : rest)
+  const { follow, messageTypes, ...rest } = params
+  const filters = { ...rest, message_types: messageTypes && messageTypes.length > 0 ? messageTypes.join(',') : undefined }
+  const query = buildQuery(follow ? { ...filters, follow: 'true' } : filters)
   const url = `${API_V1_BASE}/cassettes/entities/${encodeURIComponent(entityType)}/${encodeURIComponent(entityId)}${query}`
   const accept = mode === 'sse' ? 'text/event-stream' : 'application/x-ndjson'
   const ctrl = new AbortController()

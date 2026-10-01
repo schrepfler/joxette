@@ -6,7 +6,7 @@ import {
   flexRender,
   createColumnHelper,
 } from '@tanstack/react-table'
-import { useState, useRef, useEffect, useCallback } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
 import { JsonView } from '../../../components/JsonView'
 import { ValueCell } from '../../../components/ValueCell'
 import { cassettesApi, entityOutputApi, entitiesApi, streamEntityRecords, type EntityRecord, type Order, type StreamMode, type EntityStreamParams, type PortraitResult } from '../../../api/client'
@@ -32,6 +32,9 @@ interface EntitySearch {
 
 export const Route = createFileRoute('/entities/$entityType/$entityId')({
   component: EntityInstancePage,
+  // Without this, navigating from one entity to another reuses the component, so the
+  // previous entity's cursor, stream buffer, filters and SOL result carry over.
+  remountDeps: ({ params }) => params,
   validateSearch: (raw: Record<string, unknown>): EntitySearch => {
     const o = raw.order
     return { order: o === 'asc' || o === 'desc' ? o : undefined }
@@ -122,16 +125,18 @@ function EntityInstancePage() {
   const [toRaw, setToRaw] = useState('')
   const from = useDebounce(fromRaw, 300)
   const to = useDebounce(toRaw, 300)
-  const [messageTypesRaw, setMessageTypesRaw] = useState<string[]>([])
   const [summarySelection, setSummarySelection] = useState<DatasetSummarySelection | null>(null)
+  // Derived, not stored: selecting another dimension (e.g. a source topic) replaces the
+  // selection, so the message-type filter must go with it rather than linger unseen.
+  const selectedMessageType = summarySelection?.dimension === 'messageType' ? summarySelection.value : null
+  const messageTypesRaw = useMemo(
+    () => (selectedMessageType != null ? [selectedMessageType] : []),
+    [selectedMessageType],
+  )
 
   const handleSummarySelect = useCallback((dimension: string, value: string | null) => {
     setSummarySelection(prev => (prev?.dimension === dimension && prev?.value === value ? null : { dimension, value }))
-    if (dimension === 'messageType') {
-      const isToggleOff = summarySelection?.dimension === 'messageType' && summarySelection?.value === value
-      setMessageTypesRaw(isToggleOff || value === null ? [] : [value])
-    }
-  }, [summarySelection])
+  }, [])
   const [cursor, setCursor] = useState<string | undefined>()
   const [cursors, setCursors] = useState<string[]>([])
   const [deleteStep, setDeleteStep] = useState<0 | 1 | 2>(0)
@@ -243,6 +248,7 @@ function EntityInstancePage() {
       to: isFollowing ? undefined : (to || undefined),
       follow: isFollowing || undefined,
       order,
+      messageTypes: messageTypesRaw.length > 0 ? messageTypesRaw : undefined,
     }
     const shouldPrependLive = isFollowing && order === 'desc'
     abortRef.current = streamEntityRecords(entityType, entityId, streamMode, params, {
@@ -292,14 +298,14 @@ function EntityInstancePage() {
     followActiveRef.current = false
     setStreamStatus(s => (s === 'streaming' || s === 'draining' || s === 'tailing') ? 'idle' : s)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [from, to, order])
+  }, [from, to, order, messageTypesRaw])
 
-  // Reset paged cursor state when the sort direction changes.
+  // A cursor encodes a position within one particular filtered, ordered result set;
+  // reusing it after the filters or sort change would skip or repeat records.
   useEffect(() => {
     setCursor(undefined)
     setCursors([])
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [order])
+  }, [order, from, to, messageTypesRaw])
 
   const columns = colHelper.columns([
     colHelper.accessor('timestamp', {
