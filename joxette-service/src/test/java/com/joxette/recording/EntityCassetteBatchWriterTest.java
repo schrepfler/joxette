@@ -6,6 +6,8 @@ import com.joxette.support.DuckDBTestSupport;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
@@ -143,6 +145,23 @@ class EntityCassetteBatchWriterTest {
         assertThat(rows).hasSize(1);
         assertThat(rows.get(0)[0]).isEqualTo("x-binary");
         assertThat(rows.get(0)[1]).isEqualTo(Base64.getEncoder().encodeToString(binaryPayload));
+    }
+
+    /** See CassetteBatchWriterTest#writeBatch_headers_awkwardCharactersRoundTripExactly. */
+    @ParameterizedTest
+    @ValueSource(strings = {"a\u0000b", "\u0000", "it's", "back\\slash", "'}, {'key': 'x"})
+    void writeBatch_headers_awkwardCharactersRoundTripExactly(String awkward) throws Exception {
+        EntityRoute route = new EntityRoute(ENTITY_TYPE, "ORD-1", 0, null, "orders.events");
+        List<KafkaMessage.Header> headers = List.of(
+                new KafkaMessage.Header("x-value", awkward.getBytes(StandardCharsets.UTF_8)),
+                new KafkaMessage.Header(awkward, "key-test".getBytes(StandardCharsets.UTF_8)));
+        KafkaMessage msg = message("orders.events", 0, 0L, 0L, "k", null, headers);
+
+        writer.writeBatch(List.of(item(route, msg)));
+
+        assertThat(queryHeaders()).containsExactly(
+                new Object[]{"x-value", awkward},
+                new Object[]{awkward, "key-test"});
     }
 
     @Test

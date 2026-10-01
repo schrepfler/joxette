@@ -175,15 +175,35 @@ public class CassetteBatchWriter implements AutoCloseable {
      * Appends one {@code {'key': '...', 'value': '...'}} VARCHAR struct entry.
      *
      * <p>The value bytes are decoded as UTF-8. If decoding fails (binary payload),
-     * the bytes are base64-encoded instead. Single quotes in both key and value
-     * are escaped as {@code ''} per SQL standard.
+     * the bytes are base64-encoded instead. See {@link #varcharLiteral} for how the
+     * key and value are made safe as SQL literals.
      */
     private static void appendHeaderEntry(StringBuilder sb, String key, byte[] value) {
-        sb.append("{'key': '").append(escapeSingleQuote(key)).append("', 'value': '");
-        if (value != null && value.length > 0) {
-            sb.append(escapeSingleQuote(decodeHeaderValue(value)));
+        sb.append("{'key': ").append(varcharLiteral(key))
+          .append(", 'value': ").append(varcharLiteral(decodeHeaderValue(value)))
+          .append('}');
+    }
+
+    /**
+     * A VARCHAR SQL expression for {@code s}: single quotes doubled, and each NUL written
+     * as {@code chr(0)} concatenated outside the quotes.
+     *
+     * <p>A raw NUL inside the literal ends the statement early in the native driver
+     * ("Parser Error: unterminated quoted string"), a non-retryable error that got the
+     * whole batch — other producers' records included — quarantined and skipped. Binding
+     * header keys/values as parameters avoids that too but measured ~2.5x slower on a
+     * 10k-row batch, and NUL is the only character that needs it, so it gets this
+     * special case instead.
+     */
+    static String varcharLiteral(String s) {
+        StringBuilder sb = new StringBuilder(s.length() + 2).append('\'');
+        for (int i = 0; i < s.length(); i++) {
+            char ch = s.charAt(i);
+            if (ch == '\'') sb.append("''");
+            else if (ch == '\u0000') sb.append("' || chr(0) || '");
+            else sb.append(ch);
         }
-        sb.append("'}");
+        return sb.append('\'').toString();
     }
 
     /**
@@ -205,10 +225,6 @@ public class CassetteBatchWriter implements AutoCloseable {
             // Binary payload — base64-encode so it survives the VARCHAR round-trip
             return java.util.Base64.getEncoder().encodeToString(bytes);
         }
-    }
-
-    private static String escapeSingleQuote(String s) {
-        return s.replace("'", "''");
     }
 
     @Override

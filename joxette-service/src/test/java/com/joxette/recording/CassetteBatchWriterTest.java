@@ -7,6 +7,8 @@ import org.apache.kafka.common.record.TimestampType;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
@@ -164,6 +166,26 @@ class CassetteBatchWriterTest {
         assertThat(rows).containsExactly(
                 new Object[]{"content-type", "application/json"},
                 new Object[]{"content-type", "text/plain"});
+    }
+
+    /**
+     * Header keys/values used to be spliced into the INSERT as SQL text. A NUL byte
+     * ended the statement early inside the native driver ("Parser Error: unterminated
+     * quoted string"), which is classified as non-retryable — so after the quarantine
+     * threshold the whole batch, other producers' records included, was skipped.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {"a\u0000b", "\u0000", "it's", "back\\slash", "'}, {'key': 'x"})
+    void writeBatch_headers_awkwardCharactersRoundTripExactly(String awkward) throws Exception {
+        RecordHeaders headers = new RecordHeaders();
+        headers.add("x-value", awkward.getBytes(StandardCharsets.UTF_8));
+        headers.add(awkward, "key-test".getBytes(StandardCharsets.UTF_8));
+
+        writer.writeBatch(List.of(record(0, 0L, 0L, "k", null, headers)), Collections.singletonList(null));
+
+        assertThat(queryHeaders()).containsExactly(
+                new Object[]{"x-value", awkward},
+                new Object[]{awkward, "key-test"});
     }
 
     @Test
