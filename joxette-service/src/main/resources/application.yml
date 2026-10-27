@@ -108,6 +108,9 @@ joxette:
 
   retention:
     schedule: "0 0 1 * * *"
+    # rewrite-delete-threshold: 0.1
+    # max-rewritten-files-per-batch: 8  # caps one ducklake_rewrite_data_files call (max_compacted_files)
+    # max-batches-per-run: 1000         # safety cap on rewrite batches per table per run
 
   compaction:
     schedule: "0 0 3 * * *"
@@ -121,7 +124,7 @@ joxette:
     entity:
       min-files-per-bucket: 10
       target-file-size-mb: 256
-      lookback-days: 30
+      lookback-days: 1  # merge only files that entered the lake over N days ago (older_than); 0 = all
       max-compacted-files-per-batch: 8  # bounds one ducklake_merge_adjacent_files call's
       #   blast radius (its own max_compacted_files param). An unbounded call scans
       #   essentially the whole table — verified against ~184K real files, a single
@@ -139,7 +142,7 @@ joxette:
       enabled: false
       min-files-per-partition: 20
       target-file-size-mb: 256
-      lookback-days: 30
+      lookback-days: 1  # merge only files that entered the lake over N days ago (older_than); 0 = all
       # max-compacted-files-per-batch: 8  # same meaning as under entity:, per general table
       # max-batches-per-run: 1000
 

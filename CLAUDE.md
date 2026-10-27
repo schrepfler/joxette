@@ -82,6 +82,8 @@ CREATE TABLE IF NOT EXISTS lake.main.general_{sanitized_topic} (
 );
 ```
 
+Partitioned in DuckLake by `epoch_day(recorded_at)` and sorted by `(kafka_timestamp, kafka_partition, kafka_offset)`, both declared in the `CREATE TABLE`. Stats are skipped for `kafka_value` and `headers`.
+
 ### Entity Cassette Table (one per entity type, in DuckLake)
 
 Table name: `lake.main.entity_{sanitized_type}`
@@ -104,7 +106,7 @@ CREATE TABLE IF NOT EXISTS lake.main.entity_{sanitized_type} (
 );
 ```
 
-Partitioned in DuckLake by `(entity_bucket, date)`. Entity bucket = `hash(entity_type, entity_id) % configured_bucket_count`.
+Partitioned in DuckLake by `(bucket, epoch_month(recorded_at))` and sorted by `(entity_id, kafka_timestamp, recorded_at)`, both declared in the `CREATE TABLE`. Entity bucket = `hash(entity_type, entity_id) % configured_bucket_count`. Time partitions follow `recorded_at` because retention deletes on it: partitions wholly past the cutoff are retired without delete files.
 
 ### Known Entities Registry (in DuckLake)
 
@@ -130,7 +132,6 @@ These live in the same DuckDB database file but outside DuckLake — they are op
 CREATE TABLE IF NOT EXISTS topic_configs (
     topic           VARCHAR PRIMARY KEY,
     mode            VARCHAR NOT NULL,        -- 'general', 'entity_only', 'both'
-    time_partition  VARCHAR DEFAULT 'hour',
     max_file_size_mb INTEGER DEFAULT 256,
     max_records_per_file INTEGER DEFAULT 1000000,
     retention_days  INTEGER DEFAULT 90,
@@ -236,10 +237,11 @@ Entity cassettes aggregate messages from multiple topics. Ordering is by `timest
 
 ### Bucketed Entities
 
-Entity IDs are hashed into a configurable number of buckets (e.g., 256). Parquet files are partitioned by `(entity_bucket, date)`. Replaying one entity scans only its bucket's files. File layout:
+Entity IDs are hashed into a configurable number of buckets (e.g., 256). Parquet files are partitioned by `(bucket, epoch_month(recorded_at))`. Replaying one entity scans only its bucket's files. File layout:
 
 ```
-/{topic}/{date_or_hour}/{entity_bucket}_{sequence}.parquet
+main/entity_{type}/bucket={n}/epoch_month={months_since_epoch}/ducklake-{uuid}.parquet
+main/general_{topic}/epoch_day={days_since_epoch}/ducklake-{uuid}.parquet
 ```
 
 ---
@@ -389,7 +391,7 @@ joxette:
 
 - **Cron** — configurable schedule (default: daily at 3am)
 - **REST** — `POST /compaction/trigger` with optional body to scope to specific targets
-- **Lookback** — only compact data older than N days (default: 30) to avoid churning hot data
+- **Lookback** — only merge files that entered the lake more than N days ago (default: 1), via `ducklake_merge_adjacent_files(older_than => …)`, so files still being added to are left alone
 
 ### Configuration
 
@@ -400,7 +402,7 @@ joxette:
     entity:
       min-files-per-bucket: 10
       target-file-size-mb: 256
-      lookback-days: 30
+      lookback-days: 1
     general:
       enabled: false
       min-files-per-partition: 20
@@ -645,7 +647,7 @@ joxette:
     entity:
       min-files-per-bucket: 10
       target-file-size-mb: 256
-      lookback-days: 30
+      lookback-days: 1
     general:
       enabled: false
   

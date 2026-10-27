@@ -232,7 +232,7 @@ joxette:
     entity:
       min-files-per-bucket: 10
       target-file-size-mb: 256
-      lookback-days: 30
+      lookback-days: 1
     general:
       enabled: false
 
