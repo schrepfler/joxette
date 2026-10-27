@@ -544,4 +544,29 @@ public final class DuckDBTestSupport {
     private static String normalizeTopicName(String topic) {
         return topic.toLowerCase().replaceAll("[^a-z0-9_]", "_");
     }
+
+    /**
+     * Runs a {@code ducklake_merge_adjacent_files} / {@code ducklake_rewrite_data_files}
+     * call and returns the summed {@code files_processed} (0 when it returns no rows).
+     */
+    public static long filesProcessed(Connection conn, String maintenanceSql) throws SQLException {
+        long total = 0;
+        try (Statement st = conn.createStatement();
+             ResultSet rs = st.executeQuery(maintenanceSql)) {
+            while (rs.next()) total += rs.getLong("files_processed");
+        }
+        return total;
+    }
+
+    /** Live data files DuckLake tracks for {@code lake.main.<table>}. */
+    public static long dataFileCount(Connection conn, String table) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement(
+                "SELECT count(*) FROM ducklake_list_files('lake', ?)")) {
+            ps.setString(1, table);
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getLong(1);
+            }
+        }
+    }
 }

@@ -314,7 +314,12 @@ public class JoxetteProperties {
         public static class Entity {
             private int minFilesPerBucket = 10;
             private int targetFileSizeMb = 256;
-            private int lookbackDays = 30;
+            /**
+             * Merge only files that entered the lake more than this many days ago, so
+             * compaction leaves files still being added to by inline flushes alone. Passed
+             * to {@code ducklake_merge_adjacent_files} as {@code older_than}; 0 = no limit.
+             */
+            private int lookbackDays = 1;
             /**
              * Parquet row-group memory budget applied during entity cassette merges
              * (DuckDB 1.5.3+ {@code write_buffer_row_group_memory_limit}).
@@ -385,7 +390,12 @@ public class JoxetteProperties {
             private boolean enabled = false;
             private int minFilesPerPartition = 20;
             private int targetFileSizeMb = 256;
-            private int lookbackDays = 30;
+            /**
+             * Merge only files that entered the lake more than this many days ago, so
+             * compaction leaves files still being added to by inline flushes alone. Passed
+             * to {@code ducklake_merge_adjacent_files} as {@code older_than}; 0 = no limit.
+             */
+            private int lookbackDays = 1;
             /** As {@link Entity#maxCompactedFilesPerBatch}, for general cassette tables. */
             private int maxCompactedFilesPerBatch = 8;
             /** As {@link Entity#maxBatchesPerRun}, per general cassette topic. */

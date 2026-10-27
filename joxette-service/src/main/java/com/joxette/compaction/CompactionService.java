@@ -455,6 +455,7 @@ public class CompactionService {
             int rowGroupMemoryLimitMb = props.getCompaction().getEntity().getRowGroupMemoryLimitMb();
             int batchSize = props.getCompaction().getEntity().getMaxCompactedFilesPerBatch();
             int maxBatches = props.getCompaction().getEntity().getMaxBatchesPerRun();
+            int lookbackDays = props.getCompaction().getEntity().getLookbackDays();
             log.debug("Merging adjacent files for entity_type='{}' in batches of up to {} compacted file(s)",
                     entityType, batchSize);
             synchronized (duckDB) {
@@ -476,7 +477,7 @@ public class CompactionService {
                 // logged and swallowed internally so earlier batches' progress is always
                 // returned instead of being discarded by a catch here.
                 FileStats stats = mergeInBatches(
-                        () -> executeMergeBatch("entity_" + entityType, maxFileSizeBytes, batchSize),
+                        () -> executeMergeBatch("entity_" + entityType, maxFileSizeBytes, batchSize, lookbackDays),
                         maxBatches, MERGE_BATCH_RETRY_ATTEMPTS, MERGE_BATCH_RETRY_BASE_DELAY_MS);
                 log.debug("Merged adjacent files for entity_{}: files_processed={} files_created={}",
                         entityType, stats.filesProcessed(), stats.filesCreated());
@@ -564,7 +565,8 @@ public class CompactionService {
 
     /**
      * Runs one bounded {@code ducklake_merge_adjacent_files} call, capped to at most
-     * {@code batchSize} compacted-file operations via {@code max_compacted_files}.
+     * {@code batchSize} compacted-file operations via {@code max_compacted_files}, and
+     * limited to files older than {@code lookbackDays} (see {@link #mergeSql}).
      *
      * <p>Heals the connection on failure: {@code CALL ducklake_merge_adjacent_files}
      * can leave an aborted transaction behind exactly like any other statement (see
@@ -572,12 +574,10 @@ public class CompactionService {
      * connection would fail immediately regardless of whether the underlying I/O issue
      * was transient — defeating the retry this exists to support.
      */
-    private FileStats executeMergeBatch(String tableName, long maxFileSizeBytes, int batchSize) throws SQLException {
-        String sql = "CALL ducklake_merge_adjacent_files('lake', '" + tableName + "',"
-                   + " max_compacted_files => " + batchSize
-                   + ", max_file_size => " + maxFileSizeBytes + ")";
+    private FileStats executeMergeBatch(String tableName, long maxFileSizeBytes, int batchSize,
+                                        int lookbackDays) throws SQLException {
         try (Statement st = duckDB.createStatement();
-             ResultSet rs = st.executeQuery(sql)) {
+             ResultSet rs = st.executeQuery(mergeSql(tableName, maxFileSizeBytes, batchSize, lookbackDays))) {
             FileStats stats = FileStats.EMPTY;
             while (rs.next()) {
                 stats = stats.add(new FileStats(
@@ -589,6 +589,21 @@ public class CompactionService {
             DuckDbSession.rollbackQuietly(duckDB, "ducklake_merge_adjacent_files batch for " + tableName);
             throw e;
         }
+    }
+
+    /**
+     * The merge call for one batch. {@code older_than} (DuckLake 1.1) selects files by when
+     * they entered the lake, so with {@code lookbackDays > 0} files still being added to by
+     * inline flushes are left alone until they have settled; {@code 0} merges everything.
+     */
+    static String mergeSql(String tableName, long maxFileSizeBytes, int batchSize, int lookbackDays) {
+        StringBuilder sql = new StringBuilder("CALL ducklake_merge_adjacent_files('lake', '")
+                .append(tableName).append("', max_compacted_files => ").append(batchSize)
+                .append(", max_file_size => ").append(maxFileSizeBytes);
+        if (lookbackDays > 0) {
+            sql.append(", older_than => (now() - INTERVAL '").append(lookbackDays).append(" days')::TIMESTAMP");
+        }
+        return sql.append(')').toString();
     }
 
     /** A single bounded merge attempt — production wires this to {@link #executeMergeBatch}. */
@@ -657,7 +672,7 @@ public class CompactionService {
                 // Bounded and retried per batch, for the reasons given on doCompactEntityType.
                 // mergeInBatches never throws; failures are logged there and earlier batches kept.
                 FileStats stats = mergeInBatches(
-                        () -> executeMergeBatch(tableName, maxFileSizeBytes, batchSize),
+                        () -> executeMergeBatch(tableName, maxFileSizeBytes, batchSize, general.getLookbackDays()),
                         general.getMaxBatchesPerRun(), MERGE_BATCH_RETRY_ATTEMPTS, MERGE_BATCH_RETRY_BASE_DELAY_MS);
                 log.debug("Merged adjacent files for general cassette topic='{}': files_processed={} files_created={}",
                         topic, stats.filesProcessed(), stats.filesCreated());
