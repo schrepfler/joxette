@@ -468,6 +468,25 @@ public class JoxetteProperties {
          */
         private double rewriteDeleteThreshold = 0.1;
 
+        /**
+         * Caps one {@code ducklake_rewrite_data_files} call via its {@code max_compacted_files}
+         * parameter, which bounds the files a call writes (it may read more). Same reason as
+         * compaction's {@code max-compacted-files-per-batch}: a failed object-store read then
+         * costs one small batch, retried, instead of the whole table's rewrite.
+         */
+        private int maxRewrittenFilesPerBatch = 8;
+
+        /** Safety cap on bounded rewrite calls per table per retention run. */
+        private int maxBatchesPerRun = 1000;
+
+        public int getMaxRewrittenFilesPerBatch() { return maxRewrittenFilesPerBatch; }
+        public void setMaxRewrittenFilesPerBatch(int maxRewrittenFilesPerBatch) {
+            this.maxRewrittenFilesPerBatch = maxRewrittenFilesPerBatch;
+        }
+
+        public int getMaxBatchesPerRun() { return maxBatchesPerRun; }
+        public void setMaxBatchesPerRun(int maxBatchesPerRun) { this.maxBatchesPerRun = maxBatchesPerRun; }
+
         public String getSchedule() { return schedule; }
         public void setSchedule(String schedule) { this.schedule = schedule; }
 

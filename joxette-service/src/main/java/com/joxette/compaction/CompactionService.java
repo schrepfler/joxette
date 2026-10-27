@@ -518,6 +518,15 @@ public class CompactionService {
      * .withObjectStoreRetry}.
      */
     FileStats mergeInBatches(MergeBatchAttempt attempt, int maxBatches, int maxRetriesPerBatch, long baseDelayMs) {
+        return runInBatches(attempt, maxBatches, maxRetriesPerBatch, baseDelayMs);
+    }
+
+    /**
+     * The bounded-batch loop behind {@link #mergeInBatches}, shared with
+     * {@link RetentionService}'s {@code ducklake_rewrite_data_files} calls, which fail
+     * the same way when one call covers a whole table.
+     */
+    static FileStats runInBatches(MergeBatchAttempt attempt, int maxBatches, int maxRetriesPerBatch, long baseDelayMs) {
         FileStats total = FileStats.EMPTY;
         for (int batch = 1; batch <= maxBatches; batch++) {
             FileStats batchStats = runOneBatchWithRetry(attempt, maxRetriesPerBatch, baseDelayMs);
@@ -533,7 +542,7 @@ public class CompactionService {
     }
 
     /** Returns {@code null} once retries are exhausted (or the failure was never retryable). */
-    private FileStats runOneBatchWithRetry(MergeBatchAttempt attempt, int maxRetriesPerBatch, long baseDelayMs) {
+    private static FileStats runOneBatchWithRetry(MergeBatchAttempt attempt, int maxRetriesPerBatch, long baseDelayMs) {
         SQLException lastError = null;
         for (int i = 1; i <= maxRetriesPerBatch; i++) {
             try {

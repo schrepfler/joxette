@@ -1,7 +1,6 @@
 package com.joxette.compaction;
 
 import com.joxette.config.JoxetteProperties;
-import com.joxette.db.DuckDbErrors;
 import com.joxette.db.DuckDbSession;
 import com.joxette.db.SchemaManager;
 import com.joxette.metrics.JoxetteMetrics;
@@ -332,37 +331,55 @@ public class RetentionService {
         rewriteDataFiles("entity_" + type, "entity type='" + type + "'");
     }
 
+    private static final int REWRITE_BATCH_RETRY_ATTEMPTS = 3;
+    private static final long REWRITE_BATCH_RETRY_BASE_DELAY_MS = 500;
+
     /**
-     * Rewrites Parquet files with a high delete-marker ratio for {@code tableName}
-     * via {@code ducklake_rewrite_data_files} — DuckLake 1.0. Called after a bulk
-     * retention delete so tombstoned rows are actually reclaimed from object
-     * storage instead of only being logically deleted in the catalog. Idempotent
-     * and non-fatal: errors are logged and do not fail the retention run,
-     * mirroring CompactionService.doCompactEntityType's error-handling convention.
+     * Rewrites Parquet files with a high delete-marker ratio for {@code tableName} via
+     * {@code ducklake_rewrite_data_files}, so tombstoned rows are reclaimed from object
+     * storage instead of only being logically deleted. Called after a bulk retention delete;
+     * partitions the cutoff passed entirely were already retired by the DELETE itself, so this
+     * mostly handles the partition the cutoff falls inside.
+     *
+     * <p>Bounded, retried batches via {@link CompactionService#runInBatches}, for the reason
+     * given on {@code CompactionService.doCompactEntityType}. Never throws: a failing batch is
+     * logged there and earlier batches' work is kept.
      */
     private void rewriteDataFiles(String tableName, String label) {
-        double deleteThreshold = props.getRetention().getRewriteDeleteThreshold();
-        String sql = "CALL ducklake_rewrite_data_files('lake', '" + tableName + "',"
-                   + " delete_threshold => " + deleteThreshold + ")";
+        var retention = props.getRetention();
         log.debug("Rewriting delete-heavy files for {} ({})", label, tableName);
-        try {
-            synchronized (lake) {
-                try (Statement st = lake.createStatement()) {
-                    st.execute(sql);
-                }
-            }
-            log.debug("Rewrite complete for {} ({})", label, tableName);
-        } catch (SQLException e) {
-            if (DuckDbErrors.isTransient(e)) {
-                log.warn("ducklake_rewrite_data_files transient S3 failure for {} (will retry next run): {}",
-                        label, e.getMessage());
-            } else {
-                log.warn("ducklake_rewrite_data_files failed for {}: {}", label, e.getMessage());
-            }
-            // Non-fatal for this table, but the connection must not inherit the failure:
-            // without this, its next statement would fail with "Current transaction is aborted".
-            DuckDbSession.rollbackQuietly(lake, "retention: ducklake_rewrite_data_files for " + label);
+        synchronized (lake) {
+            CompactionService.FileStats stats = CompactionService.runInBatches(
+                    () -> executeRewriteBatch(tableName, retention.getRewriteDeleteThreshold(),
+                            retention.getMaxRewrittenFilesPerBatch()),
+                    retention.getMaxBatchesPerRun(), REWRITE_BATCH_RETRY_ATTEMPTS, REWRITE_BATCH_RETRY_BASE_DELAY_MS);
+            log.debug("Rewrite complete for {} ({}): files_processed={} files_created={}",
+                    label, tableName, stats.filesProcessed(), stats.filesCreated());
         }
+    }
+
+    private CompactionService.FileStats executeRewriteBatch(String tableName, double deleteThreshold,
+                                                            int batchSize) throws SQLException {
+        try (Statement st = lake.createStatement();
+             ResultSet rs = st.executeQuery(rewriteSql(tableName, deleteThreshold, batchSize))) {
+            CompactionService.FileStats stats = CompactionService.FileStats.EMPTY;
+            while (rs.next()) {
+                stats = stats.add(new CompactionService.FileStats(
+                        rs.getLong("files_processed"), rs.getLong("files_created")));
+            }
+            return stats;
+        } catch (SQLException e) {
+            // The connection must not inherit the failure, or its next statement (the retry)
+            // fails with "Current transaction is aborted".
+            DuckDbSession.rollbackQuietly(lake, "retention: ducklake_rewrite_data_files for " + tableName);
+            throw e;
+        }
+    }
+
+    static String rewriteSql(String tableName, double deleteThreshold, int batchSize) {
+        return "CALL ducklake_rewrite_data_files('lake', '" + tableName + "',"
+             + " delete_threshold => " + deleteThreshold
+             + ", max_compacted_files => " + batchSize + ")";
     }
 
     // =========================================================================
