@@ -18,7 +18,7 @@ The service leverages DuckLake's **data inlining** feature to buffer small write
 | Concurrency/Flows | Jox (softwaremill) | latest |
 | Kafka | Jox Kafka module | latest |
 | Structured concurrency | Jox structured concurrency | latest |
-| Database | DuckDB JDBC | org.duckdb:duckdb_jdbc:1.5.3.0 |
+| Database | DuckDB JDBC | org.duckdb:duckdb_jdbc:2.0.0.0 |
 | Storage format | DuckLake (ducklake extension) | latest |
 | Object storage | Delegated entirely to DuckDB/DuckLake layer |
 | Testing | Testcontainers (Kafka + DuckDB) | latest |

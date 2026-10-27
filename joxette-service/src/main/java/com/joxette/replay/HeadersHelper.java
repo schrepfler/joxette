@@ -25,7 +25,7 @@ public final class HeadersHelper {
      */
     static final String DDL_HEADERS_GET = """
             CREATE OR REPLACE MACRO headers_get(headers, key) AS (
-              list_filter(headers, h -> h.key = key)[1].value
+              list_filter(headers, lambda h : h.key = key)[1].value
             )
             """;
 
@@ -35,7 +35,7 @@ public final class HeadersHelper {
      */
     static final String DDL_HEADERS_GET_ALL = """
             CREATE OR REPLACE MACRO headers_get_all(headers, key) AS (
-              list_transform(list_filter(headers, h -> h.key = key), h -> h.value)
+              list_transform(list_filter(headers, lambda h : h.key = key), lambda h : h.value)
             )
             """;
 
@@ -67,10 +67,10 @@ public final class HeadersHelper {
     static final String DDL_HEADERS_TO_MAP = """
             CREATE OR REPLACE MACRO headers_to_map(headers) AS (
               MAP(
-                list_distinct(list_transform(headers, h -> h.key)),
+                list_distinct(list_transform(headers, lambda h : h.key)),
                 list_transform(
-                  list_distinct(list_transform(headers, h -> h.key)),
-                  k -> decode(list_filter(headers, h -> h.key = k)[-1].value)
+                  list_distinct(list_transform(headers, lambda h : h.key)),
+                  lambda k : decode(list_filter(headers, lambda h : h.key = k)[-1].value)
                 )
               )
             )

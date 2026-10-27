@@ -9,7 +9,7 @@
 | Build | Maven | `pom.xml` at root |
 | Concurrency | Jox (softwaremill) | structured concurrency + Kafka module |
 | Kafka client | `com.softwaremill.jox:kafka:0.5.3` | published to Maven Central 18 Mar 2026 |
-| Database | DuckDB JDBC | `org.duckdb:duckdb_jdbc:1.5.3.0` |
+| Database | DuckDB JDBC | `org.duckdb:duckdb_jdbc:2.0.0.0` |
 | Storage format | DuckLake extension | Parquet on S3 via httpfs |
 | Object storage | S3-compatible (AWS S3 or MinIO/RustFS locally) | config: `joxette.s3.*` |
 | ORM / SQL builder | jOOQ | used in replay services for type-safe queries |

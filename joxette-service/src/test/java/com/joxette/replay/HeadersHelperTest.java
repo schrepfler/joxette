@@ -44,7 +44,7 @@ class HeadersHelperTest {
      * empty-list literal {@code []::LIST(STRUCT(key VARCHAR, value BLOB))} via JDBC.
      */
     private static final String EMPTY_HEADERS =
-            "list_filter([{'key': 'k', 'value': 'v'::BLOB}], x -> false)";
+            "list_filter([{'key': 'k', 'value': 'v'::BLOB}], lambda x : false)";
 
     @BeforeAll
     static void openDb() throws Exception {

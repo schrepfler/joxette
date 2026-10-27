@@ -113,7 +113,7 @@ differ.
 | Concurrency / Flows | [Jox](https://jox.softwaremill.com/) (softwaremill) | 0.5.x / 1.1.x |
 | Cluster / Supervision | [Apache Pekko](https://pekko.apache.org/) (actor system, ClusterSingleton) | 1.1.3 |
 | Kafka | Apache Kafka clients (via Jox Kafka) | — |
-| Database / Catalog | DuckDB JDBC | 1.5.3.0 |
+| Database / Catalog | DuckDB JDBC | 2.0.0.0 |
 | Lakehouse storage | DuckLake extension | — |
 | SQL DSL | jOOQ (DDLDatabase codegen) | 3.19.x |
 | API docs | SpringDoc OpenAPI / Swagger UI | 2.8.x |

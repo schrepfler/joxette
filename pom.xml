@@ -30,8 +30,8 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <jox.channels.version>1.1.2</jox.channels.version>
         <jox.flows.version>0.6.0</jox.flows.version>
-        <duckdb.version>1.5.5.1</duckdb.version>
-        <jooq.version>3.21.8</jooq.version>
+        <duckdb.version>2.0.0.0</duckdb.version>
+        <jooq.version>3.21.9</jooq.version>
         <springdoc-openapi-starter-webmvc-ui.version>3.1.1</springdoc-openapi-starter-webmvc-ui.version>
         <aws.sdk.version>2.54.12</aws.sdk.version>
         <maven-enforcer-plugin.version>3.6.3</maven-enforcer-plugin.version>

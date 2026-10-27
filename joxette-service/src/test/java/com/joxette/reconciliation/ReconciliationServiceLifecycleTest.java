@@ -27,6 +27,7 @@ class ReconciliationServiceLifecycleTest {
 
     private Connection duckDB;
     private InstanceRegistry instanceRegistry;
+    private Connection reconciliationConn;
     private ReconciliationService service;
 
     @BeforeEach
@@ -43,12 +44,14 @@ class ReconciliationServiceLifecycleTest {
         // cleanLocksForDeadInstances().
         CompactionLockManager lockManager = new CompactionLockManager(duckDB, props, instanceRegistry);
 
-        service = new ReconciliationService(duckDB, ((org.duckdb.DuckDBConnection) duckDB).duplicate(), props, lockManager,
+        reconciliationConn = ((org.duckdb.DuckDBConnection) duckDB).duplicate();
+        service = new ReconciliationService(duckDB, reconciliationConn, props, lockManager,
                 new JoxetteMetrics(new SimpleMeterRegistry()), new ObjectMapper());
     }
 
     @AfterEach
     void tearDown() throws Exception {
+        if (reconciliationConn != null && !reconciliationConn.isClosed()) reconciliationConn.close();
         if (duckDB != null && !duckDB.isClosed()) duckDB.close();
     }
 

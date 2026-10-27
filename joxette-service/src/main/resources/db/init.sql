@@ -44,12 +44,12 @@ ATTACH IF NOT EXISTS 'ducklake:./data/joxette.ducklake' AS lake
 -- headers_get(headers, key)
 --   Returns the BLOB value of the first header whose key matches, or NULL.
 CREATE OR REPLACE MACRO headers_get(headers, hkey) AS
-    list_filter(headers, h -> h.key = hkey)[1].value;
+    list_filter(headers, lambda h : h.key = hkey)[1].value;
 
 -- headers_get_all(headers, key)
 --   Returns a BLOB[] of all values for matching header keys (preserves order).
 CREATE OR REPLACE MACRO headers_get_all(headers, hkey) AS
-    list_transform(list_filter(headers, h -> h.key = hkey), h -> h.value);
+    list_transform(list_filter(headers, lambda h : h.key = hkey), lambda h : h.value);
 
 -- headers_put(headers, key, value)
 --   Appends a new STRUCT(key, value) entry; does not deduplicate.
@@ -62,8 +62,8 @@ CREATE OR REPLACE MACRO headers_put(headers, hkey, hvalue) AS
 --   semantics where later entries shadow earlier ones in some clients).
 CREATE OR REPLACE MACRO headers_to_map(headers) AS
     MAP(
-        list_transform(headers, h -> h.key),
-        list_transform(headers, h -> h.value)
+        list_transform(headers, lambda h : h.key),
+        list_transform(headers, lambda h : h.value)
     );
 
 

@@ -519,12 +519,12 @@ public class SchemaManager {
 
             stmt.execute("""
                 CREATE OR REPLACE MACRO headers_get(headers, hkey) AS
-                    list_filter(headers, h -> h.key = hkey)[1].value
+                    list_filter(headers, lambda h : h.key = hkey)[1].value
                 """);
 
             stmt.execute("""
                 CREATE OR REPLACE MACRO headers_get_all(headers, hkey) AS
-                    list_transform(list_filter(headers, h -> h.key = hkey), h -> h.value)
+                    list_transform(list_filter(headers, lambda h : h.key = hkey), lambda h : h.value)
                 """);
 
             stmt.execute("""
@@ -535,8 +535,8 @@ public class SchemaManager {
             stmt.execute("""
                 CREATE OR REPLACE MACRO headers_to_map(headers) AS
                     MAP(
-                        list_transform(headers, h -> h.key),
-                        list_transform(headers, h -> h.value)
+                        list_transform(headers, lambda h : h.key),
+                        list_transform(headers, lambda h : h.value)
                     )
                 """);
 
