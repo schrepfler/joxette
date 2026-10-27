@@ -46,8 +46,15 @@ public class SchemaManager {
     static final String GENERAL_SORTED_BY = "kafka_timestamp, kafka_partition, kafka_offset";
     static final String ENTITY_SORTED_BY  = "entity_id, kafka_timestamp, recorded_at";
 
-    /** Entity rows land under {@code bucket=N/}, so one entity's replay reads one bucket. */
-    static final String ENTITY_PARTITIONED_BY = "bucket";
+    /**
+     * Time partitions follow {@code recorded_at} because that is what RetentionService's
+     * DELETE filters on: once a cutoff passes a partition boundary, DuckLake retires that
+     * partition's files whole — no delete files, nothing to rewrite. General tables use
+     * days; entity tables use months, because they already fan out into one directory per
+     * bucket and daily partitions would multiply small files by 256.
+     */
+    static final String GENERAL_PARTITIONED_BY = "epoch_day(recorded_at)";
+    static final String ENTITY_PARTITIONED_BY  = "bucket, epoch_month(recorded_at)";
 
     private final DuckLakeManager duckLakeManager;
     private final JoxetteProperties properties;
@@ -613,12 +620,13 @@ public class SchemaManager {
                 headers         STRUCT(key VARCHAR, value VARCHAR)[],
                 message_type    VARCHAR
             )
+            PARTITIONED BY (%s)
             SORTED BY (%s)
-            """, catalog, tableName, flexType, GENERAL_SORTED_BY);
+            """, catalog, tableName, flexType, GENERAL_PARTITIONED_BY, GENERAL_SORTED_BY);
     }
 
     /**
-     * Records Kafka messages for a specific entity type, partitioned by bucket.
+     * Records Kafka messages for a specific entity type, partitioned by bucket and month.
      * {@code bucket} = {@code hash(entity_id) mod bucket_count} for even distribution.
      */
     private void createEntityCassetteTable(Connection conn, String catalog,

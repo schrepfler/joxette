@@ -8,22 +8,23 @@ import static org.assertj.core.api.Assertions.assertThat;
 class SchemaManagerDdlTest {
 
     @Test
-    void generalDdl_declaresSortOrderInline() {
+    void generalDdl_partitionsByDayAndDeclaresSortOrderInline() {
         String ddl = SchemaManager.generalCassetteDdl("lake", "general_orders_events", "VARIANT");
 
         assertThat(ddl)
                 .contains("CREATE TABLE IF NOT EXISTS lake.main.general_orders_events (")
+                .contains("PARTITIONED BY (epoch_day(recorded_at))")
                 .contains("SORTED BY (kafka_timestamp, kafka_partition, kafka_offset)")
                 .doesNotContain("ASC"); // DuckLake rejects ASC inside an inline SORTED BY
     }
 
     @Test
-    void entityDdl_declaresBucketPartitioningAndSortOrderInline() {
+    void entityDdl_partitionsByBucketAndMonthAndDeclaresSortOrderInline() {
         String ddl = SchemaManager.entityCassetteDdl("lake", "entity_order", "VARIANT");
 
         assertThat(ddl)
                 .contains("CREATE TABLE IF NOT EXISTS lake.main.entity_order (")
-                .contains("PARTITIONED BY (bucket)")
+                .contains("PARTITIONED BY (bucket, epoch_month(recorded_at))")
                 .contains("SORTED BY (entity_id, kafka_timestamp, recorded_at)")
                 .doesNotContain("ASC");
     }
