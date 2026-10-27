@@ -94,9 +94,13 @@ class DuckLakeTableLayoutTest {
     @Test
     void retentionDeleteOnADayBoundary_retiresWholeFilesWithoutDeleteFiles() throws SQLException {
         exec(SchemaManager.generalCassetteDdl("lake", "general_orders_events", "VARIANT"));
-        insertGeneralRow("2026-10-01 10:00:00+00");
-        insertGeneralRow("2026-10-02 10:00:00+00");
+        // One statement for both days: an unpartitioned table would write them into a single file.
+        exec("INSERT INTO lake.main.general_orders_events "
+                + "(recorded_at, kafka_offset, kafka_partition, kafka_timestamp) VALUES "
+                + "(TIMESTAMPTZ '2026-10-01 10:00:00+00', 0, 0, TIMESTAMPTZ '2026-10-01 10:00:00+00'), "
+                + "(TIMESTAMPTZ '2026-10-02 10:00:00+00', 1, 0, TIMESTAMPTZ '2026-10-02 10:00:00+00')");
         DuckDBTestSupport.flushInlinedData(conn);
+        assertThat(dataFiles("general_orders_events")).as("one file per day partition").hasSize(2);
 
         // Same predicate shape RetentionService issues: recorded_at < cutoff.
         exec("DELETE FROM lake.main.general_orders_events "

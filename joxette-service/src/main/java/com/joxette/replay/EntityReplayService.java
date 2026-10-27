@@ -735,8 +735,8 @@ public class EntityReplayService implements EntityCassetteSource {
      * Restricts a per-entity query to the single partition directory that entity's
      * rows live in, as {@code bucket = computeBucket(entityType, entityId)}.
      *
-     * <p>Entity tables are {@code SET PARTITIONED BY (bucket)}
-     * (see {@code SchemaManager}), so this predicate is what lets DuckLake skip
+     * <p>Entity tables declare {@code PARTITIONED BY (bucket, epoch_month(recorded_at))}
+     * in their CREATE TABLE (see {@code SchemaManager}), so this predicate is what lets DuckLake skip
      * 255 of 256 partitions. An {@code entity_id} predicate on its own prunes
      * nothing: rows are written in Kafka arrival order, so every one of the (many,
      * small) Parquet files holds an arbitrary spread of entity ids and every file's
