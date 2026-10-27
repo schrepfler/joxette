@@ -42,6 +42,13 @@ public class SchemaManager {
 
     private static final Logger log = LoggerFactory.getLogger(SchemaManager.class);
 
+    /** Sort order DuckLake applies when it flushes inlined rows and merges files. */
+    static final String GENERAL_SORTED_BY = "kafka_timestamp, kafka_partition, kafka_offset";
+    static final String ENTITY_SORTED_BY  = "entity_id, kafka_timestamp, recorded_at";
+
+    /** Entity rows land under {@code bucket=N/}, so one entity's replay reads one bucket. */
+    static final String ENTITY_PARTITIONED_BY = "bucket";
+
     private final DuckLakeManager duckLakeManager;
     private final JoxetteProperties properties;
 
@@ -584,7 +591,17 @@ public class SchemaManager {
     private void createGeneralCassetteTable(Connection conn, String catalog,
                                              String tableName, String flexType)
             throws SQLException {
-        exec(conn, String.format("""
+        exec(conn, generalCassetteDdl(catalog, tableName, flexType));
+        log.debug("DuckLake table ready: {}.main.{}", catalog, tableName);
+    }
+
+    /**
+     * DDL for a general cassette table. Sort order is declared in the CREATE itself
+     * (DuckLake 1.1), so the table never exists without it. Inline {@code SORTED BY}
+     * takes no {@code ASC}: ascending is the default and the keyword is a parser error.
+     */
+    static String generalCassetteDdl(String catalog, String tableName, String flexType) {
+        return String.format("""
             CREATE TABLE IF NOT EXISTS %s.main.%s (
                 recorded_at     TIMESTAMPTZ NOT NULL,
                 kafka_offset    BIGINT      NOT NULL,
@@ -596,10 +613,8 @@ public class SchemaManager {
                 headers         STRUCT(key VARCHAR, value VARCHAR)[],
                 message_type    VARCHAR
             )
-            """, catalog, tableName, flexType));
-        ensureTableSorted(conn, catalog, tableName,
-                "(kafka_timestamp ASC, kafka_partition ASC, kafka_offset ASC)");
-        log.debug("DuckLake table ready: {}.main.{}", catalog, tableName);
+            SORTED BY (%s)
+            """, catalog, tableName, flexType, GENERAL_SORTED_BY);
     }
 
     /**
@@ -609,7 +624,18 @@ public class SchemaManager {
     private void createEntityCassetteTable(Connection conn, String catalog,
                                             String tableName, String flexType)
             throws SQLException {
-        exec(conn, String.format("""
+        exec(conn, entityCassetteDdl(catalog, tableName, flexType));
+        log.debug("DuckLake table ready: {}.main.{}", catalog, tableName);
+    }
+
+    /**
+     * DDL for an entity cassette table. Partitioning and sort order are declared in the
+     * CREATE itself (DuckLake 1.1), so every file the table ever gets is laid out by
+     * them — there is no window, and no swallowed ALTER failure, that leaves a table
+     * writing unpartitioned files.
+     */
+    static String entityCassetteDdl(String catalog, String tableName, String flexType) {
+        return String.format("""
             CREATE TABLE IF NOT EXISTS %s.main.%s (
                 recorded_at     TIMESTAMPTZ NOT NULL,
                 entity_id       VARCHAR     NOT NULL,
@@ -624,10 +650,9 @@ public class SchemaManager {
                 metadata        %s,
                 headers         STRUCT(key VARCHAR, value VARCHAR)[]
             )
-            """, catalog, tableName, flexType));
-        ensureTableSorted(conn, catalog, tableName,
-                "(entity_id ASC, kafka_timestamp ASC, recorded_at ASC)");
-        log.debug("DuckLake table ready: {}.main.{}", catalog, tableName);
+            PARTITIONED BY (%s)
+            SORTED BY (%s)
+            """, catalog, tableName, flexType, ENTITY_PARTITIONED_BY, ENTITY_SORTED_BY);
     }
 
     // -------------------------------------------------------------------------
@@ -876,7 +901,6 @@ public class SchemaManager {
         }
         for (String tableName : tableNames) {
             dropColumnIfExists(conn, catalog + ".main." + tableName, "kafka_value_str");
-            ensureTablePartitioned(conn, catalog, tableName);
         }
     }
 
@@ -896,71 +920,6 @@ public class SchemaManager {
             log.info("Dropped column {}.{} (no longer used)", qualifiedTable, column);
         } catch (SQLException e) {
             log.warn("Could not drop column {}.{}: {}", qualifiedTable, column, e.getMessage());
-        }
-    }
-
-    /**
-     * Applies {@code ALTER TABLE … SET SORTED BY} so DuckLake 1.0+ automatically
-     * enforces the declared sort order during compaction and inline-data flush.
-     *
-     * <p>This is issued as a separate statement after {@code CREATE TABLE IF NOT EXISTS}
-     * because DuckLake does not support {@code SORTED BY} inline in the CREATE DDL.
-     * It is safe to run on every startup against already-sorted tables — DuckLake
-     * treats a repeated {@code SET SORTED BY} with the same columns as a no-op.
-     *
-     * <p><b>Important:</b> {@code SET SORTED BY} does <em>not</em> retroactively
-     * reorder existing rows.  Pre-existing data will be sorted by DuckLake on the
-     * next compaction or flush pass.  This is the expected behaviour; no special
-     * handling is needed in the application.
-     *
-     * <p>Failures are logged as warnings and swallowed so that an older DuckLake
-     * version that does not yet support the statement cannot prevent startup.
-     */
-    static void ensureTableSorted(Connection conn, String catalog,
-                                   String tableName, String sortedBy) {
-        String sql = "ALTER TABLE " + catalog + ".main." + tableName
-                     + " SET SORTED BY " + sortedBy;
-        try (Statement stmt = conn.createStatement()) {
-            stmt.execute(sql);
-            log.debug("SORTED BY applied to {}.main.{}: {}", catalog, tableName, sortedBy);
-        } catch (SQLException e) {
-            log.warn("Could not apply SORTED BY to {}.main.{} ({}); " +
-                     "DuckLake will not enforce sort order automatically for this table",
-                     catalog, tableName, e.getMessage());
-        }
-    }
-
-    /**
-     * Applies {@code ALTER TABLE … SET PARTITIONED BY (bucket)} so entity
-     * cassette tables get real per-bucket object-store subdirectories
-     * (Hive-style {@code bucket=N/}) instead of one flat directory shared by
-     * every entity of that type.
-     *
-     * <p>Issued on every startup for every entity table, new or pre-existing
-     * — safe to repeat; DuckLake treats a repeated {@code SET PARTITIONED BY}
-     * with the same column as a no-op (verified empirically; see
-     * {@code docs/superpowers/specs/2026-08-09-entity-bucket-partitioning-design.md}).
-     *
-     * <p><b>Important:</b> like {@link #ensureTableSorted}, this does
-     * <em>not</em> retroactively move existing files into the new layout —
-     * only files written after this call land under {@code bucket=N/}.
-     * Migrating pre-existing flat files into the new layout is
-     * {@code CompactionService}'s responsibility, not this method's.
-     *
-     * <p>Failures are logged as warnings and swallowed so that an older
-     * DuckLake version that does not yet support the statement cannot
-     * prevent startup.
-     */
-    static void ensureTablePartitioned(Connection conn, String catalog, String tableName) {
-        String sql = "ALTER TABLE " + catalog + ".main." + tableName
-                     + " SET PARTITIONED BY (bucket)";
-        try (Statement stmt = conn.createStatement()) {
-            stmt.execute(sql);
-            log.debug("Bucket partitioning applied to {}.main.{}", catalog, tableName);
-        } catch (SQLException e) {
-            log.warn("Could not apply bucket partitioning to {}.main.{} ({}); " +
-                     "this table's files will not be organized into bucket=N/ subdirectories",
-                     catalog, tableName, e.getMessage());
         }
     }
 

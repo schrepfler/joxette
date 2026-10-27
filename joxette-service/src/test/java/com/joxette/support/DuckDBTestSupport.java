@@ -60,6 +60,33 @@ public final class DuckDBTestSupport {
         return conn;
     }
 
+    /**
+     * Opens an in-memory DuckDB connection with a real DuckLake catalog attached as
+     * {@code lake}, catalog and Parquet files both under {@code dir}. Unlike
+     * {@link #newConnection()}, DuckLake-only DDL ({@code PARTITIONED BY},
+     * {@code SORTED BY}, table options) and the {@code ducklake_*} functions work here.
+     */
+    public static Connection newDuckLakeConnection(java.nio.file.Path dir) throws SQLException {
+        Connection conn = DriverManager.getConnection("jdbc:duckdb:");
+        try (Statement st = conn.createStatement()) {
+            st.execute("INSTALL ducklake");
+            st.execute("LOAD ducklake");
+            st.execute("ATTACH 'ducklake:" + dir.resolve("catalog.ducklake") + "' AS lake (DATA_PATH '"
+                    + dir.resolve("files") + "/')");
+        } catch (SQLException e) {
+            conn.close();
+            throw e;
+        }
+        return conn;
+    }
+
+    /** Writes every inlined row of the {@code lake} catalog out to Parquet files. */
+    public static void flushInlinedData(Connection conn) throws SQLException {
+        try (Statement st = conn.createStatement()) {
+            st.execute("CALL ducklake_flush_inlined_data('lake')");
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Schema DDL
     // -------------------------------------------------------------------------
