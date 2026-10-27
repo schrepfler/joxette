@@ -603,6 +603,13 @@ public class SchemaManager {
     }
 
     /**
+     * Columns DuckLake records no min/max bounds for (row counts are still kept). Only
+     * columns nothing filters on: kafka_key stays because the transform pushdown filters
+     * on {@code $.key}. VARIANT columns ({@code metadata}) can't skip stats at all.
+     */
+    static final String PAYLOAD_COLUMNS_WITHOUT_STATS = "'kafka_value', 'headers'";
+
+    /**
      * DDL for a general cassette table. Sort order is declared in the CREATE itself
      * (DuckLake 1.1), so the table never exists without it. Inline {@code SORTED BY}
      * takes no {@code ASC}: ascending is the default and the keyword is a parser error.
@@ -622,7 +629,9 @@ public class SchemaManager {
             )
             PARTITIONED BY (%s)
             SORTED BY (%s)
-            """, catalog, tableName, flexType, GENERAL_PARTITIONED_BY, GENERAL_SORTED_BY);
+            WITH (skip_stats_columns = [%s])
+            """, catalog, tableName, flexType, GENERAL_PARTITIONED_BY, GENERAL_SORTED_BY,
+                PAYLOAD_COLUMNS_WITHOUT_STATS);
     }
 
     /**
@@ -660,7 +669,9 @@ public class SchemaManager {
             )
             PARTITIONED BY (%s)
             SORTED BY (%s)
-            """, catalog, tableName, flexType, ENTITY_PARTITIONED_BY, ENTITY_SORTED_BY);
+            WITH (skip_stats_columns = [%s])
+            """, catalog, tableName, flexType, ENTITY_PARTITIONED_BY, ENTITY_SORTED_BY,
+                PAYLOAD_COLUMNS_WITHOUT_STATS);
     }
 
     // -------------------------------------------------------------------------

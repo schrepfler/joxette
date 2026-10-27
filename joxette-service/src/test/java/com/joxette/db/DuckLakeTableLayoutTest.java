@@ -176,4 +176,42 @@ class DuckLakeTableLayoutTest {
         }
         return out;
     }
+
+    @Test
+    void payloadColumns_getNoMinMaxStats_whileFilteredColumnsKeepThem() throws SQLException {
+        exec(SchemaManager.entityCassetteDdl("lake", "entity_order", "VARIANT"));
+        exec("INSERT INTO lake.main.entity_order "
+                + "(recorded_at, entity_id, bucket, topic, kafka_offset, kafka_partition, kafka_timestamp, kafka_value) "
+                + "VALUES (TIMESTAMPTZ '2026-10-01 10:00:00+00', 'order-1', 0, 'orders.events', 0, 0, "
+                + "TIMESTAMPTZ '2026-10-01 10:00:00+00', 'payload'::BLOB)");
+        DuckDBTestSupport.flushInlinedData(conn);
+
+        try (Statement st = conn.createStatement();
+             ResultSet rs = st.executeQuery("SELECT count(*) FROM lake.options() "
+                     + "WHERE option_name = 'skip_stats_columns' AND scope = 'TABLE' "
+                     + "AND scope_entry = 'main.entity_order'")) {
+            assertThat(rs.next()).isTrue();
+            assertThat(rs.getLong(1)).as("skip_stats_columns is set on the table").isEqualTo(1);
+        }
+        assertThat(minValue("entity_order", "kafka_value")).isNull();
+        assertThat(minValue("entity_order", "entity_id")).isEqualTo("order-1");
+    }
+
+    private String minValue(String table, String column) throws SQLException {
+        try (PreparedStatement ps = conn.prepareStatement("""
+                SELECT max(fcs.min_value)
+                FROM __ducklake_metadata_lake.ducklake_file_column_stats fcs
+                JOIN __ducklake_metadata_lake.ducklake_table t
+                  ON t.table_id = fcs.table_id AND t.end_snapshot IS NULL
+                JOIN __ducklake_metadata_lake.ducklake_column c
+                  ON c.table_id = fcs.table_id AND c.column_id = fcs.column_id AND c.end_snapshot IS NULL
+                WHERE t.table_name = ? AND c.column_name = ?
+                """)) {
+            ps.setString(1, table);
+            ps.setString(2, column);
+            try (ResultSet rs = ps.executeQuery()) {
+                return rs.next() ? rs.getString(1) : null;
+            }
+        }
+    }
 }

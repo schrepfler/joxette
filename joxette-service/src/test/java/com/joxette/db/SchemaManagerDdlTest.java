@@ -34,4 +34,17 @@ class SchemaManagerDdlTest {
         assertThat(SchemaManager.entityCassetteDdl("lake", "entity_order", "JSON"))
                 .contains("metadata        JSON");
     }
+
+    @Test
+    void ddl_skipsStatsOnlyOnUnfilteredNonVariantPayloadColumns() {
+        for (String ddl : new String[] {
+                SchemaManager.generalCassetteDdl("lake", "general_orders_events", "VARIANT"),
+                SchemaManager.entityCassetteDdl("lake", "entity_order", "VARIANT")}) {
+            assertThat(ddl)
+                    .contains("WITH (skip_stats_columns = ['kafka_value', 'headers'])")
+                    // VARIANT columns can't skip stats; kafka_key is filtered by the $.key pushdown
+                    .doesNotContain("'metadata'")
+                    .doesNotContain("'kafka_key'");
+        }
+    }
 }
