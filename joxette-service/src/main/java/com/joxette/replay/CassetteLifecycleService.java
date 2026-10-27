@@ -1126,15 +1126,20 @@ public class CassetteLifecycleService {
     }
 
     /**
-     * Returns whether the catalog has ever recorded a data file for the current incarnation
-     * of {@code tableName} — at any snapshot, including files a later snapshot retired.
+     * Returns whether the catalog has ever recorded a data file for any table named
+     * {@code tableName} — at any snapshot, including files a later snapshot retired.
      *
      * <p>Reads {@code ducklake_data_file} history rather than {@code ducklake_list_files}:
      * since DuckLake 1.1 (DuckDB 2.0) a file whose rows are all deleted is retired from the
      * current snapshot immediately, so the current listing can no longer tell a deleted table
      * from one the catalog never knew. Retired files stay in history until snapshot expiry,
-     * which is also when cleanup removes them from object storage. A dropped and recreated
-     * table gets a new {@code table_id}, so its predecessor's files don't count.
+     * which is also when cleanup removes them from object storage.
+     *
+     * <p>Matches on name, not on the current {@code table_id}: a dropped and recreated table
+     * (e.g. {@code DELETE /entities/{type}} then registering the type again) gets a new id but
+     * writes to the same {@code main/{tableName}/} directory. Its predecessor's files are
+     * deliberately deleted data, not orphans, so they must count here or the recovery scan
+     * would read them back in.
      *
      * <p>Used by {@link #resolveEntityDataSource} to tell apart two very different reasons
      * a table can have zero live rows: rows that were deleted versus a table the current
@@ -1154,7 +1159,7 @@ public class CassetteLifecycleService {
                 "SELECT EXISTS (" +
                 "  SELECT 1 FROM __ducklake_metadata_lake.ducklake_data_file df " +
                 "  JOIN __ducklake_metadata_lake.ducklake_table t ON t.table_id = df.table_id " +
-                "  WHERE t.table_name = ? AND t.end_snapshot IS NULL" +
+                "  WHERE t.table_name = ?" +
                 ")")) {
             ps.setString(1, tableName);
             try (ResultSet rs = ps.executeQuery()) {

@@ -80,9 +80,10 @@ class RebuildKnownEntitiesIT {
     /**
      * Entity type used exclusively by
      * {@link #rebuildKnownEntities_recoverOrphanedFiles_recoversDataAfterCatalogTableReset()}.
-     * Must not be shared with any other test method: that test {@code DROP}s and recreates
-     * its cassette table, which resets the DuckLake catalog's file tracking for the table's
-     * <em>entire</em> object-storage directory — not just the rows this test itself wrote. If
+     * Must not be shared with any other test method: that test drops and recreates its
+     * cassette table and then erases the catalog's file history for that table name, which
+     * orphans the table's <em>entire</em> object-storage directory — not just the rows this
+     * test itself wrote. If
      * another test method had already flushed data for this same entity type into the same
      * bucket, that data's Parquet files would also become "orphaned" by the drop and get
      * swept up by the recovery scan, inflating the recovered-row count and making the
@@ -317,8 +318,8 @@ class RebuildKnownEntitiesIT {
      * {@code recoverOrphanedFiles=true} flag — the most permissive setting — and asserts
      * that even then:
      * <ul>
-     *   <li>the deleted "order" rows are NOT resurrected (the {@code ducklake_list_files}
-     *       tracked-file gate trusts the deletion instead of scanning raw storage), and</li>
+     *   <li>the deleted "order" rows are NOT resurrected (the {@code ducklake_data_file}
+     *       history gate trusts the deletion instead of scanning raw storage), and</li>
      *   <li>no "order" data leaks into {@link #ZERO_FILES_ENTITY_TYPE}'s rebuild (the
      *       fallback glob, when it does run, is scoped to that table's own on-disk path,
      *       never the whole bucket).</li>
@@ -401,23 +402,19 @@ class RebuildKnownEntitiesIT {
      * orphaned data, not just "correctly does nothing" (the only behaviour the other tests
      * in this class exercise).
      *
-     * <p>Simulates a lost/reset {@code .ducklake} catalog file by writing and flushing real
-     * {@link #RECOVERY_TEST_ENTITY_TYPE} data to Parquet in MinIO, then dropping and
-     * recreating its cassette table. DuckLake's {@code DROP TABLE} only removes the catalog
-     * entry — it does not delete the already-flushed Parquet file(s) from object storage (see
-     * {@code SchemaManager.probeVariant()}'s vacuum comment for the same documented
-     * behaviour) — and recreating a table with the same name resolves to the same default
-     * on-disk path ({@code {data_path}/main/{table_name}/...}), so the pre-drop Parquet file
-     * becomes exactly the kind of table-scoped "orphaned file" the recovery fallback is built
-     * to find. This was verified directly against the DuckDB/DuckLake CLI before relying on it
-     * here: {@code DROP TABLE} leaves the file on disk under the same
-     * {@code main/entity_<type>/} directory, and the recreated table reports zero rows and
-     * zero {@code ducklake_list_files} entries — the exact precondition
-     * {@code resolveEntityDataSource} requires before it will attempt the fallback scan.
+     * <p>Writes and flushes real {@link #RECOVERY_TEST_ENTITY_TYPE} data to Parquet in MinIO,
+     * then drops and recreates its cassette table. {@code DROP TABLE} does not delete the
+     * flushed Parquet file from object storage, and the recreated table resolves to the same
+     * default on-disk path ({@code {data_path}/main/{table_name}/...}). The catalog still
+     * remembers the dropped table's files, though, so a drop alone is a deliberate deletion
+     * and recovery must leave it alone; that is asserted first. The test then erases the
+     * catalog's {@code ducklake_data_file} history for the table name, as a lost/reset
+     * {@code .ducklake} file would, leaving the Parquet file as exactly the kind of
+     * table-scoped orphan the recovery fallback is built to find.
      *
      * <p>Uses a dedicated entity type not written by any other test method — see
-     * {@link #RECOVERY_TEST_ENTITY_TYPE}'s javadoc for why: the {@code DROP}/recreate here
-     * resets catalog file-tracking for that type's <em>entire</em> object-storage directory,
+     * {@link #RECOVERY_TEST_ENTITY_TYPE}'s javadoc for why: erasing the history here
+     * orphans that type's <em>entire</em> object-storage directory,
      * so reusing a type another test also writes to would sweep up that other data too and
      * make the recovered-row count depend on test execution order.
      *
@@ -456,6 +453,27 @@ class RebuildKnownEntitiesIT {
         }
         DuckDBTestSupport.createEntityTable(duckDB, RECOVERY_TEST_ENTITY_TYPE);
         assertThat(countCassetteRows(RECOVERY_TEST_ENTITY_TYPE, "shipment-999")).isEqualTo(0L);
+
+        // A drop alone is a deliberate deletion (DELETE /entities/{type} then re-registering
+        // the type), not catalog loss: the catalog still remembers the dropped table's files,
+        // so even recoverOrphanedFiles=true must not read them back in.
+        ResponseEntity<Map> afterDrop = restTemplate.postForEntity(
+                url("/cassettes/entities/rebuild-known-entities?recoverOrphanedFiles=true"),
+                null, Map.class);
+        assertThat(afterDrop.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(((Number) afterDrop.getBody().get("rebuilt")).longValue())
+                .as("a dropped-then-recreated table's files must not be resurrected")
+                .isEqualTo(0L);
+        assertThat(countCassetteRows(RECOVERY_TEST_ENTITY_TYPE, "shipment-999")).isEqualTo(0L);
+
+        // Simulate the catalog losing that history too, as a reset .ducklake file would:
+        // the Parquet file is still on object storage, but no catalog row mentions it.
+        try (PreparedStatement ps = duckDB.prepareStatement(
+                "DELETE FROM __ducklake_metadata_lake.ducklake_data_file WHERE table_id IN (" +
+                "  SELECT table_id FROM __ducklake_metadata_lake.ducklake_table WHERE table_name = ?)")) {
+            ps.setString(1, "entity_" + RECOVERY_TEST_ENTITY_TYPE);
+            assertThat(ps.executeUpdate()).isPositive();
+        }
 
         // Without recoverOrphanedFiles, the orphaned data must NOT be recovered.
         ResponseEntity<Map> noRecover = restTemplate.postForEntity(
