@@ -85,7 +85,7 @@ class CompactionServiceTest {
         // never treats this test's own in-flight lock as belonging to a dead instance.
         instanceRegistry = DuckDBTestSupport.newInstanceRegistry(duckDB);
         DuckDBTestSupport.registerLiveInstance(duckDB, TEST_INSTANCE_ID);
-        service = new CompactionService(duckDB, new com.joxette.db.DuckDbSession(duckDB), props, configRepo, TEST_METRICS, newLockManager());
+        service = new CompactionService(duckDB, props, configRepo, TEST_METRICS, newLockManager());
     }
 
     @AfterEach
@@ -334,26 +334,6 @@ class CompactionServiceTest {
         assertThat(countAfter).isEqualTo(rows);
     }
 
-    // -------------------------------------------------------------------------
-    // Legacy-file migration (bucket partitioning) — graceful degradation
-    // -------------------------------------------------------------------------
-    //
-    // The fake :memory:-attached `lake` harness has no __ducklake_metadata_lake
-    // tables, so SchemaManager.hasUnpartitionedFiles always throws SQLException
-    // here. This proves that failure doesn't abort the whole compaction run —
-    // it must still complete, falling through to the (also-failing, per
-    // existing tests) merge call. Real migration correctness is proven by
-    // EntityBucketPartitioningIT against a genuine DuckLake catalog.
-
-    @Test
-    void executeRun_migrationCheckFails_stillCompletesRun() throws Exception {
-        CompactionRun run = service.beginRun(TriggerSource.MANUAL, List.of(ENTITY_TYPE));
-        service.executeRun(run.id(), List.of(ENTITY_TYPE));
-
-        CompactionRun result = service.getRunById(run.id());
-        assertThat(result.status()).isEqualTo(RunStatus.COMPLETED);
-    }
-
     @Test
     void executeRun_preservesGeneralCassetteData() throws Exception {
         int rows = 8;
@@ -565,7 +545,7 @@ class CompactionServiceTest {
     @Test
     void executeRun_skipsATargetHeldByAnotherCallerInThisInstance_andLeavesItsLockAlone() throws Exception {
         CompactionLockManager lockManager = newLockManager();
-        CompactionService svc = new CompactionService(duckDB, new com.joxette.db.DuckDbSession(duckDB),
+        CompactionService svc = new CompactionService(duckDB,
                 testProperties(), configRepo, TEST_METRICS, lockManager);
         String target = CompactionLockManager.targetForEntityType(ENTITY_TYPE);
         assertThat(lockManager.tryAcquireExclusive(target)).isTrue();   // e.g. an in-flight truncate
@@ -707,7 +687,7 @@ class CompactionServiceTest {
 
         JoxetteProperties props = testProperties();
         props.getCompaction().getEntity().setRowGroupMemoryLimitMb(limitMb);
-        CompactionService svc = new CompactionService(duckDB, new com.joxette.db.DuckDbSession(duckDB), props, configRepo, TEST_METRICS,
+        CompactionService svc = new CompactionService(duckDB, props, configRepo, TEST_METRICS,
                 newLockManager());
 
         ch.qos.logback.classic.Logger logger =
@@ -831,8 +811,7 @@ class CompactionServiceTest {
         props.getCompaction().getGeneral().setEnabled(true);
         props.getCompaction().getGeneral().setMaxCompactedFilesPerBatch(5);
         SqlRecordingConnection conn = SqlRecordingConnection.wrap(duckDB);
-        CompactionService svc = new CompactionService(conn.connection(),
-                new com.joxette.db.DuckDbSession(conn.connection()), props, configRepo, TEST_METRICS, newLockManager());
+        CompactionService svc = new CompactionService(conn.connection(), props, configRepo, TEST_METRICS, newLockManager());
 
         CompactionRun run = svc.beginRun(TriggerSource.MANUAL, List.of("general"));
         svc.executeRun(run.id(), List.of("general"));

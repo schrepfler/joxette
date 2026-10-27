@@ -948,10 +948,9 @@ public class SchemaManager {
      * DuckLake's internal {@code ducklake_file_partition_value} tracking
      * table. Pure catalog-metadata query, no object-store I/O.
      *
-     * <p>Used by {@code CompactionService} to decide whether a one-time
-     * migration rewrite is needed, and by {@code EntityReplayService} to
-     * decide whether the fast bucket-glob file-count path is safe to use
-     * (it isn't, until this returns {@code false}).
+     * <p>Used by {@code EntityReplayService} to decide whether the fast bucket-glob
+     * file-count path is safe. Tables declare their partitioning in the CREATE, so
+     * this is {@code false} for every table created by this version.
      *
      * <p>Queries DuckLake's internal metadata schema (not a documented
      * app-facing API) — throws {@link SQLException} if unavailable (e.g. not

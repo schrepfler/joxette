@@ -1,7 +1,6 @@
 package com.joxette.config;
 
 import com.joxette.db.CatalogBackend;
-import com.joxette.db.DuckDbSession;
 import org.duckdb.DuckDBConnection;
 import org.jooq.DSLContext;
 import org.jooq.SQLDialect;
@@ -158,13 +157,6 @@ public class DuckDBConfig {
     @Bean(destroyMethod = "close")
     public Connection healthDuckDbConnection(Connection duckDbConnection) throws SQLException {
         return ((DuckDBConnection) duckDbConnection).duplicate();
-    }
-
-    /** {@link DuckDbSession} wrapping {@link #compactionDuckDbConnection}. */
-    @Bean
-    public DuckDbSession compactionDuckDbSession(
-            @Qualifier("compactionDuckDbConnection") Connection compactionDuckDbConnection) {
-        return new DuckDbSession(compactionDuckDbConnection);
     }
 
     /**

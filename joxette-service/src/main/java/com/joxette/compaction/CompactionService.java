@@ -82,9 +82,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * of blocking behind it for the merge's whole duration.
  *
  * <h2>Connection isolation</h2>
- * <p>{@link #duckDB} and {@link #session} are <strong>not</strong> the connection every
- * other DB-touching class serialises on via {@code synchronized(duckDB)}; they are
- * {@code compactionDuckDbConnection} / {@code compactionDuckDbSession} from
+ * <p>{@link #duckDB} is <strong>not</strong> the connection every
+ * other DB-touching class serialises on via {@code synchronized(duckDB)}; it is
+ * {@code compactionDuckDbConnection} from
  * {@link com.joxette.config.DuckDBConfig} — a separate connection to the same DuckDB
  * instance, obtained via {@code DuckDBConnection#duplicate()}. This exists because
  * {@code CALL ducklake_merge_adjacent_files(...)} can block for a very long time deep
@@ -103,8 +103,6 @@ public class CompactionService {
 
     /** Compaction's dedicated connection — see the class-level "Connection isolation" javadoc. */
     private final Connection           duckDB;
-    /** Same connection as {@link #duckDB}, wrapped so failures cannot leave it wedged. */
-    private final DuckDbSession        session;
     private final JoxetteProperties    props;
     private final ConfigRepository     configRepo;
     private final AtomicBoolean        running = new AtomicBoolean(false);
@@ -114,11 +112,9 @@ public class CompactionService {
     private final CompactionLockManager lockManager;
 
     public CompactionService(@Qualifier("compactionDuckDbConnection") Connection duckDB,
-                              @Qualifier("compactionDuckDbSession") DuckDbSession session,
                               JoxetteProperties props, ConfigRepository configRepo,
                               JoxetteMetrics joxetteMetrics, CompactionLockManager lockManager) {
         this.duckDB                = duckDB;
-        this.session               = session;
         this.props                 = props;
         this.configRepo            = configRepo;
         this.filesProcessedCounter = joxetteMetrics.compactionFilesProcessed();
@@ -409,96 +405,6 @@ public class CompactionService {
     }
 
     /**
-     * One-time migration: if {@code entity_{entityType}} still has any files
-     * that predate bucket partitioning (see {@link SchemaManager#hasUnpartitionedFiles}),
-     * rewrite the whole table so every row lands in its correct
-     * {@code bucket=N/} file. The original flat file(s) end up with every
-     * row soft-deleted; {@link #expireSnapshotsAndCleanup()} physically
-     * reclaims them later in the same run once their retention window
-     * allows it.
-     *
-     * <p>There is no way to scope this rewrite to just the legacy file(s)'
-     * rows without an expensive full-table scan (no queryable "which file
-     * did this row come from" column on a DuckLake table) — this is
-     * deliberately a whole-table operation, but it only ever runs once per
-     * entity type: once every file is partitioned, {@code hasUnpartitionedFiles}
-     * returns {@code false} on every subsequent call and this is skipped
-     * entirely.
-     *
-     * <p>A plain {@code DELETE} alone does not mark the original file as
-     * superseded — verified empirically: the flat file remained physically
-     * present even after {@code ducklake_expire_snapshots}/
-     * {@code ducklake_cleanup_old_files}, because from DuckLake's
-     * perspective the file is still "live," just filtered by a paired
-     * delete-marker file at read time. {@code ducklake_rewrite_data_files}
-     * is what actually rewrites a file exceeding its delete-ratio threshold
-     * (default 0.95) — for a migrated flat file, which is always 100%
-     * deleted, this produces zero replacement rows and is what makes the
-     * file eligible for {@link #expireSnapshotsAndCleanup()} to physically
-     * reclaim later in the same run. Skipping this call would leave
-     * migration "working" (rows correctly repartitioned) but never actually
-     * freeing the old files' disk space — silently reintroducing the exact
-     * problem the earlier compaction-cleanup feature fixed.
-     *
-     * <p>Failures are logged and swallowed — a failed migration attempt
-     * does not prevent the merge step that follows it, and simply retries
-     * on the next compaction run.
-     */
-    private void migrateLegacyPartitionFiles(String entityType) {
-        String table = "entity_" + entityType;
-        try {
-            if (!SchemaManager.hasUnpartitionedFiles(duckDB, table)) return;
-        } catch (SQLException e) {
-            log.debug("Could not check for unpartitioned files on entity_type='{}' ({}); skipping migration this run",
-                    entityType, e.getMessage());
-            return;
-        }
-        log.info("Migrating legacy unpartitioned files for entity_type='{}' into bucket layout", entityType);
-        String tmpTable = "tmp_migrate_" + entityType;
-        String description = "compaction: legacy partition migration of " + table;
-        // This is the only multi-statement transaction in the application, and it used to
-        // be what wedged the whole process: the swallowed catch below left its raw
-        // BEGIN TRANSACTION open on the *shared* connection, and the next failed statement
-        // anywhere — a transient object-store read, or any executeBatch() whose
-        // driver-issued BEGIN then collided with it — invalidated the transaction, after
-        // which every statement from every thread failed with "Current transaction is
-        // aborted" until the process was restarted. DuckDbSession.inTransaction guarantees
-        // the rollback that was missing; the finally block guarantees the temp-table
-        // cleanup that was missing too.
-        try {
-            session.inTransaction(description, conn -> {
-                try (Statement st = conn.createStatement()) {
-                    st.execute("CREATE TEMP TABLE " + tmpTable
-                            + " AS SELECT * FROM lake.main." + table);
-                    st.execute("DELETE FROM lake.main." + table);
-                    st.execute("INSERT INTO lake.main." + table
-                            + " SELECT * FROM " + tmpTable);
-                }
-            });
-            try (Statement st = duckDB.createStatement();
-                 ResultSet rs = st.executeQuery(
-                    "SELECT * FROM ducklake_rewrite_data_files('lake', '" + table + "')")) {
-                // No rows needed — this call's effect (marking the now-fully-deleted
-                // flat file superseded) is what matters, not its return value.
-            }
-            log.info("Legacy file migration complete for entity_type='{}'", entityType);
-        } catch (SQLException e) {
-            log.warn("Legacy file migration failed for entity_type='{}' ({}); will retry next run",
-                    entityType, e.getMessage());
-            DuckDbSession.rollbackQuietly(duckDB, description);
-        } finally {
-            // Without this the next run's CREATE TEMP TABLE fails with a Catalog Error,
-            // which is classified non-transient — migration would stay broken forever.
-            try (Statement st = duckDB.createStatement()) {
-                st.execute("DROP TABLE IF EXISTS " + tmpTable);
-            } catch (SQLException e) {
-                log.debug("Could not drop {} after legacy migration: {}", tmpTable, e.getMessage());
-                DuckDbSession.rollbackQuietly(duckDB, "compaction: dropping " + tmpTable);
-            }
-        }
-    }
-
-    /**
      * Merges adjacent small files for one entity type using
      * {@code ducklake_merge_adjacent_files} — DuckLake 1.0.
      *
@@ -552,8 +458,6 @@ public class CompactionService {
             log.debug("Merging adjacent files for entity_type='{}' in batches of up to {} compacted file(s)",
                     entityType, batchSize);
             synchronized (duckDB) {
-                migrateLegacyPartitionFiles(entityType);
-
                 // Apply the Parquet row-group memory cap before the merge (DuckDB 1.5.3+).
                 // A value of 0 means "use the DuckDB default" — skip the SET entirely.
                 if (rowGroupMemoryLimitMb > 0) {
