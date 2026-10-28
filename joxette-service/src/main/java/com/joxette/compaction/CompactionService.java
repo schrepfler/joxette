@@ -476,7 +476,7 @@ public class CompactionService {
                 // mergeInBatches never throws — every batch failure (transient or not) is
                 // logged and swallowed internally so earlier batches' progress is always
                 // returned instead of being discarded by a catch here.
-                FileStats stats = mergeInBatches(
+                FileStats stats = mergeInBatches("compaction of entity_" + entityType,
                         () -> executeMergeBatch("entity_" + entityType, maxFileSizeBytes, batchSize, lookbackDays),
                         maxBatches, MERGE_BATCH_RETRY_ATTEMPTS, MERGE_BATCH_RETRY_BASE_DELAY_MS);
                 log.debug("Merged adjacent files for entity_{}: files_processed={} files_created={}",
@@ -517,19 +517,22 @@ public class CompactionService {
      * {@code baseDelayMs} test seam already used by {@code TopicReplayService
      * .withObjectStoreRetry}.
      */
-    FileStats mergeInBatches(MergeBatchAttempt attempt, int maxBatches, int maxRetriesPerBatch, long baseDelayMs) {
-        return runInBatches(attempt, maxBatches, maxRetriesPerBatch, baseDelayMs);
+    FileStats mergeInBatches(String label, MergeBatchAttempt attempt, int maxBatches, int maxRetriesPerBatch,
+                             long baseDelayMs) {
+        return runInBatches(label, attempt, maxBatches, maxRetriesPerBatch, baseDelayMs);
     }
 
     /**
      * The bounded-batch loop behind {@link #mergeInBatches}, shared with
      * {@link RetentionService}'s {@code ducklake_rewrite_data_files} calls, which fail
-     * the same way when one call covers a whole table.
+     * the same way when one call covers a whole table. {@code label} names the operation and
+     * table in failure logs, e.g. {@code "retention rewrite of entity_order"}.
      */
-    static FileStats runInBatches(MergeBatchAttempt attempt, int maxBatches, int maxRetriesPerBatch, long baseDelayMs) {
+    static FileStats runInBatches(String label, MergeBatchAttempt attempt, int maxBatches, int maxRetriesPerBatch,
+                                  long baseDelayMs) {
         FileStats total = FileStats.EMPTY;
         for (int batch = 1; batch <= maxBatches; batch++) {
-            FileStats batchStats = runOneBatchWithRetry(attempt, maxRetriesPerBatch, baseDelayMs);
+            FileStats batchStats = runOneBatchWithRetry(label, attempt, maxRetriesPerBatch, baseDelayMs);
             if (batchStats == null) {
                 break; // retries exhausted, or a non-transient failure — stop, keep what we have
             }
@@ -542,7 +545,7 @@ public class CompactionService {
     }
 
     /** Returns {@code null} once retries are exhausted (or the failure was never retryable). */
-    private static FileStats runOneBatchWithRetry(MergeBatchAttempt attempt, int maxRetriesPerBatch, long baseDelayMs) {
+    private static FileStats runOneBatchWithRetry(String label, MergeBatchAttempt attempt, int maxRetriesPerBatch, long baseDelayMs) {
         SQLException lastError = null;
         for (int i = 1; i <= maxRetriesPerBatch; i++) {
             try {
@@ -550,7 +553,7 @@ public class CompactionService {
             } catch (SQLException e) {
                 lastError = e;
                 if (!DuckDbErrors.isTransient(e)) {
-                    log.warn("Compaction batch failed with a non-retryable error: {}", e.getMessage());
+                    log.warn("Batch for {} failed with a non-retryable error: {}", label, e.getMessage());
                     return null;
                 }
                 if (i < maxRetriesPerBatch) {
@@ -558,8 +561,8 @@ public class CompactionService {
                 }
             }
         }
-        log.warn("Compaction batch still failing after {} attempt(s), giving up for this run: {}",
-                maxRetriesPerBatch, lastError.getMessage());
+        log.warn("Batch for {} still failing after {} attempt(s), giving up for this run: {}",
+                label, maxRetriesPerBatch, lastError.getMessage());
         return null;
     }
 
@@ -610,7 +613,7 @@ public class CompactionService {
                 .append(tableName).append("', max_compacted_files => ").append(batchSize)
                 .append(", max_file_size => ").append(maxFileSizeBytes);
         if (lookbackDays > 0) {
-            sql.append(", older_than => (now() - INTERVAL '").append(lookbackDays).append(" days')::TIMESTAMP");
+            sql.append(", older_than => now() - INTERVAL '").append(lookbackDays).append(" days'");
         }
         return sql.append(')').toString();
     }
@@ -680,7 +683,7 @@ public class CompactionService {
             synchronized (duckDB) {
                 // Bounded and retried per batch, for the reasons given on doCompactEntityType.
                 // mergeInBatches never throws; failures are logged there and earlier batches kept.
-                FileStats stats = mergeInBatches(
+                FileStats stats = mergeInBatches("compaction of " + tableName,
                         () -> executeMergeBatch(tableName, maxFileSizeBytes, batchSize, general.getLookbackDays()),
                         general.getMaxBatchesPerRun(), MERGE_BATCH_RETRY_ATTEMPTS, MERGE_BATCH_RETRY_BASE_DELAY_MS);
                 log.debug("Merged adjacent files for general cassette topic='{}': files_processed={} files_created={}",

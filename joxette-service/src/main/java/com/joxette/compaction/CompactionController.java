@@ -390,7 +390,7 @@ public class CompactionController {
 
         @Schema(description = "Entity cassette compaction thresholds")
         record EntityConfig(
-                @Schema(description = "Only compact rows older than this many days", example = "30")
+                @Schema(description = "Only merge files that entered the lake more than this many days ago; 0 = no limit", example = "1")
                 int lookbackDays,
                 @Schema(description = "Compact a bucket when its estimated file count exceeds this threshold", example = "10")
                 int minFilesPerBucket,
@@ -401,7 +401,7 @@ public class CompactionController {
         record GeneralConfig(
                 @Schema(description = "Whether general cassette compaction is enabled", example = "false")
                 boolean enabled,
-                @Schema(description = "Only compact rows older than this many days", example = "30")
+                @Schema(description = "Only merge files that entered the lake more than this many days ago; 0 = no limit", example = "1")
                 int lookbackDays,
                 @Schema(description = "Compact a partition when its estimated file count exceeds this threshold", example = "20")
                 int minFilesPerPartition,

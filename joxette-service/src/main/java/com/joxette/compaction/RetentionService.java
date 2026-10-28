@@ -349,7 +349,7 @@ public class RetentionService {
         var retention = props.getRetention();
         log.debug("Rewriting delete-heavy files for {} ({})", label, tableName);
         synchronized (lake) {
-            CompactionService.FileStats stats = CompactionService.runInBatches(
+            CompactionService.FileStats stats = CompactionService.runInBatches("retention rewrite of " + tableName,
                     () -> executeRewriteBatch(tableName, retention.getRewriteDeleteThreshold(),
                             retention.getMaxRewrittenFilesPerBatch()),
                     retention.getMaxBatchesPerRun(), REWRITE_BATCH_RETRY_ATTEMPTS, REWRITE_BATCH_RETRY_BASE_DELAY_MS);

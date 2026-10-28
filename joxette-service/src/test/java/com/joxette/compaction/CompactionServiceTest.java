@@ -591,7 +591,7 @@ class CompactionServiceTest {
             return results.poll();
         };
 
-        FileStats total = service.mergeInBatches(attempt, /*maxBatches*/ 10, /*maxRetriesPerBatch*/ 3, /*baseDelayMs*/ 0);
+        FileStats total = service.mergeInBatches("compaction of t", attempt, /*maxBatches*/ 10, /*maxRetriesPerBatch*/ 3, /*baseDelayMs*/ 0);
 
         assertThat(total).isEqualTo(new FileStats(8, 2));
         assertThat(calls.get()).isEqualTo(3);
@@ -605,7 +605,7 @@ class CompactionServiceTest {
             return new FileStats(5, 1); // always more to do
         };
 
-        FileStats total = service.mergeInBatches(attempt, /*maxBatches*/ 3, /*maxRetriesPerBatch*/ 3, /*baseDelayMs*/ 0);
+        FileStats total = service.mergeInBatches("compaction of t", attempt, /*maxBatches*/ 3, /*maxRetriesPerBatch*/ 3, /*baseDelayMs*/ 0);
 
         assertThat(total).isEqualTo(new FileStats(15, 3));
         assertThat(calls.get()).isEqualTo(3);
@@ -625,7 +625,7 @@ class CompactionServiceTest {
             return (FileStats) next;
         };
 
-        FileStats total = service.mergeInBatches(attempt, 10, /*maxRetriesPerBatch*/ 3, /*baseDelayMs*/ 0);
+        FileStats total = service.mergeInBatches("compaction of t", attempt, 10, /*maxRetriesPerBatch*/ 3, /*baseDelayMs*/ 0);
 
         assertThat(total).isEqualTo(new FileStats(4, 1));
         assertThat(calls.get()).isEqualTo(3);
@@ -640,7 +640,7 @@ class CompactionServiceTest {
             throw new SQLException("IO Error: Timeout was reached"); // every later attempt fails
         };
 
-        FileStats total = service.mergeInBatches(attempt, 10, /*maxRetriesPerBatch*/ 2, /*baseDelayMs*/ 0);
+        FileStats total = service.mergeInBatches("compaction of t", attempt, 10, /*maxRetriesPerBatch*/ 2, /*baseDelayMs*/ 0);
 
         // Batch 1 succeeds (5,1). Batch 2 exhausts its 2 retry attempts and the run
         // stops there, but the first batch's real progress must not be discarded.
@@ -656,7 +656,7 @@ class CompactionServiceTest {
             throw new SQLException("Catalog Error: Table with name entity_fixture does not exist!");
         };
 
-        FileStats total = service.mergeInBatches(attempt, 10, /*maxRetriesPerBatch*/ 3, /*baseDelayMs*/ 0);
+        FileStats total = service.mergeInBatches("compaction of t", attempt, 10, /*maxRetriesPerBatch*/ 3, /*baseDelayMs*/ 0);
 
         assertThat(total).isEqualTo(FileStats.EMPTY);
         assertThat(calls.get()).isEqualTo(1); // a real bug — retrying it is pointless

@@ -370,7 +370,7 @@ public class JoxetteProperties {
             public void setTargetFileSizeMb(int targetFileSizeMb) { this.targetFileSizeMb = targetFileSizeMb; }
 
             public int getLookbackDays() { return lookbackDays; }
-            public void setLookbackDays(int lookbackDays) { this.lookbackDays = lookbackDays; }
+            public void setLookbackDays(int lookbackDays) { this.lookbackDays = requireNonNegativeLookback(lookbackDays); }
 
             public int getRowGroupMemoryLimitMb() { return rowGroupMemoryLimitMb; }
             public void setRowGroupMemoryLimitMb(int rowGroupMemoryLimitMb) {
@@ -411,7 +411,7 @@ public class JoxetteProperties {
             public void setTargetFileSizeMb(int targetFileSizeMb) { this.targetFileSizeMb = targetFileSizeMb; }
 
             public int getLookbackDays() { return lookbackDays; }
-            public void setLookbackDays(int lookbackDays) { this.lookbackDays = lookbackDays; }
+            public void setLookbackDays(int lookbackDays) { this.lookbackDays = requireNonNegativeLookback(lookbackDays); }
 
             public int getMaxCompactedFilesPerBatch() { return maxCompactedFilesPerBatch; }
             public void setMaxCompactedFilesPerBatch(int maxCompactedFilesPerBatch) {
@@ -1160,4 +1160,13 @@ public class JoxetteProperties {
 
     public Clustering getClustering() { return clustering; }
     public void setClustering(Clustering clustering) { this.clustering = clustering; }
+
+    /** Fails binding on a negative compaction lookback rather than silently treating it as "no limit". */
+    private static int requireNonNegativeLookback(int lookbackDays) {
+        if (lookbackDays < 0) {
+            throw new IllegalArgumentException(
+                    "joxette.compaction.*.lookback-days must be >= 0 (0 = no limit), got " + lookbackDays);
+        }
+        return lookbackDays;
+    }
 }

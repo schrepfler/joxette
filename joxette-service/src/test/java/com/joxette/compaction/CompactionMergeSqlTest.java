@@ -53,7 +53,7 @@ class CompactionMergeSqlTest {
     void mergeSql_withLookback_passesOlderThan() {
         assertThat(CompactionService.mergeSql("t", TARGET_FILE_SIZE, 8, 7))
                 .isEqualTo("CALL ducklake_merge_adjacent_files('lake', 't', max_compacted_files => 8, "
-                        + "max_file_size => 268435456, older_than => (now() - INTERVAL '7 days')::TIMESTAMP)");
+                        + "max_file_size => 268435456, older_than => now() - INTERVAL '7 days')");
     }
 
     @Test

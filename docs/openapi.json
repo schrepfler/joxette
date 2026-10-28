@@ -8919,8 +8919,8 @@
           "lookbackDays" : {
             "type" : "integer",
             "format" : "int32",
-            "description" : "Only compact rows older than this many days",
-            "example" : 30
+            "description" : "Only merge files that entered the lake more than this many days ago; 0 = no limit",
+            "example" : 1
           },
           "minFilesPerBucket" : {
             "type" : "integer",
@@ -8948,8 +8948,8 @@
           "lookbackDays" : {
             "type" : "integer",
             "format" : "int32",
-            "description" : "Only compact rows older than this many days",
-            "example" : 30
+            "description" : "Only merge files that entered the lake more than this many days ago; 0 = no limit",
+            "example" : 1
           },
           "minFilesPerPartition" : {
             "type" : "integer",
